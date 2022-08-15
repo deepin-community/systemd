@@ -1,0 +1,21 @@
+Description: restart systemd-binfmt if it fail
+ 如果systemd-binfmt运行失败，重启它
+Author: guozhijun <guozhijun@uniontech.com>
+Origin: https://gerrit.uniontech.com/plugins/gitiles/base/systemd/+/94cac68a4404e75c9feaa0013c7b710ee9efbd12
+Bug: https://pms.uniontech.com/zentao/bug-view-98874.html
+Last-Update: 2022-05-27
+
+--- systemd-250.4.orig/units/systemd-binfmt.service.in
++++ systemd-250.4/units/systemd-binfmt.service.in
+@@ -26,8 +26,10 @@ ConditionDirectoryNotEmpty=|/etc/binfmt.
+ ConditionDirectoryNotEmpty=|/run/binfmt.d
+ 
+ [Service]
+-Type=oneshot
++Type=simple
+ RemainAfterExit=yes
+ ExecStart={{ROOTLIBEXECDIR}}/systemd-binfmt
+ ExecStop={{ROOTLIBEXECDIR}}/systemd-binfmt --unregister
++Restart=on-failure
++RestartSec=1s
+ TimeoutSec=90s

@@ -1,0 +1,29 @@
+Description: set systemd-timesync and journal-flush service type
+ 没有必要使用notify和oneshot类型,使用simple类型能更快的启动后续服务
+Author: guozhijun <guozhijun@uniontech.com>
+
+Origin: https://gerrit.uniontech.com/plugins/gitiles/base/systemd/+/1b1d1da88839ae94bb039fa4e4791b87c74b21ae
+Last-Update: 2022-05-27
+
+--- systemd-250.4.orig/units/systemd-journal-flush.service
++++ systemd-250.4/units/systemd-journal-flush.service
+@@ -20,6 +20,7 @@ ConditionPathExists=!/etc/initrd-release
+ [Service]
+ ExecStart=journalctl --flush
+ ExecStop=journalctl --smart-relinquish-var
+-Type=oneshot
++Type=simple
+ RemainAfterExit=yes
+ TimeoutSec=90s
++Restart=on-failure
+--- systemd-250.4.orig/units/systemd-timesyncd.service.in
++++ systemd-250.4/units/systemd-timesyncd.service.in
+@@ -51,7 +51,7 @@ StateDirectory=systemd/timesync
+ SystemCallArchitectures=native
+ SystemCallErrorNumber=EPERM
+ SystemCallFilter=@system-service @clock
+-Type=notify
++Type=simple
+ User=systemd-timesync
+ {{SERVICE_WATCHDOG}}
+ 

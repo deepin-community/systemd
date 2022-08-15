@@ -1,0 +1,279 @@
+#! /usr/bin/make -f
+
+#export DH_VERBOSE = 1
+#export DEB_BUILD_OPTIONS = nostrip
+export DEB_BUILD_OPTIONS = nocheck
+
+export LC_ALL = C.UTF-8
+
+include /usr/share/dpkg/default.mk
+include /usr/share/debhelper/dh_package_notes/package-notes.mk
+
+ifeq ($(DEB_VENDOR),Ubuntu)
+    DEFAULT_NTP_SERVERS = ntp.ubuntu.com
+    SUPPORT_URL = http://www.ubuntu.com/support
+    CONFFLAGS_DISTRO =
+else
+    DEFAULT_NTP_SERVERS = 0.debian.pool.ntp.org 1.debian.pool.ntp.org 2.debian.pool.ntp.org 3.debian.pool.ntp.org
+    SUPPORT_URL = https://www.debian.org/support
+    CONFFLAGS_DISTRO =
+endif
+
+TEST_TIMEOUT_MULTIPLIER = "-t 10"
+
+# fail on missing files and symbols changes on distro builds, but not if we
+# build/test upstream master
+ifeq ($(TEST_UPSTREAM),)
+    DH_MISSING = --fail-missing
+    GENSYMBOLS_LEVEL = 4
+else
+    DH_MISSING = --list-missing
+    GENSYMBOLS_LEVEL = 1
+endif
+
+CONFFLAGS = \
+	-Db_lto=true \
+	-Db_pie=true \
+	-Dmode=release \
+	-Drootlibdir=/usr/lib/$(DEB_HOST_MULTIARCH) \
+	-Dsplit-usr=true \
+	-Dversion-tag="$(DEB_VERSION)" \
+	-Dquotaon-path=/sbin/quotaon \
+	-Dquotacheck-path=/sbin/quotacheck \
+	-Dkmod-path=/bin/kmod \
+	-Dkexec-path=/sbin/kexec \
+	-Dsulogin-path=/sbin/sulogin \
+	-Dmount-path=/bin/mount \
+	-Dumount-path=/bin/umount \
+	-Dloadkeys-path=/bin/loadkeys \
+	-Dsetfont-path=/bin/setfont \
+	-Dnologin-path=/usr/sbin/nologin \
+	-Dtelinit-path=/lib/sysvinit/telinit \
+	-Dsysvinit-path=/etc/init.d \
+	-Dsysvrcnd-path=/etc \
+	-Dlocalegen-path=/usr/sbin/locale-gen \
+	-Ddebug-shell=/bin/bash \
+	-Dzshcompletiondir=/usr/share/zsh/vendor-completions \
+	-Ddbuspolicydir=/usr/share/dbus-1/system.d/ \
+	-Dsupport-url=$(SUPPORT_URL) \
+	-Ddefault-kill-user-processes=false \
+	-Ddefault-hierarchy=unified \
+	-Ddefault-dnssec=no \
+	-Dpamconfdir=no \
+	-Dpamlibdir=/lib/$(DEB_HOST_MULTIARCH)/security \
+	-Drpmmacrosdir=no \
+	-Dqrencode=false \
+	-Dvconsole=false \
+	-Dfirstboot=false \
+	-Dxkbcommon=false \
+	-Dwheel-group=false \
+	-Duserdb=false \
+	-Dhomed=false \
+	-Dpwquality=false \
+	-Dp11kit=false \
+	-Doomd=true \
+	-Durlify=false \
+	-Dopenssl=false \
+	-Dlink-udev-shared=false \
+	-Dlink-systemctl-shared=false \
+	-Dbump-proc-sys-fs-nr-open=false \
+	-Dntp-servers="$(DEFAULT_NTP_SERVERS)" \
+	-Ddns-servers='' \
+	-Dsystem-uid-max=999 \
+	-Dsystem-gid-max=999 \
+	-Dnobody-user=nobody \
+	-Dnobody-group=nogroup \
+	-Ddev-kvm-mode=0660 \
+	-Dgroup-render-mode=0660 \
+	-Drepart=true \
+	-Dfdisk=true \
+	-Dsysext=true \
+	-Dnscd=true \
+	-Dselinux=true \
+	-Dhwdb=true \
+	-Dsysusers=true \
+	-Dinstall-tests=$(if $(filter noinsttest,$(DEB_BUILD_PROFILES)),false,true) \
+	-Dlibcryptsetup-plugins=false \
+	-Defi=true \
+	-Dman=true \
+	-Dtranslations=true \
+	-Dnss-myhostname=true \
+	-Dnss-mymachines=true \
+	-Dnss-resolve=true \
+	-Dnss-systemd=true \
+	-Dresolve=true \
+	-Dstandalone-binaries=true
+
+ifeq (, $(filter stage1, $(DEB_BUILD_PROFILES)))
+CONFFLAGS += \
+	-Daudit=true \
+	-Dlibcryptsetup=true \
+	-Dcoredump=true \
+	-Delfutils=true \
+	-Dapparmor=true \
+	-Dlibidn2=true \
+	-Dlibiptc=true \
+	-Dlibcurl=true \
+	-Dimportd=true \
+	-Dmicrohttpd=true \
+	-Dgnutls=true \
+	-Dlibfido2=true \
+	-Dtpm2=true \
+	-Dpcre2=true
+else
+CONFFLAGS += \
+	-Daudit=false \
+	-Dlibcryptsetup=false \
+	-Dcoredump=false \
+	-Delfutils=false \
+	-Dapparmor=false \
+	-Dlibidn2=false \
+	-Dlibiptc=false \
+	-Dlibcurl=false \
+	-Dimportd=false \
+	-Dmicrohttpd=false \
+	-Dgnutls=false \
+	-Dlibfido2=false \
+	-Dtpm2=false \
+	-Dpcre2=false
+endif
+
+override_dh_auto_configure:
+	dh_auto_configure --builddirectory=build-deb \
+		-- $(CONFFLAGS) $(CONFFLAGS_DISTRO) $(CONFFLAGS_UPSTREAM)
+
+override_dh_auto_build:
+	# blhc false positives: C++ fuzz test program, cc -E flags listing, PE-COFF EFI binaries
+	@echo 'blhc: ignore-line-regexp: .* -o test-bus-vtable-cc.*'
+	@echo 'blhc: ignore-line-regexp: .*cc -E.*'
+	@echo 'blhc: ignore-line-regexp: .* -o src/boot/efi.*'
+	dh_auto_build --builddirectory=build-deb
+	# generate POT file for translators
+	ninja -C build-deb/ systemd-pot
+
+override_dh_auto_install:
+	dh_auto_install --builddirectory=build-deb
+	# fix paths in manpages; manually check the remaining /usr occurrences
+	# occasionally, with filtering out paths which are known to be in /usr:
+	# grep -r /usr debian/tmp/usr/share/man/|egrep -v '/usr/local|os.*release|factory|zoneinfo|tmpfiles|kernel|foo|machines|sysctl|dbus|include|binfmt'
+	find debian/tmp/usr/share/man/ -type f | xargs sed -ri 's_/usr(/lib/systemd/system|/lib/systemd/network|/lib/udev|/lib[^/]|/lib/[^a-z])_\1_g'
+
+override_dh_auto_clean:
+ifneq (, $(TEST_UPSTREAM))
+	debian/extra/checkout-upstream
+endif
+	dh_auto_clean --builddirectory=build-deb
+	rm -f debian/shlibs.local
+	# remove Python byte code files
+	rm -rf tools/__pycache__/
+	rm -rf tools/chromiumos/__pycache__/
+	rm -f po/systemd.pot
+
+override_dh_install:
+	# remove unnecessary / unused files
+	rm -rf debian/tmp/usr/share/doc/systemd/LICENSES/
+	rm -f debian/tmp/usr/share/doc/systemd/LICENSE.*
+	rm -f debian/tmp/var/log/README
+	rm -f debian/tmp/etc/init.d/README
+	rm -f debian/tmp/lib/*.d/README
+	rm -f debian/tmp/lib/udev/*.d/README
+	rm -f debian/tmp/usr/lib/*.d/README
+	rm -f debian/tmp/usr/lib/sysctl.d/50-default.conf
+	rm -f debian/tmp/etc/X11/xinit/xinitrc.d/50-systemd-user.sh
+	rmdir -p --ignore-fail-on-non-empty debian/tmp/etc/X11/xinit/xinitrc.d/
+	# those files should probably be shipped in a -dev package, remove for now
+	rm -rf debian/tmp/usr/share/dbus-1/interfaces/
+	# remove files related to factory-reset feature
+	find debian/tmp/ \( -name 'systemd-update-done*' -o \
+		-name systemd-journal-catalog-update.service -o \
+		-name systemd-hwdb-update.service -o \
+		-name ldconfig.service -o \
+		-name etc.conf \) -print -delete
+	rm -rf debian/tmp/usr/share/factory/
+	# replace upstream sysusers.d/basic.conf with proper users for Debian
+	debian/extra/make-sysusers-basic > debian/tmp/usr/lib/sysusers.d/basic.conf
+	# remove resolvconf compat symlink
+	rm -f debian/tmp/sbin/resolvconf
+	# remove obsolete compat symlink
+	rm -f debian/tmp/usr/bin/systemd-resolve
+
+	dh_install
+
+	# install standalone binaries and manpages
+	for pkg in sysusers tmpfiles; do \
+		mkdir -p debian/systemd-standalone-$$pkg/bin debian/systemd-standalone-$$pkg/usr/share/man/man8; \
+		mv debian/systemd/bin/systemd-$$pkg.standalone debian/systemd-standalone-$$pkg/bin/systemd-$$pkg; \
+		cp debian/tmp/usr/share/man/man8/systemd-$$pkg.8 debian/systemd-standalone-$$pkg/usr/share/man/man8/; \
+	done
+
+	# we don't want /tmp to be a tmpfs by default
+	mv debian/systemd/lib/systemd/system/tmp.mount debian/systemd/usr/share/systemd/
+	printf '\n[Install]\nWantedBy=local-fs.target\n' >> debian/systemd/usr/share/systemd/tmp.mount
+	rm debian/systemd/lib/systemd/system/local-fs.target.wants/tmp.mount
+
+	# files shipped by cryptsetup
+ifeq (, $(filter stage1, $(DEB_BUILD_PROFILES)))
+	rm debian/systemd/usr/share/man/man5/crypttab.5
+endif
+
+	# files shipped by systemd
+	rm debian/udev/lib/udev/rules.d/70-uaccess.rules
+	rm debian/udev/lib/udev/rules.d/73-seat-late.rules
+	rm debian/udev/lib/udev/rules.d/71-seat.rules
+	rm debian/udev/lib/udev/rules.d/99-systemd.rules
+
+	# remove duplicate files shipped by systemd-*/udev
+	echo "Removing duplicate files in systemd package:"
+	set -e; for pkg in $(shell dh_listpackages -Nudev-udeb -Nlibudev1-udeb -Nsystemd -Nsystemd-standalone-sysusers -Nsystemd-standalone-tmpfiles); do \
+		echo "... from $$pkg..."; \
+		(cd debian/$$pkg; find -type f -o -type l) | (cd debian/systemd; xargs rm -f --verbose); \
+		(cd debian/$$pkg; find -mindepth 1 -type d | sort -r) | (cd debian/systemd; xargs rmdir --ignore-fail-on-non-empty --verbose || true); \
+	done
+
+	# Ubuntu specific files
+ifeq ($(DEB_VENDOR),Ubuntu)
+	install -D --mode=644 debian/extra/udev.py debian/udev/usr/share/apport/package-hooks/udev.py
+	install -D --mode=644 debian/extra/systemd.py debian/systemd/usr/share/apport/package-hooks/systemd.py
+	install --mode=644 debian/extra/rules-ubuntu/*.rules debian/udev/lib/udev/rules.d/
+	cp -a debian/extra/units-ubuntu/* debian/systemd/lib/systemd/system/
+endif
+
+override_dh_missing:
+	dh_missing $(DH_MISSING)
+
+override_dh_installinit:
+	dh_installinit --no-start
+
+override_dh_installsystemd:
+	dh_installsystemd -psystemd-timesyncd
+	dh_installsystemd -psystemd-oomd systemd-oomd.service
+	dh_installsystemd -psystemd-oomd --no-stop-on-upgrade systemd-oomd.socket
+
+override_dh_installsystemduser:
+
+PROJECT_VERSION ?= $(shell awk '/(PROJECT|PACKAGE)_VERSION/ {print $$3}' build-deb/config.h | tr -d \")
+
+# The SysV compat tools (which are symlinks to systemctl) are
+# quasi-essential, so add their dependencies to Pre-Depends
+# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=753589
+override_dh_shlibdeps:
+	dh_shlibdeps -psystemd -- -dPre-Depends \
+		-edebian/systemd/bin/systemctl \
+		-dDepends
+	dh_shlibdeps --remaining-packages -Lsystemd
+
+override_dh_makeshlibs:
+	sed 's/SHARED_LIB_VERSION/$(PROJECT_VERSION)/' debian/shlibs.local.in > debian/shlibs.local
+	dh_makeshlibs -plibudev1 --add-udeb=libudev1-udeb -- -c$(GENSYMBOLS_LEVEL)
+	dh_makeshlibs -psystemd -Xlibsystemd-shared -- -c$(GENSYMBOLS_LEVEL)
+	dh_makeshlibs --remaining-packages -- -c$(GENSYMBOLS_LEVEL)
+
+override_dh_auto_test:
+ifeq (, $(filter nocheck, $(DEB_BUILD_OPTIONS)))
+	echo "01234567890123456789012345678901" > build-deb/machine-id
+	# some tests hang under fakeroot, so disable fakeroot
+	env -u LD_PRELOAD SYSTEMD_MACHINE_ID_PATH=$(CURDIR)/build-deb/machine-id meson test -C build-deb --print-errorlogs $(TEST_TIMEOUT_MULTIPLIER)
+endif
+
+%:
+	dh $@ --without autoreconf --buildsystem=meson

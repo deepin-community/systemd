@@ -1,0 +1,24 @@
+Description: CD cannot be mounted automatically
+ blkid的udf光盘信息读取，暂时不支持对--offset的支持，
+ 而udev再调用blkid接口读取光盘信息时传递了此参数，导致
+ windows下追加刻录的udf格式光盘再uos中无法正常显示内容。
+ 当前修改为临时解决方案，等待上游更新blkidd代码后，需要
+ 改回来。
+Author: changlianzhi <changlianzhi@uniontech.com>
+
+
+Origin: https://gerrit.uniontech.com/plugins/gitiles/base/systemd/+/e292f9ec19579d8c1474aab6e4b43af05a79ce3e
+Bug: https://pms.uniontech.com/zentao/bug-view-52431.html
+Last-Update: 2022-05-26
+
+--- systemd-250.4.orig/rules.d/60-persistent-storage.rules
++++ systemd-250.4/rules.d/60-persistent-storage.rules
+@@ -101,7 +101,7 @@ KERNEL=="vd*[0-9]", ENV{ID_PATH}=="pci-*
+ 
+ # probe filesystem metadata of optical drives which have a media inserted
+ KERNEL=="sr*", ENV{DISK_EJECT_REQUEST}!="?*", ENV{ID_CDROM_MEDIA_TRACK_COUNT_DATA}=="?*", ENV{ID_CDROM_MEDIA_SESSION_LAST_OFFSET}=="?*", \
+-  IMPORT{builtin}="blkid --hint=session_offset=$env{ID_CDROM_MEDIA_SESSION_LAST_OFFSET}"
++  IMPORT{builtin}="blkid"
+ # single-session CDs do not have ID_CDROM_MEDIA_SESSION_LAST_OFFSET
+ KERNEL=="sr*", ENV{DISK_EJECT_REQUEST}!="?*", ENV{ID_CDROM_MEDIA_TRACK_COUNT_DATA}=="?*", ENV{ID_CDROM_MEDIA_SESSION_LAST_OFFSET}=="", \
+   IMPORT{builtin}="blkid --noraid"

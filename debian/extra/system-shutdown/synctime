@@ -1,0 +1,14 @@
+#!/bin/bash
+
+isRTCLocal=$(cat /etc/adjtime | grep LOCAL | wc -l)
+
+if [ $isRTCLocal -eq 0 ];then
+    t=$(($(date -d "$(hwclock -r -u)" +%s)-$(date +%s)))
+else
+    t=$(($(date -d "$(hwclock -r)" +%s)-$(date +%s)))
+fi
+
+if [ $t -gt 5 -o $t -lt -5 ];then 
+    hwclock -w
+fi
+

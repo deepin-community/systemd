@@ -1,0 +1,22 @@
+Description: lazy umount /var
+ 给umount var加上lazy参数
+Author: guozhijun <guozhijun@uniontech.com>
+
+Origin: https://gerrit.uniontech.com/plugins/gitiles/base/systemd/+/1fbc0f34e738a427b8050e811c555482f1d2feef
+Task: https://pms.uniontech.com/zentao/bug-view-13987.html
+Last-Update: 2022-05-26
+
+--- systemd-250.4.orig/src/fstab-generator/fstab-generator.c
++++ systemd-250.4/src/fstab-generator/fstab-generator.c
+@@ -471,6 +471,11 @@ static int add_mount(
+                 return log_oom();
+         fprintf(f, "Where=%s\n", where_escaped);
+ 
++	if(streq(where_escaped,"/var"))
++        {
++            fprintf(f, "LazyUnmount=true\n");
++        }
++
+         if (!isempty(fstype) && !streq(fstype, "auto")) {
+                 _cleanup_free_ char *t = NULL;
+ 

@@ -1,0 +1,29 @@
+Description: remove systemd.debug-shell service
+Author: Ding Heng <dingheng@uniontech.com>
+Origin: https://gerrit.uniontech.com/plugins/gitiles/base/systemd/+/12da9b51ab1b0b521118be4afee67e414556537a
+Last-Update: 2022-05-26
+
+--- systemd-250.4.orig/meson.build
++++ systemd-250.4/meson.build
+@@ -3934,8 +3934,8 @@ summary({
+         'bash completions directory' :      bashcompletiondir,
+         'zsh completions directory' :       zshcompletiondir,
+         'extra start script' :              get_option('rc-local'),
+-        'debug shell' :                     '@0@ @ @1@'.format(get_option('debug-shell'),
+-                                                               get_option('debug-tty')),
++        #'debug shell' :                     '@0@ @ @1@'.format(get_option('debug-shell'),
++        #                                                       get_option('debug-tty')),
+         'system UIDs' :                     '<=@0@ (alloc >=@1@)'.format(conf.get('SYSTEM_UID_MAX'),
+                                                                          conf.get('SYSTEM_ALLOC_UID_MIN')),
+         'system GIDs' :                     '<=@0@ (alloc >=@1@)'.format(conf.get('SYSTEM_GID_MAX'),
+--- systemd-250.4.orig/units/meson.build
++++ systemd-250.4/units/meson.build
+@@ -174,7 +174,7 @@ units = [
+ in_units = [
+         ['console-getty.service',                ''],
+         ['container-getty@.service',             ''],
+-        ['debug-shell.service',                  ''],
++        #['debug-shell.service',                  ''],
+         ['emergency.service',                    ''],
+         ['getty@.service',                       '',
+          'autovt@.service'],
