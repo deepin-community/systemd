@@ -26,8 +26,8 @@ insert_nss_entry() {
             }
             # add myhostname in front of dns
             if (grep { $_ eq "dns"} @bits) {
-		$line =~s/dns.*myhostname/myhostname dns/g;
-		return $line;
+                $line =~s/dns/myhostname dns/g;
+		        return $line;
             }
             # add myhostname at the end
             return $line . " myhostname";
