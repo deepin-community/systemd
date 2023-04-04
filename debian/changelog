@@ -1,3 +1,9 @@
+systemd (250.4.2-deepin2) unstable; urgency=medium
+
+  * xdg-autostart=false.
+
+ -- LiChengGang <lichenggang@uniontech.com>  Tue, 04 Apr 2023 15:16:32 +0800
+
 systemd (250.4.2-deepin1) unstable; urgency=medium
 
   * Merge v20 systemd code:
