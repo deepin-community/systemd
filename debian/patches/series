@@ -31,3 +31,4 @@ deepin-set-timesync-and-journalflush-service-type.patch
 deepin_add_force_hibernate_option.patch
 change-external-monitor-detecting-logic.patch
 mount-fix-command-race-with-mountinfo.patch
+systemd-pull-24943.patch
