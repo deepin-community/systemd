@@ -1,15 +1,21 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 systemd_shutdown_sources = files(
+        'detach-dm.c',
+        'detach-loopback.c',
+        'detach-md.c',
+        'detach-swap.c',
         'shutdown.c',
         'umount.c',
-        'umount.h',
 )
 
 tests += [
-        [['src/shutdown/test-umount.c',
-          'src/shutdown/umount.c',
-          'src/shutdown/umount.h'],
-         [],
-         [libmount]],
+        {
+                'sources' : files(
+                        'detach-swap.c',
+                        'test-umount.c',
+                        'umount.c',
+                ),
+                'dependencies' : libmount,
+        },
 ]

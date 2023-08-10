@@ -56,3 +56,15 @@ int crypt_dump_hex_string(const char *hex_str, char **ret_dump_str) {
 
         return 0;
 }
+
+int crypt_normalize_pin(const void *pin, size_t pin_size, char **ret_pin_string) {
+        assert(pin || pin_size == 0);
+        assert(ret_pin_string);
+
+        if (pin_size == 0) {
+                *ret_pin_string = NULL;
+                return 0;
+        }
+
+        return make_cstring(pin, pin_size, MAKE_CSTRING_ALLOW_TRAILING_NUL, ret_pin_string);
+}

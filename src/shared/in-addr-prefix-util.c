@@ -108,7 +108,7 @@ int in_addr_prefixes_reduce(Set *prefixes) {
         struct in_addr_prefix *p;
 
         SET_FOREACH(p, prefixes)
-                switch(p->family) {
+                switch (p->family) {
                 case AF_INET:
                         assert(p->prefixlen <= 32);
                         if (p->prefixlen == 0)
@@ -147,7 +147,7 @@ int in_addr_prefixes_reduce(Set *prefixes) {
                 if (p->prefixlen == 0)
                         continue;
 
-                switch(p->family) {
+                switch (p->family) {
                 case AF_INET:
                         prefixlens = ipv4_prefixlens;
                         n = &ipv4_n_prefixlens;
@@ -218,10 +218,9 @@ int config_parse_in_addr_prefixes(
                 void *data,
                 void *userdata) {
 
-        Set **prefixes = data;
+        Set **prefixes = ASSERT_PTR(data);
         int r;
 
-        assert(prefixes);
         assert(IN_SET(ltype, AF_UNSPEC, AF_INET, AF_INET6));
 
         if (isempty(rvalue)) {

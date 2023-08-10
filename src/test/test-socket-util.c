@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <grp.h>
+#include <net/if_arp.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -11,11 +12,15 @@
 #include "escape.h"
 #include "exit-status.h"
 #include "fd-util.h"
+#include "fs-util.h"
 #include "in-addr-util.h"
 #include "io-util.h"
 #include "log.h"
 #include "macro.h"
+#include "path-util.h"
 #include "process-util.h"
+#include "random-util.h"
+#include "rm-rf.h"
 #include "socket-util.h"
 #include "string-util.h"
 #include "tests.h"
@@ -218,7 +223,7 @@ TEST(getpeercred_getpeergroups) {
 
 TEST(passfd_read) {
         static const char file_contents[] = "test contents for passfd";
-        _cleanup_close_pair_ int pair[2] = { -1, -1 };
+        _cleanup_close_pair_ int pair[2];
         int r;
 
         assert_se(socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) >= 0);
@@ -228,17 +233,12 @@ TEST(passfd_read) {
 
         if (r == 0) {
                 /* Child */
-                char tmpfile[] = "/tmp/test-socket-util-passfd-read-XXXXXX";
-                _cleanup_close_ int tmpfd = -1;
-
                 pair[0] = safe_close(pair[0]);
 
-                tmpfd = mkostemp_safe(tmpfile);
-                assert_se(tmpfd >= 0);
-                assert_se(write(tmpfd, file_contents, strlen(file_contents)) == (ssize_t) strlen(file_contents));
-                tmpfd = safe_close(tmpfd);
+                char tmpfile[] = "/tmp/test-socket-util-passfd-read-XXXXXX";
+                assert_se(write_tmpfile(tmpfile, file_contents) == 0);
 
-                tmpfd = open(tmpfile, O_RDONLY);
+                _cleanup_close_ int tmpfd = open(tmpfile, O_RDONLY);
                 assert_se(tmpfd >= 0);
                 assert_se(unlink(tmpfile) == 0);
 
@@ -248,8 +248,8 @@ TEST(passfd_read) {
 
         /* Parent */
         char buf[64];
-        struct iovec iov = IOVEC_INIT(buf, sizeof(buf)-1);
-        _cleanup_close_ int fd = -1;
+        struct iovec iov = IOVEC_MAKE(buf, sizeof(buf)-1);
+        _cleanup_close_ int fd;
 
         pair[1] = safe_close(pair[1]);
 
@@ -263,7 +263,7 @@ TEST(passfd_read) {
 }
 
 TEST(passfd_contents_read) {
-        _cleanup_close_pair_ int pair[2] = { -1, -1 };
+        _cleanup_close_pair_ int pair[2];
         static const char file_contents[] = "test contents in the file";
         static const char wire_contents[] = "test contents on the wire";
         int r;
@@ -275,18 +275,14 @@ TEST(passfd_contents_read) {
 
         if (r == 0) {
                 /* Child */
-                struct iovec iov = IOVEC_INIT_STRING(wire_contents);
+                struct iovec iov = IOVEC_MAKE_STRING(wire_contents);
                 char tmpfile[] = "/tmp/test-socket-util-passfd-contents-read-XXXXXX";
-                _cleanup_close_ int tmpfd = -1;
 
                 pair[0] = safe_close(pair[0]);
 
-                tmpfd = mkostemp_safe(tmpfile);
-                assert_se(tmpfd >= 0);
-                assert_se(write(tmpfd, file_contents, strlen(file_contents)) == (ssize_t) strlen(file_contents));
-                tmpfd = safe_close(tmpfd);
+                assert_se(write_tmpfile(tmpfile, file_contents) == 0);
 
-                tmpfd = open(tmpfile, O_RDONLY);
+                _cleanup_close_ int tmpfd = open(tmpfile, O_RDONLY);
                 assert_se(tmpfd >= 0);
                 assert_se(unlink(tmpfile) == 0);
 
@@ -296,8 +292,8 @@ TEST(passfd_contents_read) {
 
         /* Parent */
         char buf[64];
-        struct iovec iov = IOVEC_INIT(buf, sizeof(buf)-1);
-        _cleanup_close_ int fd = -1;
+        struct iovec iov = IOVEC_MAKE(buf, sizeof(buf)-1);
+        _cleanup_close_ int fd;
         ssize_t k;
 
         pair[1] = safe_close(pair[1]);
@@ -315,7 +311,7 @@ TEST(passfd_contents_read) {
 }
 
 TEST(receive_nopassfd) {
-        _cleanup_close_pair_ int pair[2] = { -1, -1 };
+        _cleanup_close_pair_ int pair[2];
         static const char wire_contents[] = "no fd passed here";
         int r;
 
@@ -326,7 +322,7 @@ TEST(receive_nopassfd) {
 
         if (r == 0) {
                 /* Child */
-                struct iovec iov = IOVEC_INIT_STRING(wire_contents);
+                struct iovec iov = IOVEC_MAKE_STRING(wire_contents);
 
                 pair[0] = safe_close(pair[0]);
 
@@ -336,7 +332,7 @@ TEST(receive_nopassfd) {
 
         /* Parent */
         char buf[64];
-        struct iovec iov = IOVEC_INIT(buf, sizeof(buf)-1);
+        struct iovec iov = IOVEC_MAKE(buf, sizeof(buf)-1);
         int fd = -999;
         ssize_t k;
 
@@ -348,11 +344,11 @@ TEST(receive_nopassfd) {
         assert_se(streq(buf, wire_contents));
 
         /* no fd passed here, confirm it was reset */
-        assert_se(fd == -1);
+        assert_se(fd == -EBADF);
 }
 
 TEST(send_nodata_nofd) {
-        _cleanup_close_pair_ int pair[2] = { -1, -1 };
+        _cleanup_close_pair_ int pair[2];
         int r;
 
         assert_se(socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) >= 0);
@@ -370,7 +366,7 @@ TEST(send_nodata_nofd) {
 
         /* Parent */
         char buf[64];
-        struct iovec iov = IOVEC_INIT(buf, sizeof(buf)-1);
+        struct iovec iov = IOVEC_MAKE(buf, sizeof(buf)-1);
         int fd = -999;
         ssize_t k;
 
@@ -385,7 +381,7 @@ TEST(send_nodata_nofd) {
 }
 
 TEST(send_emptydata) {
-        _cleanup_close_pair_ int pair[2] = { -1, -1 };
+        _cleanup_close_pair_ int pair[2];
         int r;
 
         assert_se(socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) >= 0);
@@ -395,7 +391,7 @@ TEST(send_emptydata) {
 
         if (r == 0) {
                 /* Child */
-                struct iovec iov = IOVEC_INIT_STRING("");  /* zero-length iov */
+                struct iovec iov = IOVEC_MAKE_STRING("");  /* zero-length iov */
                 assert_se(iov.iov_len == 0);
 
                 pair[0] = safe_close(pair[0]);
@@ -407,7 +403,7 @@ TEST(send_emptydata) {
 
         /* Parent */
         char buf[64];
-        struct iovec iov = IOVEC_INIT(buf, sizeof(buf)-1);
+        struct iovec iov = IOVEC_MAKE(buf, sizeof(buf)-1);
         int fd = -999;
         ssize_t k;
 
@@ -422,7 +418,7 @@ TEST(send_emptydata) {
 }
 
 TEST(flush_accept) {
-        _cleanup_close_ int listen_stream = -1, listen_dgram = -1, listen_seqpacket = 1, connect_stream = -1, connect_dgram = -1, connect_seqpacket = -1;
+        _cleanup_close_ int listen_stream, listen_dgram, listen_seqpacket, connect_stream, connect_dgram, connect_seqpacket;
         static const union sockaddr_union sa = { .un.sun_family = AF_UNIX };
         union sockaddr_union lsa;
         socklen_t l;
@@ -448,9 +444,9 @@ TEST(flush_accept) {
         assert_se(flush_accept(listen_dgram) < 0);
         assert_se(flush_accept(listen_seqpacket) < 0);
 
-        assert_se(listen(listen_stream, SOMAXCONN) >= 0);
-        assert_se(listen(listen_dgram, SOMAXCONN) < 0);
-        assert_se(listen(listen_seqpacket, SOMAXCONN) >= 0);
+        assert_se(listen(listen_stream, SOMAXCONN_DELUXE) >= 0);
+        assert_se(listen(listen_dgram, SOMAXCONN_DELUXE) < 0);
+        assert_se(listen(listen_seqpacket, SOMAXCONN_DELUXE) >= 0);
 
         assert_se(flush_accept(listen_stream) >= 0);
         assert_se(flush_accept(listen_dgram) < 0);
@@ -485,6 +481,48 @@ TEST(flush_accept) {
 TEST(ipv6_enabled) {
         log_info("IPv6 supported: %s", yes_no(socket_ipv6_is_supported()));
         log_info("IPv6 enabled: %s", yes_no(socket_ipv6_is_enabled()));
+}
+
+TEST(sockaddr_un_set_path) {
+        _cleanup_(rm_rf_physical_and_freep) char *t = NULL;
+        _cleanup_(unlink_and_freep) char *sh = NULL;
+        _cleanup_free_ char *j = NULL;
+        union sockaddr_union sa;
+        _cleanup_close_ int fd1, fd2, fd3;
+
+        assert_se(mkdtemp_malloc("/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaXXXXXX", &t) >= 0);
+        assert_se(strlen(t) > SUN_PATH_LEN);
+
+        assert_se(j = path_join(t, "sock"));
+        assert_se(sockaddr_un_set_path(&sa.un, j) == -ENAMETOOLONG); /* too long for AF_UNIX socket */
+
+        assert_se(asprintf(&sh, "/tmp/%" PRIx64, random_u64()) >= 0);
+        assert_se(symlink(t, sh) >= 0); /* create temporary symlink, to access it anyway */
+
+        free(j);
+        assert_se(j = path_join(sh, "sock"));
+        assert_se(sockaddr_un_set_path(&sa.un, j) >= 0);
+
+        fd1 = socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0);
+        assert_se(fd1 >= 0);
+        assert_se(bind(fd1, &sa.sa, SOCKADDR_LEN(sa)) >= 0);
+        assert_se(listen(fd1, 1) >= 0);
+
+        sh = unlink_and_free(sh); /* remove temporary symlink */
+
+        fd2 = socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0);
+        assert_se(fd2 >= 0);
+        assert_se(connect(fd2, &sa.sa, SOCKADDR_LEN(sa)) < 0);
+        assert_se(errno == ENOENT); /* we removed the symlink, must fail */
+
+        free(j);
+        assert_se(j = path_join(t, "sock"));
+
+        fd3 = open(j, O_CLOEXEC|O_PATH|O_NOFOLLOW);
+        assert_se(fd3 > 0);
+        assert_se(sockaddr_un_set_path(&sa.un, FORMAT_PROC_FD_PATH(fd3)) >= 0); /* connect via O_PATH instead, circumventing 108ch limit */
+
+        assert_se(connect(fd2, &sa.sa, SOCKADDR_LEN(sa)) >= 0);
 }
 
 DEFINE_TEST_MAIN(LOG_DEBUG);

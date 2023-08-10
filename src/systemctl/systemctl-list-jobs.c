@@ -83,7 +83,7 @@ static int output_jobs_list(sd_bus *bus, const struct job_info* jobs, unsigned n
         if (arg_full)
                 table_set_width(table, 0);
 
-        (void) table_set_empty_string(table, "-");
+        table_set_ersatz_string(table, TABLE_ERSATZ_DASH);
 
         for (const struct job_info *j = jobs; j < jobs + n; j++) {
                 if (streq(j->state, "running"))
@@ -125,7 +125,7 @@ static bool output_show_job(struct job_info *job, char **patterns) {
         return strv_fnmatch_or_empty(patterns, job->name, FNM_NOESCAPE);
 }
 
-int list_jobs(int argc, char *argv[], void *userdata) {
+int verb_list_jobs(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_free_ struct job_info *jobs = NULL;

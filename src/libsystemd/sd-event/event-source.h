@@ -27,6 +27,7 @@ typedef enum EventSourceType {
         SOURCE_EXIT,
         SOURCE_WATCHDOG,
         SOURCE_INOTIFY,
+        SOURCE_MEMORY_PRESSURE,
         _SOURCE_EVENT_SOURCE_TYPE_MAX,
         _SOURCE_EVENT_SOURCE_TYPE_INVALID = -EINVAL,
 } EventSourceType;
@@ -99,6 +100,7 @@ struct sd_event_source {
                         sd_event_signal_handler_t callback;
                         struct signalfd_siginfo siginfo;
                         int sig;
+                        bool unblock;
                 } signal;
                 struct {
                         sd_event_child_handler_t callback;
@@ -128,6 +130,17 @@ struct sd_event_source {
                         struct inode_data *inode_data;
                         LIST_FIELDS(sd_event_source, by_inode_data);
                 } inotify;
+                struct {
+                        int fd;
+                        sd_event_handler_t callback;
+                        void *write_buffer;
+                        size_t write_buffer_size;
+                        uint32_t events, revents;
+                        LIST_FIELDS(sd_event_source, write_list);
+                        bool registered:1;
+                        bool locked:1;
+                        bool in_write_list:1;
+                } memory_pressure;
         };
 };
 

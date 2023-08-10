@@ -8,9 +8,13 @@
 #include "dlfcn-util.h"
 #include "locale-util.h"
 #include "log.h"
+#include "strv.h"
 #include "terminal-util.h"
 
 #define ANSI_WHITE_ON_BLACK "\033[40;37;1m"
+#define UNICODE_FULL_BLOCK       u8"█"
+#define UNICODE_LOWER_HALF_BLOCK u8"▄"
+#define UNICODE_UPPER_HALF_BLOCK u8"▀"
 
 static void *qrcode_dl = NULL;
 
@@ -18,10 +22,18 @@ static QRcode* (*sym_QRcode_encodeString)(const char *string, int version, QRecL
 static void (*sym_QRcode_free)(QRcode *qrcode) = NULL;
 
 int dlopen_qrencode(void) {
-        return dlopen_many_sym_or_warn(
-                        &qrcode_dl, "libqrencode.so.4", LOG_DEBUG,
+        int r;
+
+        FOREACH_STRING(s, "libqrencode.so.4", "libqrencode.so.3") {
+                r = dlopen_many_sym_or_warn(
+                        &qrcode_dl, s, LOG_DEBUG,
                         DLSYM_ARG(QRcode_encodeString),
                         DLSYM_ARG(QRcode_free));
+                if (r >= 0)
+                        break;
+        }
+
+        return r;
 }
 
 static void print_border(FILE *output, unsigned width) {
@@ -30,7 +42,7 @@ static void print_border(FILE *output, unsigned width) {
                 fputs(ANSI_WHITE_ON_BLACK, output);
 
                 for (unsigned x = 0; x < 4 + width + 4; x++)
-                        fputs("\342\226\210", output);
+                        fputs(UNICODE_FULL_BLOCK, output);
 
                 fputs(ANSI_NORMAL "\n", output);
         }
@@ -50,7 +62,7 @@ static void write_qrcode(FILE *output, QRcode *qr) {
 
                 fputs(ANSI_WHITE_ON_BLACK, output);
                 for (unsigned x = 0; x < 4; x++)
-                        fputs("\342\226\210", output);
+                        fputs(UNICODE_FULL_BLOCK, output);
 
                 for (unsigned x = 0; x < (unsigned) qr->width; x++) {
                         bool a, b;
@@ -61,15 +73,15 @@ static void write_qrcode(FILE *output, QRcode *qr) {
                         if (a && b)
                                 fputc(' ', output);
                         else if (a)
-                                fputs("\342\226\204", output);
+                                fputs(UNICODE_LOWER_HALF_BLOCK, output);
                         else if (b)
-                                fputs("\342\226\200", output);
+                                fputs(UNICODE_UPPER_HALF_BLOCK, output);
                         else
-                                fputs("\342\226\210", output);
+                                fputs(UNICODE_FULL_BLOCK, output);
                 }
 
                 for (unsigned x = 0; x < 4; x++)
-                        fputs("\342\226\210", output);
+                        fputs(UNICODE_FULL_BLOCK, output);
                 fputs(ANSI_NORMAL "\n", output);
         }
 
@@ -81,7 +93,7 @@ int print_qrcode(FILE *out, const char *header, const char *string) {
         QRcode* qr;
         int r;
 
-        /* If this is not an UTF-8 system or ANSI colors aren't supported/disabled don't print any QR
+        /* If this is not a UTF-8 system or ANSI colors aren't supported/disabled don't print any QR
          * codes */
         if (!is_locale_utf8() || !colors_enabled())
                 return -EOPNOTSUPP;

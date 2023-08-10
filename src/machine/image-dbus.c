@@ -31,23 +31,28 @@ int bus_image_method_remove(
                 void *userdata,
                 sd_bus_error *error) {
 
-        _cleanup_close_pair_ int errno_pipe_fd[2] = { -1, -1 };
-        Image *image = userdata;
+        _cleanup_close_pair_ int errno_pipe_fd[2] = PIPE_EBADF;
+        Image *image = ASSERT_PTR(userdata);
         Manager *m = image->userdata;
         pid_t child;
         int r;
 
         assert(message);
-        assert(image);
 
         if (m->n_operations >= OPERATIONS_MAX)
                 return sd_bus_error_set(error, SD_BUS_ERROR_LIMITS_EXCEEDED, "Too many ongoing operations.");
+
+        const char *details[] = {
+                "image", image->name,
+                "verb", "remove",
+                NULL
+        };
 
         r = bus_verify_polkit_async(
                         message,
                         CAP_SYS_ADMIN,
                         "org.freedesktop.machine1.manage-images",
-                        NULL,
+                        details,
                         false,
                         UID_INVALID,
                         &m->polkit_registry,
@@ -83,7 +88,7 @@ int bus_image_method_remove(
                 return r;
         }
 
-        errno_pipe_fd[0] = -1;
+        errno_pipe_fd[0] = -EBADF;
 
         return 1;
 }
@@ -93,13 +98,12 @@ int bus_image_method_rename(
                 void *userdata,
                 sd_bus_error *error) {
 
-        Image *image = userdata;
+        Image *image = ASSERT_PTR(userdata);
         Manager *m = image->userdata;
         const char *new_name;
         int r;
 
         assert(message);
-        assert(image);
 
         r = sd_bus_message_read(message, "s", &new_name);
         if (r < 0)
@@ -108,11 +112,18 @@ int bus_image_method_rename(
         if (!image_name_is_valid(new_name))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Image name '%s' is invalid.", new_name);
 
+        const char *details[] = {
+                "image", image->name,
+                "verb", "rename",
+                "new_name", new_name,
+                NULL
+        };
+
         r = bus_verify_polkit_async(
                         message,
                         CAP_SYS_ADMIN,
                         "org.freedesktop.machine1.manage-images",
-                        NULL,
+                        details,
                         false,
                         UID_INVALID,
                         &m->polkit_registry,
@@ -134,16 +145,14 @@ int bus_image_method_clone(
                 void *userdata,
                 sd_bus_error *error) {
 
-        _cleanup_close_pair_ int errno_pipe_fd[2] = { -1, -1 };
-        Image *image = userdata;
-        Manager *m = image->userdata;
+        _cleanup_close_pair_ int errno_pipe_fd[2] = PIPE_EBADF;
+        Image *image = ASSERT_PTR(userdata);
+        Manager *m = ASSERT_PTR(image->userdata);
         const char *new_name;
         int r, read_only;
         pid_t child;
 
         assert(message);
-        assert(image);
-        assert(m);
 
         if (m->n_operations >= OPERATIONS_MAX)
                 return sd_bus_error_set(error, SD_BUS_ERROR_LIMITS_EXCEEDED, "Too many ongoing operations.");
@@ -155,11 +164,18 @@ int bus_image_method_clone(
         if (!image_name_is_valid(new_name))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Image name '%s' is invalid.", new_name);
 
+        const char *details[] = {
+                "image", image->name,
+                "verb", "clone",
+                "new_name", new_name,
+                NULL
+        };
+
         r = bus_verify_polkit_async(
                         message,
                         CAP_SYS_ADMIN,
                         "org.freedesktop.machine1.manage-images",
-                        NULL,
+                        details,
                         false,
                         UID_INVALID,
                         &m->polkit_registry,
@@ -195,7 +211,7 @@ int bus_image_method_clone(
                 return r;
         }
 
-        errno_pipe_fd[0] = -1;
+        errno_pipe_fd[0] = -EBADF;
 
         return 1;
 }
@@ -207,7 +223,7 @@ int bus_image_method_mark_read_only(
 
         Image *image = userdata;
         Manager *m = image->userdata;
-        int r, read_only;
+        int read_only, r;
 
         assert(message);
 
@@ -215,11 +231,18 @@ int bus_image_method_mark_read_only(
         if (r < 0)
                 return r;
 
+        const char *details[] = {
+                "image", image->name,
+                "verb", "mark_read_only",
+                "read_only", one_zero(read_only),
+                NULL
+        };
+
         r = bus_verify_polkit_async(
                         message,
                         CAP_SYS_ADMIN,
                         "org.freedesktop.machine1.manage-images",
-                        NULL,
+                        details,
                         false,
                         UID_INVALID,
                         &m->polkit_registry,
@@ -254,11 +277,17 @@ int bus_image_method_set_limit(
         if (!FILE_SIZE_VALID_OR_INFINITY(limit))
                 return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "New limit out of range");
 
+        const char *details[] = {
+                "machine", image->name,
+                "verb", "set_limit",
+                NULL
+        };
+
         r = bus_verify_polkit_async(
                         message,
                         CAP_SYS_ADMIN,
                         "org.freedesktop.machine1.manage-images",
-                        NULL,
+                        details,
                         false,
                         UID_INVALID,
                         &m->polkit_registry,
@@ -284,7 +313,7 @@ int bus_image_method_get_hostname(
         int r;
 
         if (!image->metadata_valid) {
-                r = image_read_metadata(image);
+                r = image_read_metadata(image, &image_policy_container);
                 if (r < 0)
                         return sd_bus_error_set_errnof(error, r, "Failed to read image metadata: %m");
         }
@@ -302,7 +331,7 @@ int bus_image_method_get_machine_id(
         int r;
 
         if (!image->metadata_valid) {
-                r = image_read_metadata(image);
+                r = image_read_metadata(image, &image_policy_container);
                 if (r < 0)
                         return sd_bus_error_set_errnof(error, r, "Failed to read image metadata: %m");
         }
@@ -330,7 +359,7 @@ int bus_image_method_get_machine_info(
         int r;
 
         if (!image->metadata_valid) {
-                r = image_read_metadata(image);
+                r = image_read_metadata(image, &image_policy_container);
                 if (r < 0)
                         return sd_bus_error_set_errnof(error, r, "Failed to read image metadata: %m");
         }
@@ -347,7 +376,7 @@ int bus_image_method_get_os_release(
         int r;
 
         if (!image->metadata_valid) {
-                r = image_read_metadata(image);
+                r = image_read_metadata(image, &image_policy_container);
                 if (r < 0)
                         return sd_bus_error_set_errnof(error, r, "Failed to read image metadata: %m");
         }
@@ -356,10 +385,9 @@ int bus_image_method_get_os_release(
 }
 
 static int image_flush_cache(sd_event_source *s, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
 
         assert(s);
-        assert(m);
 
         hashmap_clear(m->image_cache);
         return 0;

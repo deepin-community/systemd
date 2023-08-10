@@ -2,22 +2,26 @@
 
 #include "alloc-util.h"
 #include "device-util.h"
+#include "escape.h"
 #include "errno-util.h"
 #include "link-config.h"
 #include "log.h"
 #include "string-util.h"
+#include "strv.h"
 #include "udev-builtin.h"
 
 static LinkConfigContext *ctx = NULL;
 
-static int builtin_net_setup_link(sd_device *dev, sd_netlink **rtnl, int argc, char **argv, bool test) {
+static int builtin_net_setup_link(UdevEvent *event, int argc, char **argv, bool test) {
+        sd_device *dev = ASSERT_PTR(ASSERT_PTR(event)->dev);
         _cleanup_(link_freep) Link *link = NULL;
+        _cleanup_free_ char *joined = NULL;
         int r;
 
         if (argc > 1)
                 return log_device_error_errno(dev, SYNTHETIC_ERRNO(EINVAL), "This program takes no arguments.");
 
-        r = link_new(ctx, rtnl, dev, &link);
+        r = link_new(ctx, &event->rtnl, dev, &link);
         if (r == -ENODEV) {
                 log_device_debug_errno(dev, r, "Link vanished while getting information, ignoring.");
                 return 0;
@@ -38,7 +42,7 @@ static int builtin_net_setup_link(sd_device *dev, sd_netlink **rtnl, int argc, c
                 return log_device_error_errno(dev, r, "Failed to get link config: %m");
         }
 
-        r = link_apply_config(ctx, rtnl, link);
+        r = link_apply_config(ctx, &event->rtnl, link);
         if (r == -ENODEV)
                 log_device_debug_errno(dev, r, "Link vanished while applying configuration, ignoring.");
         else if (r < 0)
@@ -47,6 +51,21 @@ static int builtin_net_setup_link(sd_device *dev, sd_netlink **rtnl, int argc, c
         udev_builtin_add_property(dev, test, "ID_NET_LINK_FILE", link->config->filename);
         if (link->new_name)
                 udev_builtin_add_property(dev, test, "ID_NET_NAME", link->new_name);
+
+        event->altnames = TAKE_PTR(link->altnames);
+
+        STRV_FOREACH(d, link->config->dropins) {
+                _cleanup_free_ char *escaped = NULL;
+
+                escaped = xescape(*d, ":");
+                if (!escaped)
+                        return log_oom();
+
+                if (!strextend_with_separator(&joined, ":", escaped))
+                        return log_oom();
+        }
+
+        udev_builtin_add_property(dev, test, "ID_NET_LINK_FILE_DROPINS", joined);
 
         return 0;
 }
@@ -74,12 +93,16 @@ static void builtin_net_setup_link_exit(void) {
         log_debug("Unloaded link configuration context.");
 }
 
-static bool builtin_net_setup_link_validate(void) {
-        log_debug("Check if link configuration needs reloading.");
+static bool builtin_net_setup_link_should_reload(void) {
         if (!ctx)
                 return false;
 
-        return link_config_should_reload(ctx);
+        if (link_config_should_reload(ctx)) {
+                log_debug("Link configuration context needs reloading.");
+                return true;
+        }
+
+        return false;
 }
 
 const UdevBuiltin udev_builtin_net_setup_link = {
@@ -87,7 +110,7 @@ const UdevBuiltin udev_builtin_net_setup_link = {
         .cmd = builtin_net_setup_link,
         .init = builtin_net_setup_link_init,
         .exit = builtin_net_setup_link_exit,
-        .validate = builtin_net_setup_link_validate,
+        .should_reload = builtin_net_setup_link_should_reload,
         .help = "Configure network link",
         .run_once = false,
 };

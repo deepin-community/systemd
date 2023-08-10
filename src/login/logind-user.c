@@ -6,6 +6,7 @@
 #include "alloc-util.h"
 #include "bus-common-errors.h"
 #include "bus-error.h"
+#include "bus-locator.h"
 #include "bus-util.h"
 #include "cgroup-util.h"
 #include "clean-ipc.h"
@@ -16,7 +17,7 @@
 #include "format-util.h"
 #include "fs-util.h"
 #include "hashmap.h"
-#include "label.h"
+#include "label-util.h"
 #include "limits-util.h"
 #include "logind-dbus.h"
 #include "logind-user-dbus.h"
@@ -35,7 +36,6 @@
 #include "uid-alloc-range.h"
 #include "unit-name.h"
 #include "user-util.h"
-#include "util.h"
 
 int user_new(User **ret,
              Manager *m,
@@ -141,7 +141,7 @@ User *user_free(User *u) {
 }
 
 static int user_save_internal(User *u) {
-        _cleanup_free_ char *temp_path = NULL;
+        _cleanup_(unlink_and_freep) char *temp_path = NULL;
         _cleanup_fclose_ FILE *f = NULL;
         int r;
 
@@ -189,7 +189,6 @@ static int user_save_internal(User *u) {
                         u->last_session_timestamp);
 
         if (u->sessions) {
-                Session *i;
                 bool first;
 
                 fputs("SESSIONS=", f);
@@ -284,13 +283,11 @@ static int user_save_internal(User *u) {
                 goto fail;
         }
 
+        temp_path = mfree(temp_path);
         return 0;
 
 fail:
         (void) unlink(u->state_file);
-
-        if (temp_path)
-                (void) unlink(temp_path);
 
         return log_error_errno(r, "Failed to save user data %s: %m", u->state_file);
 }
@@ -358,12 +355,11 @@ static void user_start_service(User *u) {
 }
 
 static int update_slice_callback(sd_bus_message *m, void *userdata, sd_bus_error *ret_error) {
-        _cleanup_(user_record_unrefp) UserRecord *ur = userdata;
+        _cleanup_(user_record_unrefp) UserRecord *ur = ASSERT_PTR(userdata);
         const sd_bus_error *e;
         int r;
 
         assert(m);
-        assert(ur);
 
         e = sd_bus_message_get_error(m);
         if (e) {
@@ -393,13 +389,7 @@ static int user_update_slice(User *u) {
             u->user_record->io_weight == UINT64_MAX)
                 return 0;
 
-        r = sd_bus_message_new_method_call(
-                        u->manager->bus,
-                        &m,
-                        "org.freedesktop.systemd1",
-                        "/org/freedesktop/systemd1",
-                        "org.freedesktop.systemd1.Manager",
-                        "SetUnitProperties");
+        r = bus_message_new_method_call(u->manager->bus, &m, bus_systemd_mgr, "SetUnitProperties");
         if (r < 0)
                 return bus_log_create_error(r);
 
@@ -499,8 +489,8 @@ static void user_stop_service(User *u, bool force) {
 }
 
 int user_stop(User *u, bool force) {
-        Session *s;
         int r = 0;
+
         assert(u);
 
         /* This is called whenever we begin with tearing down a user record. It's called in two cases: explicit API
@@ -534,7 +524,6 @@ int user_stop(User *u, bool force) {
 }
 
 int user_finalize(User *u) {
-        Session *s;
         int r = 0, k;
 
         assert(u);
@@ -575,7 +564,6 @@ int user_finalize(User *u) {
 }
 
 int user_get_idle_hint(User *u, dual_timestamp *t) {
-        Session *s;
         bool idle_hint = true;
         dual_timestamp ts = DUAL_TIMESTAMP_NULL;
 
@@ -630,7 +618,6 @@ int user_check_linger_file(User *u) {
 }
 
 static bool user_unit_active(User *u) {
-        const char *i;
         int r;
 
         assert(u->service);
@@ -642,7 +629,7 @@ static bool user_unit_active(User *u) {
 
                 r = manager_unit_is_active(u->manager, i, &error);
                 if (r < 0)
-                        log_debug_errno(r, "Failed to determine whether unit '%s' is active, ignoring: %s", u->service, bus_error_message(&error, r));
+                        log_debug_errno(r, "Failed to determine whether unit '%s' is active, ignoring: %s", i, bus_error_message(&error, r));
                 if (r != 0)
                         return true;
         }
@@ -721,8 +708,6 @@ void user_add_to_gc_queue(User *u) {
 }
 
 UserState user_get_state(User *u) {
-        Session *i;
-
         assert(u);
 
         if (u->stopping)
@@ -805,8 +790,6 @@ static int elect_display_compare(Session *s1, Session *s2) {
 }
 
 void user_elect_display(User *u) {
-        Session *s;
-
         assert(u);
 
         /* This elects a primary session for each user, which we call the "display". We try to keep the assignment
@@ -827,9 +810,8 @@ void user_elect_display(User *u) {
 }
 
 static int user_stop_timeout_callback(sd_event_source *es, uint64_t usec, void *userdata) {
-        User *u = userdata;
+        User *u = ASSERT_PTR(userdata);
 
-        assert(u);
         user_add_to_gc_queue(u);
 
         return 0;
@@ -856,7 +838,7 @@ void user_update_last_session_timer(User *u) {
         assert(!u->timer_event_source);
 
         user_stop_delay = user_get_stop_delay(u);
-        if (IN_SET(user_stop_delay, 0, USEC_INFINITY))
+        if (!timestamp_is_set(user_stop_delay))
                 return;
 
         if (sd_event_get_state(u->manager->event) == SD_EVENT_FINISHED) {
@@ -901,13 +883,12 @@ int config_parse_tmpfs_size(
                 void *data,
                 void *userdata) {
 
-        uint64_t *sz = data;
+        uint64_t *sz = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         /* First, try to parse as percentage */
         r = parse_permyriad(rvalue);

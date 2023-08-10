@@ -14,20 +14,19 @@ isn't what RLIMIT_CORE is supposed to do (it limits the size of the core
 
 Bug-Debian: https://bugs.debian.org/815020
 ---
- src/core/main.c              | 20 --------------------
+ src/core/main.c              | 18 ------------------
  sysctl.d/50-coredump.conf.in |  2 +-
- 2 files changed, 1 insertion(+), 21 deletions(-)
+ 2 files changed, 1 insertion(+), 19 deletions(-)
 
 diff --git a/src/core/main.c b/src/core/main.c
-index 57aedb9..52281f1 100644
+index a0e95b4..31be91c 100644
 --- a/src/core/main.c
 +++ b/src/core/main.c
-@@ -1710,24 +1710,6 @@ static void cmdline_take_random_seed(void) {
+@@ -1712,22 +1712,6 @@ static void cmdline_take_random_seed(void) {
                     "This functionality should not be used outside of testing environments.");
  }
  
 -static void initialize_coredump(bool skip_setup) {
--#if ENABLE_COREDUMP
 -        if (getpid_cached() != 1)
 -                return;
 -
@@ -38,16 +37,15 @@ index 57aedb9..52281f1 100644
 -
 -        /* But at the same time, turn off the core_pattern logic by default, so that no coredumps are stored
 -         * until the systemd-coredump tool is enabled via sysctl. However it can be changed via the kernel
--         * command line later so core dumps can still be generated during early startup and in initramfs. */
+-         * command line later so core dumps can still be generated during early startup and in initrd. */
 -        if (!skip_setup)
 -                disable_coredumps();
--#endif
 -}
 -
  static void initialize_core_pattern(bool skip_setup) {
          int r;
  
-@@ -2832,8 +2814,6 @@ int main(int argc, char *argv[]) {
+@@ -2980,8 +2964,6 @@ int main(int argc, char *argv[]) {
                          kernel_timestamp = DUAL_TIMESTAMP_NULL;
                  }
  

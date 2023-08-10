@@ -21,15 +21,15 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
 
         r = sd_netlink_message_set_flags(m, NLM_F_REQUEST | NLM_F_ACK);
         if (r < 0)
-                return log_link_debug_errno(link, r, "Could not set netlink flags: %m");
+                return r;
 
         r = sd_netlink_message_open_container(m, IFLA_LINKINFO);
         if (r < 0)
-                return log_link_debug_errno(link, r, "Failed to open IFLA_LINKINFO container: %m");
+                return r;
 
         r = sd_netlink_message_open_container_union(m, IFLA_INFO_DATA, link->kind);
         if (r < 0)
-                return log_link_debug_errno(link, r, "Could not open IFLA_INFO_DATA container: %m");
+                return r;
 
         if (link->network->can_bitrate > 0) {
                 struct can_bittiming bt = {
@@ -38,15 +38,15 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
                         .sjw = link->network->can_sync_jump_width,
                 };
 
-                log_link_debug(link, "Setting bitrate = %d bit/s", bt.bitrate);
+                log_link_debug(link, "Setting bitrate = %u bit/s", bt.bitrate);
                 if (link->network->can_sample_point > 0)
-                        log_link_debug(link, "Setting sample point = %d.%d%%", bt.sample_point / 10, bt.sample_point % 10);
+                        log_link_debug(link, "Setting sample point = %u.%u%%", bt.sample_point / 10, bt.sample_point % 10);
                 else
                         log_link_debug(link, "Using default sample point");
 
                 r = sd_netlink_message_append_data(m, IFLA_CAN_BITTIMING, &bt, sizeof(bt));
                 if (r < 0)
-                        return log_link_debug_errno(link, r, "Could not append IFLA_CAN_BITTIMING attribute: %m");
+                        return r;
         } else if (link->network->can_time_quanta_ns > 0) {
                 struct can_bittiming bt = {
                         .tq = link->network->can_time_quanta_ns,
@@ -59,7 +59,7 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
                 log_link_debug(link, "Setting time quanta = %"PRIu32" nsec", bt.tq);
                 r = sd_netlink_message_append_data(m, IFLA_CAN_BITTIMING, &bt, sizeof(bt));
                 if (r < 0)
-                        return log_link_debug_errno(link, r, "Could not append IFLA_CAN_BITTIMING attribute: %m");
+                        return r;
         }
 
         if (link->network->can_data_bitrate > 0) {
@@ -69,15 +69,15 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
                         .sjw = link->network->can_data_sync_jump_width,
                 };
 
-                log_link_debug(link, "Setting data bitrate = %d bit/s", bt.bitrate);
+                log_link_debug(link, "Setting data bitrate = %u bit/s", bt.bitrate);
                 if (link->network->can_data_sample_point > 0)
-                        log_link_debug(link, "Setting data sample point = %d.%d%%", bt.sample_point / 10, bt.sample_point % 10);
+                        log_link_debug(link, "Setting data sample point = %u.%u%%", bt.sample_point / 10, bt.sample_point % 10);
                 else
                         log_link_debug(link, "Using default data sample point");
 
                 r = sd_netlink_message_append_data(m, IFLA_CAN_DATA_BITTIMING, &bt, sizeof(bt));
                 if (r < 0)
-                        return log_link_debug_errno(link, r, "Could not append IFLA_CAN_DATA_BITTIMING attribute: %m");
+                        return r;
         } else if (link->network->can_data_time_quanta_ns > 0) {
                 struct can_bittiming bt = {
                         .tq = link->network->can_data_time_quanta_ns,
@@ -90,7 +90,7 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
                 log_link_debug(link, "Setting data time quanta = %"PRIu32" nsec", bt.tq);
                 r = sd_netlink_message_append_data(m, IFLA_CAN_DATA_BITTIMING, &bt, sizeof(bt));
                 if (r < 0)
-                        return log_link_debug_errno(link, r, "Could not append IFLA_CAN_DATA_BITTIMING attribute: %m");
+                        return r;
         }
 
         if (link->network->can_restart_us > 0) {
@@ -104,7 +104,7 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
                 log_link_debug(link, "Setting restart = %s", FORMAT_TIMESPAN(restart_ms * 1000, MSEC_PER_SEC));
                 r = sd_netlink_message_append_u32(m, IFLA_CAN_RESTART_MS, restart_ms);
                 if (r < 0)
-                        return log_link_debug_errno(link, r, "Could not append IFLA_CAN_RESTART_MS attribute: %m");
+                        return r;
         }
 
         if (link->network->can_control_mode_mask != 0) {
@@ -115,7 +115,7 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
 
                 r = sd_netlink_message_append_data(m, IFLA_CAN_CTRLMODE, &cm, sizeof(cm));
                 if (r < 0)
-                        return log_link_debug_errno(link, r, "Could not append IFLA_CAN_CTRLMODE attribute: %m");
+                        return r;
         }
 
         if (link->network->can_termination_set) {
@@ -123,16 +123,16 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
 
                 r = sd_netlink_message_append_u16(m, IFLA_CAN_TERMINATION, link->network->can_termination);
                 if (r < 0)
-                        return log_link_debug_errno(link, r, "Could not append IFLA_CAN_TERMINATION attribute: %m");
+                        return r;
         }
 
         r = sd_netlink_message_close_container(m);
         if (r < 0)
-                return log_link_debug_errno(link, r, "Failed to close IFLA_INFO_DATA container: %m");
+                return r;
 
         r = sd_netlink_message_close_container(m);
         if (r < 0)
-                return log_link_debug_errno(link, r, "Failed to close IFLA_LINKINFO container: %m");
+                return r;
 
         return 0;
 }
@@ -149,14 +149,13 @@ int config_parse_can_bitrate(
                 void *data,
                 void *userdata) {
 
-        uint32_t *br = data;
+        uint32_t *br = ASSERT_PTR(data);
         uint64_t sz;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = parse_size(rvalue, 1000, &sz);
         if (r < 0) {
@@ -189,13 +188,12 @@ int config_parse_can_time_quanta(
                 void *data,
                 void *userdata) {
 
-        nsec_t val, *tq = data;
+        nsec_t val, *tq = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = parse_nsec(rvalue, &val);
         if (r < 0) {
@@ -227,13 +225,12 @@ int config_parse_can_restart_usec(
                 void *data,
                 void *userdata) {
 
-        usec_t usec, *restart_usec = data;
+        usec_t usec, *restart_usec = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = parse_sec(rvalue, &usec);
         if (r < 0) {
@@ -265,14 +262,13 @@ int config_parse_can_control_mode(
                 void *data,
                 void *userdata) {
 
-        Network *network = userdata;
+        Network *network = ASSERT_PTR(userdata);
         uint32_t mask = ltype;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(userdata);
         assert(mask != 0);
 
         if (isempty(rvalue)) {

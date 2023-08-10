@@ -69,7 +69,7 @@ static int lldp_rx_make_space(sd_lldp_rx *lldp_rx, size_t extra) {
                         goto remove_one;
 
                 if (t == USEC_INFINITY)
-                        t = now(clock_boottime_or_monotonic());
+                        t = now(CLOCK_BOOTTIME);
 
                 if (n->until > t)
                         break;
@@ -192,11 +192,10 @@ static int lldp_rx_handle_datagram(sd_lldp_rx *lldp_rx, sd_lldp_neighbor *n) {
 static int lldp_rx_receive_datagram(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
         _cleanup_(sd_lldp_neighbor_unrefp) sd_lldp_neighbor *n = NULL;
         ssize_t space, length;
-        sd_lldp_rx *lldp_rx = userdata;
+        sd_lldp_rx *lldp_rx = ASSERT_PTR(userdata);
         struct timespec ts;
 
         assert(fd >= 0);
-        assert(lldp_rx);
 
         space = next_datagram_size_fd(fd);
         if (space < 0) {
@@ -406,7 +405,7 @@ int sd_lldp_rx_new(sd_lldp_rx **ret) {
 
         *lldp_rx = (sd_lldp_rx) {
                 .n_ref = 1,
-                .fd = -1,
+                .fd = -EBADF,
                 .neighbors_max = LLDP_DEFAULT_NEIGHBORS_MAX,
                 .capability_mask = UINT16_MAX,
         };
@@ -448,7 +447,7 @@ static int lldp_rx_start_timer(sd_lldp_rx *lldp_rx, sd_lldp_neighbor *neighbor) 
                 return event_source_disable(lldp_rx->timer_event_source);
 
         return event_reset_time(lldp_rx->event, &lldp_rx->timer_event_source,
-                                clock_boottime_or_monotonic(),
+                                CLOCK_BOOTTIME,
                                 n->until, 0,
                                 on_timer_event, lldp_rx,
                                 lldp_rx->event_priority, "lldp-rx-timer", true);

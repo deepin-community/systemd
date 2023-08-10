@@ -6,8 +6,10 @@
 #include "cryptsetup-token.h"
 #include "cryptsetup-token-util.h"
 #include "hexdecoct.h"
+#include "json.h"
 #include "luks2-tpm2.h"
 #include "memory-util.h"
+#include "strv.h"
 #include "tpm2-util.h"
 #include "version.h"
 
@@ -22,15 +24,116 @@ _public_ const char *cryptsetup_token_version(void) {
 }
 
 static int log_debug_open_error(struct crypt_device *cd, int r) {
-        if (r == -EAGAIN) {
-                crypt_log_debug(cd, "TPM2 device not found.");
-                return r;
-        } else if (r == -ENXIO) {
-                crypt_log_debug(cd, "No matching TPM2 token data found.");
-                return r;
-        }
+        if (r == -EAGAIN)
+                return crypt_log_debug_errno(cd, r, "TPM2 device not found.");
+        if (r == -ENXIO)
+                return crypt_log_debug_errno(cd, r, "No matching TPM2 token data found.");
 
         return crypt_log_debug_errno(cd, r, TOKEN_NAME " open failed: %m.");
+}
+
+_public_ int cryptsetup_token_open_pin(
+                struct crypt_device *cd, /* is always LUKS2 context */
+                int token /* is always >= 0 */,
+                const char *pin,
+                size_t pin_size,
+                char **ret_password, /* freed by cryptsetup_token_buffer_free */
+                size_t *ret_password_len,
+                void *usrptr /* plugin defined parameter passed to crypt_activate_by_token*() API */) {
+
+        _cleanup_(erase_and_freep) char *base64_encoded = NULL, *pin_string = NULL;
+        _cleanup_free_ void *blob = NULL, *pubkey = NULL, *policy_hash = NULL, *salt = NULL, *srk_buf = NULL;
+        size_t blob_size, policy_hash_size, decrypted_key_size, pubkey_size, salt_size = 0, srk_buf_size = 0;
+        _cleanup_(erase_and_freep) void *decrypted_key = NULL;
+        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+        uint32_t hash_pcr_mask, pubkey_pcr_mask;
+        systemd_tpm2_plugin_params params = {
+                .search_pcr_mask = UINT32_MAX
+        };
+        uint16_t pcr_bank, primary_alg;
+        ssize_t base64_encoded_size;
+        TPM2Flags flags = 0;
+        const char *json;
+        int r;
+
+        assert(token >= 0);
+        assert(!pin || pin_size > 0);
+        assert(ret_password);
+        assert(ret_password_len);
+
+        /* This must not fail at this moment (internal error) */
+        r = crypt_token_json_get(cd, token, &json);
+        assert(token == r);
+        assert(json);
+
+        r = crypt_normalize_pin(pin, pin_size, &pin_string);
+        if (r < 0)
+                return crypt_log_debug_errno(cd, r, "Can not normalize PIN: %m");
+
+        if (usrptr)
+                params = *(systemd_tpm2_plugin_params *)usrptr;
+
+        r = json_parse(json, 0, &v, NULL, NULL);
+        if (r < 0)
+                return crypt_log_debug_errno(cd, r, "Failed to parse token JSON data: %m");
+
+        r = tpm2_parse_luks2_json(
+                        v,
+                        NULL,
+                        &hash_pcr_mask,
+                        &pcr_bank,
+                        &pubkey,
+                        &pubkey_size,
+                        &pubkey_pcr_mask,
+                        &primary_alg,
+                        &blob,
+                        &blob_size,
+                        &policy_hash,
+                        &policy_hash_size,
+                        &salt,
+                        &salt_size,
+                        &srk_buf,
+                        &srk_buf_size,
+                        &flags);
+        if (r < 0)
+                return log_debug_open_error(cd, r);
+
+        if (params.search_pcr_mask != UINT32_MAX && hash_pcr_mask != params.search_pcr_mask)
+                return crypt_log_debug_errno(cd, ENXIO, "PCR mask doesn't match expectation (%" PRIu32 " vs. %" PRIu32 ")", hash_pcr_mask, params.search_pcr_mask);
+
+        r = acquire_luks2_key(
+                        params.device,
+                        hash_pcr_mask,
+                        pcr_bank,
+                        pubkey, pubkey_size,
+                        pubkey_pcr_mask,
+                        params.signature_path,
+                        pin_string,
+                        primary_alg,
+                        blob,
+                        blob_size,
+                        policy_hash,
+                        policy_hash_size,
+                        salt,
+                        salt_size,
+                        srk_buf,
+                        srk_buf_size,
+                        flags,
+                        &decrypted_key,
+                        &decrypted_key_size);
+        if (r < 0)
+                return log_debug_open_error(cd, r);
+
+        /* Before using this key as passphrase we base64 encode it, for compat with homed */
+        base64_encoded_size = base64mem(decrypted_key, decrypted_key_size, &base64_encoded);
+        if (base64_encoded_size < 0)
+                return log_debug_open_error(cd, base64_encoded_size);
+
+        /* free'd automatically by libcryptsetup */
+        *ret_password = TAKE_PTR(base64_encoded);
+        *ret_password_len = base64_encoded_size;
+
+        return 0;
 }
 
 /*
@@ -49,73 +152,11 @@ static int log_debug_open_error(struct crypt_device *cd, int r) {
 _public_ int cryptsetup_token_open(
                 struct crypt_device *cd, /* is always LUKS2 context */
                 int token /* is always >= 0 */,
-                char **password, /* freed by cryptsetup_token_buffer_free */
-                size_t *password_len,
+                char **ret_password, /* freed by cryptsetup_token_buffer_free */
+                size_t *ret_password_len,
                 void *usrptr /* plugin defined parameter passed to crypt_activate_by_token*() API */) {
 
-        int r;
-        const char *json;
-        size_t blob_size, policy_hash_size, decrypted_key_size;
-        uint32_t pcr_mask;
-        uint16_t pcr_bank, primary_alg;
-        systemd_tpm2_plugin_params params = {
-                .search_pcr_mask = UINT32_MAX
-        };
-        _cleanup_free_ void *blob = NULL, *policy_hash = NULL;
-        _cleanup_free_ char *base64_blob = NULL, *hex_policy_hash = NULL;
-        _cleanup_(erase_and_freep) void *decrypted_key = NULL;
-        _cleanup_(erase_and_freep) char *base64_encoded = NULL;
-
-        assert(password);
-        assert(password_len);
-        assert(token >= 0);
-
-        /* This must not fail at this moment (internal error) */
-        r = crypt_token_json_get(cd, token, &json);
-        assert(token == r);
-        assert(json);
-
-        if (usrptr)
-                params = *(systemd_tpm2_plugin_params *)usrptr;
-
-        r = parse_luks2_tpm2_data(json, params.search_pcr_mask, &pcr_mask, &pcr_bank, &primary_alg, &base64_blob, &hex_policy_hash);
-        if (r < 0)
-                return log_debug_open_error(cd, r);
-
-        /* should not happen since cryptsetup_token_validate have passed */
-        r = unbase64mem(base64_blob, SIZE_MAX, &blob, &blob_size);
-        if (r < 0)
-                return log_debug_open_error(cd, r);
-
-        /* should not happen since cryptsetup_token_validate have passed */
-        r = unhexmem(hex_policy_hash, SIZE_MAX, &policy_hash, &policy_hash_size);
-        if (r < 0)
-                return log_debug_open_error(cd, r);
-
-        r = acquire_luks2_key(
-                        pcr_mask,
-                        pcr_bank,
-                        primary_alg,
-                        params.device,
-                        blob,
-                        blob_size,
-                        policy_hash,
-                        policy_hash_size,
-                        &decrypted_key,
-                        &decrypted_key_size);
-        if (r < 0)
-                return log_debug_open_error(cd, r);
-
-        /* Before using this key as passphrase we base64 encode it, for compat with homed */
-        r = base64mem(decrypted_key, decrypted_key_size, &base64_encoded);
-        if (r < 0)
-                return log_debug_open_error(cd, r);
-
-        /* free'd automatically by libcryptsetup */
-        *password_len = strlen(base64_encoded);
-        *password = TAKE_PTR(base64_encoded);
-
-        return 0;
+        return cryptsetup_token_open_pin(cd, token, NULL, 0, ret_password, ret_password_len, usrptr);
 }
 
 /*
@@ -134,43 +175,72 @@ _public_ void cryptsetup_token_dump(
                 struct crypt_device *cd /* is always LUKS2 context */,
                 const char *json /* validated 'systemd-tpm2' token if cryptsetup_token_validate is defined */) {
 
-        int r;
-        uint32_t pcr_mask;
+        _cleanup_free_ char *hash_pcrs_str = NULL, *pubkey_pcrs_str = NULL, *blob_str = NULL, *policy_hash_str = NULL, *pubkey_str = NULL;
+        _cleanup_free_ void *blob = NULL, *pubkey = NULL, *policy_hash = NULL, *salt = NULL, *srk_buf = NULL;
+        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+        size_t blob_size, policy_hash_size, pubkey_size, salt_size = 0, srk_buf_size = 0;
+        uint32_t hash_pcr_mask, pubkey_pcr_mask;
         uint16_t pcr_bank, primary_alg;
-        size_t decoded_blob_size;
-        _cleanup_free_ char *base64_blob = NULL, *hex_policy_hash = NULL,
-                            *pcrs_str = NULL, *blob_str = NULL, *policy_hash_str = NULL;
-        _cleanup_free_ void *decoded_blob = NULL;
+        TPM2Flags flags = 0;
+        int r;
 
         assert(json);
 
-        r = parse_luks2_tpm2_data(json, UINT32_MAX, &pcr_mask, &pcr_bank, &primary_alg, &base64_blob, &hex_policy_hash);
+        r = json_parse(json, 0, &v, NULL, NULL);
         if (r < 0)
-                return (void) crypt_log_debug_errno(cd, r, "Failed to parse " TOKEN_NAME " metadata: %m.");
+                return (void) crypt_log_debug_errno(cd, r, "Failed to parse " TOKEN_NAME " JSON object: %m");
 
-        for (uint32_t i = 0; i < TPM2_PCRS_MAX; i++) {
-                if ((pcr_mask & (UINT32_C(1) << i)) &&
-                    ((r = strextendf_with_separator(&pcrs_str, ", ", "%" PRIu32, i)) < 0))
-                        return (void) crypt_log_debug_errno(cd, r, "Can not dump " TOKEN_NAME " content: %m");
-        }
+        r = tpm2_parse_luks2_json(
+                        v,
+                        NULL,
+                        &hash_pcr_mask,
+                        &pcr_bank,
+                        &pubkey,
+                        &pubkey_size,
+                        &pubkey_pcr_mask,
+                        &primary_alg,
+                        &blob,
+                        &blob_size,
+                        &policy_hash,
+                        &policy_hash_size,
+                        &salt,
+                        &salt_size,
+                        &srk_buf,
+                        &srk_buf_size,
+                        &flags);
+        if (r < 0)
+                return (void) crypt_log_debug_errno(cd, r, "Failed to parse " TOKEN_NAME " JSON fields: %m");
 
-        r = unbase64mem(base64_blob, SIZE_MAX, &decoded_blob, &decoded_blob_size);
+        hash_pcrs_str = tpm2_pcr_mask_to_string(hash_pcr_mask);
+        if (!hash_pcrs_str)
+                return (void) crypt_log_debug_errno(cd, ENOMEM, "Cannot format PCR hash mask: %m");
+
+        pubkey_pcrs_str = tpm2_pcr_mask_to_string(pubkey_pcr_mask);
+        if (!pubkey_pcrs_str)
+                return (void) crypt_log_debug_errno(cd, ENOMEM, "Cannot format PCR hash mask: %m");
+
+        r = crypt_dump_buffer_to_hex_string(blob, blob_size, &blob_str);
         if (r < 0)
                 return (void) crypt_log_debug_errno(cd, r, "Can not dump " TOKEN_NAME " content: %m");
 
-        r = crypt_dump_buffer_to_hex_string(decoded_blob, decoded_blob_size, &blob_str);
+        r = crypt_dump_buffer_to_hex_string(pubkey, pubkey_size, &pubkey_str);
         if (r < 0)
                 return (void) crypt_log_debug_errno(cd, r, "Can not dump " TOKEN_NAME " content: %m");
 
-        r = crypt_dump_hex_string(hex_policy_hash, &policy_hash_str);
+        r = crypt_dump_buffer_to_hex_string(policy_hash, policy_hash_size, &policy_hash_str);
         if (r < 0)
                 return (void) crypt_log_debug_errno(cd, r, "Can not dump " TOKEN_NAME " content: %m");
 
-        crypt_log(cd, "\ttpm2-pcrs:  %s\n", strna(pcrs_str));
-        crypt_log(cd, "\ttpm2-bank:  %s\n", strna(tpm2_pcr_bank_to_string(pcr_bank)));
-        crypt_log(cd, "\ttpm2-primary-alg:  %s\n", strna(tpm2_primary_alg_to_string(primary_alg)));
-        crypt_log(cd, "\ttpm2-blob:  %s\n", blob_str);
+        crypt_log(cd, "\ttpm2-hash-pcrs:   %s\n", strna(hash_pcrs_str));
+        crypt_log(cd, "\ttpm2-pcr-bank:    %s\n", strna(tpm2_hash_alg_to_string(pcr_bank)));
+        crypt_log(cd, "\ttpm2-pubkey:" CRYPT_DUMP_LINE_SEP "%s\n", pubkey_str);
+        crypt_log(cd, "\ttpm2-pubkey-pcrs: %s\n", strna(pubkey_pcrs_str));
+        crypt_log(cd, "\ttpm2-primary-alg: %s\n", strna(tpm2_asym_alg_to_string(primary_alg)));
+        crypt_log(cd, "\ttpm2-blob:        %s\n", blob_str);
         crypt_log(cd, "\ttpm2-policy-hash:" CRYPT_DUMP_LINE_SEP "%s\n", policy_hash_str);
+        crypt_log(cd, "\ttpm2-pin:         %s\n", true_false(flags & TPM2_FLAGS_USE_PIN));
+        crypt_log(cd, "\ttpm2-salt:        %s\n", true_false(salt));
+        crypt_log(cd, "\ttpm2-srk:         %s\n", true_false(srk_buf));
 }
 
 /*
@@ -208,7 +278,7 @@ _public_ int cryptsetup_token_validate(
                 }
 
                 u = json_variant_unsigned(e);
-                if (u >= TPM2_PCRS_MAX) {
+                if (!TPM2_PCR_VALID(u)) {
                         crypt_log_debug(cd, "TPM2 PCR number out of range.");
                         return 1;
                 }
@@ -225,7 +295,7 @@ _public_ int cryptsetup_token_validate(
                         return 1;
                 }
 
-                if (tpm2_pcr_bank_from_string(json_variant_string(w)) < 0) {
+                if (tpm2_hash_alg_from_string(json_variant_string(w)) < 0) {
                         crypt_log_debug(cd, "TPM2 PCR bank invalid or not supported: %s.", json_variant_string(w));
                         return 1;
                 }
@@ -242,7 +312,7 @@ _public_ int cryptsetup_token_validate(
                         return 1;
                 }
 
-                if (tpm2_primary_alg_from_string(json_variant_string(w)) < 0) {
+                if (tpm2_asym_alg_from_string(json_variant_string(w)) < 0) {
                         crypt_log_debug(cd, "TPM2 primary key algorithm invalid or not supported: %s", json_variant_string(w));
                         return 1;
                 }
@@ -267,6 +337,14 @@ _public_ int cryptsetup_token_validate(
         r = unhexmem(json_variant_string(w), SIZE_MAX, NULL, NULL);
         if (r < 0)
                 return crypt_log_debug_errno(cd, r, "Invalid base64 data in 'tpm2-policy-hash' field: %m");
+
+        w = json_variant_by_key(v, "tpm2-pin");
+        if (w) {
+                if (!json_variant_is_boolean(w)) {
+                        crypt_log_debug(cd, "TPM2 PIN policy is not a boolean.");
+                        return 1;
+                }
+        }
 
         return 0;
 }

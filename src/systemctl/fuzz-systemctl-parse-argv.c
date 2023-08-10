@@ -6,6 +6,7 @@
 #include "env-util.h"
 #include "fd-util.h"
 #include "fuzz.h"
+#include "nulstr-util.h"
 #include "selinux-util.h"
 #include "static-destruct.h"
 #include "stdio-util.h"
@@ -15,8 +16,11 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         _cleanup_strv_free_ char **argv = NULL;
-        _cleanup_close_ int orig_stdout_fd = -1;
+        _cleanup_close_ int orig_stdout_fd = -EBADF;
         int r;
+
+        if (size > 16*1024)
+                return 0; /* See the comment below about the limit for strv_length(). */
 
         /* We don't want to fill the logs with messages about parse errors.
          * Disable most logging if not running standalone */
@@ -31,6 +35,12 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
         if (!argv[0])
                 return 0; /* argv[0] should always be present, but may be zero-length. */
+        if (strv_length(argv) > 1024)
+                return 0; /* oss-fuzz reports timeouts which are caused by appending to a very long strv.
+                           * The code is indeed not very efficient, but it's designed for normal command-line
+                           * use, where we don't expect more than a dozen of entries. The fact that it is
+                           * slow with ~100k entries is not particularly interesting. Let's just refuse such
+                           * long command lines. */
 
         if (getenv_bool("SYSTEMD_FUZZ_OUTPUT") <= 0) {
                 orig_stdout_fd = fcntl(fileno(stdout), F_DUPFD_CLOEXEC, 3);

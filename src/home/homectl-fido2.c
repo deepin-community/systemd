@@ -26,14 +26,15 @@ static int add_fido2_credential_id(
         _cleanup_(json_variant_unrefp) JsonVariant *w = NULL;
         _cleanup_strv_free_ char **l = NULL;
         _cleanup_free_ char *escaped = NULL;
+        ssize_t escaped_size;
         int r;
 
         assert(v);
         assert(cid);
 
-        r = base64mem(cid, cid_size, &escaped);
-        if (r < 0)
-                return log_error_errno(r, "Failed to base64 encode FIDO2 credential ID: %m");
+        escaped_size = base64mem(cid, cid_size, &escaped);
+        if (escaped_size < 0)
+                return log_error_errno(escaped_size, "Failed to base64 encode FIDO2 credential ID: %m");
 
         w = json_variant_ref(json_variant_by_key(*v, "fido2HmacCredential"));
         if (w) {
@@ -73,13 +74,14 @@ static int add_fido2_salt(
 
         _cleanup_(json_variant_unrefp) JsonVariant *l = NULL, *w = NULL, *e = NULL;
         _cleanup_(erase_and_freep) char *base64_encoded = NULL, *hashed = NULL;
+        ssize_t base64_encoded_size;
         int r;
 
         /* Before using UNIX hashing on the supplied key we base64 encode it, since crypt_r() and friends
          * expect a NUL terminated string, and we use a binary key */
-        r = base64mem(secret, secret_size, &base64_encoded);
-        if (r < 0)
-                return log_error_errno(r, "Failed to base64 encode secret key: %m");
+        base64_encoded_size = base64mem(secret, secret_size, &base64_encoded);
+        if (base64_encoded_size < 0)
+                return log_error_errno(base64_encoded_size, "Failed to base64 encode secret key: %m");
 
         r = hash_password(base64_encoded, &hashed);
         if (r < 0)
@@ -118,7 +120,8 @@ static int add_fido2_salt(
 int identity_add_fido2_parameters(
                 JsonVariant **v,
                 const char *device,
-                Fido2EnrollFlags lock_with) {
+                Fido2EnrollFlags lock_with,
+                int cred_alg) {
 
 #if HAVE_LIBFIDO2
         JsonVariant *un, *realm, *rn;
@@ -165,6 +168,7 @@ int identity_add_fido2_parameters(
                         /* user_icon_name= */ NULL,
                         /* askpw_icon_name= */ "user-home",
                         lock_with,
+                        cred_alg,
                         &cid, &cid_size,
                         &salt, &salt_size,
                         &secret, &secret_size,

@@ -10,12 +10,15 @@
 #include <sys/quota.h>
 #include <sys/stat.h>
 
+#include "sd-id128.h"
+
 #include "btrfs-util.h"
 #include "bus-common-errors.h"
 #include "bus-error.h"
 #include "bus-log-control-api.h"
 #include "bus-polkit.h"
 #include "clean-ipc.h"
+#include "common-signal.h"
 #include "conf-files.h"
 #include "device-util.h"
 #include "dirent-util.h"
@@ -23,6 +26,7 @@
 #include "fileio.h"
 #include "format-util.h"
 #include "fs-util.h"
+#include "glyph-util.h"
 #include "gpt.h"
 #include "home-util.h"
 #include "homed-conf.h"
@@ -118,10 +122,9 @@ static void manager_watch_home(Manager *m) {
 
 static int on_home_inotify(sd_event_source *s, const struct inotify_event *event, void *userdata) {
         _cleanup_free_ char *j = NULL;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         const char *e, *n;
 
-        assert(m);
         assert(event);
 
         if ((event->mask & (IN_Q_OVERFLOW|IN_MOVE_SELF|IN_DELETE_SELF|IN_IGNORED|IN_UNMOUNT)) != 0) {
@@ -220,6 +223,15 @@ int manager_new(Manager **ret) {
                 return r;
 
         r = sd_event_add_signal(m->event, NULL, SIGTERM, NULL, NULL);
+        if (r < 0)
+                return r;
+
+        r = sd_event_add_memory_pressure(m->event, NULL, NULL, NULL);
+        if (r < 0)
+                log_full_errno(ERRNO_IS_NOT_SUPPORTED(r) || ERRNO_IS_PRIVILEGE(r) || (r == -EHOSTDOWN) ? LOG_DEBUG : LOG_WARNING, r,
+                               "Failed to allocate memory pressure watch, ignoring: %m");
+
+        r = sd_event_add_signal(m->event, NULL, SIGRTMIN+18, sigrtmin18_handler, NULL);
         if (r < 0)
                 return r;
 
@@ -482,7 +494,6 @@ static int manager_enumerate_records(Manager *m) {
 static int search_quota(uid_t uid, const char *exclude_quota_path) {
         struct stat exclude_st = {};
         dev_t previous_devno = 0;
-        const char *where;
         int r;
 
         /* Checks whether the specified UID owns any files on the files system, but ignore any file system
@@ -528,7 +539,7 @@ static int search_quota(uid_t uid, const char *exclude_quota_path) {
 
                 previous_devno = st.st_dev;
 
-                r = quotactl_devno(QCMD_FIXED(Q_GETQUOTA, USRQUOTA), st.st_dev, uid, &req);
+                r = quotactl_devnum(QCMD_FIXED(Q_GETQUOTA, USRQUOTA), st.st_dev, uid, &req);
                 if (r < 0) {
                         if (ERRNO_IS_NOT_SUPPORTED(r))
                                 log_debug_errno(r, "No UID quota support on %s, ignoring.", where);
@@ -859,7 +870,7 @@ static int manager_assess_image(
 
         if (S_ISDIR(st.st_mode)) {
                 _cleanup_free_ char *n = NULL, *user_name = NULL, *realm = NULL;
-                _cleanup_close_ int fd = -1;
+                _cleanup_close_ int fd = -EBADF;
                 UserStorage storage;
 
                 if (!directory_suffix)
@@ -936,6 +947,7 @@ int manager_enumerate_images(Manager *m) {
 }
 
 static int manager_connect_bus(Manager *m) {
+        _cleanup_free_ char *b = NULL;
         const char *suffix, *busname;
         int r;
 
@@ -955,9 +967,12 @@ static int manager_connect_bus(Manager *m) {
                 return r;
 
         suffix = getenv("SYSTEMD_HOME_DEBUG_SUFFIX");
-        if (suffix)
-                busname = strjoina("org.freedesktop.home1.", suffix);
-        else
+        if (suffix) {
+                b = strjoin("org.freedesktop.home1.", suffix);
+                if (!b)
+                        return log_oom();
+                busname = b;
+        } else
                 busname = "org.freedesktop.home1";
 
         r = sd_bus_request_name_async(m->bus, NULL, busname, 0, NULL, NULL);
@@ -974,6 +989,7 @@ static int manager_connect_bus(Manager *m) {
 }
 
 static int manager_bind_varlink(Manager *m) {
+        _cleanup_free_ char *p = NULL;
         const char *suffix, *socket_path;
         int r;
 
@@ -999,9 +1015,12 @@ static int manager_bind_varlink(Manager *m) {
         /* To make things easier to debug, when working from a homed managed home directory, let's optionally
          * use a different varlink socket name */
         suffix = getenv("SYSTEMD_HOME_DEBUG_SUFFIX");
-        if (suffix)
-                socket_path = strjoina("/run/systemd/userdb/io.systemd.Home.", suffix);
-        else
+        if (suffix) {
+                p = strjoin("/run/systemd/userdb/io.systemd.Home.", suffix);
+                if (!p)
+                        return log_oom();
+                socket_path = p;
+        } else
                 socket_path = "/run/systemd/userdb/io.systemd.Home";
 
         r = varlink_server_listen_address(m->varlink_server, socket_path, 0666);
@@ -1013,9 +1032,9 @@ static int manager_bind_varlink(Manager *m) {
                 return log_error_errno(r, "Failed to attach varlink connection to event loop: %m");
 
         assert(!m->userdb_service);
-        m->userdb_service = strdup(basename(socket_path));
-        if (!m->userdb_service)
-                return log_oom();
+        r = path_extract_filename(socket_path, &m->userdb_service);
+        if (r < 0)
+                return log_error_errno(r, "Failed to extra filename from socket path '%s': %m", socket_path);
 
         /* Avoid recursion */
         if (setenv("SYSTEMD_BYPASS_USERDB", m->userdb_service, 1) < 0)
@@ -1032,7 +1051,7 @@ static ssize_t read_datagram(
 
         CMSG_BUFFER_TYPE(CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int))) control;
         _cleanup_free_ void *buffer = NULL;
-        _cleanup_close_ int passed_fd = -1;
+        _cleanup_close_ int passed_fd = -EBADF;
         struct ucred *sender = NULL;
         struct cmsghdr *cmsg;
         struct msghdr mh;
@@ -1077,7 +1096,7 @@ static ssize_t read_datagram(
                     cmsg->cmsg_type == SCM_CREDENTIALS &&
                     cmsg->cmsg_len == CMSG_LEN(sizeof(struct ucred))) {
                         assert(!sender);
-                        sender = (struct ucred*) CMSG_DATA(cmsg);
+                        sender = CMSG_TYPED_DATA(cmsg, struct ucred);
                 }
 
                 if (cmsg->cmsg_level == SOL_SOCKET &&
@@ -1089,7 +1108,7 @@ static ssize_t read_datagram(
                         }
 
                         assert(passed_fd < 0);
-                        passed_fd = *(int*) CMSG_DATA(cmsg);
+                        passed_fd = *CMSG_TYPED_DATA(cmsg, int);
                 }
         }
 
@@ -1110,14 +1129,13 @@ static ssize_t read_datagram(
 static int on_notify_socket(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
         _cleanup_strv_free_ char **l = NULL;
         _cleanup_free_ void *datagram = NULL;
-        _cleanup_close_ int passed_fd = -1;
+        _cleanup_close_ int passed_fd = -EBADF;
         struct ucred sender = UCRED_INVALID;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         ssize_t n;
         Home *h;
 
         assert(s);
-        assert(m);
 
         n = read_datagram(fd, &sender, &datagram, &passed_fd);
         if (n < 0) {
@@ -1146,7 +1164,7 @@ static int on_notify_socket(sd_event_source *s, int fd, uint32_t revents, void *
 }
 
 static int manager_listen_notify(Manager *m) {
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         union sockaddr_union sa = {
                 .un.sun_family = AF_UNIX,
                 .un.sun_path = "/run/systemd/home/notify",
@@ -1159,9 +1177,11 @@ static int manager_listen_notify(Manager *m) {
 
         suffix = getenv("SYSTEMD_HOME_DEBUG_SUFFIX");
         if (suffix) {
-                const char *unix_path;
+                _cleanup_free_ char *unix_path = NULL;
 
-                unix_path = strjoina("/run/systemd/home/notify.", suffix);
+                unix_path = strjoin("/run/systemd/home/notify.", suffix);
+                if (!unix_path)
+                        return log_oom();
                 r = sockaddr_un_set_path(&sa.un, unix_path);
                 if (r < 0)
                         return log_error_errno(r, "Socket path %s does not fit in sockaddr_un: %m", unix_path);
@@ -1229,10 +1249,7 @@ static int manager_add_device(Manager *m, sd_device *d) {
                 return 0;
         if (r < 0)
                 return log_error_errno(r, "Failed to acquire ID_PART_ENTRY_TYPE device property, ignoring: %m");
-        r = sd_id128_from_string(parttype, &id);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to parse ID_PART_ENTRY_TYPE field '%s', ignoring: %m", parttype);
-        if (!sd_id128_equal(id, GPT_USER_HOME)) {
+        if (sd_id128_string_equal(parttype, SD_GPT_USER_HOME) <= 0) {
                 log_debug("Found partition (%s) we don't care about, ignoring.", sysfs);
                 return 0;
         }
@@ -1262,10 +1279,9 @@ static int manager_add_device(Manager *m, sd_device *d) {
 }
 
 static int manager_on_device(sd_device_monitor *monitor, sd_device *d, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         int r;
 
-        assert(m);
         assert(d);
 
         if (device_for_action(d, SD_DEVICE_REMOVE)) {
@@ -1321,7 +1337,6 @@ static int manager_watch_devices(Manager *m) {
 
 static int manager_enumerate_devices(Manager *m) {
         _cleanup_(sd_device_enumerator_unrefp) sd_device_enumerator *e = NULL;
-        sd_device *d;
         int r;
 
         assert(m);
@@ -1341,7 +1356,7 @@ static int manager_enumerate_devices(Manager *m) {
 }
 
 static int manager_load_key_pair(Manager *m) {
-        _cleanup_(fclosep) FILE *f = NULL;
+        _cleanup_fclose_ FILE *f = NULL;
         struct stat st;
         int r;
 
@@ -1440,9 +1455,10 @@ static int manager_generate_key_pair(Manager *m) {
                 return log_error_errno(errno, "Failed to move public key file into place: %m");
         temp_public = mfree(temp_public);
 
-        if (rename(temp_private, "/var/lib/systemd/home/local.private") < 0) {
-                (void) unlink_noerrno("/var/lib/systemd/home/local.public"); /* try to remove the file we already created */
-                return log_error_errno(errno, "Failed to move private key file into place: %m");
+        r = RET_NERRNO(rename(temp_private, "/var/lib/systemd/home/local.private"));
+        if (r < 0) {
+                (void) unlink("/var/lib/systemd/home/local.public"); /* try to remove the file we already created */
+                return log_error_errno(r, "Failed to move private key file into place: %m");
         }
         temp_private = mfree(temp_private);
 
@@ -1499,7 +1515,11 @@ static int manager_load_public_key_one(Manager *m, const char *path) {
 
         assert(m);
 
-        if (streq(basename(path), "local.public")) /* we already loaded the private key, which includes the public one */
+        r = path_extract_filename(path, &fn);
+        if (r < 0)
+                return log_error_errno(r, "Failed to extract filename of path '%s': %m", path);
+
+        if (streq(fn, "local.public")) /* we already loaded the private key, which includes the public one */
                 return 0;
 
         f = fopen(path, "re");
@@ -1528,10 +1548,6 @@ static int manager_load_public_key_one(Manager *m, const char *path) {
         if (!pkey)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to parse public key file %s.", path);
 
-        fn = strdup(basename(path));
-        if (!fn)
-                return log_oom();
-
         r = hashmap_put(m->public_keys, fn, pkey);
         if (r < 0)
                 return log_error_errno(r, "Failed to add public key to set: %m");
@@ -1544,7 +1560,6 @@ static int manager_load_public_key_one(Manager *m, const char *path) {
 
 static int manager_load_public_keys(Manager *m) {
         _cleanup_strv_free_ char **files = NULL;
-        char **i;
         int r;
 
         assert(m);
@@ -1611,7 +1626,7 @@ void manager_revalidate_image(Manager *m, Home *h) {
         assert(h);
 
         /* Frees an automatically discovered image, if it's synthetic and its image disappeared. Unmounts any
-         * image if it's mounted but it's image vanished. */
+         * image if it's mounted but its image vanished. */
 
         if (h->current_operation || !ordered_set_isempty(h->pending_operations))
                 return;
@@ -1690,9 +1705,7 @@ int manager_gc_images(Manager *m) {
 }
 
 static int on_deferred_rescan(sd_event_source *s, void *userdata) {
-        Manager *m = userdata;
-
-        assert(m);
+        Manager *m = ASSERT_PTR(userdata);
 
         m->deferred_rescan_event_source = sd_event_source_disable_unref(m->deferred_rescan_event_source);
 
@@ -1728,9 +1741,7 @@ int manager_enqueue_rescan(Manager *m) {
 }
 
 static int on_deferred_gc(sd_event_source *s, void *userdata) {
-        Manager *m = userdata;
-
-        assert(m);
+        Manager *m = ASSERT_PTR(userdata);
 
         m->deferred_gc_event_source = sd_event_source_disable_unref(m->deferred_gc_event_source);
 
@@ -1931,8 +1942,10 @@ static int manager_rebalance_calculate(Manager *m) {
                     (m->rebalance_state == REBALANCE_GROWING && h->rebalance_goal < h->rebalance_size))
                         h->rebalance_pending = false;
                 else {
-                        log_debug("Rebalancing home directory '%s' %s → %s.", h->user_name,
-                                  FORMAT_BYTES(h->rebalance_size), FORMAT_BYTES(h->rebalance_goal));
+                        log_debug("Rebalancing home directory '%s' %s %s %s.", h->user_name,
+                                  FORMAT_BYTES(h->rebalance_size),
+                                  special_glyph(SPECIAL_GLYPH_ARROW_RIGHT),
+                                  FORMAT_BYTES(h->rebalance_goal));
                         h->rebalance_pending = true;
                 }
 
@@ -2085,10 +2098,9 @@ finish:
 }
 
 static int on_rebalance_timer(sd_event_source *s, usec_t t, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
 
         assert(s);
-        assert(m);
         assert(IN_SET(m->rebalance_state, REBALANCE_WAITING, REBALANCE_PENDING, REBALANCE_SHRINKING, REBALANCE_GROWING));
 
         (void) manager_rebalance_now(m);

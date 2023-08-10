@@ -1,22 +1,44 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 systemd_analyze_sources = files(
-        'analyze.c',
+        'analyze-blame.c',
+        'analyze-calendar.c',
+        'analyze-capability.c',
+        'analyze-cat-config.c',
+        'analyze-compare-versions.c',
         'analyze-condition.c',
-        'analyze-condition.h',
-        'analyze-elf.c',
-        'analyze-elf.h',
-        'analyze-verify.c',
-        'analyze-verify.h',
+        'analyze-critical-chain.c',
+        'analyze-dot.c',
+        'analyze-dump.c',
+        'analyze-exit-status.c',
+        'analyze-fdstore.c',
+        'analyze-filesystems.c',
+        'analyze-image-policy.c',
+        'analyze-inspect-elf.c',
+        'analyze-log-control.c',
+        'analyze-malloc.c',
+        'analyze-pcrs.c',
+        'analyze-plot.c',
         'analyze-security.c',
-        'analyze-security.h')
+        'analyze-service-watchdogs.c',
+        'analyze-syscall-filter.c',
+        'analyze-time.c',
+        'analyze-time-data.c',
+        'analyze-timespan.c',
+        'analyze-timestamp.c',
+        'analyze-unit-files.c',
+        'analyze-unit-paths.c',
+        'analyze-verify.c',
+        'analyze-verify-util.c',
+        'analyze.c',
+)
 
 tests += [
-        [['src/analyze/test-verify.c',
-          'src/analyze/analyze-verify.c',
-          'src/analyze/analyze-verify.h'],
-         [libcore,
-          libshared],
-         [],
-         core_includes],
+        {
+                'sources' : files(
+                        'test-verify.c',
+                        'analyze-verify-util.c',
+                ),
+                'base' : test_core_base,
+        },
 ]

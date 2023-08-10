@@ -10,22 +10,6 @@
 #include "udevadm-util.h"
 #include "unit-name.h"
 
-static int find_device_from_path(const char *path, sd_device **ret) {
-        if (path_startswith(path, "/sys/"))
-                return sd_device_new_from_syspath(ret, path);
-
-        if (path_startswith(path, "/dev/")) {
-                struct stat st;
-
-                if (stat(path, &st) < 0)
-                        return -errno;
-
-                return sd_device_new_from_stat_rdev(ret, &st);
-        }
-
-        return -EINVAL;
-}
-
 static int find_device_from_unit(const char *unit_name, sd_device **ret) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -48,7 +32,7 @@ static int find_device_from_unit(const char *unit_name, sd_device **ret) {
                 if (r < 0)
                         return log_debug_errno(r, "Failed to convert \"%s\" to a device path: %m", unit_name);
 
-                return find_device_from_path(path, ret);
+                return sd_device_new_from_path(ret, path);
         }
 
         unit_path = unit_dbus_path_from_name(unit_name);
@@ -71,44 +55,53 @@ static int find_device_from_unit(const char *unit_name, sd_device **ret) {
 }
 
 int find_device(const char *id, const char *prefix, sd_device **ret) {
-        _cleanup_free_ char *path = NULL;
-        int r;
-
         assert(id);
         assert(ret);
 
-        if (prefix) {
-                if (!path_startswith(id, prefix)) {
-                        id = path = path_join(prefix, id);
-                        if (!path)
-                                return -ENOMEM;
-                }
-        } else {
-                /* In cases where the argument is generic (no prefix specified),
-                 * check if the argument looks like a device unit name. */
-                r = find_device_from_unit(id, ret);
-                if (r >= 0)
-                        return r;
+        if (sd_device_new_from_path(ret, id) >= 0)
+                return 0;
+
+        if (prefix && !path_startswith(id, prefix)) {
+                _cleanup_free_ char *path = NULL;
+
+                path = path_join(prefix, id);
+                if (!path)
+                        return -ENOMEM;
+
+                if (sd_device_new_from_path(ret, path) >= 0)
+                        return 0;
         }
 
-        return find_device_from_path(id, ret);
+        /* if a path is provided, then it cannot be a unit name. Let's return earlier. */
+        if (is_path(id))
+                return -ENODEV;
+
+        /* Check if the argument looks like a device unit name. */
+        return find_device_from_unit(id, ret);
 }
 
 int find_device_with_action(const char *id, sd_device_action_t action, sd_device **ret) {
-        _cleanup_free_ char *path = NULL;
+        _cleanup_(sd_device_unrefp) sd_device *dev = NULL;
+        int r;
 
         assert(id);
         assert(ret);
         assert(action >= 0 && action < _SD_DEVICE_ACTION_MAX);
 
-        if (!path_startswith(id, "/sys")) {
-                path = path_join("/sys", id);
-                if (!path)
-                        return -ENOMEM;
-                id = path;
-        }
+        r = find_device(id, "/sys", &dev);
+        if (r < 0)
+                return r;
 
-        return device_new_from_synthetic_event(ret, id, device_action_to_string(action));
+        r = device_read_uevent_file(dev);
+        if (r < 0)
+                return r;
+
+        r = device_set_action(dev, action);
+        if (r < 0)
+                return r;
+
+        *ret = TAKE_PTR(dev);
+        return 0;
 }
 
 int parse_device_action(const char *str, sd_device_action_t *action) {

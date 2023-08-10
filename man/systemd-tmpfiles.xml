@@ -131,7 +131,9 @@
         directories marked with <varname>D</varname> or
         <varname>R</varname>, and files or directories themselves
         marked with <varname>r</varname> or <varname>R</varname> are
-        removed.</para></listitem>
+        removed unless an exclusive or shared BSD lock is taken on them (see <citerefentry
+        project='man-pages'><refentrytitle>flock</refentrytitle><manvolnum>2</manvolnum></citerefentry>).
+        </para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -142,8 +144,16 @@
 
       <varlistentry>
         <term><option>--boot</option></term>
-        <listitem><para>Also execute lines with an exclamation mark.
-        </para></listitem>
+        <listitem><para>Also execute lines with an exclamation mark. Lines that are not safe to be executed
+        on a running system may be marked in this way. <command>systemd-tmpfiles</command> is executed in
+        early boot with <option>--boot</option> specified and will execute those lines. When invoked again
+        later, it should be called without <option>--boot</option>.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--graceful</option></term>
+        <listitem><para>Ignore configuration lines pertaining to unknown users or groups. This option is
+        intended to be used in early boot before all users or groups have been created.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -192,13 +202,15 @@
         are applied to file system in the indicated disk image. This is similar to <option>--root=</option>
         but operates on file systems stored in disk images or block devices. The disk image should either
         contain just a file system or a set of file systems within a GPT partition table, following the
-        <ulink url="https://systemd.io/DISCOVERABLE_PARTITIONS">Discoverable Partitions
+        <ulink url="https://uapi-group.org/specifications/specs/discoverable_partitions_specification">Discoverable Partitions
         Specification</ulink>. For further information on supported disk images, see
         <citerefentry><refentrytitle>systemd-nspawn</refentrytitle><manvolnum>1</manvolnum></citerefentry>'s
         switch of the same name.</para>
 
         <para>Implies <option>-E</option>.</para></listitem>
       </varlistentry>
+
+      <xi:include href="standard-options.xml" xpointer="image-policy-open" />
 
       <varlistentry>
         <term><option>--replace=<replaceable>PATH</replaceable></option></term>
@@ -228,6 +240,31 @@
     removed and created according to the configuration file:</para>
 
     <programlisting>systemd-tmpfiles --remove --create</programlisting>
+  </refsect1>
+
+  <refsect1>
+    <title>Credentials</title>
+
+    <para><command>systemd-tmpfiles</command> supports the service credentials logic as implemented by
+    <varname>ImportCredential=</varname>/<varname>LoadCredential=</varname>/<varname>SetCredential=</varname>
+    (see <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>1</manvolnum></citerefentry> for
+    details). The following credentials are used when passed in:</para>
+
+    <variablelist class='system-credentials'>
+      <varlistentry>
+        <term><varname>tmpfiles.extra</varname></term>
+
+        <listitem><para> The contents of this credential may contain additional lines to operate on. The
+        credential contents should follow the same format as any other <filename>tmpfiles.d/</filename>
+        drop-in configuration file. If this credential is passed it is processed after all of the drop-in
+        files read from the file system. The lines in the credential can hence augment existing lines of the
+        OS, but not override them.</para></listitem>
+      </varlistentry>
+    </variablelist>
+
+    <para>Note that by default the <filename>systemd-tmpfiles-setup.service</filename> unit file (and related
+    unit files) is set up to inherit the <literal>tmpfiles.extra</literal> credential from the service
+    manager.</para>
   </refsect1>
 
   <refsect1>

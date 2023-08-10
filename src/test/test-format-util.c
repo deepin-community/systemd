@@ -4,16 +4,30 @@
 #include "macro.h"
 #include "string-util.h"
 #include "tests.h"
+#include "uchar.h"
 
 /* Do some basic checks on STRLEN() and DECIMAL_STR_MAX() */
-assert_cc(STRLEN("xxx") == 3);
 assert_cc(STRLEN("") == 0);
-assert_cc(STRLEN(L"xxx") == 3 * sizeof(wchar_t));
+assert_cc(STRLEN("a") == 1);
+assert_cc(STRLEN("123") == 3);
+assert_cc(STRLEN(u8"") == 0);
+assert_cc(STRLEN(u8"a") == 1);
+assert_cc(STRLEN(u8"123") == 3);
+assert_cc(STRLEN(u"") == 0);
+assert_cc(STRLEN(u"a") == sizeof(char16_t));
+assert_cc(STRLEN(u"123") == 3 * sizeof(char16_t));
+assert_cc(STRLEN(U"") == 0);
+assert_cc(STRLEN(U"a") == sizeof(char32_t));
+assert_cc(STRLEN(U"123") == 3 * sizeof(char32_t));
 assert_cc(STRLEN(L"") == 0);
-assert_cc(DECIMAL_STR_MAX(uint8_t) == 5);
-assert_cc(DECIMAL_STR_MAX(int8_t) == 5);
-assert_cc(DECIMAL_STR_MAX(uint64_t) == 22);
-assert_cc(DECIMAL_STR_MAX(char) == 5);
+assert_cc(STRLEN(L"a") == sizeof(wchar_t));
+assert_cc(STRLEN(L"123") == 3 * sizeof(wchar_t));
+assert_cc(DECIMAL_STR_MAX(uint8_t) == STRLEN("255")+1);
+assert_cc(DECIMAL_STR_MAX(int8_t) == STRLEN("-127")+1);
+assert_cc(DECIMAL_STR_MAX(uint64_t) == STRLEN("18446744073709551615")+1);
+assert_cc(DECIMAL_STR_MAX(int64_t) == CONST_MAX(STRLEN("-9223372036854775808"), STRLEN("9223372036854775807"))+1);
+assert_cc(DECIMAL_STR_MAX(signed char) == STRLEN("-127")+1);
+assert_cc(DECIMAL_STR_MAX(unsigned char) == STRLEN("255")+1);
 assert_cc(CONST_MAX(DECIMAL_STR_MAX(int8_t), STRLEN("xxx")) == 5);
 
 static void test_format_bytes_one(uint64_t val, bool trailing_B, const char *iec_with_p, const char *iec_without_p,

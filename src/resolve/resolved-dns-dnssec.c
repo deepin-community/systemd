@@ -7,6 +7,7 @@
 #include "gcrypt-util.h"
 #include "hexdecoct.h"
 #include "memory-util.h"
+#include "memstream-util.h"
 #include "openssl-util.h"
 #include "resolved-dns-dnssec.h"
 #include "resolved-dns-packet.h"
@@ -348,7 +349,7 @@ static int dnssec_ecdsa_verify_raw(
         if (!s)
                 return -EIO;
 
-        /* TODO: We should eventually use use the EVP API once it supports ECDSA signature verification */
+        /* TODO: We should eventually use the EVP API once it supports ECDSA signature verification */
 
         sig = ECDSA_SIG_new();
         if (!sig)
@@ -778,8 +779,7 @@ static hash_md_t algorithm_to_implementation_id(uint8_t algorithm) {
 static void dnssec_fix_rrset_ttl(
                 DnsResourceRecord *list[],
                 unsigned n,
-                DnsResourceRecord *rrsig,
-                usec_t realtime) {
+                DnsResourceRecord *rrsig) {
 
         assert(list);
         assert(n > 0);
@@ -811,11 +811,10 @@ static int dnssec_rrset_serialize_sig(
                 char **ret_sig_data,
                 size_t *ret_sig_size) {
 
-        _cleanup_free_ char *sig_data = NULL;
-        size_t sig_size = 0;
-        _cleanup_fclose_ FILE *f = NULL;
+        _cleanup_(memstream_done) MemStream m = {};
         uint8_t wire_format_name[DNS_WIRE_FORMAT_HOSTNAME_MAX];
         DnsResourceRecord *rr;
+        FILE *f;
         int r;
 
         assert(rrsig);
@@ -824,7 +823,7 @@ static int dnssec_rrset_serialize_sig(
         assert(ret_sig_data);
         assert(ret_sig_size);
 
-        f = open_memstream_unlocked(&sig_data, &sig_size);
+        f = memstream_init(&m);
         if (!f)
                 return -ENOMEM;
 
@@ -867,14 +866,7 @@ static int dnssec_rrset_serialize_sig(
                 fwrite(DNS_RESOURCE_RECORD_RDATA(rr), 1, l, f);
         }
 
-        r = fflush_and_check(f);
-        f = safe_fclose(f);  /* sig_data may be reallocated when f is closed. */
-        if (r < 0)
-                return r;
-
-        *ret_sig_data = TAKE_PTR(sig_data);
-        *ret_sig_size = sig_size;
-        return 0;
+        return memstream_finalize(&m, ret_sig_data, ret_sig_size);
 }
 
 static int dnssec_rrset_verify_sig(
@@ -989,8 +981,9 @@ int dnssec_verify_rrset(
 
         DnsResourceRecord **list, *rr;
         const char *source, *name;
-        size_t n = 0, sig_size;
         _cleanup_free_ char *sig_data = NULL;
+        size_t sig_size = 0; /* avoid false maybe-uninitialized warning */
+        size_t n = 0;
         bool wildcard;
         int r;
 
@@ -1109,7 +1102,7 @@ int dnssec_verify_rrset(
 
         /* Now, fix the ttl, expiry, and remember the synthesizing source and the signer */
         if (r > 0)
-                dnssec_fix_rrset_ttl(list, n, rrsig, realtime);
+                dnssec_fix_rrset_ttl(list, n, rrsig);
 
         if (r == 0)
                 *result = DNSSEC_INVALID;
@@ -1184,7 +1177,7 @@ int dnssec_verify_rrset_search(
 
         /* Verifies all RRs from "a" that match the key "key" against DNSKEYs in "validated_dnskeys" */
 
-        if (!a || a->n_rrs <= 0)
+        if (dns_answer_isempty(a))
                 return -ENODATA;
 
         /* Iterate through each RRSIG RR. */

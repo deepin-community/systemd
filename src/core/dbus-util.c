@@ -30,7 +30,7 @@ int bus_property_get_triggered_unit(
         return sd_bus_message_append(reply, "s", trigger ? trigger->id : NULL);
 }
 
-BUS_DEFINE_SET_TRANSIENT(mode_t, "u", uint32_t, mode_t, "%040o");
+BUS_DEFINE_SET_TRANSIENT(mode_t, "u", uint32_t, mode_t, "%04o");
 BUS_DEFINE_SET_TRANSIENT(unsigned, "u", uint32_t, unsigned, "%" PRIu32);
 
 static inline bool valid_user_group_name_or_id_relaxed(const char *u) {
@@ -73,6 +73,30 @@ int bus_set_transient_bool(
                 Unit *u,
                 const char *name,
                 bool *p,
+                sd_bus_message *message,
+                UnitWriteFlags flags,
+                sd_bus_error *error) {
+
+        int v, r;
+
+        assert(p);
+
+        r = sd_bus_message_read(message, "b", &v);
+        if (r < 0)
+                return r;
+
+        if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
+                *p = v;
+                unit_write_settingf(u, flags, name, "%s=%s", name, yes_no(v));
+        }
+
+        return 1;
+}
+
+int bus_set_transient_tristate(
+                Unit *u,
+                const char *name,
+                int *p,
                 sd_bus_message *message,
                 UnitWriteFlags flags,
                 sd_bus_error *error) {
@@ -216,7 +240,7 @@ int bus_read_mount_options(
         if (r < 0)
                 return r;
 
-        if (!LIST_IS_EMPTY(options)) {
+        if (options) {
                 if (ret_format_str) {
                         char *final = strjoin(*ret_format_str, !isempty(*ret_format_str) ? separator : "", format_str);
                         if (!final)
@@ -227,4 +251,36 @@ int bus_read_mount_options(
         }
 
         return 0;
+}
+
+int bus_property_get_activation_details(
+                sd_bus *bus,
+                const char *path,
+                const char *interface,
+                const char *property,
+                sd_bus_message *reply,
+                void *userdata,
+                sd_bus_error *error) {
+
+        ActivationDetails **details = ASSERT_PTR(userdata);
+        _cleanup_strv_free_ char **pairs = NULL;
+        int r;
+
+        assert(reply);
+
+        r = activation_details_append_pair(*details, &pairs);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_message_open_container(reply, 'a', "(ss)");
+        if (r < 0)
+                return r;
+
+        STRV_FOREACH_PAIR(key, value, pairs) {
+                r = sd_bus_message_append(reply, "(ss)", *key, *value);
+                if (r < 0)
+                        return r;
+        }
+
+        return sd_bus_message_close_container(reply);
 }

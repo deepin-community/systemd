@@ -60,10 +60,10 @@ int wifi_get_interface(sd_netlink *genl, int ifindex, enum nl80211_iftype *ret_i
                 return log_debug_errno(r, "Failed to get NL80211_ATTR_SSID attribute: %m");
         if (r >= 0) {
                 if (len == 0) {
-                        log_debug("SSID has zero length, ignoring the received SSID.");
+                        log_debug("SSID has zero length, ignoring it.");
                         ssid = mfree(ssid);
                 } else if (strlen_ptr(ssid) != len) {
-                        log_debug("SSID contains NUL character(s), ignoring the received SSID.");
+                        log_debug("SSID contains NUL characters, ignoring it.");
                         ssid = mfree(ssid);
                 }
         }
@@ -153,7 +153,7 @@ static const char * const nl80211_iftype_table[NUM_NL80211_IFTYPES] = {
         [NL80211_IFTYPE_NAN]        = "nan",
 };
 
-DEFINE_STRING_TABLE_LOOKUP_TO_STRING(nl80211_iftype, enum nl80211_iftype);
+DEFINE_STRING_TABLE_LOOKUP(nl80211_iftype, enum nl80211_iftype);
 
 static const char * const nl80211_cmd_table[__NL80211_CMD_AFTER_LAST] = {
         [NL80211_CMD_GET_WIPHY] = "get_wiphy",

@@ -40,8 +40,8 @@ static inline int dns_name_normalize(const char *s, DNSLabelFlags flags, char **
 static inline int dns_name_is_valid(const char *s) {
         int r;
 
-        /* dns_name_normalize() verifies as a side effect */
-        r = dns_name_normalize(s, 0, NULL);
+        /* dns_name_concat() verifies as a side effect */
+        r = dns_name_concat(s, NULL, 0, NULL);
         if (r == -EINVAL)
                 return 0;
         if (r < 0)
@@ -60,13 +60,10 @@ static inline int dns_name_is_valid_ldh(const char *s) {
         return 1;
 }
 
-static inline bool dns_name_is_empty(const char *s) {
-        return isempty(s) || streq(s, ".");
-}
-
 void dns_name_hash_func(const char *s, struct siphash *state);
 int dns_name_compare_func(const char *a, const char *b);
 extern const struct hash_ops dns_name_hash_ops;
+extern const struct hash_ops dns_name_hash_ops_free;
 
 int dns_name_between(const char *a, const char *b, const char *c);
 int dns_name_equal(const char *x, const char *y);
@@ -88,7 +85,7 @@ bool dnssd_srv_type_is_valid(const char *name);
 bool dns_service_name_is_valid(const char *name);
 
 int dns_service_join(const char *name, const char *type, const char *domain, char **ret);
-int dns_service_split(const char *joined, char **name, char **type, char **domain);
+int dns_service_split(const char *joined, char **ret_name, char **ret_type, char **ret_domain);
 
 int dns_name_suffix(const char *name, unsigned n_labels, const char **ret);
 int dns_name_count_labels(const char *name);
@@ -103,3 +100,5 @@ int dns_name_apply_idna(const char *name, char **ret);
 int dns_name_is_valid_or_address(const char *name);
 
 int dns_name_dot_suffixed(const char *name);
+
+bool dns_name_dont_resolve(const char *name);

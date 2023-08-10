@@ -25,24 +25,24 @@ for high-quality random numbers cannot be fulfilled.
 The Linux kernel provides three relevant userspace APIs to request random data
 from the kernel's entropy pool:
 
-* The [`getrandom()`](http://man7.org/linux/man-pages/man2/getrandom.2.html)
-  system call with its `flags` parameter set to 0. If invoked the calling
+* The [`getrandom()`](https://man7.org/linux/man-pages/man2/getrandom.2.html)
+  system call with its `flags` parameter set to 0. If invoked, the calling
   program will synchronously block until the random pool is fully initialized
   and the requested bytes can be provided.
 
 * The `getrandom()` system call with its `flags` parameter set to
-  `GRND_NONBLOCK`. If invoked the request for random bytes will fail if the
+  `GRND_NONBLOCK`. If invoked, the request for random bytes will fail if the
   pool is not initialized yet.
 
 * Reading from the
-  [`/dev/urandom`](http://man7.org/linux/man-pages/man4/urandom.4.html)
+  [`/dev/urandom`](https://man7.org/linux/man-pages/man4/urandom.4.html)
   pseudo-device will always return random bytes immediately, even if the pool
   is not initialized. The provided random bytes will be of low quality in this
-  case however. Moreover the kernel will log about all programs using this
+  case however. Moreover, the kernel will log about all programs using this
   interface in this state, and which thus potentially rely on an uninitialized
   entropy pool.
 
-(Strictly speaking there are more APIs, for example `/dev/random`, but these
+(Strictly speaking, there are more APIs, for example `/dev/random`, but these
 should not be used by almost any application and hence aren't mentioned here.)
 
 Note that the time it takes to initialize the random pool may differ between
@@ -102,12 +102,12 @@ random bytes will either be delayed, will fail or result in a noisy kernel log
 message (see above).
 
 Various other components run during early boot that require random bytes. For
-example, initial RAM disks nowadays communicate with encrypted networks or
-access encrypted storage which might need random numbers. systemd itself
-requires random numbers as well, including for the following uses:
+example, initrds nowadays communicate with encrypted networks or access
+encrypted storage which might need random numbers. systemd itself requires
+random numbers as well, including for the following uses:
 
 * systemd assigns 'invocation' UUIDs to all services it invokes that uniquely
-  identify each invocation. This is useful retain a global handle on a specific
+  identify each invocation. This is useful to retain a global handle on a specific
   service invocation and relate it to other data. For example, log data
   collected by the journal usually includes the invocation UUID and thus the
   runtime context the service manager maintains can be neatly matched up with
@@ -144,33 +144,11 @@ acquired.
 ## Keeping `systemd'`s Demand on the Kernel Entropy Pool Minimal
 
 Since most of systemd's own use of random numbers do not require
-cryptographic-grade RNGs, it tries to avoid reading entropy from the kernel
-entropy pool if possible. If it succeeds this has the benefit that there's no
-need to delay the early boot process until entropy is available, and noisy
-kernel log messages about early reading from `/dev/urandom` are avoided
-too. Specifically:
-
-1. When generating [Type 4
-   UUIDs](https://en.wikipedia.org/wiki/Universally_unique_identifier#Version_4_\(random\)),
-   systemd tries to use Intel's and AMD's RDRAND CPU opcode directly, if
-   available. While some doubt the quality and trustworthiness of the entropy
-   provided by these opcodes, they should be good enough for generating UUIDs,
-   if not key material (though, as mentioned, today's big distributions opted
-   to trust it for that too, now, see above — but we are not going to make that
-   decision for you, and for anything key material related will only use the
-   kernel's entropy pool). If RDRAND is not available or doesn't work, it will
-   use synchronous `getrandom()` as fallback, and `/dev/urandom` on old kernels
-   where that system call doesn't exist yet. This means on non-Intel/AMD
-   systems UUID generation will block on kernel entropy initialization.
-
-2. For seeding hash tables, and all the other similar purposes systemd first
-   tries RDRAND, and if that's not available will try to use asynchronous
-   `getrandom()` (if the kernel doesn't support this system call,
-   `/dev/urandom` is used). This may fail too in case the pool is not
-   initialized yet, in which case it will fall back to glibc's internal rand()
-   calls, i.e. weak pseudo-random numbers. This should make sure we use good
-   random bytes if we can, but neither delay boot nor trigger noisy kernel log
-   messages during early boot for these use-cases.
+cryptographic-grade RNGs, it tries to avoid blocking reads to the kernel's RNG,
+opting instead for using `getrandom(GRND_INSECURE)`. After the pool is
+initialized, this is identical to `getrandom(0)`, returning cryptographically
+secure random numbers, but before it's initialized it has the nice effect of
+not blocking system boot.
 
 ## `systemd`'s Support for Filling the Kernel Entropy Pool
 
@@ -196,9 +174,9 @@ boot, in order to ensure the entropy pool is filled up quickly.
    be enabled by setting the `$SYSTEMD_RANDOM_SEED_CREDIT` environment variable
    for the service to `1` (or even `force`, see man page). Note however, that
    this service typically runs relatively late during early boot: long after
-   the initial RAM disk (`initrd`) completed, and after the `/var/` file system
-   became writable. This is usually too late for many applications, it is hence
-   not advised to rely exclusively on this functionality to seed the kernel's
+   the initrd completed, and after the `/var/` file system became
+   writable. This is usually too late for many applications, it is hence not
+   advised to rely exclusively on this functionality to seed the kernel's
    entropy pool. Also note that this service synchronously waits until the
    kernel's entropy pool is initialized before completing start-up. It may thus
    be used by other services as synchronization point to order against, if they
@@ -219,44 +197,40 @@ boot, in order to ensure the entropy pool is filled up quickly.
    generate sufficient data), to generate a new random seed file to store in
    the ESP as well as a random seed to pass to the OS kernel. The new random
    seed file for the ESP is then written to the ESP, ensuring this is completed
-   before the OS is invoked. Very early during initialization PID 1 will read
-   the random seed provided in the EFI variable and credit it fully to the
-   kernel's entropy pool.
+   before the OS is invoked.
 
-   This mechanism is able to safely provide an initialized entropy pool already
-   in the `initrd` and guarantees that different seeds are passed from the boot
-   loader to the OS on every boot (in a way that does not allow regeneration of
-   an old seed file from a new seed file). Moreover, when an OS image is
-   replicated between multiple images and the random seed is not reset, this
-   will still result in different random seeds being passed to the OS, as the
-   per-machine 'system token' is specific to the physical host, and not
-   included in OS disk images. If the 'system token' is properly initialized
-   and kept sufficiently secret it should not be possible to regenerate the
-   entropy pool of different machines, even if this seed is the only source of
-   entropy.
+   The kernel then reads the random seed that the boot loader passes to it, via
+   the EFI configuration table entry, `LINUX_EFI_RANDOM_SEED_TABLE_GUID`
+   (1ce1e5bc-7ceb-42f2-81e5-8aadf180f57b), which is allocated with pool memory
+   of type `EfiACPIReclaimMemory`. Its contents have the form:
+   ```
+   struct linux_efi_random_seed {
+       u32     size; // of the 'seed' array in bytes
+       u8      seed[];
+   };
+   ```
+   The size field is generally set to 32 bytes, and the seed field includes a
+   hashed representation of any prior seed in `LINUX_EFI_RANDOM_SEED_TABLE_GUID`
+   together with the new seed.
+
+   This mechanism is able to safely provide an initialized entropy pool before
+   userspace even starts and guarantees that different seeds are passed from
+   the boot loader to the OS on every boot (in a way that does not allow
+   regeneration of an old seed file from a new seed file). Moreover, when an OS
+   image is replicated between multiple images and the random seed is not
+   reset, this will still result in different random seeds being passed to the
+   OS, as the per-machine 'system token' is specific to the physical host, and
+   not included in OS disk images. If the 'system token' is properly
+   initialized and kept sufficiently secret it should not be possible to
+   regenerate the entropy pool of different machines, even if this seed is the
+   only source of entropy.
 
    Note that the writes to the ESP needed to maintain the random seed should be
-   minimal. The size of the random seed file is directly derived from the Linux
-   kernel's entropy pool size, which defaults to 512 bytes. This means updating
-   the random seed in the ESP should be doable safely with a single sector
-   write (since hard-disk sectors typically happen to be 512 bytes long, too),
-   which should be safe even with FAT file system drivers built into
+   minimal. Because the size of the random seed file is generally set to 32 bytes,
+   updating the random seed in the ESP should be doable safely with a single
+   sector write (since hard-disk sectors typically happen to be 512 bytes long,
+   too), which should be safe even with FAT file system drivers built into
    low-quality EFI firmwares.
-
-   As a special restriction: in virtualized environments PID 1 will refrain
-   from using this mechanism, for safety reasons. This is because on VM
-   environments the EFI variable space and the disk space is generally not
-   maintained physically separate (for example, `qemu` in EFI mode stores the
-   variables in the ESP itself). The robustness towards sloppy OS image
-   generation is the main purpose of maintaining the 'system token' however,
-   and if the EFI variable storage is not kept physically separate from the OS
-   image there's no point in it. That said, OS builders that know that they are
-   not going to replicate the built image on multiple systems may opt to turn
-   off the 'system token' concept by setting `random-seed-mode always` in the
-   ESP's
-   [`/loader/loader.conf`](https://www.freedesktop.org/software/systemd/man/loader.conf.html)
-   file. If done, `systemd-boot` will use the random seed file even if no
-   system token is found in EFI variables.
 
 4. A kernel command line option `systemd.random_seed=` may be used to pass in a
    base64 encoded seed to initialize the kernel's entropy pool from during
@@ -280,10 +254,8 @@ early-boot entropy in most cases. Specifically:
    hosting provider if they don't. For VMs used in testing environments,
    `systemd.random_seed=` may be used as an alternative to a virtualized RNG.
 
-3. On Intel/AMD systems systemd's own reliance on the kernel entropy pool is
-   minimal (as RDRAND is used on those for UUID generation). This only works if
-   the CPU has RDRAND of course, which most physical CPUs do (but I hear many
-   virtualized CPUs do not. Pity.)
+3. In general, systemd's own reliance on the kernel entropy pool is minimal
+   (due to the use of `GRND_INSECURE`).
 
 4. In all other cases, `systemd-random-seed.service` will help a bit, but — as
    mentioned — is too late to help with early boot.
@@ -318,7 +290,7 @@ This primarily leaves two kind of systems in the cold:
    do use it in many cases, but not in all. Please read the above again!
 
 2. *Why don't you use
-   [getentropy()](http://man7.org/linux/man-pages/man3/getentropy.3.html)? That's
+   [getentropy()](https://man7.org/linux/man-pages/man3/getentropy.3.html)? That's
    all you need!*
 
    Same story. That call is just a different name for `getrandom()` with
@@ -327,7 +299,7 @@ This primarily leaves two kind of systems in the cold:
    are trying to address here.
 
 3. *Why don't you generate your UUIDs with
-   [`uuidd`](http://man7.org/linux/man-pages/man8/uuidd.8.html)? That's all you
+   [`uuidd`](https://man7.org/linux/man-pages/man8/uuidd.8.html)? That's all you
    need!*
 
    First of all, that's a system service, i.e. something that runs as "payload"
@@ -411,8 +383,8 @@ This primarily leaves two kind of systems in the cold:
     [systemd-boot(7)](https://www.freedesktop.org/software/systemd/man/systemd-boot.html)
     for an introduction why. That said, any boot loader can re-implement the
     logic described above, and can pass a random seed that systemd as PID 1
-    will then upload into the kernel's entropy pool. For details see the [Boot
-    Loader Interface](https://systemd.io/BOOT_LOADER_INTERFACE) documentation.
+    will then upload into the kernel's entropy pool. For details see the
+    [Boot Loader Interface](BOOT_LOADER_INTERFACE.md) documentation.
 
 11. *Why not pass the boot loader random seed via kernel command line instead
     of as EFI variable?*

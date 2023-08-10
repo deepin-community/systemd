@@ -62,7 +62,7 @@
         </thead>
         <tbody>
           <row>
-            <entry valign="top" morerows="13">VM</entry>
+            <entry valign="top" morerows="16">VM</entry>
             <entry><varname>qemu</varname></entry>
             <entry>QEMU software virtualization, without KVM</entry>
           </row>
@@ -135,6 +135,16 @@
           <row>
             <entry><varname>acrn</varname></entry>
             <entry><ulink url="https://projectacrn.org">ACRN hypervisor</ulink></entry>
+          </row>
+
+          <row>
+            <entry><varname>apple</varname></entry>
+            <entry><ulink url="https://developer.apple.com/documentation/virtualization">Apple Virtualization.framework</ulink></entry>
+          </row>
+
+          <row>
+            <entry><varname>sre</varname></entry>
+            <entry><ulink url="https://www.lockheedmartin.com/en-us/products/Hardened-Security-for-Intel-Processors.html">LMHS SRE hypervisor</ulink></entry>
           </row>
 
           <row>
@@ -248,6 +258,16 @@
       </varlistentry>
 
       <varlistentry>
+        <term><option>--cvm</option></term>
+
+        <listitem><para>Detect whether invoked in a confidential virtual machine.
+        The result of this detection may be used to disable features that should
+        not be used in confidential VMs. It must not be used to release security
+        sensitive information. The latter must only be released after attestation
+        of the confidential environment.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><option>-q</option></term>
         <term><option>--quiet</option></term>
 
@@ -259,6 +279,12 @@
         <term><option>--list</option></term>
 
         <listitem><para>Output all currently known and detectable container and VM environments.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--list-cvm</option></term>
+
+        <listitem><para>Output all currently known and detectable confidential virtualization technologies.</para></listitem>
       </varlistentry>
 
       <xi:include href="standard-options.xml" xpointer="help" />

@@ -9,8 +9,8 @@
  */
 #pragma once
 
-#include <efi.h>
+#include "efi.h"
 
-BOOLEAN shim_loaded(void);
-
-EFI_STATUS security_policy_install(void);
+bool shim_loaded(void);
+EFI_STATUS shim_load_image(EFI_HANDLE parent, const EFI_DEVICE_PATH *device_path, EFI_HANDLE *ret_image);
+void shim_retain_protocol(void);

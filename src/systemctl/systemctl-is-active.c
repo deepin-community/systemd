@@ -13,9 +13,8 @@ static int check_unit_generic(int code, const UnitActiveState good_states[], int
         _cleanup_strv_free_ char **names = NULL;
         UnitActiveState active_state;
         sd_bus *bus;
-        char **name;
+        bool not_found = true, ok = false;
         int r;
-        bool found = false;
 
         r = acquire_bus(BUS_MANAGER, &bus);
         if (r < 0)
@@ -26,7 +25,13 @@ static int check_unit_generic(int code, const UnitActiveState good_states[], int
                 return log_error_errno(r, "Failed to expand names: %m");
 
         STRV_FOREACH(name, names) {
+                _cleanup_free_ char *load_state = NULL;
+
                 r = get_state_one_unit(bus, *name, &active_state);
+                if (r < 0)
+                        return r;
+
+                r = unit_load_state(bus, *name, &load_state);
                 if (r < 0)
                         return r;
 
@@ -34,16 +39,21 @@ static int check_unit_generic(int code, const UnitActiveState good_states[], int
                         puts(unit_active_state_to_string(active_state));
 
                 for (int i = 0; i < nb_states; ++i)
-                        if (good_states[i] == active_state)
-                                found = true;
+                        if (good_states[i] == active_state) {
+                                ok = true;
+                                break;
+                        }
+
+                if (!streq(load_state, "not-found"))
+                        not_found = false;
         }
 
-        /* use the given return code for the case that we won't find
-         * any unit which matches the list */
-        return found ? 0 : code;
+        /* We use LSB code 4 ("program or service status is unknown")
+         * when the corresponding unit file doesn't exist. */
+        return ok ? EXIT_SUCCESS : not_found ? EXIT_PROGRAM_OR_SERVICES_STATUS_UNKNOWN : code;
 }
 
-int check_unit_active(int argc, char *argv[], void *userdata) {
+int verb_is_active(int argc, char *argv[], void *userdata) {
         static const UnitActiveState states[] = {
                 UNIT_ACTIVE,
                 UNIT_RELOADING,
@@ -53,7 +63,7 @@ int check_unit_active(int argc, char *argv[], void *userdata) {
         return check_unit_generic(EXIT_PROGRAM_NOT_RUNNING, states, ELEMENTSOF(states), strv_skip(argv, 1));
 }
 
-int check_unit_failed(int argc, char *argv[], void *userdata) {
+int verb_is_failed(int argc, char *argv[], void *userdata) {
         static const UnitActiveState states[] = {
                 UNIT_FAILED,
         };

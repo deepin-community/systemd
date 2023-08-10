@@ -480,6 +480,14 @@ TEST(safe_atou16) {
         assert_se(r == 0);
         assert_se(l == 12345);
 
+        r = safe_atou16("+12345", &l);
+        assert_se(r == 0);
+        assert_se(l == 12345);
+
+        r = safe_atou16("  +12345", &l);
+        assert_se(r == 0);
+        assert_se(l == 12345);
+
         r = safe_atou16("123456", &l);
         assert_se(r == -ERANGE);
 
@@ -513,6 +521,14 @@ TEST(safe_atoi16) {
         r = safe_atoi16("  -12345", &l);
         assert_se(r == 0);
         assert_se(l == -12345);
+
+        r = safe_atoi16("+12345", &l);
+        assert_se(r == 0);
+        assert_se(l == 12345);
+
+        r = safe_atoi16("  +12345", &l);
+        assert_se(r == 0);
+        assert_se(l == 12345);
 
         r = safe_atoi16("32767", &l);
         assert_se(r == 0);
@@ -703,6 +719,22 @@ TEST(safe_atoux64) {
         assert_se(r == 0);
         assert_se(l == 11603985);
 
+        r = safe_atoux64("+12345", &l);
+        assert_se(r == 0);
+        assert_se(l == 0x12345);
+
+        r = safe_atoux64("  +12345", &l);
+        assert_se(r == 0);
+        assert_se(l == 0x12345);
+
+        r = safe_atoux64("+0x12345", &l);
+        assert_se(r == 0);
+        assert_se(l == 0x12345);
+
+        r = safe_atoux64("+0b11011", &l);
+        assert_se(r == 0);
+        assert_se(l == 11603985);
+
         r = safe_atoux64("0o11011", &l);
         assert_se(r == -EINVAL);
 
@@ -812,23 +844,6 @@ TEST(parse_nice) {
         assert_se(parse_nice("+20", &n) == -ERANGE);
 }
 
-TEST(parse_dev) {
-        dev_t dev;
-
-        assert_se(parse_dev("", &dev) == -EINVAL);
-        assert_se(parse_dev("junk", &dev) == -EINVAL);
-        assert_se(parse_dev("0", &dev) == -EINVAL);
-        assert_se(parse_dev("5", &dev) == -EINVAL);
-        assert_se(parse_dev("5:", &dev) == -EINVAL);
-        assert_se(parse_dev(":5", &dev) == -EINVAL);
-        assert_se(parse_dev("-1:-1", &dev) == -EINVAL);
-#if SIZEOF_DEV_T < 8
-        assert_se(parse_dev("4294967295:4294967295", &dev) == -EINVAL);
-#endif
-        assert_se(parse_dev("8:11", &dev) >= 0 && major(dev) == 8 && minor(dev) == 11);
-        assert_se(parse_dev("0:0", &dev) >= 0 && major(dev) == 0 && minor(dev) == 0);
-}
-
 TEST(parse_errno) {
         assert_se(parse_errno("EILSEQ") == EILSEQ);
         assert_se(parse_errno("EINVAL") == EINVAL);
@@ -848,6 +863,19 @@ TEST(parse_errno) {
         assert_se(parse_errno("EINVAL12") == -EINVAL);
         assert_se(parse_errno("-EINVAL") == -EINVAL);
         assert_se(parse_errno("EINVALaaa") == -EINVAL);
+}
+
+TEST(parse_fd) {
+        assert_se(parse_fd("0") == 0);
+        assert_se(parse_fd("1") == 1);
+
+        assert_se(parse_fd("-1") == -EBADF);
+        assert_se(parse_fd("-3") == -EBADF);
+
+        assert_se(parse_fd("") == -EINVAL);
+        assert_se(parse_fd("12.3") == -EINVAL);
+        assert_se(parse_fd("123junk") == -EINVAL);
+        assert_se(parse_fd("junk123") == -EINVAL);
 }
 
 TEST(parse_mtu) {

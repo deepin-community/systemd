@@ -8,8 +8,8 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 # Journal File Format
 
 _Note that this document describes the binary on-disk format of journals only.
-For interfacing with web technologies there's the [Journal JSON Format](https://systemd.io/JOURNAL_EXPORT_FORMATS#journal-json-format).
-For transfer of journal data across the network there's the [Journal Export Format](https://systemd.io/JOURNAL_EXPORT_FORMATS#journal-export-format)._
+For interfacing with web technologies there's the [Journal JSON Format](JOURNAL_EXPORT_FORMATS.md#journal-json-format).
+For transfer of journal data across the network there's the [Journal Export Format](JOURNAL_EXPORT_FORMATS.md#journal-export-format)._
 
 The systemd journal stores log data in a binary format with several features:
 
@@ -45,9 +45,10 @@ stream-based nature it is not indexed.
 _Or, to put this in other words: this low-level document is probably not what
 you want to use as base of your project. You want our [C
 API](https://www.freedesktop.org/software/systemd/man/sd-journal.html) instead!
-And if you really don't want the C API, then you want the [Journal Export
-Format or Journal JSON Format](https://systemd.io/JOURNAL_EXPORT_FORMATS) instead!
-This document is primarily for your entertainment and education. Thank you!_
+And if you really don't want the C API, then you want the
+[Journal Export Format or Journal JSON Format](JOURNAL_EXPORT_FORMATS.md)
+instead! This document is primarily for your entertainment and education.
+Thank you!_
 
 This document assumes you have a basic understanding of the journal concepts,
 the properties of a journal entry and so on. If not, please go and read up,
@@ -70,15 +71,15 @@ thread](https://lists.freedesktop.org/archives/systemd-devel/2012-October/007054
 
 ## Basics
 
-* All offsets, sizes, time values, hashes (and most other numeric values) are 64bit unsigned integers in LE format.
+* All offsets, sizes, time values, hashes (and most other numeric values) are 32-bit/64-bit unsigned integers in LE format.
 * Offsets are always relative to the beginning of the file.
-* The 64bit hash function siphash24 is used for newer journal files. For older files [Jenkins lookup3](https://en.wikipedia.org/wiki/Jenkins_hash_function) is used, more specifically `jenkins_hashlittle2()` with the first 32bit integer it returns as higher 32bit part of the 64bit value, and the second one uses as lower 32bit part.
-* All structures are aligned to 64bit boundaries and padded to multiples of 64bit
+* The 64-bit hash function siphash24 is used for newer journal files. For older files [Jenkins lookup3](https://en.wikipedia.org/wiki/Jenkins_hash_function) is used, more specifically `jenkins_hashlittle2()` with the first 32-bit integer it returns as higher 32-bit part of the 64-bit value, and the second one uses as lower 32-bit part.
+* All structures are aligned to 64-bit boundaries and padded to multiples of 64-bit
 * The format is designed to be read and written via memory mapping using multiple mapped windows.
 * All time values are stored in usec since the respective epoch.
 * Wall clock time values are relative to the Unix time epoch, i.e. January 1st, 1970. (`CLOCK_REALTIME`)
 * Monotonic time values are always stored jointly with the kernel boot ID value (i.e. `/proc/sys/kernel/random/boot_id`) they belong to. They tend to be relative to the start of the boot, but aren't for containers. (`CLOCK_MONOTONIC`)
-* Randomized, unique 128bit IDs are used in various locations. These are generally UUID v4 compatible, but this is not a requirement.
+* Randomized, unique 128-bit IDs are used in various locations. These are generally UUID v4 compatible, but this is not a requirement.
 
 ## General Rules
 
@@ -150,7 +151,7 @@ _packed_ struct Header {
         uint8_t reserved[7];
         sd_id128_t file_id;
         sd_id128_t machine_id;
-        sd_id128_t boot_id;    /* last writer */
+        sd_id128_t tail_entry_boot_id;
         sd_id128_t seqnum_id;
         le64_t header_size;
         le64_t arena_size;
@@ -176,6 +177,11 @@ _packed_ struct Header {
         /* Added in 246 */
         le64_t data_hash_chain_depth;
         le64_t field_hash_chain_depth;
+        /* Added in 252 */
+        le32_t tail_entry_array_offset;
+        le32_t tail_entry_array_n_entries;
+        /* Added in 254 */
+        le64_t tail_entry_offset;
 };
 ```
 
@@ -188,8 +194,18 @@ new one.
 When journal file is first created the **file_id** is randomly and uniquely
 initialized.
 
-When a writer opens a file it shall initialize the **boot_id** to the current
-boot id of the system.
+When a writer creates a file it shall initialize the **tail_entry_boot_id** to
+the current boot ID of the system. When appending an entry it shall update the
+field to the boot ID of that entry, so that it is guaranteed that the
+**tail_entry_monotonic** field refers to a timestamp of the monotonic clock
+associated with the boot with the ID indicated by the **tail_entry_boot_id**
+field. (Compatibility note: in older versions of the journal, the field was
+also supposed to be updated whenever the file was opened for any form of
+writing, including when opened to mark it as archived. This behaviour has been
+deemed problematic since without an associated boot ID the
+**tail_entry_monotonic** field is useless. To indicate whether the boot ID is
+updated only on append the JOURNAL_COMPATIBLE_TAIL_ENTRY_BOOT_ID is set. If it
+is not set, the **tail_entry_monotonic** field is not usable).
 
 The currently used part of the file is the **header_size** plus the
 **arena_size** field of the header. If a writer needs to write to a file where
@@ -218,7 +234,12 @@ timestamp of the last or first entry in the file, respectively, or 0 if no
 entry has been written yet.
 
 **tail_entry_monotonic** is the monotonic timestamp of the last entry in the
-file, referring to monotonic time of the boot identified by **boot_id**.
+file, referring to monotonic time of the boot identified by
+**tail_entry_boot_id**, but only if the
+JOURNAL_COMPATIBLE_TAIL_ENTRY_BOOT_ID feature flag is set, see above. If it
+is not set, this field might refer to a different boot then the one in the
+**tail_entry_boot_id** field, for example when the file was ultimately
+archived.
 
 **data_hash_chain_depth** is a counter of the deepest chain in the data hash
 table, minus one. This is updated whenever a chain is found that is longer than
@@ -230,6 +251,11 @@ became too frequent.
 Similar, **field_hash_chain_depth** is a counter of the deepest chain in the
 field hash table, minus one.
 
+**tail_entry_array_offset** and **tail_entry_array_n_entries** allow immediate
+access to the last entry array in the global entry array chain.
+
+**tail_entry_offset** allow immediate access to the last entry in the journal
+file.
 
 ## Extensibility
 
@@ -258,10 +284,12 @@ enum {
         HEADER_INCOMPATIBLE_COMPRESSED_LZ4  = 1 << 1,
         HEADER_INCOMPATIBLE_KEYED_HASH      = 1 << 2,
         HEADER_INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3,
+        HEADER_INCOMPATIBLE_COMPACT         = 1 << 4,
 };
 
 enum {
-        HEADER_COMPATIBLE_SEALED = 1 << 0,
+        HEADER_COMPATIBLE_SEALED             = 1 << 0,
+        HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID = 1 << 1,
 };
 ```
 
@@ -275,9 +303,18 @@ HEADER_INCOMPATIBLE_KEYED_HASH indicates that instead of the unkeyed Jenkins
 hash function the keyed siphash24 hash function is used for the two hash
 tables, see below.
 
+HEADER_INCOMPATIBLE_COMPACT indicates that the journal file uses the new binary
+format that uses less space on disk compared to the original format.
+
 HEADER_COMPATIBLE_SEALED indicates that the file includes TAG objects required
 for Forward Secure Sealing.
 
+HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID indicates whether the
+**tail_entry_boot_id** field is strictly updated on initial creation of the
+file and whenever an entry is updated (in which case the flag is set), or also
+when the file is archived (in which case it is unset). New files should always
+set this flag (and thus not update the **tail_entry_boot_id** except when
+creating the file and when appending an entry to it.
 
 ## Dirty Detection
 
@@ -297,7 +334,7 @@ STATE_ARCHIVED. If a writer is asked to write to a file that is not in
 STATE_OFFLINE it should immediately rotate the file and start a new one,
 without changing the file.
 
-After and before the state field is changed `fdatasync()` should be executed on
+After and before the state field is changed, `fdatasync()` should be executed on
 the file to ensure the dirty state hits disk.
 
 
@@ -392,7 +429,16 @@ _packed_ struct DataObject {
         le64_t entry_offset; /* the first array entry we store inline */
         le64_t entry_array_offset;
         le64_t n_entries;
-        uint8_t payload[];
+        union {                                                         \
+                struct {                                                \
+                        uint8_t payload[] ;                             \
+                } regular;                                              \
+                struct {                                                \
+                        le32_t tail_entry_array_offset;                 \
+                        le32_t tail_entry_array_n_entries;              \
+                        uint8_t payload[];                              \
+                } compact;                                              \
+        };                                                              \
 };
 ```
 
@@ -425,6 +471,9 @@ OBJECT_COMPRESSED_XZ/OBJECT_COMPRESSED_LZ4/OBJECT_COMPRESSED_ZSTD is set in the
 `ObjectHeader`, in which case the payload is compressed with the indicated
 compression algorithm.
 
+If the `HEADER_INCOMPATIBLE_COMPACT` flag is set, Two extra fields are stored to
+allow immediate access to the tail entry array in the DATA object's entry array
+chain.
 
 ## Field Objects
 
@@ -456,11 +505,6 @@ field name. It is the head of a singly linked list using DATA's
 ## Entry Objects
 
 ```
-_packed_ struct EntryItem {
-        le64_t object_offset;
-        le64_t hash;
-};
-
 _packed_ struct EntryObject {
         ObjectHeader object;
         le64_t seqnum;
@@ -468,7 +512,15 @@ _packed_ struct EntryObject {
         le64_t monotonic;
         sd_id128_t boot_id;
         le64_t xor_hash;
-        EntryItem items[];
+        union {                                 \
+                struct {                        \
+                        le64_t object_offset;   \
+                        le64_t hash;            \
+                } regular[];                    \
+                struct {                        \
+                        le32_t object_offset;   \
+                } compact[];                    \
+        } items;                                \
 };
 ```
 
@@ -493,6 +545,10 @@ timestamps.
 The **items[]** array contains references to all DATA objects of this entry,
 plus their respective hashes (which are calculated the same way as in the DATA
 objects, i.e. keyed by the file ID).
+
+If the `HEADER_INCOMPATIBLE_COMPACT` flag is set, DATA object offsets are stored
+as 32-bit integers instead of 64-bit and the unused hash field per data object is
+not stored anymore.
 
 In the file ENTRY objects are written ordered monotonically by sequence
 number. For continuous parts of the file written during the same boot
@@ -547,13 +603,19 @@ creativity rather than runtime parameters.
 _packed_ struct EntryArrayObject {
         ObjectHeader object;
         le64_t next_entry_array_offset;
-        le64_t items[];
+        union {
+                le64_t regular[];
+                le32_t compact[];
+        } items;
 };
 ```
 
 Entry Arrays are used to store a sorted array of offsets to entries. Entry
 arrays are strictly sorted by offsets on disk, and hence by their timestamps
 and sequence numbers (with some restrictions, see above).
+
+If the `HEADER_INCOMPATIBLE_COMPACT` flag is set, offsets are stored as 32-bit
+integers instead of 64-bit.
 
 Entry Arrays are chained up. If one entry array is full another one is
 allocated and the **next_entry_array_offset** field of the old one pointed to

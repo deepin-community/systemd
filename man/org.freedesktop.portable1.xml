@@ -58,6 +58,10 @@ node /org/freedesktop/portable1 {
                                      out a{say} units);
       GetImageState(in  s image,
                     out s state);
+      GetImageStateWithExtensions(in  s image,
+                                  in  as extensions,
+                                  in  t flags,
+                                  out s state);
       AttachImage(in  s image,
                   in  as matches,
                   in  s profile,
@@ -132,6 +136,8 @@ node /org/freedesktop/portable1 {
     <variablelist class="dbus-method" generated="True" extra-ref="GetImageMetadataWithExtensions()"/>
 
     <variablelist class="dbus-method" generated="True" extra-ref="GetImageState()"/>
+
+    <variablelist class="dbus-method" generated="True" extra-ref="GetImageStateWithExtensions()"/>
 
     <variablelist class="dbus-method" generated="True" extra-ref="AttachImage()"/>
 
@@ -209,6 +215,12 @@ node /org/freedesktop/portable1 {
         <listitem><para>running-runtime</para></listitem>
       </itemizedlist></para>
 
+      <para><function>GetImageStateWithExtensions()</function> is a superset of
+      <function>GetImageState()</function>, with additional support for a list of extensions
+      as input parameters, which is necessary to query the state in case the image was attached
+      in that particular way. The <varname>flag</varname> parameter is currently unused and
+      reserved for future purposes.</para>
+
       <para><function>AttachImage()</function> attaches a portable image to the system.
       This method takes an image path or name, a list of strings that will be used to search for
       unit files inside the image (partial or complete matches), a string indicating which
@@ -247,7 +259,7 @@ node /org/freedesktop/portable1 {
       see the <varname>MountImages=</varname> entry on
       <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>
       and <citerefentry><refentrytitle>systemd-sysext</refentrytitle><manvolnum>8</manvolnum></citerefentry>.
-      The <varname>flag</varname> parameter is currently unused and reserved for future purposes.</para>
+      </para>
 
       <para><function>DetachImage()</function> detaches a portable image from the system.
       This method takes an image path or name, and a boolean indicating whether the image to
@@ -295,10 +307,16 @@ node /org/freedesktop/portable1 {
       <para>The <function>AttachImageWithExtensions()</function>,
       <function>DetachImageWithExtensions()</function> and
       <function>ReattachImageWithExtensions()</function> methods take in options as flags instead of
-      booleans to allow for extendability, defined as follows:</para>
+      booleans to allow for extendability. <varname>SD_SYSTEMD_PORTABLE_FORCE_ATTACH</varname> will cause
+      safety checks that ensure the units are not running while the new image is attached or detached
+      to be skipped. <varname>SD_SYSTEMD_PORTABLE_FORCE_SYSEXT</varname> will cause the check that the
+      <filename>extension-release.<replaceable>NAME</replaceable></filename> file in the extension image
+      matches the image name to be skipped. They are defined as follows:</para>
 
       <programlisting>
-#define SD_SYSTEMD_PORTABLE_RUNTIME  (UINT64_C(1) &lt;&lt; 0)
+#define SD_SYSTEMD_PORTABLE_RUNTIME         (UINT64_C(1) &lt;&lt; 0)
+#define SD_SYSTEMD_PORTABLE_FORCE_ATTACH    (UINT64_C(1) &lt;&lt; 1)
+#define SD_SYSTEMD_PORTABLE_FORCE_SYSEXT    (UINT64_C(1) &lt;&lt; 2)
       </programlisting>
     </refsect2>
 
@@ -337,6 +355,9 @@ node /org/freedesktop/portable1 {
                                 out a{say} extensions,
                                 out a{say} units);
       GetState(out s state);
+      GetStateWithExtensions(in  as extensions,
+                             in  t flags,
+                             out s state);
       Attach(in  as matches,
              in  s profile,
              in  b runtime,
@@ -359,13 +380,13 @@ node /org/freedesktop/portable1 {
                in  s copy_mode,
                out a(sss) changes_removed,
                out a(sss) changes_updated);
-      ReattacheWithExtensions(in  as extensions,
-                              in  as matches,
-                              in  s profile,
-                              in  s copy_mode,
-                              in  t flags,
-                              out a(sss) changes_removed,
-                              out a(sss) changes_updated);
+      ReattachWithExtensions(in  as extensions,
+                             in  as matches,
+                             in  s profile,
+                             in  s copy_mode,
+                             in  t flags,
+                             out a(sss) changes_removed,
+                             out a(sss) changes_updated);
       Remove();
       MarkReadOnly(in  b read_only);
       SetLimit(in  t limit);
@@ -405,6 +426,8 @@ node /org/freedesktop/portable1 {
 
     <!--method GetState is not documented!-->
 
+    <!--method GetStateWithExtensions is not documented!-->
+
     <!--method Attach is not documented!-->
 
     <!--method AttachWithExtensions is not documented!-->
@@ -415,7 +438,7 @@ node /org/freedesktop/portable1 {
 
     <!--method Reattach is not documented!-->
 
-    <!--method ReattacheWithExtensions is not documented!-->
+    <!--method ReattachWithExtensions is not documented!-->
 
     <!--method Remove is not documented!-->
 
@@ -437,6 +460,8 @@ node /org/freedesktop/portable1 {
 
     <variablelist class="dbus-method" generated="True" extra-ref="GetState()"/>
 
+    <variablelist class="dbus-method" generated="True" extra-ref="GetStateWithExtensions()"/>
+
     <variablelist class="dbus-method" generated="True" extra-ref="Attach()"/>
 
     <variablelist class="dbus-method" generated="True" extra-ref="AttachWithExtensions()"/>
@@ -447,7 +472,7 @@ node /org/freedesktop/portable1 {
 
     <variablelist class="dbus-method" generated="True" extra-ref="Reattach()"/>
 
-    <variablelist class="dbus-method" generated="True" extra-ref="ReattacheWithExtensions()"/>
+    <variablelist class="dbus-method" generated="True" extra-ref="ReattachWithExtensions()"/>
 
     <variablelist class="dbus-method" generated="True" extra-ref="Remove()"/>
 
@@ -505,7 +530,7 @@ node /org/freedesktop/portable1 {
 
         <listitem><para>Reattach()</para></listitem>
 
-        <listitem><para>ReattacheWithExtensions()</para></listitem>
+        <listitem><para>ReattachWithExtensions()</para></listitem>
 
         <listitem><para>Remove()</para></listitem>
 
@@ -540,10 +565,5 @@ node /org/freedesktop/portable1 {
     </refsect2>
   </refsect1>
 
-  <refsect1>
-    <title>Versioning</title>
-
-    <para>These D-Bus interfaces follow <ulink url="http://0pointer.de/blog/projects/versioning-dbus.html">
-    the usual interface versioning guidelines</ulink>.</para>
-  </refsect1>
+  <xi:include href="org.freedesktop.locale1.xml" xpointer="versioning"/>
 </refentry>

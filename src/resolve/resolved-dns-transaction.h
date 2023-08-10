@@ -97,11 +97,8 @@ struct DnsTransaction {
         /* The features of the DNS server at time of transaction start */
         DnsServerFeatureLevel current_feature_level;
 
-        /* If we got SERVFAIL back, we retry the lookup, using a lower feature level than we used
-         * before. Similar, if we get NXDOMAIN in pure EDNS0 mode, we check in EDNS0-less mode before giving
-         * up (as mitigation for DVE-2018-0001). */
+        /* If we got SERVFAIL back, we retry the lookup, using a lower feature level than we used before. */
         DnsServerFeatureLevel clamp_feature_level_servfail;
-        DnsServerFeatureLevel clamp_feature_level_nxdomain;
 
         uint16_t id;
 
@@ -201,10 +198,6 @@ DnsTransactionSource dns_transaction_source_from_string(const char *s) _pure_;
 /* LLMNR Jitter interval, see RFC 4795 Section 7 */
 #define LLMNR_JITTER_INTERVAL_USEC (100 * USEC_PER_MSEC)
 
-/* mDNS Jitter interval, see RFC 6762 Section 5.2 */
-#define MDNS_JITTER_MIN_USEC   (20 * USEC_PER_MSEC)
-#define MDNS_JITTER_RANGE_USEC (100 * USEC_PER_MSEC)
-
 /* mDNS probing interval, see RFC 6762 Section 8.1 */
 #define MDNS_PROBING_INTERVAL_USEC (250 * USEC_PER_MSEC)
 
@@ -217,8 +210,8 @@ DnsTransactionSource dns_transaction_source_from_string(const char *s) _pure_;
 /* Maximum attempts to send MDNS requests, see RFC 6762 Section 8.1 */
 #define MDNS_TRANSACTION_ATTEMPTS_MAX 3
 
-#define TRANSACTION_ATTEMPTS_MAX(p) (((p) == DNS_PROTOCOL_LLMNR) ? \
-                                         LLMNR_TRANSACTION_ATTEMPTS_MAX : \
-                                         (((p) == DNS_PROTOCOL_MDNS) ? \
-                                             MDNS_TRANSACTION_ATTEMPTS_MAX : \
-                                             DNS_TRANSACTION_ATTEMPTS_MAX))
+#define TRANSACTION_ATTEMPTS_MAX(p) ((p) == DNS_PROTOCOL_LLMNR ?        \
+                                     LLMNR_TRANSACTION_ATTEMPTS_MAX :   \
+                                     (p) == DNS_PROTOCOL_MDNS ?         \
+                                     MDNS_TRANSACTION_ATTEMPTS_MAX :    \
+                                     DNS_TRANSACTION_ATTEMPTS_MAX)

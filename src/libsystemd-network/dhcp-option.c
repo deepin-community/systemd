@@ -58,12 +58,11 @@ static int option_append(uint8_t options[], size_t size, size_t *offset,
 
         case SD_DHCP_OPTION_USER_CLASS: {
                 size_t total = 0;
-                char **s;
 
                 if (strv_isempty((char **) optval))
                         return -EINVAL;
 
-                STRV_FOREACH(s, (char **) optval) {
+                STRV_FOREACH(s, (const char* const*) optval) {
                         size_t len = strlen(*s);
 
                         if (len > 255 || len == 0)
@@ -79,7 +78,7 @@ static int option_append(uint8_t options[], size_t size, size_t *offset,
                 options[*offset + 1] = total;
                 *offset += 2;
 
-                STRV_FOREACH(s, (char **) optval) {
+                STRV_FOREACH(s, (const char* const*) optval) {
                         size_t len = strlen(*s);
 
                         options[*offset] = len;
@@ -280,6 +279,7 @@ static int parse_options(const uint8_t options[], size_t buflen, uint8_t *overlo
         uint8_t code, len;
         const uint8_t *option;
         size_t offset = 0;
+        int r;
 
         while (offset < buflen) {
                 code = options[offset ++];
@@ -319,13 +319,9 @@ static int parse_options(const uint8_t options[], size_t buflen, uint8_t *overlo
                         if (error_message) {
                                 _cleanup_free_ char *string = NULL;
 
-                                /* Accept a trailing NUL byte */
-                                if (memchr(option, 0, len - 1))
-                                        return -EINVAL;
-
-                                string = memdup_suffix0((const char *) option, len);
-                                if (!string)
-                                        return -ENOMEM;
+                                r = make_cstring((const char*) option, len, MAKE_CSTRING_ALLOW_TRAILING_NUL, &string);
+                                if (r < 0)
+                                        return r;
 
                                 if (!ascii_is_valid(string))
                                         return -EINVAL;
@@ -396,6 +392,31 @@ int dhcp_option_parse(DHCPMessage *message, size_t len, dhcp_option_callback_t c
                 *_error_message = TAKE_PTR(error_message);
 
         return message_type;
+}
+
+int dhcp_option_parse_string(const uint8_t *option, size_t len, char **ret) {
+        int r;
+
+        assert(option);
+        assert(ret);
+
+        if (len <= 0)
+                *ret = mfree(*ret);
+        else {
+                char *string;
+
+                /*
+                 * One trailing NUL byte is OK, we don't mind. See:
+                 * https://github.com/systemd/systemd/issues/1337
+                 */
+                r = make_cstring((const char *) option, len, MAKE_CSTRING_ALLOW_TRAILING_NUL, &string);
+                if (r < 0)
+                        return r;
+
+                free_and_replace(*ret, string);
+        }
+
+        return 0;
 }
 
 static sd_dhcp_option* dhcp_option_free(sd_dhcp_option *i) {

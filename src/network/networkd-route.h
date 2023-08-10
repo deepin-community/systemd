@@ -14,12 +14,19 @@
 typedef struct Manager Manager;
 typedef struct Network Network;
 typedef struct Request Request;
+typedef struct Route Route;
+typedef int (*route_netlink_handler_t)(
+                sd_netlink *rtnl,
+                sd_netlink_message *m,
+                Request *req,
+                Link *link,
+                Route *route);
 
-typedef struct Route {
+struct Route {
         Link *link;
         Manager *manager;
         Network *network;
-        NetworkConfigSection *section;
+        ConfigSection *section;
         NetworkConfigSource source;
         NetworkConfigState state;
         union in_addr_union provider; /* DHCP server or router address */
@@ -43,6 +50,7 @@ typedef struct Route {
         uint32_t initcwnd;
         uint32_t initrwnd;
         uint32_t advmss;
+        char *tcp_congestion_control_algo;
         unsigned char pref;
         unsigned flags;
         int gateway_onlink; /* Only used in conf parser and route_section_verify(). */
@@ -66,23 +74,22 @@ typedef struct Route {
         usec_t lifetime_usec;
         /* Used when kernel does not support RTA_EXPIRES attribute. */
         sd_event_source *expire;
-} Route;
+};
 
-void route_hash_func(const Route *route, struct siphash *state);
-int route_compare_func(const Route *a, const Route *b);
 extern const struct hash_ops route_hash_ops;
 
 int route_new(Route **ret);
 Route *route_free(Route *route);
-DEFINE_NETWORK_SECTION_FUNCTIONS(Route, route_free);
+DEFINE_SECTION_CLEANUP_FUNCTIONS(Route, route_free);
 int route_dup(const Route *src, Route **ret);
 
 int route_configure_handler_internal(sd_netlink *rtnl, sd_netlink_message *m, Link *link, const char *error_msg);
 int route_remove(Route *route);
+int route_remove_and_drop(Route *route);
 
 int route_get(Manager *manager, Link *link, const Route *in, Route **ret);
 
-int link_drop_routes(Link *link);
+int link_drop_managed_routes(Link *link);
 int link_drop_foreign_routes(Link *link);
 void link_foreignize_routes(Link *link);
 
@@ -92,10 +99,9 @@ int link_request_route(
                 Route *route,
                 bool consume_object,
                 unsigned *message_counter,
-                link_netlink_message_handler_t netlink_handler,
+                route_netlink_handler_t netlink_handler,
                 Request **ret);
 int link_request_static_routes(Link *link, bool only_ipv4);
-int request_process_route(Request *req);
 
 int manager_rtnl_process_route(sd_netlink *rtnl, sd_netlink_message *message, Manager *m);
 
@@ -104,7 +110,7 @@ int network_add_default_route_on_device(Network *network);
 void network_drop_invalid_routes(Network *network);
 
 DEFINE_NETWORK_CONFIG_STATE_FUNCTIONS(Route, route);
-void link_mark_routes(Link *link, NetworkConfigSource source, const struct in6_addr *router);
+void link_mark_routes(Link *link, NetworkConfigSource source);
 
 CONFIG_PARSER_PROTOTYPE(config_parse_gateway);
 CONFIG_PARSER_PROTOTYPE(config_parse_preferred_src);
@@ -119,5 +125,6 @@ CONFIG_PARSER_PROTOTYPE(config_parse_route_type);
 CONFIG_PARSER_PROTOTYPE(config_parse_tcp_window);
 CONFIG_PARSER_PROTOTYPE(config_parse_route_mtu);
 CONFIG_PARSER_PROTOTYPE(config_parse_multipath_route);
+CONFIG_PARSER_PROTOTYPE(config_parse_tcp_congestion);
 CONFIG_PARSER_PROTOTYPE(config_parse_tcp_advmss);
 CONFIG_PARSER_PROTOTYPE(config_parse_route_nexthop);

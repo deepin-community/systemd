@@ -2,17 +2,19 @@
 
 #include <getopt.h>
 
+#include "build.h"
 #include "bus-log-control-api.h"
 #include "bus-object.h"
 #include "cgroup-util.h"
 #include "conf-parser.h"
 #include "daemon-util.h"
+#include "fileio.h"
 #include "log.h"
 #include "main-func.h"
-#include "oomd-manager.h"
 #include "oomd-manager-bus.h"
+#include "oomd-manager.h"
 #include "parse-util.h"
-#include "pretty-print.c"
+#include "pretty-print.h"
 #include "psi-util.h"
 #include "signal-util.h"
 
@@ -29,21 +31,16 @@ static int parse_config(void) {
                 {}
         };
 
-        return config_parse_many_nulstr(PKGSYSCONFDIR "/oomd.conf",
-                                        CONF_PATHS_NULSTR("systemd/oomd.conf.d"),
-                                        "OOM\0",
-                                        config_item_table_lookup,
-                                        items,
-                                        CONFIG_PARSE_WARN,
-                                        NULL,
-                                        NULL);
+        return config_parse_config_file("oomd.conf", "OOM\0",
+                                        config_item_table_lookup, items,
+                                        CONFIG_PARSE_WARN, NULL);
 }
 
 static int help(void) {
         _cleanup_free_ char *link = NULL;
         int r;
 
-        r = terminal_urlify_man("systemd-oomd", "1", &link);
+        r = terminal_urlify_man("systemd-oomd", "8", &link);
         if (r < 0)
                 return log_oom();
 
@@ -149,7 +146,7 @@ static int run(int argc, char *argv[]) {
 
         r = safe_atollu(swap, &s);
         if (r < 0 || s == 0)
-                log_warning("Swap is currently not detected; memory pressure usage will be degraded");
+                log_warning("No swap; memory pressure usage will be degraded");
 
         if (!is_pressure_supported())
                 return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Pressure Stall Information (PSI) is not supported");
@@ -170,7 +167,7 @@ static int run(int argc, char *argv[]) {
         assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGTERM, SIGINT, -1) >= 0);
 
         if (arg_mem_pressure_usec > 0 && arg_mem_pressure_usec < 1 * USEC_PER_SEC)
-                log_error_errno(SYNTHETIC_ERRNO(EINVAL), "DefaultMemoryPressureDurationSec= must be 0 or at least 1s");
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "DefaultMemoryPressureDurationSec= must be 0 or at least 1s");
 
         r = manager_new(&m);
         if (r < 0)

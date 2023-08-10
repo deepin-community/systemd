@@ -81,6 +81,14 @@
       </listitem>
     </varlistentry>
 
+    <varlistentry id='log-ratelimit-kmsg'>
+      <term><varname>$SYSTEMD_LOG_RATELIMIT_KMSG</varname></term>
+
+      <listitem><para id='log-ratelimit-kmsg-body'> Whether to ratelimit kmsg or not. Takes a boolean.
+      Defaults to <literal>true</literal>. If disabled, systemd will not ratelimit messages written to kmsg.
+      </para></listitem>
+    </varlistentry>
+
     <varlistentry id='pager'>
       <term><varname>$SYSTEMD_PAGER</varname></term>
 
@@ -90,7 +98,10 @@
       <citerefentry project='man-pages'><refentrytitle>less</refentrytitle><manvolnum>1</manvolnum></citerefentry> and
       <citerefentry project='man-pages'><refentrytitle>more</refentrytitle><manvolnum>1</manvolnum></citerefentry>, until one is found. If
       no pager implementation is discovered no pager is invoked. Setting this environment variable to an empty string
-      or the value <literal>cat</literal> is equivalent to passing <option>--no-pager</option>.</para></listitem>
+      or the value <literal>cat</literal> is equivalent to passing <option>--no-pager</option>.</para>
+
+      <para>Note: if <varname>$SYSTEMD_PAGERSECURE</varname> is not set, <varname>$SYSTEMD_PAGER</varname>
+      (as well as <varname>$PAGER</varname>) will be silently ignored.</para></listitem>
     </varlistentry>
 
     <varlistentry id='less'>

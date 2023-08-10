@@ -6,11 +6,9 @@
 #include "macro.h"
 #include "strv.h"
 #include "tests.h"
-#include "util.h"
 
 TEST(get_locales) {
         _cleanup_strv_free_ char **locales = NULL;
-        char **p;
         int r;
 
         r = get_locales(&locales);
@@ -58,7 +56,6 @@ TEST(locale_is_installed) {
 
 TEST(keymaps) {
         _cleanup_strv_free_ char **kmaps = NULL;
-        char **p;
         int r;
 
         assert_se(!keymap_is_valid(""));
@@ -85,7 +82,7 @@ TEST(keymaps) {
 
 #define dump_glyph(x) log_info(STRINGIFY(x) ": %s", special_glyph(x))
 TEST(dump_special_glyphs) {
-        assert_cc(SPECIAL_GLYPH_SPARKLES + 1 == _SPECIAL_GLYPH_MAX);
+        assert_cc(SPECIAL_GLYPH_WARNING_SIGN + 1 == _SPECIAL_GLYPH_MAX);
 
         log_info("is_locale_utf8: %s", yes_no(is_locale_utf8()));
 
@@ -93,13 +90,18 @@ TEST(dump_special_glyphs) {
         dump_glyph(SPECIAL_GLYPH_TREE_BRANCH);
         dump_glyph(SPECIAL_GLYPH_TREE_RIGHT);
         dump_glyph(SPECIAL_GLYPH_TREE_SPACE);
+        dump_glyph(SPECIAL_GLYPH_TREE_TOP);
+        dump_glyph(SPECIAL_GLYPH_VERTICAL_DOTTED);
         dump_glyph(SPECIAL_GLYPH_TRIANGULAR_BULLET);
         dump_glyph(SPECIAL_GLYPH_BLACK_CIRCLE);
         dump_glyph(SPECIAL_GLYPH_WHITE_CIRCLE);
         dump_glyph(SPECIAL_GLYPH_MULTIPLICATION_SIGN);
         dump_glyph(SPECIAL_GLYPH_CIRCLE_ARROW);
         dump_glyph(SPECIAL_GLYPH_BULLET);
-        dump_glyph(SPECIAL_GLYPH_ARROW);
+        dump_glyph(SPECIAL_GLYPH_ARROW_LEFT);
+        dump_glyph(SPECIAL_GLYPH_ARROW_RIGHT);
+        dump_glyph(SPECIAL_GLYPH_ARROW_UP);
+        dump_glyph(SPECIAL_GLYPH_ARROW_DOWN);
         dump_glyph(SPECIAL_GLYPH_ELLIPSIS);
         dump_glyph(SPECIAL_GLYPH_MU);
         dump_glyph(SPECIAL_GLYPH_CHECK_MARK);
@@ -117,6 +119,8 @@ TEST(dump_special_glyphs) {
         dump_glyph(SPECIAL_GLYPH_RECYCLING);
         dump_glyph(SPECIAL_GLYPH_DOWNLOAD);
         dump_glyph(SPECIAL_GLYPH_SPARKLES);
+        dump_glyph(SPECIAL_GLYPH_LOW_BATTERY);
+        dump_glyph(SPECIAL_GLYPH_WARNING_SIGN);
 }
 
 DEFINE_TEST_MAIN(LOG_INFO);

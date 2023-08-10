@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: CC0-1.0
+# SPDX-License-Identifier: MIT-0
 
 # Enroll the security token in the LUKS2 volume. Replace /dev/sdXn by the
 # partition to use (e.g. /dev/sda1).
@@ -9,4 +9,4 @@ sudo /usr/lib/systemd/systemd-cryptsetup attach mytest /dev/sdXn - fido2-device=
 
 # If that worked, let's now add the same line persistently to /etc/crypttab,
 # for the future.
-sudo bash -c 'echo "mytest /dev/sdXn - fido2-device=auto" >> /etc/crypttab'
+sudo bash -c 'echo "mytest /dev/sdXn - fido2-device=auto" >>/etc/crypttab'

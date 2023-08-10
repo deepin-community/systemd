@@ -15,7 +15,6 @@
 #include "strv.h"
 #include "tests.h"
 #include "user-util.h"
-#include "util.h"
 #include "version.h"
 
 static void check_p_d_u(const char *path, int code, const char *result) {
@@ -62,6 +61,33 @@ TEST(path_get_unit) {
         check_p_g_u("/system.slice/system-waldo.slice/_cpu.service/sdfdsaf", 0, "cpu.service");
         check_p_g_u("/user.slice/user-1000.slice/user@1000.service/server.service", 0, "user@1000.service");
         check_p_g_u("/user.slice/user-1000.slice/user@.service/server.service", -ENXIO, NULL);
+}
+
+static void check_p_g_u_p(const char *path, int code, const char *result) {
+        _cleanup_free_ char *unit_path = NULL;
+        int r;
+
+        r = cg_path_get_unit_path(path, &unit_path);
+        printf("%s: %s → %s %d expected %s %d\n", __func__, path, unit_path, r, strnull(result), code);
+        assert_se(r == code);
+        assert_se(streq_ptr(unit_path, result));
+}
+
+TEST(path_get_unit_path) {
+        check_p_g_u_p("/system.slice/foobar.service/sdfdsaf", 0, "/system.slice/foobar.service");
+        check_p_g_u_p("/system.slice/getty@tty5.service", 0, "/system.slice/getty@tty5.service");
+        check_p_g_u_p("/system.slice/getty@tty5.service/aaa/bbb", 0, "/system.slice/getty@tty5.service");
+        check_p_g_u_p("/system.slice/getty@tty5.service/", 0, "/system.slice/getty@tty5.service");
+        check_p_g_u_p("/system.slice/getty@tty6.service/tty5", 0, "/system.slice/getty@tty6.service");
+        check_p_g_u_p("sadfdsafsda", -ENXIO, NULL);
+        check_p_g_u_p("/system.slice/getty####@tty6.service/xxx", -ENXIO, NULL);
+        check_p_g_u_p("/system.slice/system-waldo.slice/foobar.service/sdfdsaf", 0, "/system.slice/system-waldo.slice/foobar.service");
+        check_p_g_u_p("/system.slice/system-waldo.slice/_cpu.service/sdfdsaf", 0, "/system.slice/system-waldo.slice/_cpu.service");
+        check_p_g_u_p("/system.slice/system-waldo.slice/_cpu.service", 0, "/system.slice/system-waldo.slice/_cpu.service");
+        check_p_g_u_p("/user.slice/user-1000.slice/user@1000.service/server.service", 0, "/user.slice/user-1000.slice/user@1000.service");
+        check_p_g_u_p("/user.slice/user-1000.slice/user@.service/server.service", -ENXIO, NULL);
+        check_p_g_u_p("/user.slice/_user-1000.slice/user@1000.service/foobar.slice/foobar@pie.service", 0, "/user.slice/_user-1000.slice/user@1000.service");
+        check_p_g_u_p("/_session-2.scope/_foobar@pie.service/pa/po", 0, "/_session-2.scope");
 }
 
 static void check_p_g_u_u(const char *path, int code, const char *result) {
@@ -209,14 +235,19 @@ TEST(proc) {
         }
 }
 
-static void test_escape_one(const char *s, const char *r) {
-        _cleanup_free_ char *b;
+static void test_escape_one(const char *s, const char *expected) {
+        _cleanup_free_ char *b = NULL;
 
-        b = cg_escape(s);
-        assert_se(b);
-        assert_se(streq(b, r));
+        assert_se(s);
+        assert_se(expected);
+
+        assert_se(cg_escape(s, &b) >= 0);
+        assert_se(streq(b, expected));
 
         assert_se(streq(cg_unescape(b), s));
+
+        assert_se(filename_is_valid(b));
+        assert_se(!cg_needs_escape(s) || b[0] == '_');
 }
 
 TEST(escape, .sd_booted = true) {
@@ -424,6 +455,15 @@ TEST(cg_get_keyed_attribute) {
                 free(vals3[i]);
                 free(vals3a[i]);
         }
+}
+
+TEST(bfq_weight_conversion) {
+        assert_se(BFQ_WEIGHT(1) == 1);
+        assert_se(BFQ_WEIGHT(50) == 50);
+        assert_se(BFQ_WEIGHT(100) == 100);
+        assert_se(BFQ_WEIGHT(500) == 136);
+        assert_se(BFQ_WEIGHT(5000) == 545);
+        assert_se(BFQ_WEIGHT(10000) == 1000);
 }
 
 DEFINE_TEST_MAIN(LOG_DEBUG);

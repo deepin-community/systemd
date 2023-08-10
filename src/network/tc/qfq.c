@@ -25,27 +25,28 @@ static int quick_fair_queueing_class_fill_message(Link *link, TClass *tclass, sd
         assert(tclass);
         assert(req);
 
-        qfq = TCLASS_TO_QFQ(tclass);
+        assert_se(qfq = TCLASS_TO_QFQ(tclass));
 
         r = sd_netlink_message_open_container_union(req, TCA_OPTIONS, "qfq");
         if (r < 0)
-                return log_link_error_errno(link, r, "Could not open container TCA_OPTIONS: %m");
+                return r;
 
         if (qfq->weight > 0) {
                 r = sd_netlink_message_append_u32(req, TCA_QFQ_WEIGHT, qfq->weight);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_QFQ_WEIGHT attribute: %m");
+                        return r;
         }
 
         if (qfq->max_packet > 0) {
                 r = sd_netlink_message_append_u32(req, TCA_QFQ_LMAX, qfq->max_packet);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_QFQ_LMAX attribute: %m");
+                        return r;
         }
 
         r = sd_netlink_message_close_container(req);
         if (r < 0)
-                return log_link_error_errno(link, r, "Could not close container TCA_OPTIONS: %m");
+                return r;
+
         return 0;
 }
 
@@ -63,14 +64,13 @@ int config_parse_quick_fair_queueing_weight(
 
         _cleanup_(tclass_free_or_set_invalidp) TClass *tclass = NULL;
         QuickFairQueueingClass *qfq;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint32_t v;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = tclass_new_static(TCLASS_KIND_QFQ, network, filename, section_line, &tclass);
         if (r == -ENOMEM)
@@ -124,14 +124,13 @@ int config_parse_quick_fair_queueing_max_packet(
 
         _cleanup_(tclass_free_or_set_invalidp) TClass *tclass = NULL;
         QuickFairQueueingClass *qfq;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint64_t v;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = tclass_new_static(TCLASS_KIND_QFQ, network, filename, section_line, &tclass);
         if (r == -ENOMEM)

@@ -133,9 +133,8 @@ static int verify_features(
         assert(path);
 
         if (!sym_fido_dev_is_fido2(d))
-                return log_full_errno(log_level,
-                                      SYNTHETIC_ERRNO(ENODEV),
-                                       "Specified device %s is not a FIDO2 device.", path);
+                return log_full_errno(log_level, SYNTHETIC_ERRNO(ENODEV),
+                                      "Specified device %s is not a FIDO2 device.", path);
 
         di = sym_fido_cbor_info_new();
         if (!di)
@@ -193,6 +192,150 @@ static int verify_features(
                 *ret_has_uv = has_uv;
 
         return 0;
+}
+
+static int fido2_assert_set_basic_properties(
+                fido_assert_t *a,
+                const char *rp_id,
+                const void *cid,
+                size_t cid_size) {
+        int r;
+
+        assert(a);
+        assert(rp_id);
+        assert(cid);
+        assert(cid_size > 0);
+
+        r = sym_fido_assert_set_rp(a, rp_id);
+        if (r != FIDO_OK)
+                return log_error_errno(SYNTHETIC_ERRNO(EIO),
+                                       "Failed to set FIDO2 assertion ID: %s", sym_fido_strerr(r));
+
+        r = sym_fido_assert_set_clientdata_hash(a, (const unsigned char[32]) {}, 32);
+        if (r != FIDO_OK)
+                return log_error_errno(SYNTHETIC_ERRNO(EIO),
+                                       "Failed to set FIDO2 assertion client data hash: %s", sym_fido_strerr(r));
+
+        r = sym_fido_assert_allow_cred(a, cid, cid_size);
+        if (r != FIDO_OK)
+                return log_error_errno(SYNTHETIC_ERRNO(EIO),
+                                       "Failed to add FIDO2 assertion credential ID: %s", sym_fido_strerr(r));
+
+        return 0;
+}
+
+static int fido2_common_assert_error_handle(int r) {
+        switch (r) {
+        case FIDO_OK:
+                return 0;
+        case FIDO_ERR_NO_CREDENTIALS:
+                return log_error_errno(SYNTHETIC_ERRNO(EBADSLT),
+                                       "Wrong security token; needed credentials not present on token.");
+        case FIDO_ERR_PIN_REQUIRED:
+                return log_error_errno(SYNTHETIC_ERRNO(ENOANO),
+                                       "Security token requires PIN.");
+        case FIDO_ERR_PIN_AUTH_BLOCKED:
+                return log_error_errno(SYNTHETIC_ERRNO(EOWNERDEAD),
+                                       "PIN of security token is blocked, please remove/reinsert token.");
+#ifdef FIDO_ERR_UV_BLOCKED
+        case FIDO_ERR_UV_BLOCKED:
+                return log_error_errno(SYNTHETIC_ERRNO(EOWNERDEAD),
+                                       "Verification of security token is blocked, please remove/reinsert token.");
+#endif
+        case FIDO_ERR_PIN_INVALID:
+                return log_error_errno(SYNTHETIC_ERRNO(ENOLCK),
+                                       "PIN of security token incorrect.");
+        case FIDO_ERR_UP_REQUIRED:
+                return log_error_errno(SYNTHETIC_ERRNO(EMEDIUMTYPE),
+                                       "User presence required.");
+        case FIDO_ERR_ACTION_TIMEOUT:
+                return log_error_errno(SYNTHETIC_ERRNO(ENOSTR),
+                                       "Token action timeout. (User didn't interact with token quickly enough.)");
+        default:
+                return log_error_errno(SYNTHETIC_ERRNO(EIO),
+                                       "Failed to ask token for assertion: %s", sym_fido_strerr(r));
+        }
+}
+
+static int fido2_is_cred_in_specific_token(
+                const char *path,
+                const char *rp_id,
+                const void *cid,
+                size_t cid_size,
+                Fido2EnrollFlags flags) {
+
+        assert(path);
+        assert(rp_id);
+        assert(cid);
+        assert(cid_size);
+
+        _cleanup_(fido_dev_free_wrapper) fido_dev_t *d = NULL;
+        _cleanup_(fido_assert_free_wrapper) fido_assert_t *a = NULL;
+        bool has_up = false, has_uv = false;
+        int r;
+
+        d = sym_fido_dev_new();
+        if (!d)
+                return log_oom();
+
+        r = sym_fido_dev_open(d, path);
+        if (r != FIDO_OK)
+                return log_error_errno(SYNTHETIC_ERRNO(EIO),
+                                       "Failed to open FIDO2 device %s: %s", path, sym_fido_strerr(r));
+
+        r = verify_features(d, path, LOG_ERR, NULL, NULL, &has_up, &has_uv);
+        if (r == -ENODEV) { /* Not a FIDO2 device or lacking HMAC-SECRET extension */
+                log_debug_errno(r, "%s is not a FIDO2 device, or it lacks the hmac-secret extension", path);
+                return false;
+        }
+        if (r < 0)
+                return r;
+
+        a = sym_fido_assert_new();
+        if (!a)
+                return log_oom();
+
+        r = fido2_assert_set_basic_properties(a, rp_id, cid, cid_size);
+        if (r < 0)
+                return r;
+
+        /* FIDO2 devices may not support pre-flight requests with UV, at least not
+         * without user interaction [1]. As a result, let's just return true
+         * here and go ahead with trying the unlock directly.
+         * Reference:
+         * 1: https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#sctn-getAssert-authnr-alg
+         *    See section 7.4 */
+        if (has_uv && FLAGS_SET(flags, FIDO2ENROLL_UV)) {
+                log_debug("Pre-flight requests with UV are unsupported, device: %s", path);
+                return true;
+        }
+
+        /* According to CTAP 2.1 specification, to do pre-flight we need to set up option to false
+         * with optionally pinUvAuthParam in assertion[1]. But for authenticator that doesn't support
+         * user presence, once up option is present, the authenticator may return CTAP2_ERR_UNSUPPORTED_OPTION[2].
+         * So we simplely omit the option in that case.
+         * Reference:
+         * 1: https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#pre-flight
+         * 2: https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html#authenticatorGetAssertion (in step 5)
+         */
+        if (has_up)
+                r = sym_fido_assert_set_up(a, FIDO_OPT_FALSE);
+        else
+                r = sym_fido_assert_set_up(a, FIDO_OPT_OMIT);
+        if (r != FIDO_OK)
+                return log_error_errno(SYNTHETIC_ERRNO(EIO),
+                                       "Failed to set assertion user presence: %s", sym_fido_strerr(r));
+
+        r = sym_fido_dev_get_assert(d, a, NULL);
+
+        switch (r) {
+                case FIDO_OK:
+                        return true;
+                case FIDO_ERR_NO_CREDENTIALS:
+                        return false;
+                default:
+                        return fido2_common_assert_error_handle(r);
+        }
 }
 
 static int fido2_use_hmac_hash_specific_token(
@@ -264,20 +407,9 @@ static int fido2_use_hmac_hash_specific_token(
                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
                                        "Failed to set salt on FIDO2 assertion: %s", sym_fido_strerr(r));
 
-        r = sym_fido_assert_set_rp(a, rp_id);
-        if (r != FIDO_OK)
-                return log_error_errno(SYNTHETIC_ERRNO(EIO),
-                                       "Failed to set FIDO2 assertion ID: %s", sym_fido_strerr(r));
-
-        r = sym_fido_assert_set_clientdata_hash(a, (const unsigned char[32]) {}, 32);
-        if (r != FIDO_OK)
-                return log_error_errno(SYNTHETIC_ERRNO(EIO),
-                                       "Failed to set FIDO2 assertion client data hash: %s", sym_fido_strerr(r));
-
-        r = sym_fido_assert_allow_cred(a, cid, cid_size);
-        if (r != FIDO_OK)
-                return log_error_errno(SYNTHETIC_ERRNO(EIO),
-                                       "Failed to add FIDO2 assertion credential ID: %s", sym_fido_strerr(r));
+        r = fido2_assert_set_basic_properties(a, rp_id, cid, cid_size);
+        if (r < 0)
+                return r;
 
         log_info("Asking FIDO2 token for authentication.");
 
@@ -313,8 +445,6 @@ static int fido2_use_hmac_hash_specific_token(
                 bool retry_with_up = false, retry_with_pin = false;
 
                 if (FLAGS_SET(required, FIDO2ENROLL_PIN)) {
-                        char **i;
-
                         /* OK, we need a pin, try with all pins in turn */
                         if (strv_isempty(pins))
                                 r = FIDO_ERR_PIN_REQUIRED;
@@ -358,7 +488,7 @@ static int fido2_use_hmac_hash_specific_token(
                          * it gracefully (also see below.) */
 
                         if (has_up && (required & (FIDO2ENROLL_UP|FIDO2ENROLL_UP_IF_NEEDED)) == FIDO2ENROLL_UP_IF_NEEDED) {
-                                log_notice("%s%sGot unsupported option error when when user presence test is turned off. Trying with user presence test turned on.",
+                                log_notice("%s%sGot unsupported option error when user presence test is turned off. Trying with user presence test turned on.",
                                            emoji_enabled() ? special_glyph(SPECIAL_GLYPH_TOUCH) : "",
                                            emoji_enabled() ? " " : "");
                                 retry_with_up = true;
@@ -406,36 +536,9 @@ static int fido2_use_hmac_hash_specific_token(
                         required |= FIDO2ENROLL_PIN;
         }
 
-        switch (r) {
-        case FIDO_OK:
-                break;
-        case FIDO_ERR_NO_CREDENTIALS:
-                return log_error_errno(SYNTHETIC_ERRNO(EBADSLT),
-                                       "Wrong security token; needed credentials not present on token.");
-        case FIDO_ERR_PIN_REQUIRED:
-                return log_error_errno(SYNTHETIC_ERRNO(ENOANO),
-                                       "Security token requires PIN.");
-        case FIDO_ERR_PIN_AUTH_BLOCKED:
-                return log_error_errno(SYNTHETIC_ERRNO(EOWNERDEAD),
-                                       "PIN of security token is blocked, please remove/reinsert token.");
-#ifdef FIDO_ERR_UV_BLOCKED
-        case FIDO_ERR_UV_BLOCKED:
-                return log_error_errno(SYNTHETIC_ERRNO(EOWNERDEAD),
-                                       "Verification of security token is blocked, please remove/reinsert token.");
-#endif
-        case FIDO_ERR_PIN_INVALID:
-                return log_error_errno(SYNTHETIC_ERRNO(ENOLCK),
-                                       "PIN of security token incorrect.");
-        case FIDO_ERR_UP_REQUIRED:
-                return log_error_errno(SYNTHETIC_ERRNO(EMEDIUMTYPE),
-                                       "User presence required.");
-        case FIDO_ERR_ACTION_TIMEOUT:
-                return log_error_errno(SYNTHETIC_ERRNO(ENOSTR),
-                                       "Token action timeout. (User didn't interact with token quickly enough.)");
-        default:
-                return log_error_errno(SYNTHETIC_ERRNO(EIO),
-                                       "Failed to ask token for assertion: %s", sym_fido_strerr(r));
-        }
+        r = fido2_common_assert_error_handle(r);
+        if (r < 0)
+                return r;
 
         hmac = sym_fido_assert_hmac_secret_ptr(a, 0);
         if (!hmac)
@@ -450,6 +553,20 @@ static int fido2_use_hmac_hash_specific_token(
         *ret_hmac = TAKE_PTR(hmac_copy);
         *ret_hmac_size = hmac_size;
         return 0;
+}
+
+/* COSE_ECDH_ES256 is not usable with fido_cred_set_type() thus it's not listed here. */
+static const char *fido2_algorithm_to_string(int alg) {
+        switch(alg) {
+                case COSE_ES256:
+                        return "es256";
+                case COSE_RS256:
+                        return "rs256";
+                case COSE_EDDSA:
+                        return "eddsa";
+                default:
+                        return NULL;
+        }
 }
 
 int fido2_use_hmac_hash(
@@ -472,8 +589,18 @@ int fido2_use_hmac_hash(
         if (r < 0)
                 return log_error_errno(r, "FIDO2 support is not installed.");
 
-        if (device)
+        if (device) {
+                r = fido2_is_cred_in_specific_token(device, rp_id, cid, cid_size, required);
+                if (r == 0)
+                        /* The caller is expected to attempt other key slots in this case,
+                         * therefore, do not spam the console with error logs here. */
+                        return log_debug_errno(SYNTHETIC_ERRNO(EBADSLT),
+                                               "The credential is not in the token %s.", device);
+                if (r < 0)
+                        return log_error_errno(r, "Token returned error during pre-flight: %m");
+
                 return fido2_use_hmac_hash_specific_token(device, rp_id, salt, salt_size, cid, cid_size, pins, required, ret_hmac, ret_hmac_size);
+        }
 
         di = sym_fido_dev_info_new(allocated);
         if (!di)
@@ -508,6 +635,16 @@ int fido2_use_hmac_hash(
                         goto finish;
                 }
 
+                r = fido2_is_cred_in_specific_token(path, rp_id, cid, cid_size, required);
+                if (r < 0) {
+                        log_error_errno(r, "Token returned error during pre-flight: %m");
+                        goto finish;
+                }
+                if (r == 0) {
+                        log_debug("The credential is not in the token %s, skipping.", path);
+                        continue;
+                }
+
                 r = fido2_use_hmac_hash_specific_token(path, rp_id, salt, salt_size, cid, cid_size, pins, required, ret_hmac, ret_hmac_size);
                 if (!IN_SET(r,
                             -EBADSLT, /* device doesn't understand our credential hash */
@@ -534,6 +671,7 @@ int fido2_generate_hmac_hash(
                 const char *user_icon,
                 const char *askpw_icon_name,
                 Fido2EnrollFlags lock_with,
+                int cred_alg,
                 void **ret_cid, size_t *ret_cid_size,
                 void **ret_salt, size_t *ret_salt_size,
                 void **ret_secret, size_t *ret_secret_size,
@@ -583,7 +721,7 @@ int fido2_generate_hmac_hash(
         if (!salt)
                 return log_oom();
 
-        r = genuine_random_bytes(salt, FIDO2_SALT_SIZE, RANDOM_BLOCK);
+        r = crypto_random_bytes(salt, FIDO2_SALT_SIZE);
         if (r < 0)
                 return log_error_errno(r, "Failed to generate salt: %m");
 
@@ -630,10 +768,10 @@ int fido2_generate_hmac_hash(
                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
                                        "Failed to set FIDO2 credential relying party ID/name: %s", sym_fido_strerr(r));
 
-        r = sym_fido_cred_set_type(c, COSE_ES256);
+        r = sym_fido_cred_set_type(c, cred_alg);
         if (r != FIDO_OK)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
-                                       "Failed to set FIDO2 credential type to ES256: %s", sym_fido_strerr(r));
+                                       "Failed to set FIDO2 credential type to %s: %s", fido2_algorithm_to_string(cred_alg), sym_fido_strerr(r));
 
         r = sym_fido_cred_set_user(
                         c,
@@ -682,8 +820,7 @@ int fido2_generate_hmac_hash(
                                                "Token asks for PIN but doesn't advertise 'clientPin' feature.");
 
                 for (;;) {
-                        _cleanup_(strv_free_erasep) char **pin = NULL;
-                        char **i;
+                        _cleanup_strv_free_erase_ char **pin = NULL;
 
                         r = ask_password_auto("Please enter security token PIN:", askpw_icon_name, NULL, "fido2-pin", "fido2-pin", USEC_INFINITY, 0, &pin);
                         if (r < 0)
@@ -724,6 +861,9 @@ int fido2_generate_hmac_hash(
         if (r == FIDO_ERR_ACTION_TIMEOUT)
                 return log_error_errno(SYNTHETIC_ERRNO(ENOSTR),
                                        "Token action timeout. (User didn't interact with token quickly enough.)");
+        if (r == FIDO_ERR_UNSUPPORTED_ALGORITHM)
+                return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
+                                        "Token doesn't support credential algorithm %s.", fido2_algorithm_to_string(cred_alg));
         if (r != FIDO_OK)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
                                        "Failed to generate FIDO2 credential: %s", sym_fido_strerr(r));
@@ -748,20 +888,9 @@ int fido2_generate_hmac_hash(
                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
                                        "Failed to set salt on FIDO2 assertion: %s", sym_fido_strerr(r));
 
-        r = sym_fido_assert_set_rp(a, rp_id);
-        if (r != FIDO_OK)
-                return log_error_errno(SYNTHETIC_ERRNO(EIO),
-                                       "Failed to set FIDO2 assertion ID: %s", sym_fido_strerr(r));
-
-        r = sym_fido_assert_set_clientdata_hash(a, (const unsigned char[32]) {}, 32);
-        if (r != FIDO_OK)
-                return log_error_errno(SYNTHETIC_ERRNO(EIO),
-                                       "Failed to set FIDO2 assertion client data hash: %s", sym_fido_strerr(r));
-
-        r = sym_fido_assert_allow_cred(a, cid, cid_size);
-        if (r != FIDO_OK)
-                return log_error_errno(SYNTHETIC_ERRNO(EIO),
-                                       "Failed to add FIDO2 assertion credential ID: %s", sym_fido_strerr(r));
+        r = fido2_assert_set_basic_properties(a, rp_id, cid, cid_size);
+        if (r < 0)
+                return r;
 
         log_info("Generating secret key on FIDO2 security token.");
 
@@ -828,7 +957,7 @@ int fido2_generate_hmac_hash(
                          * slightly more defensively. */
 
                         if (has_up && !FLAGS_SET(lock_with, FIDO2ENROLL_UP)) {
-                                log_notice("%s%sGot unsupported option error when when user presence test is turned off. Trying with user presence test turned on.",
+                                log_notice("%s%sGot unsupported option error when user presence test is turned off. Trying with user presence test turned on.",
                                            emoji_enabled() ? special_glyph(SPECIAL_GLYPH_TOUCH) : "",
                                            emoji_enabled() ? " " : "");
                                 retry_with_up = true;
@@ -1127,3 +1256,24 @@ finish:
                                "FIDO2 tokens not supported on this build.");
 #endif
 }
+
+#if HAVE_LIBFIDO2
+int parse_fido2_algorithm(const char *s, int *ret) {
+        int a;
+
+        assert(s);
+
+        if (streq(s, "es256"))
+                a = COSE_ES256;
+        else if (streq(s, "rs256"))
+                a = COSE_RS256;
+        else if (streq(s, "eddsa"))
+                a = COSE_EDDSA;
+        else
+                return -EINVAL;
+
+        if (ret)
+                *ret = a;
+        return 0;
+}
+#endif

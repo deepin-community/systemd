@@ -53,7 +53,7 @@ static struct option_desc option_tests[] = {
 };
 
 static const char *dhcp_type(int type) {
-        switch(type) {
+        switch (type) {
         case DHCP_DISCOVER:
                 return "DHCPDISCOVER";
         case DHCP_OFFER:
@@ -89,7 +89,8 @@ static void test_message_init(void) {
         message = malloc0(len);
 
         assert_se(dhcp_message_init(message, BOOTREQUEST, 0x12345678,
-                  DHCP_DISCOVER, ARPHRD_ETHER, optlen, &optoffset) >= 0);
+                                    DHCP_DISCOVER, ARPHRD_ETHER, ETH_ALEN, (uint8_t[16]){},
+                                    optlen, &optoffset) >= 0);
 
         assert_se(message->xid == htobe32(0x12345678));
         assert_se(message->op == BOOTREQUEST);
@@ -124,7 +125,7 @@ static void test_ignore_opts(uint8_t *descoption, int *descpos, int *desclen) {
         assert_se(*descpos >= 0);
 
         while (*descpos < *desclen) {
-                switch(descoption[*descpos]) {
+                switch (descoption[*descpos]) {
                 case SD_DHCP_OPTION_PAD:
                         *descpos += 1;
                         break;
@@ -338,13 +339,13 @@ static void test_option_set(void) {
 
         if (verbose)
                 printf("%2d: 0x%02x(0x%02x) (options)\n", 9, result->options[9],
-                       SD_DHCP_OPTION_END);
+                       (unsigned) SD_DHCP_OPTION_END);
 
         assert_se(result->options[9] == SD_DHCP_OPTION_END);
 
         if (verbose)
                 printf("%2d: 0x%02x(0x%02x) (options)\n", 10, result->options[10],
-                       SD_DHCP_OPTION_PAD);
+                       (unsigned) SD_DHCP_OPTION_PAD);
 
         assert_se(result->options[10] == SD_DHCP_OPTION_PAD);
 

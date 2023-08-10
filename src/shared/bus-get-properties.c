@@ -38,6 +38,22 @@ int bus_property_set_bool(
         return 0;
 }
 
+int bus_property_get_tristate(
+                sd_bus *bus,
+                const char *path,
+                const char *interface,
+                const char *property,
+                sd_bus_message *reply,
+                void *userdata,
+                sd_bus_error *error) {
+
+        /* Defaults to false. */
+
+        int b = (*(int*) userdata) > 0;
+
+        return sd_bus_message_append_basic(reply, 'b', &b);
+}
+
 int bus_property_get_id128(
                 sd_bus *bus,
                 const char *path,
@@ -133,9 +149,9 @@ int bus_property_get_rlimit(
                 s = is_soft ? strndupa_safe(property, is_soft - property) : property;
 
                 /* Skip over any prefix, such as "Default" */
-                assert_se(p = strstr(s, "Limit"));
+                assert_se(p = strstrafter(s, "Limit"));
 
-                z = rlimit_from_string(p + 5);
+                z = rlimit_from_string(p);
                 assert(z >= 0);
 
                 (void) getrlimit(z, &buf);

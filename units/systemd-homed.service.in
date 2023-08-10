@@ -11,7 +11,6 @@
 Description=Home Area Manager
 Documentation=man:systemd-homed.service(8)
 Documentation=man:org.freedesktop.home1(5)
-
 After=home.mount dbus.service
 
 [Service]
@@ -34,6 +33,7 @@ StateDirectory=systemd/home
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 SystemCallFilter=@system-service @mount
+TimeoutStopSec=3min
 {{SERVICE_WATCHDOG}}
 
 [Install]

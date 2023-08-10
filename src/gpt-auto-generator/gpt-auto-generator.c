@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <stdlib.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #include "sd-device.h"
@@ -11,6 +12,7 @@
 #include "blockdev-util.h"
 #include "btrfs-util.h"
 #include "device-util.h"
+#include "devnum-util.h"
 #include "dirent-util.h"
 #include "dissect-image.h"
 #include "dropin.h"
@@ -21,7 +23,8 @@
 #include "fstab-util.h"
 #include "generator.h"
 #include "gpt.h"
-#include "mkdir.h"
+#include "image-policy.h"
+#include "initrd-util.h"
 #include "mountpoint-util.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -32,81 +35,32 @@
 #include "string-util.h"
 #include "strv.h"
 #include "unit-name.h"
-#include "util.h"
 #include "virt.h"
 
 static const char *arg_dest = NULL;
 static bool arg_enabled = true;
 static bool arg_root_enabled = true;
+static bool arg_swap_enabled = true;
+static char *arg_root_fstype = NULL;
+static char *arg_root_options = NULL;
 static int arg_root_rw = -1;
+static ImagePolicy *arg_image_policy = NULL;
 
-static int open_parent_block_device(dev_t devnum, int *ret_fd) {
-        _cleanup_(sd_device_unrefp) sd_device *d = NULL;
-        const char *name, *devtype, *node;
-        sd_device *parent;
-        dev_t pn;
-        int fd, r;
+STATIC_DESTRUCTOR_REGISTER(arg_image_policy, image_policy_freep);
 
-        assert(ret_fd);
+STATIC_DESTRUCTOR_REGISTER(arg_root_fstype, freep);
+STATIC_DESTRUCTOR_REGISTER(arg_root_options, freep);
 
-        r = sd_device_new_from_devnum(&d, 'b', devnum);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to open device: %m");
+static int add_cryptsetup(
+                const char *id,
+                const char *what,
+                bool rw,
+                bool require,
+                bool measure,
+                char **ret_device) {
 
-        if (sd_device_get_devname(d, &name) < 0) {
-                r = sd_device_get_syspath(d, &name);
-                if (r < 0) {
-                        log_device_debug_errno(d, r, "Device %u:%u does not have a name, ignoring: %m",
-                                               major(devnum), minor(devnum));
-                        return 0;
-                }
-        }
-
-        r = sd_device_get_parent(d, &parent);
-        if (r < 0) {
-                log_device_debug_errno(d, r, "Not a partitioned device, ignoring: %m");
-                return 0;
-        }
-
-        /* Does it have a devtype? */
-        r = sd_device_get_devtype(parent, &devtype);
-        if (r < 0) {
-                log_device_debug_errno(parent, r, "Parent doesn't have a device type, ignoring: %m");
-                return 0;
-        }
-
-        /* Is this a disk or a partition? We only care for disks... */
-        if (!streq(devtype, "disk")) {
-                log_device_debug(parent, "Parent isn't a raw disk, ignoring.");
-                return 0;
-        }
-
-        /* Does it have a device node? */
-        r = sd_device_get_devname(parent, &node);
-        if (r < 0) {
-                log_device_debug_errno(parent, r, "Parent device does not have device node, ignoring: %m");
-                return 0;
-        }
-
-        log_device_debug(d, "Root device %s.", node);
-
-        r = sd_device_get_devnum(parent, &pn);
-        if (r < 0) {
-                log_device_debug_errno(parent, r, "Parent device is not a proper block device, ignoring: %m");
-                return 0;
-        }
-
-        fd = open(node, O_RDONLY|O_CLOEXEC|O_NOCTTY);
-        if (fd < 0)
-                return log_error_errno(errno, "Failed to open %s: %m", node);
-
-        *ret_fd = fd;
-        return 1;
-}
-
-static int add_cryptsetup(const char *id, const char *what, bool rw, bool require, char **device) {
 #if HAVE_LIBCRYPTSETUP
-        _cleanup_free_ char *e = NULL, *n = NULL, *d = NULL;
+        _cleanup_free_ char *e = NULL, *n = NULL, *d = NULL, *options = NULL;
         _cleanup_fclose_ FILE *f = NULL;
         int r;
 
@@ -140,7 +94,28 @@ static int add_cryptsetup(const char *id, const char *what, bool rw, bool requir
                 "After=%s\n",
                 d, d);
 
-        r = generator_write_cryptsetup_service_section(f, id, what, NULL, rw ? NULL : "read-only");
+        if (!rw) {
+                options = strdup("read-only");
+                if (!options)
+                        return log_oom();
+        }
+
+        if (measure) {
+                /* We only measure the root volume key into PCR 15 if we are booted with sd-stub (i.e. in a
+                 * UKI), and sd-stub measured the UKI. We do this in order not to step into people's own PCR
+                 * assignment, under the assumption that people who are fine to use sd-stub with its PCR
+                 * assignments are also OK with our PCR 15 use here. */
+
+                r = efi_stub_measured(LOG_WARNING);
+                if (r == 0)
+                        log_debug("Will not measure volume key of volume '%s', not booted via systemd-stub with measurements enabled.", id);
+                else if (r > 0) {
+                        if (!strextend_with_separator(&options, ",", "tpm2-measure-pcr=yes"))
+                                return log_oom();
+                }
+        }
+
+        r = generator_write_cryptsetup_service_section(f, id, what, NULL, options);
         if (r < 0)
                 return r;
 
@@ -152,8 +127,7 @@ static int add_cryptsetup(const char *id, const char *what, bool rw, bool requir
         if (r < 0)
                 return r;
 
-        const char *dmname;
-        dmname = strjoina("dev-mapper-", e, ".device");
+        const char *dmname = strjoina("dev-mapper-", e, ".device");
 
         if (require) {
                 r = generator_add_symlink(arg_dest, "cryptsetup.target", "requires", n);
@@ -168,23 +142,24 @@ static int add_cryptsetup(const char *id, const char *what, bool rw, bool requir
         r = write_drop_in_format(arg_dest, dmname, 50, "job-timeout",
                                  "# Automatically generated by systemd-gpt-auto-generator\n\n"
                                  "[Unit]\n"
-                                 "JobTimeoutSec=0"); /* the binary handles timeouts anyway */
+                                 "JobTimeoutSec=infinity"); /* the binary handles timeouts anyway */
         if (r < 0)
                 log_warning_errno(r, "Failed to write device timeout drop-in, ignoring: %m");
 
-        if (device) {
-                char *ret;
+        if (ret_device) {
+                char *s;
 
-                ret = path_join("/dev/mapper", id);
-                if (!ret)
+                s = path_join("/dev/mapper", id);
+                if (!s)
                         return log_oom();
 
-                *device = ret;
+                *ret_device = s;
         }
 
         return 0;
 #else
-        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Partition is encrypted, but the project was compiled without libcryptsetup support");
+        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
+                               "Partition is encrypted, but systemd-gpt-auto-generator was compiled without libcryptsetup support");
 #endif
 }
 
@@ -195,6 +170,7 @@ static int add_mount(
                 const char *fstype,
                 bool rw,
                 bool growfs,
+                bool measure,
                 const char *options,
                 const char *description,
                 const char *post) {
@@ -215,12 +191,21 @@ static int add_mount(
         log_debug("Adding %s: %s fstype=%s", where, what, fstype ?: "(any)");
 
         if (streq_ptr(fstype, "crypto_LUKS")) {
-                r = add_cryptsetup(id, what, rw, true, &crypto_what);
+                r = add_cryptsetup(id, what, rw, /* require= */ true, measure, &crypto_what);
                 if (r < 0)
                         return r;
 
                 what = crypto_what;
                 fstype = NULL;
+        } else if (fstype) {
+                r = dissect_fstype_ok(fstype);
+                if (r < 0)
+                        return log_error_errno(r, "Unable to determine of dissected file system type '%s' is permitted: %m", fstype);
+                if (!r)
+                        return log_error_errno(
+                                        SYNTHETIC_ERRNO(EIDRM),
+                                        "Refusing to automatically mount uncommon file system '%s' to '%s'.",
+                                        fstype, where);
         }
 
         r = unit_name_from_path(where, ".mount", &unit);
@@ -264,9 +249,7 @@ static int add_mount(
                 fprintf(f, "Type=%s\n", fstype);
 
         if (options)
-                fprintf(f, "Options=%s,%s\n", options, rw ? "rw" : "ro");
-        else
-                fprintf(f, "Options=%s\n", rw ? "rw" : "ro");
+                fprintf(f, "Options=%s\n", options);
 
         r = fflush_and_check(f);
         if (r < 0)
@@ -274,6 +257,12 @@ static int add_mount(
 
         if (growfs) {
                 r = generator_hook_up_growfs(arg_dest, where, post);
+                if (r < 0)
+                        return r;
+        }
+
+        if (measure) {
+                r = generator_hook_up_pcrfs(arg_dest, where, post);
                 if (r < 0)
                         return r;
         }
@@ -290,12 +279,13 @@ static int add_mount(
 static int path_is_busy(const char *where) {
         int r;
 
+        assert(where);
+
         /* already a mountpoint; generators run during reload */
         r = path_is_mount_point(where, NULL, AT_SYMLINK_FOLLOW);
         if (r > 0)
                 return false;
-
-        /* the directory might not exist on a stateless system */
+        /* The directory will be created by the mount or automount unit when it is started. */
         if (r == -ENOENT)
                 return false;
 
@@ -303,28 +293,45 @@ static int path_is_busy(const char *where) {
                 return log_warning_errno(r, "Cannot check if \"%s\" is a mount point: %m", where);
 
         /* not a mountpoint but it contains files */
-        r = dir_is_empty(where);
-        if (r < 0)
+        r = dir_is_empty(where, /* ignore_hidden_or_backup= */ false);
+        if (r == -ENOTDIR) {
+                log_debug("\"%s\" is not a directory, ignoring.", where);
+                return true;
+        } else if (r < 0)
                 return log_warning_errno(r, "Cannot check if \"%s\" is empty: %m", where);
-        if (r > 0)
-                return false;
+        else if (r == 0) {
+                log_debug("\"%s\" already populated, ignoring.", where);
+                return true;
+        }
 
-        log_debug("\"%s\" already populated, ignoring.", where);
-        return true;
+        return false;
 }
 
 static int add_partition_mount(
+                PartitionDesignator d,
                 DissectedPartition *p,
                 const char *id,
                 const char *where,
                 const char *description) {
 
+        _cleanup_free_ char *options = NULL;
         int r;
+
         assert(p);
 
         r = path_is_busy(where);
         if (r != 0)
                 return r < 0 ? r : 0;
+
+        r = partition_pick_mount_options(
+                        d,
+                        dissected_partition_fstype(p),
+                        p->rw,
+                        /* discard= */ true,
+                        &options,
+                        /* ret_ms_flags= */ NULL);
+        if (r < 0)
+                return r;
 
         return add_mount(
                         id,
@@ -333,12 +340,13 @@ static int add_partition_mount(
                         p->fstype,
                         p->rw,
                         p->growfs,
-                        NULL,
+                        /* measure= */ STR_IN_SET(id, "root", "var"), /* by default measure rootfs and /var, since they contain the "identity" of the system */
+                        options,
                         description,
                         SPECIAL_LOCAL_FS_TARGET);
 }
 
-static int add_swap(DissectedPartition *p) {
+static int add_partition_swap(DissectedPartition *p) {
         const char *what;
         _cleanup_free_ char *name = NULL, *unit = NULL, *crypto_what = NULL;
         _cleanup_fclose_ FILE *f = NULL;
@@ -346,6 +354,9 @@ static int add_swap(DissectedPartition *p) {
 
         assert(p);
         assert(p->node);
+
+        if (!arg_swap_enabled)
+                return 0;
 
         /* Disable the swap auto logic if at least one swap is defined in /etc/fstab, see #6192. */
         r = fstab_has_fstype("swap");
@@ -357,7 +368,7 @@ static int add_swap(DissectedPartition *p) {
         }
 
         if (streq_ptr(p->fstype, "crypto_LUKS")) {
-                r = add_cryptsetup("swap", p->node, true, true, &crypto_what);
+                r = add_cryptsetup("swap", p->node, /* rw= */ true, /* require= */ true, /* measure= */ false, &crypto_what);
                 if (r < 0)
                         return r;
                 what = crypto_what;
@@ -412,17 +423,13 @@ static int add_automount(
                 const char *description,
                 usec_t timeout) {
 
-        _cleanup_free_ char *unit = NULL;
+        _cleanup_free_ char *unit = NULL, *p = NULL;
         _cleanup_fclose_ FILE *f = NULL;
-        const char *opt = "noauto", *p;
         int r;
 
         assert(id);
         assert(where);
         assert(description);
-
-        if (options)
-                opt = strjoina(options, ",", opt);
 
         r = add_mount(id,
                       what,
@@ -430,7 +437,8 @@ static int add_automount(
                       fstype,
                       rw,
                       growfs,
-                      opt,
+                      /* measure= */ false,
+                      options,
                       description,
                       NULL);
         if (r < 0)
@@ -440,7 +448,10 @@ static int add_automount(
         if (r < 0)
                 return log_error_errno(r, "Failed to generate unit name: %m");
 
-        p = prefix_roota(arg_dest, unit);
+        p = path_join(arg_dest, unit);
+        if (!p)
+                return log_oom();
+
         f = fopen(p, "wxe");
         if (!f)
                 return log_error_errno(errno, "Failed to create unit file %s: %m", unit);
@@ -464,20 +475,47 @@ static int add_automount(
         return generator_add_symlink(arg_dest, SPECIAL_LOCAL_FS_TARGET, "wants", unit);
 }
 
-static const char *esp_or_xbootldr_options(const DissectedPartition *p) {
-        assert(p);
+static int slash_boot_in_fstab(void) {
+        static int cache = -1;
 
-        /* if we probed vfat or have no idea about the file system then assume these file systems are vfat
-         * and thus understand "umask=0077". If we detected something else then don't specify any options and
-         * use kernel defaults. */
+        if (cache >= 0)
+                return cache;
 
-        if (!p->fstype || streq(p->fstype, "vfat"))
-                return "umask=0077";
-
-        return NULL;
+        cache = fstab_is_mount_point("/boot");
+        if (cache < 0)
+                return log_error_errno(cache, "Failed to parse fstab: %m");
+        return cache;
 }
 
-static int add_xbootldr(DissectedPartition *p) {
+static int slash_efi_in_fstab(void) {
+        static int cache = -1;
+
+        if (cache >= 0)
+                return cache;
+
+        cache = fstab_is_mount_point("/efi");
+        if (cache < 0)
+                return log_error_errno(cache, "Failed to parse fstab: %m");
+        return cache;
+}
+
+static bool slash_boot_exists(void) {
+        static int cache = -1;
+
+        if (cache >= 0)
+                return cache;
+
+        if (access("/boot", F_OK) >= 0)
+                return (cache = true);
+        if (errno != ENOENT)
+                log_error_errno(errno, "Failed to determine whether /boot/ exists, assuming no: %m");
+        else
+                log_debug_errno(errno, "/boot/: %m");
+        return (cache = false);
+}
+
+static int add_partition_xbootldr(DissectedPartition *p) {
+        _cleanup_free_ char *options = NULL;
         int r;
 
         assert(p);
@@ -487,11 +525,11 @@ static int add_xbootldr(DissectedPartition *p) {
                 return 0;
         }
 
-        r = fstab_is_mount_point("/boot");
+        r = slash_boot_in_fstab();
         if (r < 0)
-                return log_error_errno(r, "Failed to parse fstab: %m");
+                return r;
         if (r > 0) {
-                log_debug("/boot specified in fstab, ignoring XBOOTLDR partition.");
+                log_debug("/boot/ specified in fstab, ignoring XBOOTLDR partition.");
                 return 0;
         }
 
@@ -501,20 +539,32 @@ static int add_xbootldr(DissectedPartition *p) {
         if (r > 0)
                 return 0;
 
-        return add_automount("boot",
-                             p->node,
-                             "/boot",
-                             p->fstype,
-                             /* rw= */ true,
-                             /* growfs= */ false,
-                             esp_or_xbootldr_options(p),
-                             "Boot Loader Partition",
-                             120 * USEC_PER_SEC);
+        r = partition_pick_mount_options(
+                        PARTITION_XBOOTLDR,
+                        dissected_partition_fstype(p),
+                        /* rw= */ true,
+                        /* discard= */ false,
+                        &options,
+                        /* ret_ms_flags= */ NULL);
+        if (r < 0)
+                return log_error_errno(r, "Failed to determine default mount options for /boot/: %m");
+
+        return add_automount(
+                        "boot",
+                        p->node,
+                        "/boot",
+                        p->fstype,
+                        /* rw= */ true,
+                        /* growfs= */ false,
+                        options,
+                        "Boot Loader Partition",
+                        120 * USEC_PER_SEC);
 }
 
 #if ENABLE_EFI
-static int add_esp(DissectedPartition *p, bool has_xbootldr) {
+static int add_partition_esp(DissectedPartition *p, bool has_xbootldr) {
         const char *esp_path = NULL, *id = NULL;
+        _cleanup_free_ char *options = NULL;
         int r;
 
         assert(p);
@@ -524,75 +574,80 @@ static int add_esp(DissectedPartition *p, bool has_xbootldr) {
                 return 0;
         }
 
-        /* If /efi exists we'll use that. Otherwise we'll use /boot, as that's usually the better choice, but
-         * only if there's no explicit XBOOTLDR partition around. */
-        if (access("/efi", F_OK) < 0) {
-                if (errno != ENOENT)
-                        return log_error_errno(errno, "Failed to determine whether /efi exists: %m");
-
-                /* Use /boot as fallback, but only if there's no XBOOTLDR partition */
-                if (!has_xbootldr) {
-                        esp_path = "/boot";
-                        id = "boot";
-                }
-        }
-        if (!esp_path)
-                esp_path = "/efi";
-        if (!id)
-                id = "efi";
-
-        /* We create an .automount which is not overridden by the .mount from the fstab generator. */
-        r = fstab_is_mount_point(esp_path);
-        if (r < 0)
-                return log_error_errno(r, "Failed to parse fstab: %m");
-        if (r > 0) {
-                log_debug("%s specified in fstab, ignoring.", esp_path);
-                return 0;
-        }
-
-        r = path_is_busy(esp_path);
-        if (r < 0)
-                return r;
-        if (r > 0)
-                return 0;
-
-        if (is_efi_boot()) {
-                sd_id128_t loader_uuid;
-
-                /* If this is an EFI boot, be extra careful, and only mount the ESP if it was the ESP used for booting. */
-
-                r = efi_loader_get_device_part_uuid(&loader_uuid);
-                if (r == -ENOENT) {
-                        log_debug("EFI loader partition unknown.");
-                        return 0;
-                }
+        /* If /boot/ is present, unused, and empty, we'll take that.
+         * Otherwise, if /efi/ is unused and empty (or missing), we'll take that.
+         * Otherwise, we do nothing.
+         */
+        if (!has_xbootldr && slash_boot_exists()) {
+                r = slash_boot_in_fstab();
                 if (r < 0)
-                        return log_error_errno(r, "Failed to read ESP partition UUID: %m");
-
-                if (!sd_id128_equal(p->uuid, loader_uuid)) {
-                        log_debug("Partition for %s does not appear to be the partition we are booted from.", p->node);
-                        return 0;
+                        return r;
+                if (r == 0) {
+                        r = path_is_busy("/boot");
+                        if (r < 0)
+                                return r;
+                        if (r == 0) {
+                                esp_path = "/boot";
+                                id = "boot";
+                        }
+                } else {
+                        /* Check if the fstab entry for /boot/ is already the ESP. If so, we don't need to
+                         * check /efi/ or duplicate the mount there. */
+                        r = fstab_is_mount_point_full("/boot", p->node);
+                        if (r < 0)
+                                return log_error_errno(r,
+                                                       "Failed to check if fstab entry for /boot uses the same device as '%s': %m",
+                                                       p->node);
+                        if (r > 0)
+                                return 0;
                 }
-        } else
-                log_debug("Not an EFI boot, skipping ESP check.");
+        }
 
-        return add_automount(id,
-                             p->node,
-                             esp_path,
-                             p->fstype,
-                             /* rw= */ true,
-                             /* growfs= */ false,
-                             esp_or_xbootldr_options(p),
-                             "EFI System Partition Automount",
-                             120 * USEC_PER_SEC);
+        if (!esp_path) {
+                r = slash_efi_in_fstab();
+                if (r < 0)
+                        return r;
+                if (r > 0)
+                        return 0;
+
+                r = path_is_busy("/efi");
+                if (r < 0)
+                        return r;
+                if (r > 0)
+                        return 0;
+
+                esp_path = "/efi";
+                id = "efi";
+        }
+
+        r = partition_pick_mount_options(
+                        PARTITION_ESP,
+                        dissected_partition_fstype(p),
+                        /* rw= */ true,
+                        /* discard= */ false,
+                        &options,
+                        /* ret_ms_flags= */ NULL);
+        if (r < 0)
+                return log_error_errno(r, "Failed to determine default mount options for %s: %m", esp_path);
+
+        return add_automount(
+                        id,
+                        p->node,
+                        esp_path,
+                        p->fstype,
+                        /* rw= */ true,
+                        /* growfs= */ false,
+                        options,
+                        "EFI System Partition Automount",
+                        120 * USEC_PER_SEC);
 }
 #else
-static int add_esp(DissectedPartition *p, bool has_xbootldr) {
+static int add_partition_esp(DissectedPartition *p, bool has_xbootldr) {
         return 0;
 }
 #endif
 
-static int add_root_rw(DissectedPartition *p) {
+static int add_partition_root_rw(DissectedPartition *p) {
         const char *path;
         int r;
 
@@ -618,7 +673,7 @@ static int add_root_rw(DissectedPartition *p) {
         path = strjoina(arg_dest, "/systemd-remount-fs.service.d/50-remount-rw.conf");
 
         r = write_string_file(path,
-                              "# Automatically generated by systemd-gpt-generator\n\n"
+                              "# Automatically generated by systemd-gpt-auto-generator\n\n"
                               "[Service]\n"
                               "Environment=SYSTEMD_REMOUNT_ROOT_RW=1\n",
                               WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_NOFOLLOW|WRITE_STRING_FILE_MKDIR_0755);
@@ -630,16 +685,21 @@ static int add_root_rw(DissectedPartition *p) {
 
 #if ENABLE_EFI
 static int add_root_cryptsetup(void) {
+#if HAVE_LIBCRYPTSETUP
 
         /* If a device /dev/gpt-auto-root-luks appears, then make it pull in systemd-cryptsetup-root.service, which
          * sets it up, and causes /dev/gpt-auto-root to appear which is all we are looking for. */
 
-        return add_cryptsetup("root", "/dev/gpt-auto-root-luks", true, false, NULL);
+        return add_cryptsetup("root", "/dev/gpt-auto-root-luks", /* rw= */ true, /* require= */ false, /* measure= */ true, NULL);
+#else
+        return 0;
+#endif
 }
 #endif
 
 static int add_root_mount(void) {
 #if ENABLE_EFI
+        _cleanup_free_ char *options = NULL;
         int r;
 
         if (!is_efi_boot()) {
@@ -653,11 +713,10 @@ static int add_root_mount(void) {
                            "(The boot loader did not set EFI variable LoaderDevicePartUUID.)");
                 return 0;
         } else if (r < 0)
-                return log_error_errno(r, "Failed to read ESP partition UUID: %m");
+                return log_error_errno(r, "Failed to read loader partition UUID: %m");
 
-        /* OK, we have an ESP partition, this is fantastic, so let's
-         * wait for a root device to show up. A udev rule will create
-         * the link for us under the right name. */
+        /* OK, we have an ESP/XBOOTLDR partition, this is fantastic, so let's wait for a root device to show up.
+         * A udev rule will create the link for us under the right name. */
 
         if (in_initrd()) {
                 r = generator_write_initrd_root_device_deps(arg_dest, "/dev/gpt-auto-root");
@@ -672,14 +731,29 @@ static int add_root_mount(void) {
         /* Note that we do not need to enable systemd-remount-fs.service here. If
          * /etc/fstab exists, systemd-fstab-generator will pull it in for us. */
 
+        r = partition_pick_mount_options(
+                        PARTITION_ROOT,
+                        arg_root_fstype,
+                        arg_root_rw > 0,
+                        /* discard= */ true,
+                        &options,
+                        /* ret_ms_flags= */ NULL);
+        if (r < 0)
+                return log_error_errno(r, "Failed to pick root mount options: %m");
+
+        if (arg_root_options)
+                if (!strextend_with_separator(&options, ",", arg_root_options))
+                        return log_oom();
+
         return add_mount(
                         "root",
                         "/dev/gpt-auto-root",
                         in_initrd() ? "/sysroot" : "/",
-                        NULL,
+                        arg_root_fstype,
                         /* rw= */ arg_root_rw > 0,
                         /* growfs= */ false,
-                        NULL,
+                        /* measure= */ true,
+                        options,
                         "Root Partition",
                         in_initrd() ? SPECIAL_INITRD_ROOT_FS_TARGET : SPECIAL_LOCAL_FS_TARGET);
 #else
@@ -687,76 +761,137 @@ static int add_root_mount(void) {
 #endif
 }
 
-static int enumerate_partitions(dev_t devnum) {
-        _cleanup_close_ int fd = -1;
-        _cleanup_(dissected_image_unrefp) DissectedImage *m = NULL;
-        int r, k;
+static int process_loader_partitions(DissectedPartition *esp, DissectedPartition *xbootldr) {
+        sd_id128_t loader_uuid;
+        int r, ret = 0;
 
-        r = open_parent_block_device(devnum, &fd);
-        if (r <= 0)
-                return r;
+        assert(esp);
+        assert(xbootldr);
 
-        r = dissect_image(
-                        fd,
-                        NULL, NULL,
-                        /* diskseq= */ 0,
-                        UINT64_MAX,
-                        USEC_INFINITY,
-                        DISSECT_IMAGE_GPT_ONLY|
-                        DISSECT_IMAGE_NO_UDEV|
-                        DISSECT_IMAGE_USR_NO_ROOT,
-                        &m);
-        if (r == -ENOPKG) {
-                log_debug_errno(r, "No suitable partition table found, ignoring.");
+        if (!is_efi_boot()) {
+                log_debug("Not an EFI boot, skipping loader partition UUID check.");
+                goto mount;
+        }
+
+        /* Let's check if LoaderDevicePartUUID points to either ESP or XBOOTLDR. We prefer it pointing
+         * to the ESP, but we accept XBOOTLDR too. If it points to neither of them, don't mount any
+         * loader partitions, since they are not the ones used for booting. */
+
+        r = efi_loader_get_device_part_uuid(&loader_uuid);
+        if (r == -ENOENT) {
+                log_debug_errno(r, "EFI loader partition unknown, skipping ESP and XBOOTLDR mounts.");
                 return 0;
         }
         if (r < 0)
-                return log_error_errno(r, "Failed to dissect: %m");
+                return log_debug_errno(r, "Failed to read loader partition UUID, ignoring: %m");
+
+        if (esp->found && sd_id128_equal(esp->uuid, loader_uuid))
+                goto mount;
+
+        if (xbootldr->found && sd_id128_equal(xbootldr->uuid, loader_uuid)) {
+                log_debug("LoaderDevicePartUUID points to XBOOTLDR partition.");
+                goto mount;
+        }
+
+        log_debug("LoaderDevicePartUUID points to neither ESP nor XBOOTLDR, ignoring.");
+        return 0;
+
+mount:
+        if (xbootldr->found) {
+                r = add_partition_xbootldr(xbootldr);
+                if (r < 0)
+                        ret = r;
+        }
+
+        if (esp->found) {
+                r = add_partition_esp(esp, xbootldr->found);
+                if (r < 0)
+                        ret = r;
+        }
+
+        return ret;
+}
+
+static int enumerate_partitions(dev_t devnum) {
+        _cleanup_(dissected_image_unrefp) DissectedImage *m = NULL;
+        _cleanup_(loop_device_unrefp) LoopDevice *loop = NULL;
+        _cleanup_free_ char *devname = NULL;
+        int r, k;
+
+        r = block_get_whole_disk(devnum, &devnum);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to get whole block device for " DEVNUM_FORMAT_STR ": %m",
+                                       DEVNUM_FORMAT_VAL(devnum));
+
+        r = devname_from_devnum(S_IFBLK, devnum, &devname);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to get device node of " DEVNUM_FORMAT_STR ": %m",
+                                       DEVNUM_FORMAT_VAL(devnum));
+
+        /* Let's take a LOCK_SH lock on the block device, in case udevd is already running. If we don't take
+         * the lock, udevd might end up issuing BLKRRPART in the middle, and we don't want that, since that
+         * might remove all partitions while we are operating on them. */
+        r = loop_device_open_from_path(devname, O_RDONLY, LOCK_SH, &loop);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to open %s: %m", devname);
+
+        r = dissect_loop_device(
+                        loop,
+                        /* verity= */ NULL,
+                        /* mount_options= */ NULL,
+                        arg_image_policy ?: &image_policy_host,
+                        DISSECT_IMAGE_GPT_ONLY|
+                        DISSECT_IMAGE_USR_NO_ROOT|
+                        DISSECT_IMAGE_DISKSEQ_DEVNODE|
+                        DISSECT_IMAGE_ALLOW_EMPTY,
+                        /* NB! Unlike most other places where we dissect block devices we do not use
+                         * DISSECT_IMAGE_ADD_PARTITION_DEVICES here: we want that the kernel finds the
+                         * devices, and udev probes them before we mount them via .mount units much later
+                         * on. And thus we also don't set DISSECT_IMAGE_PIN_PARTITION_DEVICES here, because
+                         * we don't actually mount anything immediately. */
+                        &m);
+        if (r < 0) {
+                bool ok = r == -ENOPKG;
+                dissect_log_error(ok ? LOG_DEBUG : LOG_ERR, r, devname, NULL);
+                return ok ? 0 : r;
+        }
 
         if (m->partitions[PARTITION_SWAP].found) {
-                k = add_swap(m->partitions + PARTITION_SWAP);
+                k = add_partition_swap(m->partitions + PARTITION_SWAP);
                 if (k < 0)
                         r = k;
         }
 
-        if (m->partitions[PARTITION_XBOOTLDR].found) {
-                k = add_xbootldr(m->partitions + PARTITION_XBOOTLDR);
-                if (k < 0)
-                        r = k;
-        }
-
-        if (m->partitions[PARTITION_ESP].found) {
-                k = add_esp(m->partitions + PARTITION_ESP, m->partitions[PARTITION_XBOOTLDR].found);
-                if (k < 0)
-                        r = k;
-        }
+        k = process_loader_partitions(m->partitions + PARTITION_ESP, m->partitions + PARTITION_XBOOTLDR);
+        if (k < 0)
+                r = k;
 
         if (m->partitions[PARTITION_HOME].found) {
-                k = add_partition_mount(m->partitions + PARTITION_HOME, "home", "/home", "Home Partition");
+                k = add_partition_mount(PARTITION_HOME, m->partitions + PARTITION_HOME, "home", "/home", "Home Partition");
                 if (k < 0)
                         r = k;
         }
 
         if (m->partitions[PARTITION_SRV].found) {
-                k = add_partition_mount(m->partitions + PARTITION_SRV, "srv", "/srv", "Server Data Partition");
+                k = add_partition_mount(PARTITION_SRV, m->partitions + PARTITION_SRV, "srv", "/srv", "Server Data Partition");
                 if (k < 0)
                         r = k;
         }
 
         if (m->partitions[PARTITION_VAR].found) {
-                k = add_partition_mount(m->partitions + PARTITION_VAR, "var", "/var", "Variable Data Partition");
+                k = add_partition_mount(PARTITION_VAR, m->partitions + PARTITION_VAR, "var", "/var", "Variable Data Partition");
                 if (k < 0)
                         r = k;
         }
 
         if (m->partitions[PARTITION_TMP].found) {
-                k = add_partition_mount(m->partitions + PARTITION_TMP, "var-tmp", "/var/tmp", "Temporary Data Partition");
+                k = add_partition_mount(PARTITION_TMP, m->partitions + PARTITION_TMP, "var-tmp", "/var/tmp", "Temporary Data Partition");
                 if (k < 0)
                         r = k;
         }
 
         if (m->partitions[PARTITION_ROOT].found) {
-                k = add_root_rw(m->partitions + PARTITION_ROOT);
+                k = add_partition_root_rw(m->partitions + PARTITION_ROOT);
                 if (k < 0)
                         r = k;
         }
@@ -765,36 +900,15 @@ static int enumerate_partitions(dev_t devnum) {
 }
 
 static int add_mounts(void) {
-        _cleanup_free_ char *p = NULL;
-        int r;
         dev_t devno;
+        int r;
 
-        /* If the root mount has been replaced by some form of volatile file system (overlayfs), the
-         * original root block device node is symlinked in /run/systemd/volatile-root. Let's read that
-         * here. */
-        r = readlink_malloc("/run/systemd/volatile-root", &p);
-        if (r == -ENOENT) { /* volatile-root not found */
-                r = get_block_device_harder("/", &devno);
-                if (r == -EUCLEAN)
-                        return btrfs_log_dev_root(LOG_ERR, r, "root file system");
-                if (r < 0)
-                        return log_error_errno(r, "Failed to determine block device of root file system: %m");
-                if (r == 0) { /* Not backed by block device */
-                        r = get_block_device_harder("/usr", &devno);
-                        if (r == -EUCLEAN)
-                                return btrfs_log_dev_root(LOG_ERR, r, "/usr");
-                        if (r < 0)
-                                return log_error_errno(r, "Failed to determine block device of /usr file system: %m");
-                }
-        } else if (r < 0)
-                return log_error_errno(r, "Failed to read symlink /run/systemd/volatile-root: %m");
-        else {
-                mode_t m;
-                r = device_path_parse_major_minor(p, &m, &devno);
-                if (r < 0)
-                        return log_error_errno(r, "Failed to parse major/minor device node: %m");
-                if (!S_ISBLK(m))
-                        return log_error_errno(SYNTHETIC_ERRNO(ENOTBLK), "Volatile root device is of wrong type.");
+        r = blockdev_get_root(LOG_ERR, &devno);
+        if (r < 0)
+                return r;
+        if (r == 0) {
+                log_debug("Skipping automatic GPT dissection logic, root file system not backed by a (single) whole block device.");
+                return 0;
         }
 
         return enumerate_partitions(devno);
@@ -836,10 +950,40 @@ static int parse_proc_cmdline_item(const char *key, const char *value, void *dat
 
                 arg_root_enabled = false;
 
+        } else if (streq(key, "rootfstype")) {
+
+                if (proc_cmdline_value_missing(key, value))
+                        return 0;
+
+                return free_and_strdup_warn(&arg_root_fstype, value);
+
+        } else if (streq(key, "rootflags")) {
+
+                if (proc_cmdline_value_missing(key, value))
+                        return 0;
+
+                if (!strextend_with_separator(&arg_root_options, ",", value))
+                        return log_oom();
+
         } else if (proc_cmdline_key_streq(key, "rw") && !value)
                 arg_root_rw = true;
         else if (proc_cmdline_key_streq(key, "ro") && !value)
                 arg_root_rw = false;
+        else if (proc_cmdline_key_streq(key, "systemd.image_policy"))
+                return parse_image_policy_argument(optarg, &arg_image_policy);
+
+        else if (proc_cmdline_key_streq(key, "systemd.swap")) {
+
+                r = value ? parse_boolean(value) : 1;
+                if (r < 0)
+                        log_warning_errno(r, "Failed to parse swap switch \"%s\", ignoring: %m", value);
+                else
+                        arg_swap_enabled = r;
+
+                if (!arg_swap_enabled)
+                        log_debug("Disabling swap partitions auto-detection, systemd.swap=no is defined.");
+
+        }
 
         return 0;
 }

@@ -3,9 +3,27 @@
 set -e
 
 TEST_DESCRIPTION="test systemd-repart"
-TEST_NO_NSPAWN=1
+IMAGE_NAME="repart"
+IMAGE_ADDITIONAL_ROOT_SIZE=1000
+TEST_FORCE_NEWIMAGE=1
 
 # shellcheck source=test/test-functions
 . "$TEST_BASE_DIR/test-functions"
+
+test_append_files() {
+    if ! get_bool "${TEST_NO_QEMU:=}"; then
+        install_dmevent
+        instmods dm_verity =md
+        instmods erofs
+        generate_module_dependencies
+        image_install -o mksquashfs
+        image_install -o mkfs.erofs
+    fi
+
+    inst_binary mcopy
+    if command -v openssl >/dev/null 2>&1; then
+        inst_binary openssl
+    fi
+}
 
 do_test "$@"

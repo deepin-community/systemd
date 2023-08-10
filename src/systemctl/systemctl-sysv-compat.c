@@ -18,9 +18,8 @@
 
 int talk_initctl(char rl) {
 #if HAVE_SYSV_COMPAT
-        struct init_request request;
-        _cleanup_close_ int fd = -1;
-        const char *p;
+        _cleanup_close_ int fd = -EBADF;
+        const char *path;
         int r;
 
         /* Try to switch to the specified SysV runlevel. Returns == 0 if the operation does not apply on this
@@ -29,19 +28,19 @@ int talk_initctl(char rl) {
         if (rl == 0)
                 return 0;
 
-        FOREACH_STRING(p, "/run/initctl", "/dev/initctl") {
-                fd = open(p, O_WRONLY|O_NONBLOCK|O_CLOEXEC|O_NOCTTY);
-                if (fd >= 0 || errno != ENOENT)
+        FOREACH_STRING(_path, "/run/initctl", "/dev/initctl") {
+                path = _path;
+
+                fd = open(path, O_WRONLY|O_NONBLOCK|O_CLOEXEC|O_NOCTTY);
+                if (fd < 0 && errno != ENOENT)
+                        return log_error_errno(errno, "Failed to open %s: %m", path);
+                if (fd >= 0)
                         break;
         }
-        if (fd < 0) {
-                if (errno == ENOENT)
-                        return 0;
+        if (fd < 0)
+                return 0;
 
-                return log_error_errno(errno, "Failed to open initctl fifo: %m");
-        }
-
-        request = (struct init_request) {
+        struct init_request request = {
                 .magic = INIT_MAGIC,
                 .sleeptime = 0,
                 .cmd = INIT_CMD_RUNLVL,
@@ -50,7 +49,7 @@ int talk_initctl(char rl) {
 
         r = loop_write(fd, &request, sizeof(request), false);
         if (r < 0)
-                return log_error_errno(r, "Failed to write to %s: %m", p);
+                return log_error_errno(r, "Failed to write to %s: %m", path);
 
         return 1;
 #else
@@ -114,10 +113,11 @@ int enable_sysv_units(const char *verb, char **args) {
 #if HAVE_SYSV_COMPAT
         _cleanup_(lookup_paths_free) LookupPaths paths = {};
         unsigned f = 0;
+        SysVUnitEnableState enable_state = SYSV_UNIT_NOT_FOUND;
 
         /* Processes all SysV units, and reshuffles the array so that afterwards only the native units remain */
 
-        if (arg_scope != UNIT_FILE_SYSTEM)
+        if (arg_runtime_scope != RUNTIME_SCOPE_SYSTEM)
                 return 0;
 
         if (getenv_bool("SYSTEMCTL_SKIP_SYSV") > 0)
@@ -129,7 +129,7 @@ int enable_sysv_units(const char *verb, char **args) {
                         "is-enabled"))
                 return 0;
 
-        r = lookup_paths_init(&paths, arg_scope, LOOKUP_PATHS_EXCLUDE_GENERATED, arg_root);
+        r = lookup_paths_init_or_warn(&paths, arg_runtime_scope, LOOKUP_PATHS_EXCLUDE_GENERATED, arg_root);
         if (r < 0)
                 return r;
 
@@ -159,7 +159,7 @@ int enable_sysv_units(const char *verb, char **args) {
                 if (path_is_absolute(name))
                         continue;
 
-                j = unit_file_exists(arg_scope, &paths, name);
+                j = unit_file_exists(arg_runtime_scope, &paths, name);
                 if (j < 0 && !IN_SET(j, -ELOOP, -ERFKILL, -EADDRNOTAVAIL))
                         return log_error_errno(j, "Failed to look up unit file state: %m");
                 found_native = j != 0;
@@ -227,10 +227,12 @@ int enable_sysv_units(const char *verb, char **args) {
                         if (j == EXIT_SUCCESS) {
                                 if (!arg_quiet)
                                         puts("enabled");
-                                r = 1;
+                                enable_state = SYSV_UNIT_ENABLED;
                         } else {
                                 if (!arg_quiet)
                                         puts("disabled");
+                                if (enable_state != SYSV_UNIT_ENABLED)
+                                        enable_state = SYSV_UNIT_DISABLED;
                         }
 
                 } else if (j != EXIT_SUCCESS)
@@ -246,6 +248,8 @@ int enable_sysv_units(const char *verb, char **args) {
                 strv_remove(args + f, name);
         }
 
+        if (streq(verb, "is-enabled"))
+                return enable_state;
 #endif
         return r;
 }

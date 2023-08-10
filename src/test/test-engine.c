@@ -93,7 +93,7 @@ int main(int argc, char *argv[]) {
         assert_se(set_unit_path(unit_dir) >= 0);
         assert_se(runtime_dir = setup_fake_runtime_dir());
 
-        r = manager_new(UNIT_FILE_USER, MANAGER_TEST_RUN_BASIC, &m);
+        r = manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_BASIC, &m);
         if (manager_errno_skip_test(r))
                 return log_tests_skipped_errno(r, "manager_new");
         assert_se(r >= 0);
@@ -103,106 +103,106 @@ int main(int argc, char *argv[]) {
         assert_se(manager_load_startable_unit_or_warn(m, "a.service", NULL, &a) >= 0);
         assert_se(manager_load_startable_unit_or_warn(m, "b.service", NULL, &b) >= 0);
         assert_se(manager_load_startable_unit_or_warn(m, "c.service", NULL, &c) >= 0);
-        manager_dump_units(m, stdout, "\t");
+        manager_dump_units(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test1: (Trivial)\n");
         r = manager_add_job(m, JOB_START, c, JOB_REPLACE, NULL, &err, &j);
         if (sd_bus_error_is_set(&err))
                 log_error("error: %s: %s", err.name, err.message);
         assert_se(r == 0);
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Load2:\n");
         manager_clear_jobs(m);
         assert_se(manager_load_startable_unit_or_warn(m, "d.service", NULL, &d) >= 0);
         assert_se(manager_load_startable_unit_or_warn(m, "e.service", NULL, &e) >= 0);
-        manager_dump_units(m, stdout, "\t");
+        manager_dump_units(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test2: (Cyclic Order, Unfixable)\n");
         assert_se(manager_add_job(m, JOB_START, d, JOB_REPLACE, NULL, NULL, &j) == -EDEADLK);
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test3: (Cyclic Order, Fixable, Garbage Collector)\n");
         assert_se(manager_add_job(m, JOB_START, e, JOB_REPLACE, NULL, NULL, &j) == 0);
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test4: (Identical transaction)\n");
         assert_se(manager_add_job(m, JOB_START, e, JOB_FAIL, NULL, NULL, &j) == 0);
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Load3:\n");
         assert_se(manager_load_startable_unit_or_warn(m, "g.service", NULL, &g) >= 0);
-        manager_dump_units(m, stdout, "\t");
+        manager_dump_units(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test5: (Colliding transaction, fail)\n");
         assert_se(manager_add_job(m, JOB_START, g, JOB_FAIL, NULL, NULL, &j) == -EDEADLK);
 
         printf("Test6: (Colliding transaction, replace)\n");
         assert_se(manager_add_job(m, JOB_START, g, JOB_REPLACE, NULL, NULL, &j) == 0);
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test7: (Unmergeable job type, fail)\n");
         assert_se(manager_add_job(m, JOB_STOP, g, JOB_FAIL, NULL, NULL, &j) == -EDEADLK);
 
         printf("Test8: (Mergeable job type, fail)\n");
         assert_se(manager_add_job(m, JOB_RESTART, g, JOB_FAIL, NULL, NULL, &j) == 0);
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test9: (Unmergeable job type, replace)\n");
         assert_se(manager_add_job(m, JOB_STOP, g, JOB_REPLACE, NULL, NULL, &j) == 0);
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Load4:\n");
         assert_se(manager_load_startable_unit_or_warn(m, "h.service", NULL, &h) >= 0);
-        manager_dump_units(m, stdout, "\t");
+        manager_dump_units(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test10: (Unmergeable job type of auxiliary job, fail)\n");
         assert_se(manager_add_job(m, JOB_START, h, JOB_FAIL, NULL, NULL, &j) == 0);
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Load5:\n");
         manager_clear_jobs(m);
         assert_se(manager_load_startable_unit_or_warn(m, "i.service", NULL, &i) >= 0);
         SERVICE(a)->state = SERVICE_RUNNING;
         SERVICE(d)->state = SERVICE_RUNNING;
-        manager_dump_units(m, stdout, "\t");
+        manager_dump_units(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test11: (Start/stop job ordering, execution cycle)\n");
         assert_se(manager_add_job(m, JOB_START, i, JOB_FAIL, NULL, NULL, &j) == 0);
         assert_se(unit_has_job_type(a, JOB_STOP));
         assert_se(unit_has_job_type(d, JOB_STOP));
         assert_se(unit_has_job_type(b, JOB_START));
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Load6:\n");
         manager_clear_jobs(m);
         assert_se(manager_load_startable_unit_or_warn(m, "a-conj.service", NULL, &a_conj) >= 0);
         SERVICE(a)->state = SERVICE_DEAD;
-        manager_dump_units(m, stdout, "\t");
+        manager_dump_units(m, stdout, /* patterns= */ NULL, "\t");
 
         printf("Test12: (Trivial cycle, Unfixable)\n");
         assert_se(manager_add_job(m, JOB_START, a_conj, JOB_REPLACE, NULL, NULL, &j) == -EDEADLK);
-        manager_dump_jobs(m, stdout, "\t");
+        manager_dump_jobs(m, stdout, /* patterns= */ NULL, "\t");
 
         assert_se(!hashmap_get(unit_get_dependencies(a, UNIT_PROPAGATES_RELOAD_TO), b));
         assert_se(!hashmap_get(unit_get_dependencies(b, UNIT_RELOAD_PROPAGATED_FROM), a));
         assert_se(!hashmap_get(unit_get_dependencies(a, UNIT_PROPAGATES_RELOAD_TO), c));
         assert_se(!hashmap_get(unit_get_dependencies(c, UNIT_RELOAD_PROPAGATED_FROM), a));
 
-        assert_se(unit_add_dependency(a, UNIT_PROPAGATES_RELOAD_TO, b, true, UNIT_DEPENDENCY_UDEV) == 0);
-        assert_se(unit_add_dependency(a, UNIT_PROPAGATES_RELOAD_TO, c, true, UNIT_DEPENDENCY_PROC_SWAP) == 0);
+        assert_se(unit_add_dependency(a, UNIT_PROPAGATES_RELOAD_TO, b, true, UNIT_DEPENDENCY_UDEV) >= 0);
+        assert_se(unit_add_dependency(a, UNIT_PROPAGATES_RELOAD_TO, c, true, UNIT_DEPENDENCY_PROC_SWAP) >= 0);
 
-        assert_se(hashmap_get(unit_get_dependencies(a, UNIT_PROPAGATES_RELOAD_TO), b));
-        assert_se(hashmap_get(unit_get_dependencies(b, UNIT_RELOAD_PROPAGATED_FROM), a));
-        assert_se(hashmap_get(unit_get_dependencies(a, UNIT_PROPAGATES_RELOAD_TO), c));
-        assert_se(hashmap_get(unit_get_dependencies(c, UNIT_RELOAD_PROPAGATED_FROM), a));
+        assert_se( hashmap_get(unit_get_dependencies(a, UNIT_PROPAGATES_RELOAD_TO), b));
+        assert_se( hashmap_get(unit_get_dependencies(b, UNIT_RELOAD_PROPAGATED_FROM), a));
+        assert_se( hashmap_get(unit_get_dependencies(a, UNIT_PROPAGATES_RELOAD_TO), c));
+        assert_se( hashmap_get(unit_get_dependencies(c, UNIT_RELOAD_PROPAGATED_FROM), a));
 
         unit_remove_dependencies(a, UNIT_DEPENDENCY_UDEV);
 
         assert_se(!hashmap_get(unit_get_dependencies(a, UNIT_PROPAGATES_RELOAD_TO), b));
         assert_se(!hashmap_get(unit_get_dependencies(b, UNIT_RELOAD_PROPAGATED_FROM), a));
-        assert_se(hashmap_get(unit_get_dependencies(a, UNIT_PROPAGATES_RELOAD_TO), c));
-        assert_se(hashmap_get(unit_get_dependencies(c, UNIT_RELOAD_PROPAGATED_FROM), a));
+        assert_se( hashmap_get(unit_get_dependencies(a, UNIT_PROPAGATES_RELOAD_TO), c));
+        assert_se( hashmap_get(unit_get_dependencies(c, UNIT_RELOAD_PROPAGATED_FROM), a));
 
         unit_remove_dependencies(a, UNIT_DEPENDENCY_PROC_SWAP);
 
@@ -223,6 +223,7 @@ int main(int argc, char *argv[]) {
         assert_se(unit_add_dependency_by_name(stub, UNIT_AFTER, SPECIAL_ROOT_SLICE, true, UNIT_DEPENDENCY_FILE) >= 0);
         assert_se(unit_add_dependency_by_name(stub, UNIT_REQUIRES, "non-existing.mount", true, UNIT_DEPENDENCY_FILE) >= 0);
         assert_se(unit_add_dependency_by_name(stub, UNIT_ON_FAILURE, "non-existing-on-failure.target", true, UNIT_DEPENDENCY_FILE) >= 0);
+        assert_se(unit_add_dependency_by_name(stub, UNIT_ON_SUCCESS, "non-existing-on-success.target", true, UNIT_DEPENDENCY_FILE) >= 0);
 
         log_info("/* Merging a+stub, dumps before */");
         unit_dump(a, stderr, NULL);
@@ -231,13 +232,19 @@ int main(int argc, char *argv[]) {
         log_info("/* Dump of merged a+stub */");
         unit_dump(a, stderr, NULL);
 
-        assert_se(unit_has_dependency(a, UNIT_ATOM_AFTER, manager_get_unit(m, SPECIAL_BASIC_TARGET)));
-        assert_se(unit_has_dependency(a, UNIT_ATOM_AFTER, manager_get_unit(m, "quux.target")));
-        assert_se(unit_has_dependency(a, UNIT_ATOM_AFTER, manager_get_unit(m, SPECIAL_ROOT_SLICE)));
-        assert_se(unit_has_dependency(a, UNIT_ATOM_PULL_IN_START, manager_get_unit(m, "non-existing.mount")));
-        assert_se(unit_has_dependency(a, UNIT_ATOM_RETROACTIVE_START_REPLACE, manager_get_unit(m, "non-existing.mount")));
-        assert_se(unit_has_dependency(a, UNIT_ATOM_ON_FAILURE, manager_get_unit(m, "non-existing-on-failure.target")));
+        assert_se( unit_has_dependency(a, UNIT_ATOM_AFTER, manager_get_unit(m, SPECIAL_BASIC_TARGET)));
+        assert_se( unit_has_dependency(a, UNIT_ATOM_AFTER, manager_get_unit(m, "quux.target")));
+        assert_se( unit_has_dependency(a, UNIT_ATOM_AFTER, manager_get_unit(m, SPECIAL_ROOT_SLICE)));
+        assert_se( unit_has_dependency(a, UNIT_ATOM_PULL_IN_START, manager_get_unit(m, "non-existing.mount")));
+        assert_se( unit_has_dependency(a, UNIT_ATOM_RETROACTIVE_START_REPLACE, manager_get_unit(m, "non-existing.mount")));
+        assert_se( unit_has_dependency(a, UNIT_ATOM_ON_FAILURE, manager_get_unit(m, "non-existing-on-failure.target")));
+        assert_se( unit_has_dependency(manager_get_unit(m, "non-existing-on-failure.target"), UNIT_ATOM_ON_FAILURE_OF, a));
+        assert_se( unit_has_dependency(a, UNIT_ATOM_ON_SUCCESS, manager_get_unit(m, "non-existing-on-success.target")));
+        assert_se( unit_has_dependency(manager_get_unit(m, "non-existing-on-success.target"), UNIT_ATOM_ON_SUCCESS_OF, a));
         assert_se(!unit_has_dependency(a, UNIT_ATOM_ON_FAILURE, manager_get_unit(m, "basic.target")));
+        assert_se(!unit_has_dependency(a, UNIT_ATOM_ON_SUCCESS, manager_get_unit(m, "basic.target")));
+        assert_se(!unit_has_dependency(a, UNIT_ATOM_ON_FAILURE_OF, manager_get_unit(m, "basic.target")));
+        assert_se(!unit_has_dependency(a, UNIT_ATOM_ON_SUCCESS_OF, manager_get_unit(m, "basic.target")));
         assert_se(!unit_has_dependency(a, UNIT_ATOM_PROPAGATES_RELOAD_TO, manager_get_unit(m, "non-existing-on-failure.target")));
 
         assert_se(unit_has_name(a, "a.service"));
@@ -275,19 +282,19 @@ int main(int argc, char *argv[]) {
         assert_se(UNIT_GET_SLICE(tomato) == zupa);
         assert_se(!unit_has_dependency(tomato, UNIT_ATOM_IN_SLICE, sauce));
         assert_se(!unit_has_dependency(tomato, UNIT_ATOM_IN_SLICE, fruit));
-        assert_se(unit_has_dependency(tomato, UNIT_ATOM_IN_SLICE, zupa));
+        assert_se( unit_has_dependency(tomato, UNIT_ATOM_IN_SLICE, zupa));
 
         assert_se(!unit_has_dependency(tomato, UNIT_ATOM_REFERENCES, sauce));
         assert_se(!unit_has_dependency(tomato, UNIT_ATOM_REFERENCES, fruit));
-        assert_se(unit_has_dependency(tomato, UNIT_ATOM_REFERENCES, zupa));
+        assert_se( unit_has_dependency(tomato, UNIT_ATOM_REFERENCES, zupa));
 
         assert_se(!unit_has_dependency(sauce, UNIT_ATOM_SLICE_OF, tomato));
         assert_se(!unit_has_dependency(fruit, UNIT_ATOM_SLICE_OF, tomato));
-        assert_se(unit_has_dependency(zupa, UNIT_ATOM_SLICE_OF, tomato));
+        assert_se( unit_has_dependency(zupa, UNIT_ATOM_SLICE_OF, tomato));
 
         assert_se(!unit_has_dependency(sauce, UNIT_ATOM_REFERENCED_BY, tomato));
         assert_se(!unit_has_dependency(fruit, UNIT_ATOM_REFERENCED_BY, tomato));
-        assert_se(unit_has_dependency(zupa, UNIT_ATOM_REFERENCED_BY, tomato));
+        assert_se( unit_has_dependency(zupa, UNIT_ATOM_REFERENCED_BY, tomato));
 
         return 0;
 }

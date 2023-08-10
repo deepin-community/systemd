@@ -4,80 +4,44 @@ resolve_includes = [includes, include_directories('.')]
 
 basic_dns_sources = files(
         'resolved-dns-dnssec.c',
-        'resolved-dns-dnssec.h',
         'resolved-dns-packet.c',
-        'resolved-dns-packet.h',
         'resolved-dns-rr.c',
-        'resolved-dns-rr.h',
         'resolved-dns-answer.c',
-        'resolved-dns-answer.h',
         'resolved-dns-question.c',
-        'resolved-dns-question.h',
         'resolved-util.c',
-        'resolved-util.h',
         'dns-type.c',
-        'dns-type.h',
 )
 
 systemd_resolved_sources = files(
         'resolved-bus.c',
-        'resolved-bus.h',
         'resolved-conf.c',
-        'resolved-conf.h',
-        'resolved-def.h',
         'resolved-dns-cache.c',
-        'resolved-dns-cache.h',
         'resolved-dns-query.c',
-        'resolved-dns-query.h',
         'resolved-dns-scope.c',
-        'resolved-dns-scope.h',
         'resolved-dns-search-domain.c',
-        'resolved-dns-search-domain.h',
         'resolved-dns-server.c',
-        'resolved-dns-server.h',
         'resolved-dns-stream.c',
-        'resolved-dns-stream.h',
         'resolved-dns-stub.c',
-        'resolved-dns-stub.h',
         'resolved-dns-synthesize.c',
-        'resolved-dns-synthesize.h',
         'resolved-dns-transaction.c',
-        'resolved-dns-transaction.h',
         'resolved-dns-trust-anchor.c',
-        'resolved-dns-trust-anchor.h',
         'resolved-dns-zone.c',
-        'resolved-dns-zone.h',
         'resolved-dnssd-bus.c',
-        'resolved-dnssd-bus.h',
         'resolved-dnssd.c',
-        'resolved-dnssd.h',
-        'resolved-dnstls.h',
         'resolved-etc-hosts.c',
-        'resolved-etc-hosts.h',
         'resolved-link-bus.c',
-        'resolved-link-bus.h',
         'resolved-link.c',
-        'resolved-link.h',
         'resolved-llmnr.c',
-        'resolved-llmnr.h',
         'resolved-manager.c',
-        'resolved-manager.h',
         'resolved-mdns.c',
-        'resolved-mdns.h',
         'resolved-resolv-conf.c',
-        'resolved-resolv-conf.h',
         'resolved-socket-graveyard.c',
-        'resolved-socket-graveyard.h',
         'resolved-varlink.c',
-        'resolved-varlink.h',
-        'resolved.c',
 )
 
 resolvectl_sources = files(
-         'resolvconf-compat.c',
-         'resolvconf-compat.h',
-         'resolvectl.c',
-         'resolvectl.h',
+        'resolvconf-compat.c',
+        'resolvectl.c',
 )
 
 ############################################################
@@ -121,6 +85,7 @@ libsystemd_resolve_core = static_library(
         'systemd-resolve-core',
         basic_dns_sources,
         include_directories : includes,
+        dependencies : userspace,
         build_by_default : false)
 
 systemd_resolved_sources += custom_target(
@@ -140,13 +105,11 @@ if conf.get('ENABLE_DNS_OVER_TLS') == 1
         if conf.get('DNS_OVER_TLS_USE_GNUTLS') == 1
                 systemd_resolved_sources += files(
                         'resolved-dnstls-gnutls.c',
-                        'resolved-dnstls-gnutls.h',
                 )
                 systemd_resolved_dependencies += libgnutls
         elif conf.get('DNS_OVER_TLS_USE_OPENSSL') == 1
                 systemd_resolved_sources += files(
                         'resolved-dnstls-openssl.c',
-                        'resolved-dnstls-openssl.h',
                 )
                 systemd_resolved_dependencies += libopenssl
         else
@@ -169,58 +132,83 @@ custom_target(
         'resolved.conf',
         input : 'resolved.conf.in',
         output : 'resolved.conf',
-        command : [meson_render_jinja2, config_h, '@INPUT@', '@OUTPUT@'],
+        command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
         install : conf.get('ENABLE_RESOLVE') == 1 and install_sysconfdir_samples,
         install_dir : pkgsysconfdir)
 
 ############################################################
 
+test_resolve_base = {
+        'link_with' : [libsystemd_resolve_core, libshared],
+        'dependencies' : [lib_openssl_or_gcrypt, libm],
+}
+
 tests += [
-        [['src/resolve/test-resolve-tables.c'],
-         [libsystemd_resolve_core,
-          libshared],
-         [lib_openssl_or_gcrypt,
-          libm]],
-
-        [['src/resolve/test-dns-packet.c'],
-         [libsystemd_resolve_core,
-          libshared],
-         [lib_openssl_or_gcrypt,
-          libm]],
-
-        [['src/resolve/test-resolved-etc-hosts.c',
-          'src/resolve/resolved-etc-hosts.c',
-          'src/resolve/resolved-etc-hosts.h'],
-         [libsystemd_resolve_core,
-          libshared],
-         [lib_openssl_or_gcrypt,
-          libm]],
-
-        [['src/resolve/test-resolved-packet.c'],
-         [libsystemd_resolve_core,
-          libshared],
-         [lib_openssl_or_gcrypt,
-          libm]],
-
-        [['src/resolve/test-dnssec.c'],
-         [libsystemd_resolve_core,
-          libshared],
-         [lib_openssl_or_gcrypt,
-          libm],
-         [], 'HAVE_OPENSSL_OR_GCRYPT'],
-
-        [['src/resolve/test-dnssec-complex.c'],
-         [libsystemd_resolve_core,
-          libshared],
-         [lib_openssl_or_gcrypt,
-          libm],
-         [], '', 'manual'],
+        {
+                'sources' : files('test-resolve-tables.c'),
+                'base' : test_resolve_base,
+        },
+        {
+                'sources' : files('test-dns-packet.c'),
+                'base' : test_resolve_base,
+        },
+        {
+                'sources' : files(
+                        'test-resolved-etc-hosts.c',
+                        'resolved-etc-hosts.c',
+                ),
+                'base' : test_resolve_base,
+        },
+        {
+                'sources' : files('test-resolved-packet.c'),
+                'base' : test_resolve_base,
+        },
+        {
+                'sources' : files('test-dnssec.c'),
+                'base' : test_resolve_base,
+                'condition' : 'HAVE_OPENSSL_OR_GCRYPT',
+        },
+        {
+                'sources' : files('test-dnssec-complex.c'),
+                'base' : test_resolve_base,
+                'type' : 'manual',
+        },
+        {
+                'sources' : [
+                        files('test-resolved-stream.c'),
+                        basic_dns_sources,
+                        systemd_resolved_sources,
+                ],
+                'dependencies' : [
+                        lib_openssl_or_gcrypt,
+                        libm,
+                        systemd_resolved_dependencies,
+                ],
+                'includes' : resolve_includes,
+        },
 ]
+
+fuzzer_resolve_base = {
+        'link_with' : [libsystemd_resolve_core, libshared],
+        'dependencies' : [lib_openssl_or_gcrypt, libm],
+}
 
 fuzzers += [
-        [['src/resolve/fuzz-dns-packet.c'],
-         [libsystemd_resolve_core,
-          libshared],
-         [lib_openssl_or_gcrypt,
-          libm]],
+        {
+                'sources' : files('fuzz-dns-packet.c'),
+                'base' : fuzzer_resolve_base,
+        },
+        {
+                'sources' : files(
+                        'fuzz-etc-hosts.c',
+                        'resolved-etc-hosts.c',
+                ),
+                'base' : fuzzer_resolve_base,
+        },
+        {
+                'sources' : files('fuzz-resource-record.c'),
+                'base' : fuzzer_resolve_base,
+        },
 ]
+
+systemd_resolved_sources += files('resolved.c')

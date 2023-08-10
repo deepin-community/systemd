@@ -14,7 +14,7 @@
 # General Public License for more details.
 #
 # You should have received a copy of the GNU Lesser General Public License
-# along with systemd; If not, see <http://www.gnu.org/licenses/>.
+# along with systemd; If not, see <https://www.gnu.org/licenses/>.
 
 __contains_word () {
     local w word=$1; shift
@@ -25,8 +25,9 @@ __contains_word () {
 
 __get_machines() {
     local a b
-    machinectl list --full --no-legend --no-pager 2>/dev/null |
-        { while read a b; do echo " $a"; done; };
+    { machinectl list --full --max-addresses=0 --no-legend --no-pager 2>/dev/null; echo ".host"; } | \
+	{ while read a b; do echo " $a"; done; } | \
+        sort -u
 }
 
 _portablectl() {
@@ -35,7 +36,7 @@ _portablectl() {
     local -A OPTS=(
         [STANDALONE]='-q --quiet --runtime --no-reload --cat --no-pager --no-legend
                               --no-ask-password --enable --now -h --help --version'
-        [ARG]='-p --profile --copy -H --host -M --machine'
+        [ARG]='-p --profile --copy -H --host -M --machine --extension'
     )
 
     local -A VERBS=(
@@ -59,6 +60,10 @@ _portablectl() {
             --machine|-M)
                 comps=$( __get_machines )
                 ;;
+            --extension)
+                comps=$( compgen -A file -- "$cur" )
+                compopt -o filenames
+                ;;
         esac
         COMPREPLY=( $(compgen -W '$comps' -- "$cur") )
         return 0
@@ -77,7 +82,7 @@ _portablectl() {
         fi
     done
 
-    n=$(($COMP_CWORD - $i))
+    n=$((COMP_CWORD - i))
 
     if [[ -z ${verb-} ]]; then
         comps=${VERBS[*]}

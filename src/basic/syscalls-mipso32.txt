@@ -21,6 +21,7 @@ bpf	4355
 brk	4045
 cachectl	4148
 cacheflush	4147
+cachestat	4451
 capget	4204
 capset	4205
 chdir	4012
@@ -427,6 +428,7 @@ renameat2	4351
 request_key	4281
 restart_syscall	4253
 riscv_flush_icache
+riscv_hwprobe
 rmdir	4040
 rseq	4367
 rt_sigaction	4194
@@ -473,6 +475,7 @@ sendmmsg	4343
 sendmsg	4179
 sendto	4180
 set_mempolicy	4270
+set_mempolicy_home_node	4450
 set_robust_list	4309
 set_thread_area	4283
 set_tid_address	4252

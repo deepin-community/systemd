@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import pwd
 import grp
+from pathlib import Path
 
 try:
     from systemd import id128
@@ -28,6 +29,7 @@ except AttributeError:
     sys.exit(EXIT_TEST_SKIP)
 
 exe_with_args = sys.argv[1:]
+temp_dir = tempfile.TemporaryDirectory(prefix='test-systemd-tmpfiles.')
 
 def test_line(line, *, user, returncode=EX_DATAERR, extra={}):
     args = ['--user'] if user else []
@@ -72,10 +74,10 @@ def test_uninitialized_t():
         return
 
     test_line('w /foo - - - - "specifier for --user %t"',
-              user=True, returncode=0, extra={'env':{}})
+              user=True, returncode=0, extra={'env':{'HOME': os.getenv('HOME')}})
 
 def test_content(line, expected, *, user, extra={}, subpath='/arg', path_cb=None):
-    d = tempfile.TemporaryDirectory(prefix='test-systemd-tmpfiles.')
+    d = tempfile.TemporaryDirectory(prefix='test-content.', dir=temp_dir.name)
     if path_cb is not None:
         path_cb(d.name, subpath)
     arg = d.name + subpath
@@ -87,7 +89,7 @@ def test_content(line, expected, *, user, extra={}, subpath='/arg', path_cb=None
 
 def test_valid_specifiers(*, user):
     test_content('f {} - - - - two words', 'two words', user=user)
-    if id128:
+    if id128 and os.path.isfile('/etc/machine-id'):
         try:
             test_content('f {} - - - - %m', '{}'.format(id128.get_machine().hex), user=user)
         except AssertionError as e:
@@ -98,14 +100,24 @@ def test_valid_specifiers(*, user):
         test_content('f {} - - - - %b', '{}'.format(id128.get_boot().hex), user=user)
     test_content('f {} - - - - %H', '{}'.format(socket.gethostname()), user=user)
     test_content('f {} - - - - %v', '{}'.format(os.uname().release), user=user)
-    test_content('f {} - - - - %U', '{}'.format(os.getuid()), user=user)
-    test_content('f {} - - - - %G', '{}'.format(os.getgid()), user=user)
+    test_content('f {} - - - - %U', '{}'.format(os.getuid() if user else 0), user=user)
+    test_content('f {} - - - - %G', '{}'.format(os.getgid() if user else 0), user=user)
 
-    puser = pwd.getpwuid(os.getuid())
-    test_content('f {} - - - - %u', '{}'.format(puser.pw_name), user=user)
+    try:
+        puser = pwd.getpwuid(os.getuid() if user else 0)
+    except KeyError:
+        puser = None
 
-    pgroup = grp.getgrgid(os.getgid())
-    test_content('f {} - - - - %g', '{}'.format(pgroup.gr_name), user=user)
+    if puser:
+        test_content('f {} - - - - %u', '{}'.format(puser.pw_name), user=user)
+
+    try:
+        pgroup = grp.getgrgid(os.getgid() if user else 0)
+    except KeyError:
+        pgroup = None
+
+    if pgroup:
+        test_content('f {} - - - - %g', '{}'.format(pgroup.gr_name), user=user)
 
     # Note that %h is the only specifier in which we look the environment,
     # because we check $HOME. Should we even be doing that?
@@ -118,22 +130,23 @@ def test_valid_specifiers(*, user):
                      xdg_runtime_dir if user else '/run',
                      user=user)
 
-    xdg_config_home = os.getenv('XDG_CONFIG_HOME')
-    if xdg_config_home is not None or not user:
-        test_content('f {} - - - - %S',
-                     xdg_config_home if user else '/var/lib',
-                     user=user)
+    xdg_state_home = os.getenv('XDG_STATE_HOME')
+    if xdg_state_home is None and user:
+        xdg_state_home = os.path.join(home, ".local/state")
+    test_content('f {} - - - - %S',
+                 xdg_state_home if user else '/var/lib',
+                 user=user)
 
     xdg_cache_home = os.getenv('XDG_CACHE_HOME')
-    if xdg_cache_home is not None or not user:
-        test_content('f {} - - - - %C',
-                     xdg_cache_home if user else '/var/cache',
-                     user=user)
+    if xdg_cache_home is None and user:
+        xdg_cache_home = os.path.join(home, ".cache")
+    test_content('f {} - - - - %C',
+                 xdg_cache_home if user else '/var/cache',
+                 user=user)
 
-    if xdg_config_home is not None or not user:
-        test_content('f {} - - - - %L',
-                     xdg_config_home + '/log' if user else '/var/log',
-                     user=user)
+    test_content('f {} - - - - %L',
+                 os.path.join(xdg_state_home, 'log') if user else '/var/log',
+                 user=user)
 
     test_content('f {} - - - - %%', '%', user=user)
 
@@ -188,6 +201,30 @@ def test_hard_cleanup(*, user):
     label = 'valid_symlink-deep'
     test_content('f= {} - - - - ' + label, label, user=user, subpath='/deep/1/2', path_cb=valid_symlink)
 
+def test_base64():
+    test_content('f~ {} - - - - UGlmZgpQYWZmClB1ZmYgCg==', "Piff\nPaff\nPuff \n", user=False)
+
+def test_conditionalized_execute_bit():
+    c = subprocess.run(exe_with_args + ['--version', '|', 'grep', '-F', '+ACL'], shell=True, stdout=subprocess.DEVNULL)
+    if c.returncode != 0:
+        return 0
+
+    d = tempfile.TemporaryDirectory(prefix='test-acl.', dir=temp_dir.name)
+    temp = Path(d.name) / "cond_exec"
+    temp.touch()
+    temp.chmod(0o644)
+
+    test_line(f"a {temp} - - - - u:root:Xwr", user=False, returncode=0)
+    c = subprocess.run(["getfacl", "-Ec", temp],
+                       stdout=subprocess.PIPE, check=True, text=True)
+    assert "user:root:rw-" in c.stdout
+
+    temp.chmod(0o755)
+    test_line(f"a+ {temp} - - - - u:root:Xwr,g:root:rX", user=False, returncode=0)
+    c = subprocess.run(["getfacl", "-Ec", temp],
+                       stdout=subprocess.PIPE, check=True, text=True)
+    assert "user:root:rwx" in c.stdout and "group:root:r-x" in c.stdout
+
 if __name__ == '__main__':
     test_invalids(user=False)
     test_invalids(user=True)
@@ -198,3 +235,7 @@ if __name__ == '__main__':
 
     test_hard_cleanup(user=False)
     test_hard_cleanup(user=True)
+
+    test_base64()
+
+    test_conditionalized_execute_bit()

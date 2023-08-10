@@ -2,8 +2,9 @@
 
 #include <stdlib.h>
 
+#include "analyze.h"
 #include "analyze-condition.h"
-#include "analyze-verify.h"
+#include "analyze-verify-util.h"
 #include "condition.h"
 #include "conf-parser.h"
 #include "load-fragment.h"
@@ -52,11 +53,9 @@ static int parse_condition(Unit *u, const char *line) {
 
 _printf_(7, 8)
 static int log_helper(void *userdata, int level, int error, const char *file, int line, const char *func, const char *format, ...) {
-        Unit *u = userdata;
+        Unit *u = ASSERT_PTR(userdata);
         va_list ap;
         int r;
-
-        assert(u);
 
         /* "upgrade" debug messages */
         level = MIN(LOG_INFO, level);
@@ -73,7 +72,7 @@ static int log_helper(void *userdata, int level, int error, const char *file, in
         return r;
 }
 
-int verify_conditions(char **lines, UnitFileScope scope, const char *unit, const char *root) {
+static int verify_conditions(char **lines, RuntimeScope scope, const char *unit, const char *root) {
         _cleanup_(manager_freep) Manager *m = NULL;
         Unit *u;
         int r, q = 1;
@@ -113,8 +112,6 @@ int verify_conditions(char **lines, UnitFileScope scope, const char *unit, const
                 if (r < 0)
                         return r;
         } else {
-                char **line;
-
                 r = unit_new_for_name(m, sizeof(Service), "test.service", &u);
                 if (r < 0)
                         return log_error_errno(r, "Failed to create test.service: %m");
@@ -126,13 +123,24 @@ int verify_conditions(char **lines, UnitFileScope scope, const char *unit, const
                 }
         }
 
-        r = condition_test_list(u->asserts, environ, assert_type_to_string, log_helper, u);
+        condition_test_logger_t logger = arg_quiet ? NULL : log_helper;
+        r = condition_test_list(u->asserts, environ, assert_type_to_string, logger, u);
         if (u->asserts)
-                log_notice("Asserts %s.", r > 0 ? "succeeded" : "failed");
+                log_full(arg_quiet ? LOG_DEBUG : LOG_NOTICE, "Asserts %s.", r > 0 ? "succeeded" : "failed");
 
-        q = condition_test_list(u->conditions, environ, condition_type_to_string, log_helper, u);
+        q = condition_test_list(u->conditions, environ, condition_type_to_string, logger, u);
         if (u->conditions)
-                log_notice("Conditions %s.", q > 0 ? "succeeded" : "failed");
+                log_full(arg_quiet ? LOG_DEBUG : LOG_NOTICE, "Conditions %s.", q > 0 ? "succeeded" : "failed");
 
         return r > 0 && q > 0 ? 0 : -EIO;
+}
+
+int verb_condition(int argc, char *argv[], void *userdata) {
+        int r;
+
+        r = verify_conditions(strv_skip(argv, 1), arg_runtime_scope, arg_unit, arg_root);
+        if (r < 0)
+                return r;
+
+        return EXIT_SUCCESS;
 }

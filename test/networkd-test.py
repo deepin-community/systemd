@@ -7,7 +7,7 @@
 # but it assumes (and checks at the beginning) that networkd is not currently
 # running.
 #
-# This can be run on a normal installation, in QEMU, nspawn (with
+# This can be run on a normal installation, in qemu, systemd-nspawn (with
 # --private-network), LXD (with "--config raw.lxc=lxc.aa_profile=unconfined"),
 # or LXC system containers. You need at least the "ip" tool from the iproute
 # package; it is recommended to install dnsmasq too to get full test coverage.
@@ -91,7 +91,7 @@ def setUpModule():
 def tearDownModule():
     global tmpmounts
     for d in tmpmounts:
-        subprocess.check_call(["umount", d])
+        subprocess.check_call(["umount", "--lazy", d])
     for u in stopped_units:
         subprocess.call(["systemctl", "stop", u])
     for u in running_units:
@@ -138,7 +138,7 @@ class NetworkdTestingUtilities:
 
     def read_attr(self, link, attribute):
         """Read a link attributed from the sysfs."""
-        # Note we we don't want to check if interface `link' is managed, we
+        # Note we don't want to check if interface `link' is managed, we
         # want to evaluate link variable and pass the value of the link to
         # assert_link_states e.g. eth0=managed.
         self.assert_link_states(**{link:'managed'})
@@ -273,6 +273,7 @@ Priority=0
 [Bridge]
 UnicastFlood=true
 HairPin=true
+Isolated=true
 UseBPDU=true
 FastLeave=true
 AllowPortToBeRoot=true
@@ -286,11 +287,12 @@ Priority=23
 
         self.assertEqual(self.read_attr('port2', 'brport/priority'), '23')
         self.assertEqual(self.read_attr('port2', 'brport/hairpin_mode'), '1')
+        self.assertEqual(self.read_attr('port2', 'brport/isolated'), '1')
         self.assertEqual(self.read_attr('port2', 'brport/path_cost'), '555')
         self.assertEqual(self.read_attr('port2', 'brport/multicast_fast_leave'), '1')
         self.assertEqual(self.read_attr('port2', 'brport/unicast_flood'), '1')
-        self.assertEqual(self.read_attr('port2', 'brport/bpdu_guard'), '1')
-        self.assertEqual(self.read_attr('port2', 'brport/root_block'), '1')
+        self.assertEqual(self.read_attr('port2', 'brport/bpdu_guard'), '0')
+        self.assertEqual(self.read_attr('port2', 'brport/root_block'), '0')
 
 class ClientTestBase(NetworkdTestingUtilities):
     """Provide common methods for testing networkd against servers."""
@@ -338,6 +340,20 @@ class ClientTestBase(NetworkdTestingUtilities):
         sys.stdout.flush()
         subprocess.call(['journalctl', '-b', '--no-pager', '--quiet',
                          '--cursor', self.journal_cursor, '-u', unit])
+
+    def show_ifaces(self):
+        '''Show network interfaces'''
+
+        print('--- networkctl ---')
+        sys.stdout.flush()
+        subprocess.call(['networkctl', 'status', '-n', '0', '-a'])
+
+    def show_resolvectl(self):
+        '''Show resolved settings'''
+
+        print('--- resolvectl ---')
+        sys.stdout.flush()
+        subprocess.call(['resolvectl'])
 
     def create_iface(self, ipv6=False):
         '''Create test interface with DHCP server behind it'''
@@ -466,7 +482,7 @@ DHCP={dhcp_mode}
     def test_coldplug_dhcp_yes_ip4_no_ra(self):
         # with disabling RA explicitly things should be fast
         self.do_test(coldplug=True, ipv6=False,
-                     extra_opts='IPv6AcceptRA=False')
+                     extra_opts='IPv6AcceptRA=no')
 
     def test_coldplug_dhcp_ip4_only(self):
         # we have a 12s timeout on RA, so we need to wait longer
@@ -476,7 +492,7 @@ DHCP={dhcp_mode}
     def test_coldplug_dhcp_ip4_only_no_ra(self):
         # with disabling RA explicitly things should be fast
         self.do_test(coldplug=True, ipv6=False, dhcp_mode='ipv4',
-                     extra_opts='IPv6AcceptRA=False')
+                     extra_opts='IPv6AcceptRA=no')
 
     def test_coldplug_dhcp_ip6(self):
         self.do_test(coldplug=True, ipv6=True)
@@ -506,7 +522,7 @@ Domains= ~company
 
         try:
             self.do_test(coldplug=True, ipv6=False,
-                         extra_opts='IPv6AcceptRouterAdvertisements=False')
+                         extra_opts='IPv6AcceptRA=no')
         except subprocess.CalledProcessError as e:
             # networkd often fails to start in LXC: https://github.com/systemd/systemd/issues/11848
             if IS_CONTAINER and e.cmd == ['systemctl', 'start', 'systemd-networkd']:
@@ -539,7 +555,7 @@ Domains= ~company ~.
 
         try:
             self.do_test(coldplug=True, ipv6=False,
-                         extra_opts='IPv6AcceptRouterAdvertisements=False')
+                         extra_opts='IPv6AcceptRA=no')
         except subprocess.CalledProcessError as e:
             # networkd often fails to start in LXC: https://github.com/systemd/systemd/issues/11848
             if IS_CONTAINER and e.cmd == ['systemctl', 'start', 'systemd-networkd']:
@@ -593,7 +609,7 @@ class DnsmasqClientTest(ClientTestBase, unittest.TestCase):
         if dnsmasq_opts:
             extra_opts += dnsmasq_opts
         self.dnsmasq = subprocess.Popen(
-            ['dnsmasq', '--keep-in-foreground', '--log-queries',
+            ['dnsmasq', '--keep-in-foreground', '--log-queries=extra', '--log-dhcp',
              '--log-facility=' + self.dnsmasq_log, '--conf-file=/dev/null',
              '--dhcp-leasefile=' + lease_file, '--bind-interfaces',
              '--interface=' + self.if_router, '--except-interface=lo',
@@ -610,11 +626,12 @@ class DnsmasqClientTest(ClientTestBase, unittest.TestCase):
             self.dnsmasq.wait()
             self.dnsmasq = None
 
-    def print_server_log(self):
+    def print_server_log(self, log_file=None):
         '''Print DHCP server log for debugging failures'''
 
-        with open(self.dnsmasq_log) as f:
-            sys.stdout.write('\n\n---- dnsmasq log ----\n{}\n------\n\n'.format(f.read()))
+        path = log_file if log_file else self.dnsmasq_log
+        with open(path) as f:
+            sys.stdout.write('\n\n---- {} ----\n{}\n------\n\n'.format(os.path.basename(path), f.read()))
 
     def test_resolved_domain_restricted_dns(self):
         '''resolved: domain-restricted DNS servers'''
@@ -623,7 +640,7 @@ class DnsmasqClientTest(ClientTestBase, unittest.TestCase):
         conf = '/run/systemd/resolved.conf.d/test-enable-dnssec.conf'
         os.makedirs(os.path.dirname(conf), exist_ok=True)
         with open(conf, 'w') as f:
-            f.write('[Resolve]\nDNSSEC=allow-downgrade\nLLMNR=no\nMulticastDNS=no\nDNSOverTLS=no\n')
+            f.write('[Resolve]\nDNSSEC=allow-downgrade\nLLMNR=no\nMulticastDNS=no\nDNSOverTLS=no\nDNS=\n')
         self.addCleanup(os.remove, conf)
 
         # create interface for generic connections; this will map all DNS names
@@ -634,7 +651,7 @@ class DnsmasqClientTest(ClientTestBase, unittest.TestCase):
 Name={}
 [Network]
 DHCP=ipv4
-IPv6AcceptRA=False
+IPv6AcceptRA=no
 DNSSECNegativeTrustAnchors=search.example.com
 '''.format(self.iface))
 
@@ -647,7 +664,7 @@ DNSSECNegativeTrustAnchors=search.example.com
 
         vpn_dnsmasq_log = os.path.join(self.workdir, 'dnsmasq-vpn.log')
         vpn_dnsmasq = subprocess.Popen(
-            ['dnsmasq', '--keep-in-foreground', '--log-queries',
+            ['dnsmasq', '--keep-in-foreground', '--log-queries=extra',
              '--log-facility=' + vpn_dnsmasq_log, '--conf-file=/dev/null',
              '--dhcp-leasefile=/dev/null', '--bind-interfaces',
              '--interface=testvpnrouter', '--except-interface=lo',
@@ -659,7 +676,7 @@ DNSSECNegativeTrustAnchors=search.example.com
 [Match]
 Name=testvpnclient
 [Network]
-IPv6AcceptRA=False
+IPv6AcceptRA=no
 Address=10.241.3.2/24
 DNS=10.241.3.1
 Domains=~company ~lab
@@ -672,32 +689,42 @@ DNSSECNegativeTrustAnchors=company lab
 
         # ensure we start fresh with every test
         subprocess.check_call(['systemctl', 'restart', 'systemd-resolved'])
+        subprocess.check_call(['systemctl', 'service-log-level', 'systemd-resolved', 'debug'])
 
-        # test vpnclient specific domains; these should *not* be answered by
-        # the general DNS
-        out = subprocess.check_output(['resolvectl', 'query', 'math.lab'])
-        self.assertIn(b'math.lab: 10.241.3.3', out)
-        out = subprocess.check_output(['resolvectl', 'query', 'kettle.cantina.company'])
-        self.assertIn(b'kettle.cantina.company: 10.241.4.4', out)
+        try:
+            # test vpnclient specific domains; these should *not* be answered by
+            # the general DNS
+            out = subprocess.check_output(['resolvectl', 'query', '-4', 'math.lab'])
+            self.assertIn(b'math.lab: 10.241.3.3', out)
+            out = subprocess.check_output(['resolvectl', 'query', '-4', 'kettle.cantina.company'])
+            self.assertIn(b'kettle.cantina.company: 10.241.4.4', out)
 
-        # test general domains
-        out = subprocess.check_output(['resolvectl', 'query', 'search.example.com'])
-        self.assertIn(b'search.example.com: 192.168.42.1', out)
+            # test general domains
+            out = subprocess.check_output(['resolvectl', 'query', '-4', 'search.example.com'])
+            self.assertIn(b'search.example.com: 192.168.42.1', out)
 
-        with open(self.dnsmasq_log) as f:
-            general_log = f.read()
-        with open(vpn_dnsmasq_log) as f:
-            vpn_log = f.read()
+            with open(self.dnsmasq_log) as f:
+                general_log = f.read()
+            with open(vpn_dnsmasq_log) as f:
+                vpn_log = f.read()
 
-        # VPN domains should only be sent to VPN DNS
-        self.assertRegex(vpn_log, 'query.*math.lab')
-        self.assertRegex(vpn_log, 'query.*cantina.company')
-        self.assertNotIn('.lab', general_log)
-        self.assertNotIn('.company', general_log)
+            # VPN domains should only be sent to VPN DNS
+            self.assertRegex(vpn_log, 'query.*math.lab')
+            self.assertRegex(vpn_log, 'query.*cantina.company')
+            self.assertNotIn('.lab', general_log)
+            self.assertNotIn('.company', general_log)
 
-        # general domains should not be sent to the VPN DNS
-        self.assertRegex(general_log, 'query.*search.example.com')
-        self.assertNotIn('search.example.com', vpn_log)
+            # general domains should not be sent to the VPN DNS
+            self.assertRegex(general_log, 'query.*search.example.com')
+            self.assertNotIn('search.example.com', vpn_log)
+
+        except (AssertionError, subprocess.CalledProcessError):
+            self.show_journal('systemd-resolved.service')
+            self.print_server_log()
+            self.print_server_log(vpn_dnsmasq_log)
+            self.show_ifaces()
+            self.show_resolvectl()
+            raise
 
     def test_resolved_etc_hosts(self):
         '''resolved queries to /etc/hosts'''
@@ -706,7 +733,7 @@ DNSSECNegativeTrustAnchors=company lab
         conf = '/run/systemd/resolved.conf.d/test-enable-dnssec.conf'
         os.makedirs(os.path.dirname(conf), exist_ok=True)
         with open(conf, 'w') as f:
-            f.write('[Resolve]\nDNSSEC=allow-downgrade\nLLMNR=no\nMulticastDNS=no\nDNSOverTLS=no\n')
+            f.write('[Resolve]\nDNSSEC=allow-downgrade\nLLMNR=no\nMulticastDNS=no\nDNSOverTLS=no\nDNS=\n')
         self.addCleanup(os.remove, conf)
 
         # Add example.com to NTA list for this test
@@ -723,6 +750,7 @@ DNSSECNegativeTrustAnchors=company lab
         subprocess.check_call(['mount', '--bind', hosts, '/etc/hosts'])
         self.addCleanup(subprocess.call, ['umount', '/etc/hosts'])
         subprocess.check_call(['systemctl', 'restart', 'systemd-resolved.service'])
+        subprocess.check_call(['systemctl', 'service-log-level', 'systemd-resolved.service', 'debug'])
 
         # note: different IPv4 address here, so that it's easy to tell apart
         # what resolved the query
@@ -758,6 +786,8 @@ DNSSECNegativeTrustAnchors=company lab
         except (AssertionError, subprocess.CalledProcessError):
             self.show_journal('systemd-resolved.service')
             self.print_server_log()
+            self.show_ifaces()
+            self.show_resolvectl()
             raise
 
     def test_transient_hostname(self):
@@ -773,7 +803,7 @@ DNSSECNegativeTrustAnchors=company lab
         self.addCleanup(subprocess.call, ['systemctl', 'stop', 'systemd-hostnamed.service'])
 
         self.create_iface(dnsmasq_opts=['--dhcp-host={},192.168.5.210,testgreen'.format(self.iface_mac)])
-        self.do_test(coldplug=None, extra_opts='IPv6AcceptRA=False', dhcp_mode='ipv4')
+        self.do_test(coldplug=None, extra_opts='IPv6AcceptRA=no', dhcp_mode='ipv4')
 
         try:
             # should have received the fixed IP above
@@ -817,7 +847,7 @@ DNSSECNegativeTrustAnchors=company lab
         self.addCleanup(subprocess.call, ['systemctl', 'stop', 'systemd-hostnamed.service'])
 
         self.create_iface(dnsmasq_opts=['--dhcp-host={},192.168.5.210,testgreen'.format(self.iface_mac)])
-        self.do_test(coldplug=None, extra_opts='IPv6AcceptRA=False', dhcp_mode='ipv4')
+        self.do_test(coldplug=None, extra_opts='IPv6AcceptRA=no', dhcp_mode='ipv4')
 
         try:
             # should have received the fixed IP above
@@ -989,6 +1019,9 @@ DNS=127.0.0.1
             time.sleep(0.1)
         self.assertIn('nameserver 192.168.42.1\n', contents)
         self.assertIn('nameserver 127.0.0.1\n', contents)
+
+        out = subprocess.check_output(['networkctl', 'status', 'dummy0'])
+        self.assertIn(b'test.network.d/dns.conf', out)
 
     def test_dhcp_timezone(self):
         '''networkd sets time zone from DHCP'''

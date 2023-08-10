@@ -1,23 +1,19 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include <efidef.h>
+#include "efi.h"
 
 EFI_STATUS pe_memory_locate_sections(
-                const CHAR8 *base,
-                const CHAR8 **sections,
-                UINTN *addrs,
-                UINTN *sizes);
+                const void *base,
+                const char * const sections[],
+                size_t *addrs,
+                size_t *sizes);
 
 EFI_STATUS pe_file_locate_sections(
                 EFI_FILE *dir,
-                const CHAR16 *path,
-                const CHAR8 **sections,
-                UINTN *offsets,
-                UINTN *sizes);
+                const char16_t *path,
+                const char * const sections[],
+                size_t *offsets,
+                size_t *sizes);
 
-EFI_STATUS pe_alignment_info(
-                const void *base,
-                UINT32 *ret_entry_point_address,
-                UINT32 *ret_size_of_image,
-                UINT32 *ret_section_alignment);
+EFI_STATUS pe_kernel_info(const void *base, uint32_t *ret_compat_address);

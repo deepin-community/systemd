@@ -13,9 +13,10 @@
 
 #include "alloc-util.h"
 #include "bus-error.h"
+#include "bus-locator.h"
 #include "bus-util.h"
+#include "constants.h"
 #include "daemon-util.h"
-#include "def.h"
 #include "fd-util.h"
 #include "format-util.h"
 #include "initreq.h"
@@ -24,6 +25,7 @@
 #include "main-func.h"
 #include "memory-util.h"
 #include "process-util.h"
+#include "reboot-util.h"
 #include "special.h"
 
 #define SERVER_FD_MAX 16
@@ -103,17 +105,9 @@ static int change_runlevel(Server *s, int runlevel) {
         else
                 mode = "replace-irreversibly";
 
-        log_debug("Running request %s/start/%s", target, mode);
+        log_debug("Requesting %s/start/%s", target, mode);
 
-        r = sd_bus_call_method(
-                        s->bus,
-                        "org.freedesktop.systemd1",
-                        "/org/freedesktop/systemd1",
-                        "org.freedesktop.systemd1.Manager",
-                        "StartUnit",
-                        &error,
-                        NULL,
-                        "ss", target, mode);
+        r = bus_call_method(s->bus, bus_systemd_mgr, "StartUnit", &error, NULL, "ss", target, mode);
         if (r < 0)
                 return log_error_errno(r, "Failed to change runlevel: %s", bus_error_message(&error, r));
 
@@ -290,9 +284,10 @@ static int server_init(Server *s, unsigned n_sockets) {
 
 static int process_event(Server *s, struct epoll_event *ev) {
         int r;
-        Fifo *f;
+        _cleanup_(fifo_freep) Fifo *f = NULL;
 
         assert(s);
+        assert(ev);
 
         if (!(ev->events & EPOLLIN))
                 return log_info_errno(SYNTHETIC_ERRNO(EIO),
@@ -300,17 +295,16 @@ static int process_event(Server *s, struct epoll_event *ev) {
 
         f = (Fifo*) ev->data.ptr;
         r = fifo_process(f);
-        if (r < 0) {
-                log_info_errno(r, "Got error on fifo: %m");
-                fifo_free(f);
-                return r;
-        }
+        if (r < 0)
+                return log_info_errno(r, "Got error on fifo: %m");
+
+        TAKE_PTR(f);
 
         return 0;
 }
 
 static int run(int argc, char *argv[]) {
-        _cleanup_(server_done) Server server = { .epoll_fd = -1 };
+        _cleanup_(server_done) Server server = { .epoll_fd = -EBADF };
         _unused_ _cleanup_(notify_on_cleanup) const char *notify_stop = NULL;
         int r, n;
 

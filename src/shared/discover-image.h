@@ -7,19 +7,13 @@
 #include "sd-id128.h"
 
 #include "hashmap.h"
-#include "lockfile-util.h"
+#include "image-policy.h"
+#include "lock-util.h"
 #include "macro.h"
+#include "os-util.h"
 #include "path-util.h"
 #include "string-util.h"
 #include "time-util.h"
-
-typedef enum ImageClass {
-        IMAGE_MACHINE,
-        IMAGE_PORTABLE,
-        IMAGE_EXTENSION,
-        _IMAGE_CLASS_MAX,
-        _IMAGE_CLASS_INVALID = -EINVAL,
-} ImageClass;
 
 typedef enum ImageType {
         IMAGE_DIRECTORY,
@@ -34,6 +28,7 @@ typedef struct Image {
         unsigned n_ref;
 
         ImageType type;
+        ImageClass class;
         char *name;
         char *path;
         bool read_only;
@@ -81,7 +76,7 @@ int image_name_lock(const char *name, int operation, LockFile *ret);
 
 int image_set_limit(Image *i, uint64_t referenced_max);
 
-int image_read_metadata(Image *i);
+int image_read_metadata(Image *i, const ImagePolicy *image_policy);
 
 bool image_in_search_path(ImageClass class, const char *root, const char *image);
 

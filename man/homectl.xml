@@ -55,7 +55,7 @@
       security and is thus recommended.</para></listitem>
 
       <listitem><para>Similar, but the LUKS2 encrypted file system is located on regular block device, such
-      as an USB storage stick. In this mode home directories and all data they include are nicely migratable
+      as a USB storage stick. In this mode home directories and all data they include are nicely migratable
       between machines, simply by plugging the USB stick into different systems at different
       times.</para></listitem>
 
@@ -272,6 +272,19 @@
       </varlistentry>
 
       <varlistentry>
+        <term><option>--capability-bounding-set=</option><replaceable>CAPABILITIES</replaceable></term>
+        <term><option>--capability-ambient-set=</option><replaceable>CAPABILITIES</replaceable></term>
+
+        <listitem><para>These options take a space separated list of process capabilities
+        (e.g. <constant>CAP_WAKE_ALARM</constant>, <constant>CAP_BLOCK_SUSPEND</constant>, …) that shall be
+        set in the capability bounding and ambient sets for all the user's sessions. See <citerefentry
+        project='man-pages'><refentrytitle>capabilities</refentrytitle><manvolnum>7</manvolnum></citerefentry>
+        for details on the capabilities concept. These options may be used more than once, in which case the
+        specified lists are combined. If the parameter begins with a <literal>~</literal> character the
+        effect is inverted: the specified capability is dropped from the specific set.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><option>--skel=</option><replaceable>PATH</replaceable></term>
 
         <listitem><para>Takes a file system path to a directory. Specifies the skeleton directory to
@@ -354,6 +367,19 @@
         FIDO2 does not allow. PKCS#11/PIV devices generally require initialization (i.e. storing a
         private/public key pair on them, see example below) before they can be used; FIDO2 security tokens
         generally do not required that, and work out of the box.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--fido2-credential-algorithm=</option><replaceable>STRING</replaceable></term>
+        <listitem><para>Specify COSE algorithm used in credential generation. The default value is
+        <literal>es256</literal>. Supported values are <literal>es256</literal>, <literal>rs256</literal>
+        and <literal>eddsa</literal>.</para>
+
+        <para><literal>es256</literal> denotes ECDSA over NIST P-256 with SHA-256. <literal>rs256</literal>
+        denotes 2048-bit RSA with PKCS#1.5 padding and SHA-256. <literal>eddsa</literal> denotes
+        EDDSA over Curve25519 with SHA-512.</para>
+
+        <para>Note that your authenticator may not support some algorithms.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -673,17 +699,24 @@
       <varlistentry>
         <term><option>--luks-cipher=</option><replaceable>CIPHER</replaceable></term>
         <term><option>--luks-cipher-mode=</option><replaceable>MODE</replaceable></term>
-        <term><option>--luks-volume-key-size=</option><replaceable>BITS</replaceable></term>
+        <term><option>--luks-volume-key-size=</option><replaceable>BYTES</replaceable></term>
         <term><option>--luks-pbkdf-type=</option><replaceable>TYPE</replaceable></term>
         <term><option>--luks-pbkdf-hash-algorithm=</option><replaceable>ALGORITHM</replaceable></term>
+        <term><option>--luks-pbkdf-force-iterations=</option><replaceable>ITERATIONS</replaceable></term>
         <term><option>--luks-pbkdf-time-cost=</option><replaceable>SECONDS</replaceable></term>
         <term><option>--luks-pbkdf-memory-cost=</option><replaceable>BYTES</replaceable></term>
         <term><option>--luks-pbkdf-parallel-threads=</option><replaceable>THREADS</replaceable></term>
+        <term><option>--luks-sector-size=</option><replaceable>BYTES</replaceable></term>
 
         <listitem><para>Configures various cryptographic parameters for the LUKS2 storage mechanism. See
         <citerefentry
         project='man-pages'><refentrytitle>cryptsetup</refentrytitle><manvolnum>8</manvolnum></citerefentry>
-        for details on the specific attributes.</para></listitem>
+        for details on the specific attributes.</para>
+
+        <para>Note that <command>homectl</command> uses bytes for key size, like
+        <filename>/proc/crypto</filename>, but <citerefentry
+        project='man-pages'><refentrytitle>cryptsetup</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+        uses bits.</para></listitem>
       </varlistentry>
 
       <varlistentry>

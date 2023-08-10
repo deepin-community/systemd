@@ -5,11 +5,14 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "sd-id128.h"
+
 #include "all-units.h"
 #include "alloc-util.h"
 #include "capability-util.h"
 #include "conf-parser.h"
 #include "fd-util.h"
+#include "fileio.h"
 #include "format-util.h"
 #include "fs-util.h"
 #include "hashmap.h"
@@ -19,6 +22,8 @@
 #include "load-fragment.h"
 #include "macro.h"
 #include "memory-util.h"
+#include "open-file.h"
+#include "pcre2-util.h"
 #include "rm-rf.h"
 #include "specifier.h"
 #include "string-util.h"
@@ -30,15 +35,19 @@
 /* Nontrivial value serves as a placeholder to check that parsing function (didn't) change it */
 #define CGROUP_LIMIT_DUMMY      3
 
+static char *runtime_dir = NULL;
+
+STATIC_DESTRUCTOR_REGISTER(runtime_dir, rm_rf_physical_and_freep);
+
 TEST_RET(unit_file_get_set) {
         int r;
-        Hashmap *h;
+        _cleanup_hashmap_free_ Hashmap *h = NULL;
         UnitFileList *p;
 
-        h = hashmap_new(&string_hash_ops);
+        h = hashmap_new(&unit_file_list_hash_ops_free);
         assert_se(h);
 
-        r = unit_file_get_list(UNIT_FILE_SYSTEM, NULL, h, NULL, NULL);
+        r = unit_file_get_list(RUNTIME_SCOPE_SYSTEM, NULL, h, NULL, NULL);
         if (IN_SET(r, -EPERM, -EACCES))
                 return log_tests_skipped_errno(r, "unit_file_get_list");
 
@@ -49,8 +58,6 @@ TEST_RET(unit_file_get_set) {
 
         HASHMAP_FOREACH(p, h)
                 printf("%s = %s\n", p->path, unit_file_state_to_string(p->state));
-
-        unit_file_list_free(h);
 
         return 0;
 }
@@ -65,10 +72,10 @@ static void check_execcommand(ExecCommand *c,
 
         assert_se(c);
         log_info("expect: \"%s\" [\"%s\" \"%s\" \"%s\"]",
-                 path, argv0 ?: path, argv1, argv2);
+                 path, argv0 ?: path, strnull(argv1), strnull(argv2));
         n = strv_length(c->argv);
         log_info("actual: \"%s\" [\"%s\" \"%s\" \"%s\"]",
-                 c->path, c->argv[0], n > 0 ? c->argv[1] : NULL, n > 1 ? c->argv[2] : NULL);
+                 c->path, c->argv[0], n > 0 ? c->argv[1] : "(null)", n > 1 ? c->argv[2] : "(null)");
         assert_se(streq(c->path, path));
         assert_se(streq(c->argv[0], argv0 ?: path));
         if (n > 0)
@@ -97,7 +104,7 @@ TEST(config_parse_exec) {
         _cleanup_(manager_freep) Manager *m = NULL;
         _cleanup_(unit_freep) Unit *u = NULL;
 
-        r = manager_new(UNIT_FILE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
+        r = manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
         if (manager_errno_skip_test(r)) {
                 log_notice_errno(r, "Skipping test: manager_new: %m");
                 return;
@@ -412,6 +419,21 @@ TEST(config_parse_exec) {
         assert_se(r == 0);
         assert_se(c1->command_next == NULL);
 
+        log_info("/* long arg */"); /* See issue #22957. */
+
+        char x[LONG_LINE_MAX-100], *y;
+        y = mempcpy(x, "/bin/echo ", STRLEN("/bin/echo "));
+        memset(y, 'x', sizeof(x) - STRLEN("/bin/echo ") - 1);
+        x[sizeof(x) - 1] = '\0';
+
+        r = config_parse_exec(NULL, "fake", 5, "section", 1,
+                              "LValue", 0, x,
+                              &c, u);
+        assert_se(r >= 0);
+        c1 = c1->command_next;
+        check_execcommand(c1,
+                          "/bin/echo", NULL, y, NULL, false);
+
         log_info("/* empty argument, reset */");
         r = config_parse_exec(NULL, "fake", 4, "section", 1,
                               "LValue", 0, "",
@@ -441,7 +463,7 @@ TEST(config_parse_log_extra_fields) {
         _cleanup_(unit_freep) Unit *u = NULL;
         ExecContext c = {};
 
-        r = manager_new(UNIT_FILE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
+        r = manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
         if (manager_errno_skip_test(r)) {
                 log_notice_errno(r, "Skipping test: manager_new: %m");
                 return;
@@ -489,76 +511,93 @@ TEST(config_parse_log_extra_fields) {
 TEST(install_printf, .sd_booted = true) {
         char    name[] = "name.service",
                 path[] = "/run/systemd/system/name.service";
-        UnitFileInstallInfo i = { .name = name, .path = path, };
-        UnitFileInstallInfo i2 = { .name= name, .path = path, };
+        InstallInfo i = { .name = name, .path = path, };
+        InstallInfo i2 = { .name= name, .path = path, };
         char    name3[] = "name@inst.service",
                 path3[] = "/run/systemd/system/name.service";
-        UnitFileInstallInfo i3 = { .name = name3, .path = path3, };
-        UnitFileInstallInfo i4 = { .name = name3, .path = path3, };
+        InstallInfo i3 = { .name = name3, .path = path3, };
+        InstallInfo i4 = { .name = name3, .path = path3, };
 
         _cleanup_free_ char *mid = NULL, *bid = NULL, *host = NULL, *gid = NULL, *group = NULL, *uid = NULL, *user = NULL;
 
-        assert_se(specifier_machine_id('m', NULL, NULL, NULL, &mid) >= 0 && mid);
-        assert_se(specifier_boot_id('b', NULL, NULL, NULL, &bid) >= 0 && bid);
+        if (sd_id128_get_machine(NULL) >= 0)
+                assert_se(specifier_machine_id('m', NULL, NULL, NULL, &mid) >= 0 && mid);
+        if (sd_booted() > 0)
+                assert_se(specifier_boot_id('b', NULL, NULL, NULL, &bid) >= 0 && bid);
         assert_se(host = gethostname_malloc());
         assert_se(group = gid_to_name(getgid()));
         assert_se(asprintf(&gid, UID_FMT, getgid()) >= 0);
         assert_se(user = uid_to_name(getuid()));
         assert_se(asprintf(&uid, UID_FMT, getuid()) >= 0);
 
-#define expect(src, pattern, result)                                    \
+#define expect(scope, src, pattern, result)                             \
         do {                                                            \
-                _cleanup_free_ char *t = NULL;                          \
-                _cleanup_free_ char                                     \
-                        *d1 = strdup(i.name),                           \
-                        *d2 = strdup(i.path);                           \
-                assert_se(install_name_printf(&src, pattern, NULL, &t) >= 0 || !result); \
+                _cleanup_free_ char *t = NULL,                          \
+                        *d1 = ASSERT_PTR(strdup(i.name)),               \
+                        *d2 = ASSERT_PTR(strdup(i.path));               \
+                int r = install_name_printf(scope, &src, pattern, &t);  \
+                assert_se(result ? r >= 0 : r < 0);                     \
                 memzero(i.name, strlen(i.name));                        \
                 memzero(i.path, strlen(i.path));                        \
-                assert_se(d1 && d2);                                    \
                 if (result) {                                           \
                         printf("%s\n", t);                              \
                         assert_se(streq(t, result));                    \
-                } else assert_se(t == NULL);                            \
+                } else                                                  \
+                        assert_se(!t);                                  \
                 strcpy(i.name, d1);                                     \
                 strcpy(i.path, d2);                                     \
         } while (false)
 
-        expect(i, "%n", "name.service");
-        expect(i, "%N", "name");
-        expect(i, "%p", "name");
-        expect(i, "%i", "");
-        expect(i, "%j", "name");
-        expect(i, "%g", group);
-        expect(i, "%G", gid);
-        expect(i, "%u", user);
-        expect(i, "%U", uid);
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%n", "name.service");
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%N", "name");
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%p", "name");
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%i", "");
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%j", "name");
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%g", "root");
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%G", "0");
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%u", "root");
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%U", "0");
 
-        expect(i, "%m", mid);
-        expect(i, "%b", bid);
-        expect(i, "%H", host);
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%m", mid);
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%b", bid);
+        expect(RUNTIME_SCOPE_SYSTEM, i, "%H", host);
 
-        expect(i2, "%g", group);
-        expect(i2, "%G", gid);
-        expect(i2, "%u", user);
-        expect(i2, "%U", uid);
+        expect(RUNTIME_SCOPE_SYSTEM, i2, "%g", "root");
+        expect(RUNTIME_SCOPE_SYSTEM, i2, "%G", "0");
+        expect(RUNTIME_SCOPE_SYSTEM, i2, "%u", "root");
+        expect(RUNTIME_SCOPE_SYSTEM, i2, "%U", "0");
 
-        expect(i3, "%n", "name@inst.service");
-        expect(i3, "%N", "name@inst");
-        expect(i3, "%p", "name");
-        expect(i3, "%g", group);
-        expect(i3, "%G", gid);
-        expect(i3, "%u", user);
-        expect(i3, "%U", uid);
+        expect(RUNTIME_SCOPE_USER, i2, "%g", group);
+        expect(RUNTIME_SCOPE_USER, i2, "%G", gid);
+        expect(RUNTIME_SCOPE_USER, i2, "%u", user);
+        expect(RUNTIME_SCOPE_USER, i2, "%U", uid);
 
-        expect(i3, "%m", mid);
-        expect(i3, "%b", bid);
-        expect(i3, "%H", host);
+        /* gcc-12.0.1-0.9.fc36.x86_64 insist that streq(…, NULL) is called,
+         * even though the call is inside of a conditional where the pointer is checked. :( */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnonnull"
+        expect(RUNTIME_SCOPE_GLOBAL, i2, "%g", NULL);
+        expect(RUNTIME_SCOPE_GLOBAL, i2, "%G", NULL);
+        expect(RUNTIME_SCOPE_GLOBAL, i2, "%u", NULL);
+        expect(RUNTIME_SCOPE_GLOBAL, i2, "%U", NULL);
+#pragma GCC diagnostic pop
 
-        expect(i4, "%g", group);
-        expect(i4, "%G", gid);
-        expect(i4, "%u", user);
-        expect(i4, "%U", uid);
+        expect(RUNTIME_SCOPE_SYSTEM, i3, "%n", "name@inst.service");
+        expect(RUNTIME_SCOPE_SYSTEM, i3, "%N", "name@inst");
+        expect(RUNTIME_SCOPE_SYSTEM, i3, "%p", "name");
+        expect(RUNTIME_SCOPE_USER, i3, "%g", group);
+        expect(RUNTIME_SCOPE_USER, i3, "%G", gid);
+        expect(RUNTIME_SCOPE_USER, i3, "%u", user);
+        expect(RUNTIME_SCOPE_USER, i3, "%U", uid);
+
+        expect(RUNTIME_SCOPE_SYSTEM, i3, "%m", mid);
+        expect(RUNTIME_SCOPE_SYSTEM, i3, "%b", bid);
+        expect(RUNTIME_SCOPE_SYSTEM, i3, "%H", host);
+
+        expect(RUNTIME_SCOPE_USER, i4, "%g", group);
+        expect(RUNTIME_SCOPE_USER, i4, "%G", gid);
+        expect(RUNTIME_SCOPE_USER, i4, "%u", user);
+        expect(RUNTIME_SCOPE_USER, i4, "%U", uid);
 }
 
 static uint64_t make_cap(int cap) {
@@ -769,6 +808,70 @@ TEST(config_parse_pass_environ) {
         assert_se(streq(passenv[0], "normal_name"));
 }
 
+TEST(config_parse_unit_env_file) {
+        /* int config_parse_unit_env_file(
+                 const char *unit,
+                 const char *filename,
+                 unsigned line,
+                 const char *section,
+                 unsigned section_line,
+                 const char *lvalue,
+                 int ltype,
+                 const char *rvalue,
+                 void *data,
+                 void *userdata) */
+
+        _cleanup_(manager_freep) Manager *m = NULL;
+        Unit *u;
+        _cleanup_strv_free_ char **files = NULL;
+        int r;
+
+        r = manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
+        if (manager_errno_skip_test(r)) {
+                log_notice_errno(r, "Skipping test: manager_new: %m");
+                return;
+        }
+
+        assert_se(r >= 0);
+        assert_se(manager_startup(m, NULL, NULL, NULL) >= 0);
+
+        assert_se(u = unit_new(m, sizeof(Service)));
+        assert_se(unit_add_name(u, "foobar.service") == 0);
+
+        r = config_parse_unit_env_file(u->id, "fake", 1, "section", 1,
+                                      "EnvironmentFile", 0, "not-absolute",
+                                       &files, u);
+        assert_se(r == 0);
+        assert_se(strv_isempty(files));
+
+        r = config_parse_unit_env_file(u->id, "fake", 1, "section", 1,
+                                      "EnvironmentFile", 0, "/absolute1",
+                                       &files, u);
+        assert_se(r == 0);
+        assert_se(strv_length(files) == 1);
+
+        r = config_parse_unit_env_file(u->id, "fake", 1, "section", 1,
+                                      "EnvironmentFile", 0, "/absolute2",
+                                       &files, u);
+        assert_se(r == 0);
+        assert_se(strv_length(files) == 2);
+        assert_se(streq(files[0], "/absolute1"));
+        assert_se(streq(files[1], "/absolute2"));
+
+        r = config_parse_unit_env_file(u->id, "fake", 1, "section", 1,
+                                       "EnvironmentFile", 0, "",
+                                       &files, u);
+        assert_se(r == 0);
+        assert_se(strv_isempty(files));
+
+        r = config_parse_unit_env_file(u->id, "fake", 1, "section", 1,
+                                       "EnvironmentFile", 0, "/path/%n.conf",
+                                       &files, u);
+        assert_se(r == 0);
+        assert_se(strv_length(files) == 1);
+        assert_se(streq(files[0], "/path/foobar.service.conf"));
+}
+
 TEST(unit_dump_config_items) {
         unit_dump_config_items(stdout);
 }
@@ -820,7 +923,7 @@ TEST(config_parse_memory_limit) {
                 r = config_parse_memory_limit(NULL, "fake", 1, "section", 1,
                                               limit_tests[i].limit, 1,
                                               limit_tests[i].value, &c, NULL);
-                log_info("%s=%s\t%"PRIu64"==%"PRIu64"\n",
+                log_info("%s=%s\t%"PRIu64"==%"PRIu64,
                          limit_tests[i].limit, limit_tests[i].value,
                          *limit_tests[i].result, limit_tests[i].expected);
                 assert_se(r >= 0);
@@ -856,7 +959,7 @@ TEST(unit_is_recursive_template_dependency) {
         Unit *u;
         int r;
 
-        r = manager_new(UNIT_FILE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
+        r = manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
         if (manager_errno_skip_test(r)) {
                 log_notice_errno(r, "Skipping test: manager_new: %m");
                 return;
@@ -894,15 +997,106 @@ TEST(unit_is_recursive_template_dependency) {
         assert_se(unit_is_likely_recursive_template_dependency(u, "foobar@foobar@123.mount", "foobar@%n.mount") == 0);
 }
 
-DEFINE_CUSTOM_TEST_MAIN(
-        LOG_INFO,
+#define TEST_PATTERN(_regex, _allowed_patterns_count, _denied_patterns_count)   \
+        {                                                                       \
+                .regex = _regex,                                                \
+                .allowed_patterns_count = _allowed_patterns_count,              \
+                .denied_patterns_count = _denied_patterns_count                 \
+        }
 
-        _cleanup_(rm_rf_physical_and_freep) char *runtime_dir = NULL;
-        ({
-                if (enter_cgroup_subroot(NULL) == -ENOMEDIUM)
-                        return log_tests_skipped("cgroupfs not available");
+TEST(config_parse_log_filter_patterns) {
+        ExecContext c = {};
 
-                assert_se(runtime_dir = setup_fake_runtime_dir());
-        }),
+        static const struct {
+                const char *regex;
+                size_t allowed_patterns_count;
+                size_t denied_patterns_count;
+        } regex_tests[] = {
+                TEST_PATTERN("", 0, 0),
+                TEST_PATTERN(".*", 1, 0),
+                TEST_PATTERN("~.*", 1, 1),
+                TEST_PATTERN("", 0, 0),
+                TEST_PATTERN("~.*", 0, 1),
+                TEST_PATTERN("[.*", 0, 1),              /* Invalid pattern. */
+                TEST_PATTERN(".*gg.*", 1, 1),
+                TEST_PATTERN("~.*", 1, 1),              /* Already in the patterns list. */
+                TEST_PATTERN("[.*", 1, 1),              /* Invalid pattern. */
+                TEST_PATTERN("\\x7ehello", 2, 1),
+                TEST_PATTERN("", 0, 0),
+                TEST_PATTERN("~foobar", 0, 1),
+        };
 
-        /* no outro */);
+        if (ERRNO_IS_NOT_SUPPORTED(dlopen_pcre2()))
+                return (void) log_tests_skipped("PCRE2 support is not available");
+
+        for (size_t i = 0; i < ELEMENTSOF(regex_tests); i++) {
+                assert_se(config_parse_log_filter_patterns(NULL, "fake", 1, "section", 1, "LogFilterPatterns", 1,
+                                                           regex_tests[i].regex, &c, NULL) >= 0);
+
+                assert_se(set_size(c.log_filter_allowed_patterns) == regex_tests[i].allowed_patterns_count);
+                assert_se(set_size(c.log_filter_denied_patterns) == regex_tests[i].denied_patterns_count);
+
+                /* Ensure `~` is properly removed */
+                const char *p;
+                SET_FOREACH(p, c.log_filter_allowed_patterns)
+                        assert_se(p && p[0] != '~');
+                SET_FOREACH(p, c.log_filter_denied_patterns)
+                        assert_se(p && p[0] != '~');
+        }
+
+        exec_context_done(&c);
+}
+
+TEST(config_parse_open_file) {
+        _cleanup_(manager_freep) Manager *m = NULL;
+        _cleanup_(unit_freep) Unit *u = NULL;
+        _cleanup_(open_file_freep) OpenFile *of = NULL;
+        int r;
+
+        r = manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
+        if (manager_errno_skip_test(r)) {
+                log_notice_errno(r, "Skipping test: manager_new: %m");
+                return;
+        }
+
+        assert_se(r >= 0);
+        assert_se(manager_startup(m, NULL, NULL, NULL) >= 0);
+
+        assert_se(u = unit_new(m, sizeof(Service)));
+        assert_se(unit_add_name(u, "foobar.service") == 0);
+
+        r = config_parse_open_file(NULL, "fake", 1, "section", 1,
+                                   "OpenFile", 0, "/proc/1/ns/mnt:host-mount-namespace:read-only",
+                                   &of, u);
+        assert_se(r >= 0);
+        assert_se(of);
+        assert_se(streq(of->path, "/proc/1/ns/mnt"));
+        assert_se(streq(of->fdname, "host-mount-namespace"));
+        assert_se(of->flags == OPENFILE_READ_ONLY);
+
+        of = open_file_free(of);
+        r = config_parse_open_file(NULL, "fake", 1, "section", 1,
+                                   "OpenFile", 0, "/proc/1/ns/mnt::read-only",
+                                   &of, u);
+        assert_se(r >= 0);
+        assert_se(of);
+        assert_se(streq(of->path, "/proc/1/ns/mnt"));
+        assert_se(streq(of->fdname, "mnt"));
+        assert_se(of->flags == OPENFILE_READ_ONLY);
+
+        r = config_parse_open_file(NULL, "fake", 1, "section", 1,
+                                   "OpenFile", 0, "",
+                                   &of, u);
+        assert_se(r >= 0);
+        assert_se(!of);
+}
+
+static int intro(void) {
+        if (enter_cgroup_subroot(NULL) == -ENOMEDIUM)
+                return log_tests_skipped("cgroupfs not available");
+
+        assert_se(runtime_dir = setup_fake_runtime_dir());
+        return EXIT_SUCCESS;
+}
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_INFO, intro);

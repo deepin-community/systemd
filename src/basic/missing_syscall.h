@@ -363,6 +363,20 @@ static inline int missing_rt_sigqueueinfo(pid_t tgid, int sig, siginfo_t *info) 
 
 /* ======================================================================= */
 
+#if !HAVE_RT_TGSIGQUEUEINFO
+static inline int missing_rt_tgsigqueueinfo(pid_t tgid, pid_t tid, int sig, siginfo_t *info) {
+#  if defined __NR_rt_tgsigqueueinfo && __NR_rt_tgsigqueueinfo >= 0
+        return syscall(__NR_rt_tgsigqueueinfo, tgid, tid, sig, info);
+#  else
+#    error "__NR_rt_tgsigqueueinfo not defined"
+#  endif
+}
+
+#  define rt_tgsigqueueinfo missing_rt_tgsigqueueinfo
+#endif
+
+/* ======================================================================= */
+
 #if !HAVE_EXECVEAT
 static inline int missing_execveat(int dirfd, const char *pathname,
                                    char *const argv[], char *const envp[],
@@ -408,44 +422,6 @@ static inline int missing_close_range(int first_fd, int end_fd, unsigned flags) 
 }
 
 #  define close_range missing_close_range
-#endif
-
-/* ======================================================================= */
-
-#if !HAVE_EPOLL_PWAIT2
-
-/* Defined to be equivalent to the kernel's _NSIG_WORDS, i.e. the size of the array of longs that is
- * encapsulated by sigset_t. */
-#define KERNEL_NSIG_WORDS (64 / (sizeof(long) * 8))
-#define KERNEL_NSIG_BYTES (KERNEL_NSIG_WORDS * sizeof(long))
-
-struct epoll_event;
-
-static inline int missing_epoll_pwait2(
-                int fd,
-                struct epoll_event *events,
-                int maxevents,
-                const struct timespec *timeout,
-                const sigset_t *sigset) {
-
-#  if defined(__NR_epoll_pwait2) && HAVE_LINUX_TIME_TYPES_H
-        if (timeout) {
-                /* Convert from userspace timespec to kernel timespec */
-                struct __kernel_timespec ts = {
-                        .tv_sec = timeout->tv_sec,
-                        .tv_nsec = timeout->tv_nsec,
-                };
-
-                return syscall(__NR_epoll_pwait2, fd, events, maxevents, &ts, sigset, sigset ? KERNEL_NSIG_BYTES : 0);
-        } else
-                return syscall(__NR_epoll_pwait2, fd, events, maxevents, NULL, sigset, sigset ? KERNEL_NSIG_BYTES : 0);
-#  else
-        errno = ENOSYS;
-        return -1;
-#  endif
-}
-
-#  define epoll_pwait2 missing_epoll_pwait2
 #endif
 
 /* ======================================================================= */
@@ -569,6 +545,10 @@ static inline int missing_open_tree(
 #define MOVE_MOUNT_F_EMPTY_PATH 0x00000004 /* Empty from path permitted */
 #endif
 
+#ifndef MOVE_MOUNT_T_EMPTY_PATH
+#define MOVE_MOUNT_T_EMPTY_PATH 0x00000040 /* Empty to path permitted */
+#endif
+
 static inline int missing_move_mount(
                 int from_dfd,
                 const char *from_pathname,
@@ -589,6 +569,78 @@ static inline int missing_move_mount(
 
 /* ======================================================================= */
 
+#if !HAVE_FSOPEN
+
+#ifndef FSOPEN_CLOEXEC
+#define FSOPEN_CLOEXEC 0x00000001
+#endif
+
+static inline int missing_fsopen(const char *fsname, unsigned flags) {
+#  if defined __NR_fsopen && __NR_fsopen >= 0
+        return syscall(__NR_fsopen, fsname, flags);
+#  else
+        errno = ENOSYS;
+        return -1;
+#  endif
+}
+
+#  define fsopen missing_fsopen
+#endif
+
+/* ======================================================================= */
+
+#if !HAVE_FSCONFIG
+
+#ifndef FSCONFIG_SET_FLAG
+#define FSCONFIG_SET_FLAG 0 /* Set parameter, supplying no value */
+#endif
+
+#ifndef FSCONFIG_SET_STRING
+#define FSCONFIG_SET_STRING 1 /* Set parameter, supplying a string value */
+#endif
+
+#ifndef FSCONFIG_SET_FD
+#define FSCONFIG_SET_FD 5 /* Set parameter, supplying an object by fd */
+#endif
+
+#ifndef FSCONFIG_CMD_CREATE
+#define FSCONFIG_CMD_CREATE 6 /* Invoke superblock creation */
+#endif
+
+static inline int missing_fsconfig(int fd, unsigned cmd, const char *key, const void *value, int aux) {
+#  if defined __NR_fsconfig && __NR_fsconfig >= 0
+        return syscall(__NR_fsconfig, fd, cmd, key, value, aux);
+#  else
+        errno = ENOSYS;
+        return -1;
+#  endif
+}
+
+#  define fsconfig missing_fsconfig
+#endif
+
+/* ======================================================================= */
+
+#if !HAVE_FSMOUNT
+
+#ifndef FSMOUNT_CLOEXEC
+#define FSMOUNT_CLOEXEC 0x00000001
+#endif
+
+static inline int missing_fsmount(int fd, unsigned flags, unsigned ms_flags) {
+#  if defined __NR_fsmount && __NR_fsmount >= 0
+        return syscall(__NR_fsmount, fd, flags, ms_flags);
+#  else
+        errno = ENOSYS;
+        return -1;
+#  endif
+}
+
+#  define fsmount missing_fsmount
+#endif
+
+/* ======================================================================= */
+
 #if !HAVE_GETDENTS64
 
 static inline ssize_t missing_getdents64(int fd, void *buffer, size_t length) {
@@ -601,4 +653,18 @@ static inline ssize_t missing_getdents64(int fd, void *buffer, size_t length) {
 }
 
 #  define getdents64 missing_getdents64
+#endif
+
+/* ======================================================================= */
+
+/* glibc does not provide clone() on ia64, only clone2(). Not only that, but it also doesn't provide a
+ * prototype, only the symbol in the shared library (it provides a prototype for clone(), but not the
+ * symbol in the shared library). */
+#if defined(__ia64__)
+int __clone2(int (*fn)(void *), void *stack_base, size_t stack_size, int flags, void *arg);
+#define HAVE_CLONE 0
+#else
+/* We know that everywhere else clone() is available, so we don't bother with a meson check (that takes time
+ * at build time) and just define it. Once the kernel drops ia64 support, we can drop this too. */
+#define HAVE_CLONE 1
 #endif

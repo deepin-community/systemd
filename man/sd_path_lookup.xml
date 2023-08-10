@@ -55,6 +55,7 @@
 
         <constant>SD_PATH_USER_CONFIGURATION</constant>,
         <constant>SD_PATH_USER_RUNTIME</constant>,
+        <constant>SD_PATH_USER_STATE_PRIVATE</constant>,
         <constant>SD_PATH_USER_STATE_CACHE</constant>,
 
         <constant>SD_PATH_USER</constant>,
@@ -100,6 +101,11 @@
         <constant>SD_PATH_CATALOG</constant>,
 
         <constant>SD_PATH_SYSTEMD_SEARCH_NETWORK</constant>,
+
+        <constant>SD_PATH_SYSTEMD_SYSTEM_ENVIRONMENT_GENERATOR</constant>,
+        <constant>SD_PATH_SYSTEMD_USER_ENVIRONMENT_GENERATOR</constant>,
+        <constant>SD_PATH_SYSTEMD_SEARCH_SYSTEM_ENVIRONMENT_GENERATOR</constant>,
+        <constant>SD_PATH_SYSTEMD_SEARCH_USER_ENVIRONMENT_GENERATOR</constant>,
 };</funcsynopsisinfo>
 
       <funcprototype>

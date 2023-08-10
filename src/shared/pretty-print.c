@@ -6,7 +6,7 @@
 
 #include "alloc-util.h"
 #include "conf-files.h"
-#include "def.h"
+#include "constants.h"
 #include "env-util.h"
 #include "fd-util.h"
 #include "fileio.h"
@@ -16,7 +16,6 @@
 #include "string-util.h"
 #include "strv.h"
 #include "terminal-util.h"
-#include "util.h"
 
 bool urlify_enabled(void) {
 #if ENABLE_URLIFY
@@ -43,7 +42,7 @@ int terminal_urlify(const char *url, const char *text, char **ret) {
 
         assert(url);
 
-        /* Takes an URL and a pretty string and formats it as clickable link for the terminal. See
+        /* Takes a URL and a pretty string and formats it as clickable link for the terminal. See
          * https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda for details. */
 
         if (isempty(text))
@@ -168,7 +167,6 @@ static int cat_file(const char *filename, bool newline) {
 }
 
 int cat_files(const char *file, char **dropins, CatFlags flags) {
-        char **path;
         int r;
 
         if (file) {
@@ -284,10 +282,9 @@ static int guess_type(const char **name, char ***prefixes, bool *is_collection, 
 int conf_files_cat(const char *root, const char *name) {
         _cleanup_strv_free_ char **dirs = NULL, **files = NULL;
         _cleanup_free_ char *path = NULL;
-        char **prefix, **prefixes = NULL; /* explicit initialization to appease gcc */
+        char **prefixes = NULL; /* explicit initialization to appease gcc */
         bool is_collection;
         const char *extension;
-        char **t;
         int r;
 
         r = guess_type(&name, &prefixes, &is_collection, &extension);

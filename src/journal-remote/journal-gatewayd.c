@@ -14,6 +14,8 @@
 #include "sd-journal.h"
 
 #include "alloc-util.h"
+#include "build.h"
+#include "bus-locator.h"
 #include "bus-util.h"
 #include "errno-util.h"
 #include "fd-util.h"
@@ -29,8 +31,8 @@
 #include "parse-util.h"
 #include "pretty-print.h"
 #include "sigbus.h"
+#include "signal-util.h"
 #include "tmpfile-util.h"
-#include "util.h"
 
 #define JOURNAL_WAIT_TIMEOUT (10*USEC_PER_SEC)
 
@@ -127,7 +129,7 @@ static int request_meta_ensure_tmp(RequestMeta *m) {
         if (m->tmp)
                 rewind(m->tmp);
         else {
-                _cleanup_close_ int fd = -1;
+                _cleanup_close_ int fd = -EBADF;
 
                 fd = open_tmpfile_unlinkable("/tmp", O_RDWR|O_CLOEXEC);
                 if (fd < 0)
@@ -147,11 +149,12 @@ static ssize_t request_reader_entries(
                 char *buf,
                 size_t max) {
 
-        RequestMeta *m = cls;
+        RequestMeta *m = ASSERT_PTR(cls);
+        dual_timestamp previous_ts = DUAL_TIMESTAMP_NULL;
+        sd_id128_t previous_boot_id = SD_ID128_NULL;
         int r;
         size_t n, k;
 
-        assert(m);
         assert(buf);
         assert(max > 0);
         assert(pos >= m->delta);
@@ -223,7 +226,7 @@ static ssize_t request_reader_entries(
                 }
 
                 r = show_journal_entry(m->tmp, m->journal, m->mode, 0, OUTPUT_FULL_WIDTH,
-                                   NULL, NULL, NULL);
+                                   NULL, NULL, NULL, &previous_ts, &previous_boot_id);
                 if (r < 0) {
                         log_error_errno(r, "Failed to serialize item: %m");
                         return MHD_CONTENT_READER_END_WITH_ERROR;
@@ -255,7 +258,7 @@ static ssize_t request_reader_entries(
         errno = 0;
         k = fread(buf, 1, n, m->tmp);
         if (k != n) {
-                log_error("Failed to read from file: %s", errno != 0 ? strerror_safe(errno) : "Premature EOF");
+                log_error("Failed to read from file: %s", STRERROR_OR_EOF(errno));
                 return MHD_CONTENT_READER_END_WITH_ERROR;
         }
 
@@ -328,7 +331,7 @@ static int request_parse_range(
                                 return r;
                 }
 
-                p = (colon2 ? colon2 : colon) + 1;
+                p = (colon2 ?: colon) + 1;
                 if (*p) {
                         r = safe_atou64(p, &m->n_entries);
                         if (r < 0)
@@ -359,11 +362,9 @@ static mhd_result request_parse_arguments_iterator(
                 const char *key,
                 const char *value) {
 
-        RequestMeta *m = cls;
+        RequestMeta *m = ASSERT_PTR(cls);
         _cleanup_free_ char *p = NULL;
         int r;
-
-        assert(m);
 
         if (isempty(key)) {
                 m->argument_parse_error = -EINVAL;
@@ -467,11 +468,10 @@ static int request_handler_entries(
                 void *connection_cls) {
 
         _cleanup_(MHD_destroy_responsep) struct MHD_Response *response = NULL;
-        RequestMeta *m = connection_cls;
+        RequestMeta *m = ASSERT_PTR(connection_cls);
         int r;
 
         assert(connection);
-        assert(m);
 
         r = open_journal(m);
         if (r < 0)
@@ -541,11 +541,10 @@ static ssize_t request_reader_fields(
                 char *buf,
                 size_t max) {
 
-        RequestMeta *m = cls;
+        RequestMeta *m = ASSERT_PTR(cls);
         int r;
         size_t n, k;
 
-        assert(m);
         assert(buf);
         assert(max > 0);
         assert(pos >= m->delta);
@@ -603,7 +602,7 @@ static ssize_t request_reader_fields(
         errno = 0;
         k = fread(buf, 1, n, m->tmp);
         if (k != n) {
-                log_error("Failed to read from file: %s", errno != 0 ? strerror_safe(errno) : "Premature EOF");
+                log_error("Failed to read from file: %s", STRERROR_OR_EOF(errno));
                 return MHD_CONTENT_READER_END_WITH_ERROR;
         }
 
@@ -616,11 +615,10 @@ static int request_handler_fields(
                 void *connection_cls) {
 
         _cleanup_(MHD_destroy_responsep) struct MHD_Response *response = NULL;
-        RequestMeta *m = connection_cls;
+        RequestMeta *m = ASSERT_PTR(connection_cls);
         int r;
 
         assert(connection);
-        assert(m);
 
         r = open_journal(m);
         if (r < 0)
@@ -674,7 +672,7 @@ static int request_handler_file(
                 const char *mime_type) {
 
         _cleanup_(MHD_destroy_responsep) struct MHD_Response *response = NULL;
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         struct stat st;
 
         assert(connection);
@@ -708,14 +706,7 @@ static int get_virtualization(char **v) {
         if (r < 0)
                 return r;
 
-        r = sd_bus_get_property_string(
-                        bus,
-                        "org.freedesktop.systemd1",
-                        "/org/freedesktop/systemd1",
-                        "org.freedesktop.systemd1.Manager",
-                        "Virtualization",
-                        NULL,
-                        &b);
+        r = bus_get_property_string(bus, bus_systemd_mgr, "Virtualization", NULL, &b);
         if (r < 0)
                 return r;
 
@@ -734,15 +725,14 @@ static int request_handler_machine(
                 void *connection_cls) {
 
         _cleanup_(MHD_destroy_responsep) struct MHD_Response *response = NULL;
-        RequestMeta *m = connection_cls;
+        RequestMeta *m = ASSERT_PTR(connection_cls);
         int r;
-        _cleanup_free_ char* hostname = NULL, *os_name = NULL;
+        _cleanup_free_ char* hostname = NULL, *pretty_name = NULL, *os_name = NULL;
         uint64_t cutoff_from = 0, cutoff_to = 0, usage = 0;
         sd_id128_t mid, bid;
         _cleanup_free_ char *v = NULL, *json = NULL;
 
         assert(connection);
-        assert(m);
 
         r = open_journal(m);
         if (r < 0)
@@ -768,7 +758,10 @@ static int request_handler_machine(
         if (r < 0)
                 return mhd_respondf(connection, r, MHD_HTTP_INTERNAL_SERVER_ERROR, "Failed to determine disk usage: %m");
 
-        (void) parse_os_release(NULL, "PRETTY_NAME", &os_name);
+        (void) parse_os_release(
+                        NULL,
+                        "PRETTY_NAME", &pretty_name,
+                        "NAME=", &os_name);
         (void) get_virtualization(&v);
 
         r = asprintf(&json,
@@ -783,7 +776,7 @@ static int request_handler_machine(
                      SD_ID128_FORMAT_VAL(mid),
                      SD_ID128_FORMAT_VAL(bid),
                      hostname_cleanup(hostname),
-                     os_name ? os_name : "Linux",
+                     os_release_pretty_name(pretty_name, os_name),
                      v ? v : "bare",
                      usage,
                      cutoff_from,
@@ -911,7 +904,7 @@ static int parse_argv(int argc, char *argv[]) {
 
         while ((c = getopt_long(argc, argv, "hD:", options, NULL)) >= 0)
 
-                switch(c) {
+                switch (c) {
 
                 case 'h':
                         return help();
@@ -1012,11 +1005,15 @@ static int parse_argv(int argc, char *argv[]) {
 
 static int run(int argc, char *argv[]) {
         _cleanup_(MHD_stop_daemonp) struct MHD_Daemon *d = NULL;
+        static const struct sigaction sigterm = {
+                .sa_handler = nop_signal_handler,
+                .sa_flags = SA_RESTART,
+        };
         struct MHD_OptionItem opts[] = {
-                { MHD_OPTION_NOTIFY_COMPLETED,
-                  (intptr_t) request_meta_free, NULL },
                 { MHD_OPTION_EXTERNAL_LOGGER,
                   (intptr_t) microhttpd_logger, NULL },
+                { MHD_OPTION_NOTIFY_COMPLETED,
+                  (intptr_t) request_meta_free, NULL },
                 { MHD_OPTION_END, 0, NULL },
                 { MHD_OPTION_END, 0, NULL },
                 { MHD_OPTION_END, 0, NULL },
@@ -1048,6 +1045,7 @@ static int run(int argc, char *argv[]) {
                 return r;
 
         sigbus_install();
+        assert_se(sigaction(SIGTERM, &sigterm, NULL) >= 0);
 
         r = setup_gnutls_logger(NULL);
         if (r < 0)

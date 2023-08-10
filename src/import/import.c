@@ -7,6 +7,7 @@
 #include "sd-id128.h"
 
 #include "alloc-util.h"
+#include "build.h"
 #include "discover-image.h"
 #include "env-util.h"
 #include "fd-util.h"
@@ -82,7 +83,7 @@ static int normalize_local(const char *local, char **ret) {
 }
 
 static int open_source(const char *path, const char *local, int *ret_open_fd) {
-        _cleanup_close_ int open_fd = -1;
+        _cleanup_close_ int open_fd = -EBADF;
         int retval;
 
         assert(local);
@@ -91,7 +92,7 @@ static int open_source(const char *path, const char *local, int *ret_open_fd) {
         if (path) {
                 open_fd = open(path, O_RDONLY|O_CLOEXEC|O_NOCTTY);
                 if (open_fd < 0)
-                        return log_error_errno(errno, "Failed to open raw image to import: %m");
+                        return log_error_errno(errno, "Failed to open source file '%s': %m", path);
 
                 retval = open_fd;
 
@@ -131,7 +132,7 @@ static int import_tar(int argc, char *argv[], void *userdata) {
         _cleanup_free_ char *ll = NULL, *normalized = NULL;
         _cleanup_(sd_event_unrefp) sd_event *event = NULL;
         const char *path = NULL, *local = NULL;
-        _cleanup_close_ int open_fd = -1;
+        _cleanup_close_ int open_fd = -EBADF;
         int r, fd;
 
         if (argc >= 2)
@@ -203,7 +204,7 @@ static int import_raw(int argc, char *argv[], void *userdata) {
         _cleanup_free_ char *ll = NULL, *normalized = NULL;
         _cleanup_(sd_event_unrefp) sd_event *event = NULL;
         const char *path = NULL, *local = NULL;
-        _cleanup_close_ int open_fd = -1;
+        _cleanup_close_ int open_fd = -EBADF;
         int r, fd;
 
         if (argc >= 2)

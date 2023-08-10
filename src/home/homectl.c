@@ -5,9 +5,12 @@
 #include "sd-bus.h"
 
 #include "ask-password-api.h"
+#include "build.h"
 #include "bus-common-errors.h"
 #include "bus-error.h"
 #include "bus-locator.h"
+#include "cap-list.h"
+#include "capability-util.h"
 #include "cgroup-util.h"
 #include "dns-domain.h"
 #include "env-util.h"
@@ -27,20 +30,20 @@
 #include "pager.h"
 #include "parse-argument.h"
 #include "parse-util.h"
+#include "password-quality-util.h"
 #include "path-util.h"
 #include "percent-util.h"
 #include "pkcs11-util.h"
 #include "pretty-print.h"
 #include "process-util.h"
-#include "pwquality-util.h"
 #include "rlimit-util.h"
 #include "spawn-polkit-agent.h"
 #include "terminal-util.h"
 #include "uid-alloc-range.h"
-#include "user-record-pwquality.h"
+#include "user-record.h"
+#include "user-record-password-quality.h"
 #include "user-record-show.h"
 #include "user-record-util.h"
-#include "user-record.h"
 #include "user-util.h"
 #include "verbs.h"
 
@@ -61,6 +64,11 @@ static uint64_t arg_disk_size_relative = UINT64_MAX;
 static char **arg_pkcs11_token_uri = NULL;
 static char **arg_fido2_device = NULL;
 static Fido2EnrollFlags arg_fido2_lock_with = FIDO2ENROLL_PIN | FIDO2ENROLL_UP;
+#if HAVE_LIBFIDO2
+static int arg_fido2_cred_alg = COSE_ES256;
+#else
+static int arg_fido2_cred_alg = 0;
+#endif
 static bool arg_recovery_key = false;
 static JsonFormatFlags arg_json_format_flags = JSON_FORMAT_OFF;
 static bool arg_and_resize = false;
@@ -70,6 +78,8 @@ static enum {
         EXPORT_FORMAT_STRIPPED,      /* strip "state" + "binding", but leave signature in place */
         EXPORT_FORMAT_MINIMAL,       /* also strip signature */
 } arg_export_format = EXPORT_FORMAT_FULL;
+static uint64_t arg_capability_bounding_set = UINT64_MAX;
+static uint64_t arg_capability_ambient_set = UINT64_MAX;
 
 STATIC_DESTRUCTOR_REGISTER(arg_identity_extra, json_variant_unrefp);
 STATIC_DESTRUCTOR_REGISTER(arg_identity_extra_this_machine, json_variant_unrefp);
@@ -103,7 +113,7 @@ static int acquire_bus(sd_bus **bus) {
         if (*bus)
                 return 0;
 
-        r = bus_connect_transport(arg_transport, arg_host, false, bus);
+        r = bus_connect_transport(arg_transport, arg_host, RUNTIME_SCOPE_SYSTEM, bus);
         if (r < 0)
                 return bus_log_connect_error(r, arg_transport);
 
@@ -200,25 +210,26 @@ static int acquire_existing_password(
                 bool emphasize_current,
                 AskPasswordFlags flags) {
 
-        _cleanup_(strv_free_erasep) char **password = NULL;
+        _cleanup_strv_free_erase_ char **password = NULL;
+        _cleanup_(erase_and_freep) char *envpw = NULL;
         _cleanup_free_ char *question = NULL;
-        char *e;
         int r;
 
         assert(user_name);
         assert(hr);
 
-        e = getenv("PASSWORD");
-        if (e) {
+        r = getenv_steal_erase("PASSWORD", &envpw);
+        if (r < 0)
+                return log_error_errno(r, "Failed to acquire password from environment: %m");
+        if (r > 0) {
                 /* People really shouldn't use environment variables for passing passwords. We support this
                  * only for testing purposes, and do not document the behaviour, so that people won't
                  * actually use this outside of testing. */
 
-                r = user_record_set_password(hr, STRV_MAKE(e), true);
+                r = user_record_set_password(hr, STRV_MAKE(envpw), true);
                 if (r < 0)
                         return log_error_errno(r, "Failed to store password: %m");
 
-                assert_se(unsetenv_erase("PASSWORD") >= 0);
                 return 1;
         }
 
@@ -260,25 +271,26 @@ static int acquire_recovery_key(
                 UserRecord *hr,
                 AskPasswordFlags flags) {
 
-        _cleanup_(strv_free_erasep) char **recovery_key = NULL;
+        _cleanup_strv_free_erase_ char **recovery_key = NULL;
+        _cleanup_(erase_and_freep) char *envpw = NULL;
         _cleanup_free_ char *question = NULL;
-        char *e;
         int r;
 
         assert(user_name);
         assert(hr);
 
-        e = getenv("RECOVERY_KEY");
-        if (e) {
+        r = getenv_steal_erase("PASSWORD", &envpw);
+        if (r < 0)
+                return log_error_errno(r, "Failed to acquire password from environment: %m");
+        if (r > 0) {
                 /* People really shouldn't use environment variables for passing secrets. We support this
                  * only for testing purposes, and do not document the behaviour, so that people won't
                  * actually use this outside of testing. */
 
-                r = user_record_set_password(hr, STRV_MAKE(e), true); /* recovery keys are stored in the record exactly like regular passwords! */
+                r = user_record_set_password(hr, STRV_MAKE(envpw), true); /* recovery keys are stored in the record exactly like regular passwords! */
                 if (r < 0)
                         return log_error_errno(r, "Failed to store recovery key: %m");
 
-                assert_se(unsetenv_erase("RECOVERY_KEY") >= 0);
                 return 1;
         }
 
@@ -317,21 +329,22 @@ static int acquire_token_pin(
                 UserRecord *hr,
                 AskPasswordFlags flags) {
 
-        _cleanup_(strv_free_erasep) char **pin = NULL;
+        _cleanup_strv_free_erase_ char **pin = NULL;
+        _cleanup_(erase_and_freep) char *envpin = NULL;
         _cleanup_free_ char *question = NULL;
-        char *e;
         int r;
 
         assert(user_name);
         assert(hr);
 
-        e = getenv("PIN");
-        if (e) {
-                r = user_record_set_token_pin(hr, STRV_MAKE(e), false);
+        r = getenv_steal_erase("PIN", &envpin);
+        if (r < 0)
+                return log_error_errno(r, "Failed to acquire PIN from environment: %m");
+        if (r > 0) {
+                r = user_record_set_token_pin(hr, STRV_MAKE(envpin), false);
                 if (r < 0)
                         return log_error_errno(r, "Failed to store token PIN: %m");
 
-                assert_se(unsetenv_erase("PIN") >= 0);
                 return 1;
         }
 
@@ -554,7 +567,6 @@ static int acquire_passed_secrets(const char *user_name, UserRecord **ret) {
 static int activate_home(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r, ret = 0;
-        char **i;
 
         r = acquire_bus(&bus);
         if (r < 0)
@@ -603,7 +615,6 @@ static int activate_home(int argc, char *argv[], void *userdata) {
 static int deactivate_home(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r, ret = 0;
-        char **i;
 
         r = acquire_bus(&bus);
         if (r < 0)
@@ -688,9 +699,9 @@ static char **mangle_user_list(char **list, char ***ret_allocated) {
 
 static int inspect_home(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
-        _cleanup_(strv_freep) char **mangled_list = NULL;
+        _cleanup_strv_free_ char **mangled_list = NULL;
         int r, ret = 0;
-        char **items, **i;
+        char **items;
 
         pager_open(arg_pager_flags);
 
@@ -772,9 +783,9 @@ static int inspect_home(int argc, char *argv[], void *userdata) {
 
 static int authenticate_home(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
-        _cleanup_(strv_freep) char **mangled_list = NULL;
+        _cleanup_strv_free_ char **mangled_list = NULL;
         int r, ret = 0;
-        char **i, **items;
+        char **items;
 
         items = mangle_user_list(strv_skip(argv, 1), &mangled_list);
         if (!items)
@@ -1084,7 +1095,6 @@ static int add_disposition(JsonVariant **v) {
 static int acquire_new_home_record(UserRecord **ret) {
         _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
         _cleanup_(user_record_unrefp) UserRecord *hr = NULL;
-        char **i;
         int r;
 
         assert(ret);
@@ -1114,7 +1124,7 @@ static int acquire_new_home_record(UserRecord **ret) {
         }
 
         STRV_FOREACH(i, arg_fido2_device) {
-                r = identity_add_fido2_parameters(&v, *i, arg_fido2_lock_with);
+                r = identity_add_fido2_parameters(&v, *i, arg_fido2_lock_with, arg_fido2_cred_alg);
                 if (r < 0)
                         return r;
         }
@@ -1150,33 +1160,25 @@ static int acquire_new_password(
                 bool suggest,
                 char **ret) {
 
+        _cleanup_(erase_and_freep) char *envpw = NULL;
         unsigned i = 5;
-        char *e;
         int r;
 
         assert(user_name);
         assert(hr);
 
-        e = getenv("NEWPASSWORD");
-        if (e) {
-                _cleanup_(erase_and_freep) char *copy = NULL;
-
+        r = getenv_steal_erase("NEWPASSWORD", &envpw);
+        if (r < 0)
+                return log_error_errno(r, "Failed to acquire password from environment: %m");
+        if (r > 0) {
                 /* As above, this is not for use, just for testing */
 
-                if (ret) {
-                        copy = strdup(e);
-                        if (!copy)
-                                return log_oom();
-                }
-
-                r = user_record_set_password(hr, STRV_MAKE(e), /* prepend = */ true);
+                r = user_record_set_password(hr, STRV_MAKE(envpw), /* prepend = */ true);
                 if (r < 0)
                         return log_error_errno(r, "Failed to store password: %m");
 
-                assert_se(unsetenv_erase("NEWPASSWORD") >= 0);
-
                 if (ret)
-                        *ret = TAKE_PTR(copy);
+                        *ret = TAKE_PTR(envpw);
 
                 return 0;
         }
@@ -1185,7 +1187,7 @@ static int acquire_new_password(
                 (void) suggest_passwords();
 
         for (;;) {
-                _cleanup_(strv_free_erasep) char **first = NULL, **second = NULL;
+                _cleanup_strv_free_erase_ char **first = NULL, **second = NULL;
                 _cleanup_free_ char *question = NULL;
 
                 if (--i == 0)
@@ -1321,7 +1323,7 @@ static int create_home(int argc, char *argv[], void *userdata) {
 
                 /* If password quality enforcement is disabled, let's at least warn client side */
 
-                r = user_record_quality_check_password(hr, hr, &error);
+                r = user_record_check_password_quality(hr, hr, &error);
                 if (r < 0)
                         log_warning_errno(r, "Specified password does not pass quality checks (%s), proceeding anyway.", bus_error_message(&error, r));
         }
@@ -1375,7 +1377,6 @@ static int create_home(int argc, char *argv[], void *userdata) {
 static int remove_home(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r, ret = 0;
-        char **i;
 
         r = acquire_bus(&bus);
         if (r < 0)
@@ -1413,7 +1414,6 @@ static int acquire_updated_home_record(
 
         _cleanup_(json_variant_unrefp) JsonVariant *json = NULL;
         _cleanup_(user_record_unrefp) UserRecord *hr = NULL;
-        char **i;
         int r;
 
         assert(ret);
@@ -1483,7 +1483,7 @@ static int acquire_updated_home_record(
         }
 
         STRV_FOREACH(i, arg_fido2_device) {
-                r = identity_add_fido2_parameters(&json, *i, arg_fido2_lock_with);
+                r = identity_add_fido2_parameters(&json, *i, arg_fido2_lock_with, arg_fido2_cred_alg);
                 if (r < 0)
                         return r;
         }
@@ -1693,9 +1693,13 @@ static int passwd_home(int argc, char *argv[], void *userdata) {
         int r;
 
         if (arg_pkcs11_token_uri)
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "To change the PKCS#11 security token use 'homectl update --pkcs11-token-uri=…'.");
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "To change the PKCS#11 security token use 'homectl update --pkcs11-token-uri=%s'.",
+                                       special_glyph(SPECIAL_GLYPH_ELLIPSIS));
         if (arg_fido2_device)
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "To change the FIDO2 security token use 'homectl update --fido2-device=…'.");
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "To change the FIDO2 security token use 'homectl update --fido2-device=%s'.",
+                                       special_glyph(SPECIAL_GLYPH_ELLIPSIS));
         if (identity_properties_specified())
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "The 'passwd' verb does not permit changing other record properties at the same time.");
 
@@ -1863,7 +1867,6 @@ static int resize_home(int argc, char *argv[], void *userdata) {
 static int lock_home(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r, ret = 0;
-        char **i;
 
         r = acquire_bus(&bus);
         if (r < 0)
@@ -1895,7 +1898,6 @@ static int lock_home(int argc, char *argv[], void *userdata) {
 static int unlock_home(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r, ret = 0;
-        char **i;
 
         r = acquire_bus(&bus);
         if (r < 0)
@@ -1946,7 +1948,7 @@ static int with_home(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         _cleanup_(user_record_unrefp) UserRecord *secret = NULL;
-        _cleanup_close_ int acquired_fd = -1;
+        _cleanup_close_ int acquired_fd = -EBADF;
         _cleanup_strv_free_ char **cmdline  = NULL;
         const char *home;
         int r, ret;
@@ -2212,6 +2214,10 @@ static int help(int argc, char *argv[], void *userdata) {
                "  -d --home-dir=PATH           Home directory\n"
                "  -u --uid=UID                 Numeric UID for user\n"
                "  -G --member-of=GROUP         Add user to group\n"
+               "     --capability-bounding-set=CAPS\n"
+               "                               Bounding POSIX capability set\n"
+               "     --capability-ambient-set=CAPS\n"
+               "                               Ambient POSIX capability set\n"
                "     --skel=PATH               Skeleton directory to use\n"
                "     --shell=PATH              Shell for account\n"
                "     --setenv=VARIABLE[=VALUE] Set an environment variable at log-in\n"
@@ -2294,6 +2300,8 @@ static int help(int argc, char *argv[], void *userdata) {
                "                               Memory cost for PBKDF in bytes\n"
                "     --luks-pbkdf-parallel-threads=NUMBER\n"
                "                               Number of parallel threads for PKBDF\n"
+               "     --luks-sector-size=BYTES\n"
+               "                               Sector size for LUKS encryption in bytes\n"
                "     --luks-extra-mount-options=OPTIONS\n"
                "                               LUKS extra mount options\n"
                "     --auto-resize-mode=MODE   Automatically grow/shrink home on login/logout\n"
@@ -2372,9 +2380,11 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_IO_WEIGHT,
                 ARG_LUKS_PBKDF_TYPE,
                 ARG_LUKS_PBKDF_HASH_ALGORITHM,
+                ARG_LUKS_PBKDF_FORCE_ITERATIONS,
                 ARG_LUKS_PBKDF_TIME_COST,
                 ARG_LUKS_PBKDF_MEMORY_COST,
                 ARG_LUKS_PBKDF_PARALLEL_THREADS,
+                ARG_LUKS_SECTOR_SIZE,
                 ARG_RATE_LIMIT_INTERVAL,
                 ARG_RATE_LIMIT_BURST,
                 ARG_STOP_DELAY,
@@ -2399,6 +2409,9 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_LUKS_EXTRA_MOUNT_OPTIONS,
                 ARG_AUTO_RESIZE_MODE,
                 ARG_REBALANCE_WEIGHT,
+                ARG_FIDO2_CRED_ALG,
+                ARG_CAPABILITY_BOUNDING_SET,
+                ARG_CAPABILITY_AMBIENT_SET,
         };
 
         static const struct option options[] = {
@@ -2451,9 +2464,11 @@ static int parse_argv(int argc, char *argv[]) {
                 { "luks-volume-key-size",        required_argument, NULL, ARG_LUKS_VOLUME_KEY_SIZE        },
                 { "luks-pbkdf-type",             required_argument, NULL, ARG_LUKS_PBKDF_TYPE             },
                 { "luks-pbkdf-hash-algorithm",   required_argument, NULL, ARG_LUKS_PBKDF_HASH_ALGORITHM   },
+                { "luks-pbkdf-force-iterations", required_argument, NULL, ARG_LUKS_PBKDF_FORCE_ITERATIONS },
                 { "luks-pbkdf-time-cost",        required_argument, NULL, ARG_LUKS_PBKDF_TIME_COST        },
                 { "luks-pbkdf-memory-cost",      required_argument, NULL, ARG_LUKS_PBKDF_MEMORY_COST      },
                 { "luks-pbkdf-parallel-threads", required_argument, NULL, ARG_LUKS_PBKDF_PARALLEL_THREADS },
+                { "luks-sector-size",            required_argument, NULL, ARG_LUKS_SECTOR_SIZE            },
                 { "nosuid",                      required_argument, NULL, ARG_NOSUID                      },
                 { "nodev",                       required_argument, NULL, ARG_NODEV                       },
                 { "noexec",                      required_argument, NULL, ARG_NOEXEC                      },
@@ -2475,6 +2490,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "json",                        required_argument, NULL, ARG_JSON                        },
                 { "export-format",               required_argument, NULL, ARG_EXPORT_FORMAT               },
                 { "pkcs11-token-uri",            required_argument, NULL, ARG_PKCS11_TOKEN_URI            },
+                { "fido2-credential-algorithm",  required_argument, NULL, ARG_FIDO2_CRED_ALG              },
                 { "fido2-device",                required_argument, NULL, ARG_FIDO2_DEVICE                },
                 { "fido2-with-client-pin",       required_argument, NULL, ARG_FIDO2_WITH_PIN              },
                 { "fido2-with-user-presence",    required_argument, NULL, ARG_FIDO2_WITH_UP               },
@@ -2486,6 +2502,8 @@ static int parse_argv(int argc, char *argv[]) {
                 { "luks-extra-mount-options",    required_argument, NULL, ARG_LUKS_EXTRA_MOUNT_OPTIONS    },
                 { "auto-resize-mode",            required_argument, NULL, ARG_AUTO_RESIZE_MODE            },
                 { "rebalance-weight",            required_argument, NULL, ARG_REBALANCE_WEIGHT            },
+                { "capability-bounding-set",     required_argument, NULL, ARG_CAPABILITY_BOUNDING_SET     },
+                { "capability-ambient-set",      required_argument, NULL, ARG_CAPABILITY_AMBIENT_SET      },
                 {}
         };
 
@@ -2961,8 +2979,6 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case ARG_DISK_SIZE:
                         if (isempty(optarg)) {
-                                const char *prop;
-
                                 FOREACH_STRING(prop, "diskSize", "diskSizeRelative", "rebalanceWeight") {
                                         r = drop_from_identity(prop);
                                         if (r < 0)
@@ -3071,10 +3087,12 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_LUKS_VOLUME_KEY_SIZE:
+                case ARG_LUKS_PBKDF_FORCE_ITERATIONS:
                 case ARG_LUKS_PBKDF_PARALLEL_THREADS:
                 case ARG_RATE_LIMIT_BURST: {
                         const char *field =
                                        c == ARG_LUKS_VOLUME_KEY_SIZE ? "luksVolumeKeySize" :
+                                c == ARG_LUKS_PBKDF_FORCE_ITERATIONS ? "luksPbkdfForceIterations" :
                                 c == ARG_LUKS_PBKDF_PARALLEL_THREADS ? "luksPbkdfParallelThreads" :
                                            c == ARG_RATE_LIMIT_BURST ? "rateLimitBurst" : NULL;
                         unsigned n;
@@ -3094,6 +3112,28 @@ static int parse_argv(int argc, char *argv[]) {
                         r = json_variant_set_field_unsigned(&arg_identity_extra, field, n);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to set %s field: %m", field);
+
+                        break;
+                }
+
+                case ARG_LUKS_SECTOR_SIZE: {
+                        uint64_t ss;
+
+                        if (isempty(optarg)) {
+                                r = drop_from_identity("luksSectorSize");
+                                if (r < 0)
+                                        return r;
+
+                                break;
+                        }
+
+                        r = parse_sector_size(optarg, &ss);
+                        if (r < 0)
+                                return r;
+
+                        r = json_variant_set_field_unsigned(&arg_identity_extra, "luksSectorSize", ss);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to set sector size field: %m");
 
                         break;
                 }
@@ -3122,7 +3162,7 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case ARG_SSH_AUTHORIZED_KEYS: {
                         _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
-                        _cleanup_(strv_freep) char **l = NULL, **add = NULL;
+                        _cleanup_strv_free_ char **l = NULL, **add = NULL;
 
                         if (isempty(optarg)) {
                                 r = drop_from_identity("sshAuthorizedKeys");
@@ -3464,9 +3504,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
                 }
 
-                case ARG_PKCS11_TOKEN_URI: {
-                        const char *p;
-
+                case ARG_PKCS11_TOKEN_URI:
                         if (streq(optarg, "list"))
                                 return pkcs11_list_tokens();
 
@@ -3500,11 +3538,14 @@ static int parse_argv(int argc, char *argv[]) {
 
                         strv_uniq(arg_pkcs11_token_uri);
                         break;
-                }
 
-                case ARG_FIDO2_DEVICE: {
-                        const char *p;
+                case ARG_FIDO2_CRED_ALG:
+                        r = parse_fido2_algorithm(optarg, &arg_fido2_cred_alg);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to parse COSE algorithm: %s", optarg);
+                        break;
 
+                case ARG_FIDO2_DEVICE:
                         if (streq(optarg, "list"))
                                 return fido2_list_devices();
 
@@ -3534,44 +3575,32 @@ static int parse_argv(int argc, char *argv[]) {
 
                         strv_uniq(arg_fido2_device);
                         break;
-                }
 
-                case ARG_FIDO2_WITH_PIN: {
-                        bool lock_with_pin;
-
-                        r = parse_boolean_argument("--fido2-with-client-pin=", optarg, &lock_with_pin);
+                case ARG_FIDO2_WITH_PIN:
+                        r = parse_boolean_argument("--fido2-with-client-pin=", optarg, NULL);
                         if (r < 0)
                                 return r;
 
-                        SET_FLAG(arg_fido2_lock_with, FIDO2ENROLL_PIN, lock_with_pin);
+                        SET_FLAG(arg_fido2_lock_with, FIDO2ENROLL_PIN, r);
                         break;
-                }
 
-                case ARG_FIDO2_WITH_UP: {
-                        bool lock_with_up;
-
-                        r = parse_boolean_argument("--fido2-with-user-presence=", optarg, &lock_with_up);
+                case ARG_FIDO2_WITH_UP:
+                        r = parse_boolean_argument("--fido2-with-user-presence=", optarg, NULL);
                         if (r < 0)
                                 return r;
 
-                        SET_FLAG(arg_fido2_lock_with, FIDO2ENROLL_UP, lock_with_up);
+                        SET_FLAG(arg_fido2_lock_with, FIDO2ENROLL_UP, r);
                         break;
-                }
 
-                case ARG_FIDO2_WITH_UV: {
-                        bool lock_with_uv;
-
-                        r = parse_boolean_argument("--fido2-with-user-verification=", optarg, &lock_with_uv);
+                case ARG_FIDO2_WITH_UV:
+                        r = parse_boolean_argument("--fido2-with-user-verification=", optarg, NULL);
                         if (r < 0)
                                 return r;
 
-                        SET_FLAG(arg_fido2_lock_with, FIDO2ENROLL_UV, lock_with_uv);
+                        SET_FLAG(arg_fido2_lock_with, FIDO2ENROLL_UV, r);
                         break;
-                }
 
-                case ARG_RECOVERY_KEY: {
-                        const char *p;
-
+                case ARG_RECOVERY_KEY:
                         r = parse_boolean(optarg);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to parse --recovery-key= argument: %s", optarg);
@@ -3585,7 +3614,6 @@ static int parse_argv(int argc, char *argv[]) {
                         }
 
                         break;
-                }
 
                 case ARG_AUTO_RESIZE_MODE:
                         if (isempty(optarg)) {
@@ -3613,6 +3641,7 @@ static int parse_argv(int argc, char *argv[]) {
                                 r = drop_from_identity("rebalanceWeight");
                                 if (r < 0)
                                         return r;
+                                break;
                         }
 
                         if (streq(optarg, "off"))
@@ -3623,8 +3652,8 @@ static int parse_argv(int argc, char *argv[]) {
                                         return log_error_errno(r, "Failed to parse --rebalance-weight= argument: %s", optarg);
 
                                 if (u < REBALANCE_WEIGHT_MIN || u > REBALANCE_WEIGHT_MAX)
-                                        return log_error_errno(SYNTHETIC_ERRNO(ERANGE), "Rebalancing weight out of valid range %" PRIu64 "…%" PRIu64 ": %s",
-                                                               REBALANCE_WEIGHT_MIN, REBALANCE_WEIGHT_MAX, optarg);
+                                        return log_error_errno(SYNTHETIC_ERRNO(ERANGE), "Rebalancing weight out of valid range %" PRIu64 "%s%" PRIu64 ": %s",
+                                                               REBALANCE_WEIGHT_MIN, special_glyph(SPECIAL_GLYPH_ELLIPSIS), REBALANCE_WEIGHT_MAX, optarg);
                         }
 
                         /* Drop from per machine stuff and everywhere */
@@ -3689,15 +3718,14 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_DROP_CACHES: {
-                        bool drop_caches;
-
                         if (isempty(optarg)) {
                                 r = drop_from_identity("dropCaches");
                                 if (r < 0)
                                         return r;
+                                break;
                         }
 
-                        r = parse_boolean_argument("--drop-caches=", optarg, &drop_caches);
+                        r = parse_boolean_argument("--drop-caches=", optarg, NULL);
                         if (r < 0)
                                 return r;
 
@@ -3705,6 +3733,61 @@ static int parse_argv(int argc, char *argv[]) {
                         if (r < 0)
                                 return log_error_errno(r, "Failed to set drop caches field: %m");
 
+                        break;
+                }
+
+                case ARG_CAPABILITY_AMBIENT_SET:
+                case ARG_CAPABILITY_BOUNDING_SET: {
+                        _cleanup_strv_free_ char **l = NULL;
+                        bool subtract = false;
+                        uint64_t parsed, *which, updated;
+                        const char *p, *field;
+
+                        if (c == ARG_CAPABILITY_AMBIENT_SET) {
+                                which = &arg_capability_ambient_set;
+                                field = "capabilityAmbientSet";
+                        } else {
+                                assert(c == ARG_CAPABILITY_BOUNDING_SET);
+                                which = &arg_capability_bounding_set;
+                                field = "capabilityBoundingSet";
+                        }
+
+                        if (isempty(optarg)) {
+                                r = drop_from_identity(field);
+                                if (r < 0)
+                                        return r;
+
+                                *which = UINT64_MAX;
+                                break;
+                        }
+
+                        p = optarg;
+                        if (*p == '~') {
+                                subtract = true;
+                                p++;
+                        }
+
+                        r = capability_set_from_string(p, &parsed);
+                        if (r == 0)
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid capabilities in capability string '%s'.", p);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to parse capability string '%s': %m", p);
+
+                        if (*which == UINT64_MAX)
+                                updated = subtract ? all_capabilities() & ~parsed : parsed;
+                        else if (subtract)
+                                updated = *which & ~parsed;
+                        else
+                                updated = *which | parsed;
+
+                        if (capability_set_to_strv(updated, &l) < 0)
+                                return log_oom();
+
+                        r = json_variant_set_field_strv(&arg_identity_extra, field, l);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to set %s field: %m", field);
+
+                        *which = updated;
                         break;
                 }
 

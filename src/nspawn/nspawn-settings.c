@@ -16,7 +16,6 @@
 #include "string-util.h"
 #include "strv.h"
 #include "user-util.h"
-#include "util.h"
 
 Settings *settings_new(void) {
         Settings *s;
@@ -98,27 +97,25 @@ int settings_load(FILE *f, const char *path, Settings **ret) {
         return 0;
 }
 
-static void free_oci_hooks(OciHook *h, size_t n) {
-        size_t i;
+static void free_oci_hooks(OciHook *hooks, size_t n) {
+        assert(hooks || n == 0);
 
-        assert(h || n == 0);
-
-        for (i = 0; i < n; i++) {
-                free(h[i].path);
-                strv_free(h[i].args);
-                strv_free(h[i].env);
+        FOREACH_ARRAY(hook, hooks, n) {
+                free(hook->path);
+                strv_free(hook->args);
+                strv_free(hook->env);
         }
 
-        free(h);
+        free(hooks);
 }
 
-void device_node_array_free(DeviceNode *node, size_t n) {
-        size_t i;
+void device_node_array_free(DeviceNode *nodes, size_t n) {
+        assert(nodes || n == 0);
 
-        for (i = 0; i < n; i++)
-                free(node[i].path);
+        FOREACH_ARRAY(node, nodes, n)
+                free(node->path);
 
-        free(node);
+        free(nodes);
 }
 
 Settings* settings_free(Settings *s) {
@@ -470,6 +467,69 @@ int config_parse_veth_extra(
         return 0;
 }
 
+int config_parse_network_iface_pair(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        char*** l = data;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        return interface_pair_parse(l, rvalue);
+}
+
+int config_parse_macvlan_iface_pair(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        char*** l = data;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        return macvlan_pair_parse(l, rvalue);
+}
+
+int config_parse_ipvlan_iface_pair(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        char*** l = data;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        return ipvlan_pair_parse(l, rvalue);
+}
+
 int config_parse_network_zone(
                 const char *unit,
                 const char *filename,
@@ -623,6 +683,11 @@ int config_parse_private_users(
                 settings->userns_mode = USER_NAMESPACE_PICK;
                 settings->uid_shift = UID_INVALID;
                 settings->uid_range = UINT32_C(0x10000);
+        } else if (streq(rvalue, "identity")) {
+                /* identity: User namespacing on, UID range is 0:65536 */
+                settings->userns_mode = USER_NAMESPACE_FIXED;
+                settings->uid_shift = 0;
+                settings->uid_range = UINT32_C(0x10000);
         } else {
                 const char *range, *shift;
                 uid_t sh, rn;
@@ -710,31 +775,6 @@ int config_parse_syscall_filter(
         }
 }
 
-int config_parse_hostname(
-                const char *unit,
-                const char *filename,
-                unsigned line,
-                const char *section,
-                unsigned section_line,
-                const char *lvalue,
-                int ltype,
-                const char *rvalue,
-                void *data,
-                void *userdata) {
-
-        char **s = data;
-
-        assert(rvalue);
-        assert(s);
-
-        if (!hostname_is_valid(rvalue, 0)) {
-                log_syntax(unit, LOG_WARNING, filename, line, 0, "Invalid hostname, ignoring: %s", rvalue);
-                return 0;
-        }
-
-        return free_and_strdup_warn(s, empty_to_null(rvalue));
-}
-
 int config_parse_oom_score_adjust(
                 const char *unit,
                 const char *filename,
@@ -747,11 +787,10 @@ int config_parse_oom_score_adjust(
                 void *data,
                 void *userdata) {
 
-        Settings *settings = data;
+        Settings *settings = ASSERT_PTR(data);
         int oa, r;
 
         assert(rvalue);
-        assert(settings);
 
         if (isempty(rvalue)) {
                 settings->oom_score_adjust_set = false;
@@ -786,10 +825,9 @@ int config_parse_cpu_affinity(
                 void *data,
                 void *userdata) {
 
-        Settings *settings = data;
+        Settings *settings = ASSERT_PTR(data);
 
         assert(rvalue);
-        assert(settings);
 
         return parse_cpu_set_extend(rvalue, &settings->cpu_set, true, unit, filename, line, lvalue);
 }
@@ -864,11 +902,10 @@ int config_parse_link_journal(
                 void *data,
                 void *userdata) {
 
-        Settings *settings = data;
+        Settings *settings = ASSERT_PTR(data);
         int r;
 
         assert(rvalue);
-        assert(settings);
 
         r = parse_link_journal(rvalue, &settings->link_journal, &settings->link_journal_try);
         if (r < 0)
@@ -913,11 +950,10 @@ int config_parse_userns_chown(
                 void *data,
                 void *userdata) {
 
-        UserNamespaceOwnership *ownership = data;
+        UserNamespaceOwnership *ownership = ASSERT_PTR(data);
         int r;
 
         assert(rvalue);
-        assert(ownership);
 
         /* Compatibility support for UserNamespaceChown=, whose job has been taken over by UserNamespaceOwnership= */
 
@@ -943,11 +979,10 @@ int config_parse_bind_user(
                 void *data,
                 void *userdata) {
 
-        char ***bind_user = data;
+        char ***bind_user = ASSERT_PTR(data);
         int r;
 
         assert(rvalue);
-        assert(bind_user);
 
         if (isempty(rvalue)) {
                 *bind_user = strv_free(*bind_user);

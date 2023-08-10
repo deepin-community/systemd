@@ -116,6 +116,9 @@ sd_lldp_neighbor *lldp_neighbor_unlink(sd_lldp_neighbor *n) {
 sd_lldp_neighbor *lldp_neighbor_new(size_t raw_size) {
         sd_lldp_neighbor *n;
 
+        if (raw_size > SIZE_MAX - ALIGN(sizeof(sd_lldp_neighbor)))
+                return NULL;
+
         n = malloc0(ALIGN(sizeof(sd_lldp_neighbor)) + raw_size);
         if (!n)
                 return NULL;
@@ -156,8 +159,7 @@ static int parse_string(sd_lldp_rx *lldp_rx, char **s, const void *q, size_t n) 
         if (!k)
                 return log_oom_debug();
 
-        free(*s);
-        *s = k;
+        free_and_replace(*s, k);
 
         return 1;
 }
@@ -333,9 +335,9 @@ void lldp_neighbor_start_ttl(sd_lldp_neighbor *n) {
                 usec_t base;
 
                 /* Use the packet's timestamp if there is one known */
-                base = triple_timestamp_by_clock(&n->timestamp, clock_boottime_or_monotonic());
-                if (base <= 0 || base == USEC_INFINITY)
-                        base = now(clock_boottime_or_monotonic()); /* Otherwise, take the current time */
+                base = triple_timestamp_by_clock(&n->timestamp, CLOCK_BOOTTIME);
+                if (!timestamp_is_set(base))
+                        base = now(CLOCK_BOOTTIME); /* Otherwise, take the current time */
 
                 n->until = usec_add(base, n->ttl * USEC_PER_SEC);
         } else
@@ -649,7 +651,8 @@ int sd_lldp_neighbor_from_raw(sd_lldp_neighbor **ret, const void *raw, size_t ra
         if (!n)
                 return -ENOMEM;
 
-        memcpy(LLDP_NEIGHBOR_RAW(n), raw, raw_size);
+        memcpy_safe(LLDP_NEIGHBOR_RAW(n), raw, raw_size);
+
         r = lldp_neighbor_parse(n);
         if (r < 0)
                 return r;

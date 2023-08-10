@@ -10,7 +10,7 @@
 #include "tests.h"
 #include "tmpfile-util.h"
 
-char long_string[LONG_LINE_MAX+1];
+static char long_string[LONG_LINE_MAX+1];
 
 TEST(serialize_item) {
         _cleanup_(unlink_tempfilep) char fn[] = "/tmp/test-serialize.XXXXXX";
@@ -124,10 +124,7 @@ TEST(serialize_strv) {
 
                 const char *t = startswith(line, "strv3=");
                 assert_se(t);
-
-                char *un;
-                assert_se(cunescape(t, 0, &un) >= 0);
-                assert_se(strv_consume(&strv2, un) >= 0);
+                assert_se(deserialize_strv(&strv2, t) >= 0);
         }
 
         assert_se(strv_equal(strv, strv2));
@@ -189,10 +186,10 @@ TEST(serialize_environment) {
         assert_se(strv_equal(env, env2));
 }
 
-DEFINE_CUSTOM_TEST_MAIN(
-        LOG_INFO,
-        ({
-                memset(long_string, 'x', sizeof(long_string)-1);
-                char_array_0(long_string);
-        }),
-        /* no outro */);
+static int intro(void) {
+        memset(long_string, 'x', sizeof(long_string)-1);
+        char_array_0(long_string);
+        return EXIT_SUCCESS;
+}
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_INFO, intro);

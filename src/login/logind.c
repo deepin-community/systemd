@@ -14,10 +14,12 @@
 #include "bus-log-control-api.h"
 #include "bus-polkit.h"
 #include "cgroup-util.h"
+#include "common-signal.h"
+#include "constants.h"
 #include "daemon-util.h"
-#include "def.h"
 #include "device-util.h"
 #include "dirent-util.h"
+#include "escape.h"
 #include "fd-util.h"
 #include "format-util.h"
 #include "fs-util.h"
@@ -38,11 +40,11 @@
 #include "udev-util.h"
 #include "user-util.h"
 
-static Manager* manager_unref(Manager *m);
-DEFINE_TRIVIAL_CLEANUP_FUNC(Manager*, manager_unref);
+static Manager* manager_free(Manager *m);
+DEFINE_TRIVIAL_CLEANUP_FUNC(Manager*, manager_free);
 
 static int manager_new(Manager **ret) {
-        _cleanup_(manager_unrefp) Manager *m = NULL;
+        _cleanup_(manager_freep) Manager *m = NULL;
         int r;
 
         assert(ret);
@@ -52,8 +54,9 @@ static int manager_new(Manager **ret) {
                 return -ENOMEM;
 
         *m = (Manager) {
-                .console_active_fd = -1,
-                .reserve_vt_fd = -1,
+                .console_active_fd = -EBADF,
+                .reserve_vt_fd = -EBADF,
+                .enable_wall_messages = true,
                 .idle_action_not_before_usec = now(CLOCK_MONOTONIC),
         };
 
@@ -83,6 +86,14 @@ static int manager_new(Manager **ret) {
         if (r < 0)
                 return r;
 
+        r = sd_event_add_signal(m->event, NULL, SIGRTMIN+18, sigrtmin18_handler, NULL);
+        if (r < 0)
+                return r;
+
+        r = sd_event_add_memory_pressure(m->event, NULL, NULL, NULL);
+        if (r < 0)
+                log_debug_errno(r, "Failed allocate memory pressure event source, ignoring: %m");
+
         (void) sd_event_set_watchdog(m->event, true);
 
         manager_reset_config(m);
@@ -91,7 +102,7 @@ static int manager_new(Manager **ret) {
         return 0;
 }
 
-static Manager* manager_unref(Manager *m) {
+static Manager* manager_free(Manager *m) {
         Session *session;
         User *u;
         Device *d;
@@ -167,7 +178,6 @@ static Manager* manager_unref(Manager *m) {
         strv_free(m->kill_only_users);
         strv_free(m->kill_exclude_users);
 
-        free(m->scheduled_shutdown_type);
         free(m->scheduled_shutdown_tty);
         free(m->wall_message);
         free(m->action_job);
@@ -180,7 +190,6 @@ static Manager* manager_unref(Manager *m) {
 
 static int manager_enumerate_devices(Manager *m) {
         _cleanup_(sd_device_enumerator_unrefp) sd_device_enumerator *e = NULL;
-        sd_device *d;
         int r;
 
         assert(m);
@@ -209,7 +218,6 @@ static int manager_enumerate_devices(Manager *m) {
 
 static int manager_enumerate_buttons(Manager *m) {
         _cleanup_(sd_device_enumerator_unrefp) sd_device_enumerator *e = NULL;
-        sd_device *d;
         int r;
 
         assert(m);
@@ -299,11 +307,16 @@ static int manager_enumerate_linger_users(Manager *m) {
 
         FOREACH_DIRENT(de, d, return -errno) {
                 int k;
+                _cleanup_free_ char *n = NULL;
 
                 if (!dirent_is_file(de))
                         continue;
-
-                k = manager_add_user_by_name(m, de->d_name, NULL);
+                k = cunescape(de->d_name, 0, &n);
+                if (k < 0) {
+                        r = log_warning_errno(k, "Failed to unescape username '%s', ignoring: %m", de->d_name);
+                        continue;
+                }
+                k = manager_add_user_by_name(m, n, NULL);
                 if (k < 0)
                         r = log_warning_errno(k, "Couldn't add lingering user %s, ignoring: %m", de->d_name);
         }
@@ -438,7 +451,7 @@ static int deliver_fd(Manager *m, const char *fdname, int fd) {
 
 static int manager_attach_fds(Manager *m) {
         _cleanup_strv_free_ char **fdnames = NULL;
-        int r, n;
+        int n;
 
         /* Upon restart, PID1 will send us back all fds of session devices that we previously opened. Each
          * file descriptor is associated with a given session. The session ids are passed through FDNAMES. */
@@ -455,15 +468,9 @@ static int manager_attach_fds(Manager *m) {
                 if (deliver_fd(m, fdnames[i], fd) >= 0)
                         continue;
 
-                /* Hmm, we couldn't deliver the fd to any session device object? If so, let's close the fd */
-                safe_close(fd);
-
-                /* Remove from fdstore as well */
-                r = sd_notifyf(false,
-                               "FDSTOREREMOVE=1\n"
-                               "FDNAME=%s", fdnames[i]);
-                if (r < 0)
-                        log_warning_errno(r, "Failed to remove file descriptor from the store, ignoring: %m");
+                /* Hmm, we couldn't deliver the fd to any session device object? If so, let's close the fd
+                 * and remove it from fdstore. */
+                close_and_notify_warn(fd, fdnames[i]);
         }
 
         return 0;
@@ -546,9 +553,8 @@ static int manager_enumerate_inhibitors(Manager *m) {
 }
 
 static int manager_dispatch_seat_udev(sd_device_monitor *monitor, sd_device *device, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
 
-        assert(m);
         assert(device);
 
         manager_process_seat_device(m, device);
@@ -556,9 +562,8 @@ static int manager_dispatch_seat_udev(sd_device_monitor *monitor, sd_device *dev
 }
 
 static int manager_dispatch_device_udev(sd_device_monitor *monitor, sd_device *device, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
 
-        assert(m);
         assert(device);
 
         manager_process_seat_device(m, device);
@@ -566,10 +571,9 @@ static int manager_dispatch_device_udev(sd_device_monitor *monitor, sd_device *d
 }
 
 static int manager_dispatch_vcsa_udev(sd_device_monitor *monitor, sd_device *device, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         const char *name;
 
-        assert(m);
         assert(device);
 
         /* Whenever a VCSA device is removed try to reallocate our
@@ -584,9 +588,8 @@ static int manager_dispatch_vcsa_udev(sd_device_monitor *monitor, sd_device *dev
 }
 
 static int manager_dispatch_button_udev(sd_device_monitor *monitor, sd_device *device, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
 
-        assert(m);
         assert(device);
 
         manager_process_button_device(m, device);
@@ -594,9 +597,8 @@ static int manager_dispatch_button_udev(sd_device_monitor *monitor, sd_device *d
 }
 
 static int manager_dispatch_console(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
 
-        assert(m);
         assert(m->seat0);
         assert(m->console_active_fd == fd);
 
@@ -685,7 +687,7 @@ static int manager_connect_bus(Manager *m) {
 
 static int manager_vt_switch(sd_event_source *src, const struct signalfd_siginfo *si, void *data) {
         Manager *m = data;
-        Session *active, *iter;
+        Session *active;
 
         /*
          * We got a VT-switch signal and we have to acknowledge it immediately.
@@ -706,7 +708,7 @@ static int manager_vt_switch(sd_event_source *src, const struct signalfd_siginfo
 
         active = m->seat0->active;
         if (!active || active->vtnr < 1) {
-                _cleanup_close_ int fd = -1;
+                _cleanup_close_ int fd = -EBADF;
                 int r;
 
                 /* We are requested to acknowledge the VT-switch signal by the kernel but
@@ -732,16 +734,14 @@ static int manager_vt_switch(sd_event_source *src, const struct signalfd_siginfo
                 return 0;
         }
 
-        if (active->vtfd >= 0) {
+        if (active->vtfd >= 0)
                 session_leave_vt(active);
-        } else {
-                LIST_FOREACH(sessions_by_seat, iter, m->seat0->sessions) {
+        else
+                LIST_FOREACH(sessions_by_seat, iter, m->seat0->sessions)
                         if (iter->vtnr == active->vtnr && iter->vtfd >= 0) {
                                 session_leave_vt(iter);
                                 break;
                         }
-                }
-        }
 
         return 0;
 }
@@ -784,7 +784,7 @@ static int manager_connect_console(Manager *m) {
 
         if (SIGRTMIN + 1 > SIGRTMAX)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                       "Not enough real-time signals available: %u-%u",
+                                       "Not enough real-time signals available: %i-%i",
                                        SIGRTMIN, SIGRTMAX);
 
         assert_se(ignore_signals(SIGRTMIN + 1) >= 0);
@@ -822,7 +822,7 @@ static int manager_connect_udev(Manager *m) {
         if (r < 0)
                 return r;
 
-        (void) sd_event_source_set_description(sd_device_monitor_get_event_source(m->device_seat_monitor), "logind-seat-monitor");
+        (void) sd_device_monitor_set_description(m->device_seat_monitor, "seat");
 
         r = sd_device_monitor_new(&m->device_monitor);
         if (r < 0)
@@ -848,7 +848,7 @@ static int manager_connect_udev(Manager *m) {
         if (r < 0)
                 return r;
 
-        (void) sd_event_source_set_description(sd_device_monitor_get_event_source(m->device_monitor), "logind-device-monitor");
+        (void) sd_device_monitor_set_description(m->device_monitor, "input,graphics,drm");
 
         /* Don't watch keys if nobody cares */
         if (!manager_all_buttons_ignored(m)) {
@@ -872,7 +872,7 @@ static int manager_connect_udev(Manager *m) {
                 if (r < 0)
                         return r;
 
-                (void) sd_event_source_set_description(sd_device_monitor_get_event_source(m->device_button_monitor), "logind-button-monitor");
+                (void) sd_device_monitor_set_description(m->device_button_monitor, "button");
         }
 
         /* Don't bother watching VCSA devices, if nobody cares */
@@ -894,7 +894,7 @@ static int manager_connect_udev(Manager *m) {
                 if (r < 0)
                         return r;
 
-                (void) sd_event_source_set_description(sd_device_monitor_get_event_source(m->device_vcsa_monitor), "logind-vcsa-monitor");
+                (void) sd_device_monitor_set_description(m->device_vcsa_monitor, "vcsa");
         }
 
         return 0;
@@ -951,12 +951,10 @@ static void manager_gc(Manager *m, bool drop_not_started) {
 }
 
 static int manager_dispatch_idle_action(sd_event_source *s, uint64_t t, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         struct dual_timestamp since;
         usec_t n, elapse;
         int r;
-
-        assert(m);
 
         if (m->idle_action == HANDLE_IGNORE ||
             m->idle_action_usec <= 0)
@@ -965,18 +963,33 @@ static int manager_dispatch_idle_action(sd_event_source *s, uint64_t t, void *us
         n = now(CLOCK_MONOTONIC);
 
         r = manager_get_idle_hint(m, &since);
-        if (r <= 0)
+        if (r <= 0) {
                 /* Not idle. Let's check if after a timeout it might be idle then. */
                 elapse = n + m->idle_action_usec;
-        else {
+                m->was_idle = false;
+        } else {
+
                 /* Idle! Let's see if it's time to do something, or if
                  * we shall sleep for longer. */
 
                 if (n >= since.monotonic + m->idle_action_usec &&
                     (m->idle_action_not_before_usec <= 0 || n >= m->idle_action_not_before_usec + m->idle_action_usec)) {
-                        log_info("System idle. Doing %s operation.", handle_action_to_string(m->idle_action));
+                        bool is_edge = false;
 
-                        manager_handle_action(m, 0, m->idle_action, false, false);
+                        /* We weren't idle previously or some activity happened while we were sleeping, and now we are
+                         * idle. Let's remember that for the next time and make this an edge transition. */
+                        if (!m->was_idle || since.monotonic >= m->idle_action_not_before_usec) {
+                                is_edge = true;
+                                m->was_idle = true;
+                        }
+
+                        if (m->idle_action == HANDLE_LOCK && !is_edge)
+                                /* We are idle and we were before so we are actually not taking any action. */
+                                log_debug("System idle.");
+                        else
+                                log_info("System idle. Will %s now.", handle_action_verb_to_string(m->idle_action));
+
+                        manager_handle_action(m, 0, m->idle_action, false, is_edge);
                         m->idle_action_not_before_usec = n;
                 }
 
@@ -1014,6 +1027,11 @@ static int manager_dispatch_reload_signal(sd_event_source *s, const struct signa
         Manager *m = userdata;
         int r;
 
+        (void) sd_notifyf(/* unset= */ false,
+                          "RELOADING=1\n"
+                          "STATUS=Reloading configuration...\n"
+                          "MONOTONIC_USEC=" USEC_FMT, now(CLOCK_MONOTONIC));
+
         manager_reset_config(m);
         r = manager_parse_config_file(m);
         if (r < 0)
@@ -1021,6 +1039,7 @@ static int manager_dispatch_reload_signal(sd_event_source *s, const struct signa
         else
                 log_info("Config file reloaded.");
 
+        (void) sd_notify(/* unset= */ false, NOTIFY_READY);
         return 0;
 }
 
@@ -1090,6 +1109,8 @@ static int manager_startup(Manager *m) {
         if (r < 0)
                 log_warning_errno(r, "Button enumeration failed: %m");
 
+        manager_load_scheduled_shutdown(m);
+
         /* Remove stale objects before we start them */
         manager_gc(m, false);
 
@@ -1154,7 +1175,7 @@ static int manager_run(Manager *m) {
 }
 
 static int run(int argc, char *argv[]) {
-        _cleanup_(manager_unrefp) Manager *m = NULL;
+        _cleanup_(manager_freep) Manager *m = NULL;
         _unused_ _cleanup_(notify_on_cleanup) const char *notify_message = NULL;
         int r;
 
@@ -1171,7 +1192,7 @@ static int run(int argc, char *argv[]) {
 
         umask(0022);
 
-        r = mac_selinux_init();
+        r = mac_init();
         if (r < 0)
                 return r;
 
@@ -1182,7 +1203,7 @@ static int run(int argc, char *argv[]) {
         (void) mkdir_label("/run/systemd/users", 0755);
         (void) mkdir_label("/run/systemd/sessions", 0755);
 
-        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGHUP, SIGTERM, SIGINT, SIGCHLD, -1) >= 0);
+        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGHUP, SIGTERM, SIGINT, SIGCHLD, SIGRTMIN+18, -1) >= 0);
 
         r = manager_new(&m);
         if (r < 0)

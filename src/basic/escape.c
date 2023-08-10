@@ -182,7 +182,7 @@ int cunescape_one(const char *p, size_t length, char32_t *ret, bool *eight_bit, 
         }
 
         case 'u': {
-                /* C++11 style 16bit unicode */
+                /* C++11 style 16-bit unicode */
 
                 int a[4];
                 size_t i;
@@ -209,7 +209,7 @@ int cunescape_one(const char *p, size_t length, char32_t *ret, bool *eight_bit, 
         }
 
         case 'U': {
-                /* C++11 style 32bit unicode */
+                /* C++11 style 32-bit unicode */
 
                 int a[8];
                 size_t i;
@@ -445,44 +445,51 @@ char* escape_non_printable_full(const char *str, size_t console_width, XEscapeFl
 }
 
 char* octescape(const char *s, size_t len) {
-        char *r, *t;
-        const char *f;
+        char *buf, *t;
 
-        /* Escapes all chars in bad, in addition to \ and " chars,
-         * in \nnn style escaping. */
+        /* Escapes all chars in bad, in addition to \ and " chars, in \nnn style escaping. */
 
-        r = new(char, len * 4 + 1);
-        if (!r)
+        assert(s || len == 0);
+
+        t = buf = new(char, len * 4 + 1);
+        if (!buf)
                 return NULL;
 
-        for (f = s, t = r; f < s + len; f++) {
+        for (size_t i = 0; i < len; i++) {
+                uint8_t u = (uint8_t) s[i];
 
-                if (*f < ' ' || *f >= 127 || IN_SET(*f, '\\', '"')) {
+                if (u < ' ' || u >= 127 || IN_SET(u, '\\', '"')) {
                         *(t++) = '\\';
-                        *(t++) = '0' + (*f >> 6);
-                        *(t++) = '0' + ((*f >> 3) & 8);
-                        *(t++) = '0' + (*f & 8);
+                        *(t++) = '0' + (u >> 6);
+                        *(t++) = '0' + ((u >> 3) & 7);
+                        *(t++) = '0' + (u & 7);
                 } else
-                        *(t++) = *f;
+                        *(t++) = u;
         }
 
         *t = 0;
-
-        return r;
-
+        return buf;
 }
 
 static char* strcpy_backslash_escaped(char *t, const char *s, const char *bad) {
         assert(bad);
+        assert(t);
+        assert(s);
 
-        for (; *s; s++)
-                if (char_is_cc(*s))
-                        t += cescape_char(*s, t);
-                else {
+        while (*s) {
+                int l = utf8_encoded_valid_unichar(s, SIZE_MAX);
+
+                if (char_is_cc(*s) || l < 0)
+                        t += cescape_char(*(s++), t);
+                else if (l == 1) {
                         if (*s == '\\' || strchr(bad, *s))
                                 *(t++) = '\\';
-                        *(t++) = *s;
+                        *(t++) = *(s++);
+                } else {
+                        t = mempcpy(t, s, l);
+                        s += l;
                 }
+        }
 
         return t;
 }
@@ -511,10 +518,15 @@ char* shell_maybe_quote(const char *s, ShellEscapeFlags flags) {
         if (FLAGS_SET(flags, SHELL_ESCAPE_EMPTY) && isempty(s))
                 return strdup("\"\""); /* We don't use $'' here in the POSIX mode. "" is fine too. */
 
-        for (p = s; *p; p++)
-                if (char_is_cc(*p) ||
+        for (p = s; *p; ) {
+                int l = utf8_encoded_valid_unichar(p, SIZE_MAX);
+
+                if (char_is_cc(*p) || l < 0 ||
                     strchr(WHITESPACE SHELL_NEED_QUOTES, *p))
                         break;
+
+                p += l;
+        }
 
         if (!*p)
                 return strdup(s);
@@ -549,7 +561,6 @@ char* quote_command_line(char **argv, ShellEscapeFlags flags) {
 
         assert(argv);
 
-        char **a;
         STRV_FOREACH(a, argv) {
                 _cleanup_free_ char *t = NULL;
 

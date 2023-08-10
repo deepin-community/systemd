@@ -9,7 +9,7 @@
 #include <sys/statfs.h>
 #include <sys/types.h>
 
-#include "def.h"
+#include "constants.h"
 #include "set.h"
 
 #define SYSTEMD_CGROUP_CONTROLLER_LEGACY "name=systemd"
@@ -86,6 +86,7 @@ bool cpu_accounting_is_cheap(void);
 
 /* Special values for all weight knobs on unified hierarchy */
 #define CGROUP_WEIGHT_INVALID UINT64_MAX
+#define CGROUP_WEIGHT_IDLE UINT64_C(0)
 #define CGROUP_WEIGHT_MIN UINT64_C(1)
 #define CGROUP_WEIGHT_MAX UINT64_C(10000)
 #define CGROUP_WEIGHT_DEFAULT UINT64_C(100)
@@ -125,6 +126,20 @@ static inline bool CGROUP_CPU_SHARES_IS_OK(uint64_t x) {
         return
             x == CGROUP_CPU_SHARES_INVALID ||
             (x >= CGROUP_CPU_SHARES_MIN && x <= CGROUP_CPU_SHARES_MAX);
+}
+
+/* Special values for the special {blkio,io}.bfq.weight attribute */
+#define CGROUP_BFQ_WEIGHT_INVALID UINT64_MAX
+#define CGROUP_BFQ_WEIGHT_MIN UINT64_C(1)
+#define CGROUP_BFQ_WEIGHT_MAX UINT64_C(1000)
+#define CGROUP_BFQ_WEIGHT_DEFAULT UINT64_C(100)
+
+/* Convert the normal io.weight value to io.bfq.weight */
+static inline uint64_t BFQ_WEIGHT(uint64_t io_weight) {
+        return
+            io_weight <= CGROUP_WEIGHT_DEFAULT ?
+            CGROUP_BFQ_WEIGHT_DEFAULT - (CGROUP_WEIGHT_DEFAULT - io_weight) * (CGROUP_BFQ_WEIGHT_DEFAULT - CGROUP_BFQ_WEIGHT_MIN) / (CGROUP_WEIGHT_DEFAULT - CGROUP_WEIGHT_MIN) :
+            CGROUP_BFQ_WEIGHT_DEFAULT + (io_weight - CGROUP_WEIGHT_DEFAULT) * (CGROUP_BFQ_WEIGHT_MAX - CGROUP_BFQ_WEIGHT_DEFAULT) / (CGROUP_WEIGHT_MAX - CGROUP_WEIGHT_DEFAULT);
 }
 
 /* Special values for the blkio.weight attribute */
@@ -191,6 +206,8 @@ int cg_pid_get_path(const char *controller, pid_t pid, char **path);
 
 int cg_rmdir(const char *controller, const char *path);
 
+int cg_is_threaded(const char *controller, const char *path);
+
 typedef enum  {
         CG_KEY_MODE_GRACEFUL = 1 << 0,
 } CGroupKeyMode;
@@ -222,7 +239,6 @@ int cg_get_attribute_as_uint64(const char *controller, const char *path, const c
 /* Does a parse_boolean() on the attribute contents and sets ret accordingly */
 int cg_get_attribute_as_bool(const char *controller, const char *path, const char *attribute, bool *ret);
 
-int cg_set_access(const char *controller, const char *path, uid_t uid, gid_t gid);
 int cg_get_owner(const char *controller, const char *path, uid_t *ret_uid);
 
 int cg_set_xattr(const char *controller, const char *path, const char *name, const void *value, size_t size, int flags);
@@ -244,6 +260,7 @@ int cg_path_get_cgroupid(const char *path, uint64_t *ret);
 int cg_path_get_session(const char *path, char **session);
 int cg_path_get_owner_uid(const char *path, uid_t *uid);
 int cg_path_get_unit(const char *path, char **unit);
+int cg_path_get_unit_path(const char *path, char **unit);
 int cg_path_get_user_unit(const char *path, char **unit);
 int cg_path_get_machine_name(const char *path, char **machine);
 int cg_path_get_slice(const char *path, char **slice);
@@ -262,7 +279,8 @@ int cg_pid_get_user_slice(pid_t pid, char **slice);
 
 int cg_path_decode_unit(const char *cgroup, char **unit);
 
-char *cg_escape(const char *p);
+bool cg_needs_escape(const char *p);
+int cg_escape(const char *p, char **ret);
 char *cg_unescape(const char *p) _pure_;
 
 bool cg_controller_is_valid(const char *p);

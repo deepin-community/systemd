@@ -12,7 +12,7 @@
 
 #include "alloc-util.h"
 #include "cgroup-util.h"
-#include "def.h"
+#include "constants.h"
 #include "dirent-util.h"
 #include "extract-word.h"
 #include "fd-util.h"
@@ -23,6 +23,7 @@
 #include "login-util.h"
 #include "macro.h"
 #include "missing_magic.h"
+#include "missing_threads.h"
 #include "mkdir.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -357,20 +358,29 @@ int cg_kill(
                 Set *s,
                 cg_kill_log_func_t log_kill,
                 void *userdata) {
-        int r;
+
+        int r, ret;
 
         r = cg_kill_items(controller, path, sig, flags, s, log_kill, userdata, "cgroup.procs");
         if (r < 0 || sig != SIGKILL)
                 return r;
 
+        ret = r;
+
         /* Only in case of killing with SIGKILL and when using cgroupsv2, kill remaining threads manually as
            a workaround for kernel bug. It was fixed in 5.2-rc5 (c03cd7738a83), backported to 4.19.66
            (4340d175b898) and 4.14.138 (feb6b123b7dd). */
         r = cg_unified_controller(controller);
-        if (r <= 0)
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return ret;
+
+        r = cg_kill_items(controller, path, sig, flags, s, log_kill, userdata, "cgroup.threads");
+        if (r < 0)
                 return r;
 
-        return cg_kill_items(controller, path, sig, flags, s, log_kill, userdata, "cgroup.threads");
+        return r > 0 || ret > 0;
 }
 
 int cg_kill_kernel_sigkill(const char *controller, const char *path) {
@@ -462,14 +472,11 @@ int cg_kill_recursive(
 }
 
 static const char *controller_to_dirname(const char *controller) {
-        const char *e;
-
         assert(controller);
 
-        /* Converts a controller name to the directory name below
-         * /sys/fs/cgroup/ we want to mount it to. Effectively, this
-         * just cuts off the name= prefixed used for named
-         * hierarchies, if it is specified. */
+        /* Converts a controller name to the directory name below /sys/fs/cgroup/ we want to mount it
+         * to. Effectively, this just cuts off the name= prefixed used for named hierarchies, if it is
+         * specified. */
 
         if (streq(controller, SYSTEMD_CGROUP_CONTROLLER)) {
                 if (cg_hybrid_unified() > 0)
@@ -478,18 +485,14 @@ static const char *controller_to_dirname(const char *controller) {
                         controller = SYSTEMD_CGROUP_CONTROLLER_LEGACY;
         }
 
-        e = startswith(controller, "name=");
-        if (e)
-                return e;
-
-        return controller;
+        return startswith(controller, "name=") ?: controller;
 }
 
-static int join_path_legacy(const char *controller, const char *path, const char *suffix, char **fs) {
+static int join_path_legacy(const char *controller, const char *path, const char *suffix, char **ret) {
         const char *dn;
         char *t = NULL;
 
-        assert(fs);
+        assert(ret);
         assert(controller);
 
         dn = controller_to_dirname(controller);
@@ -505,14 +508,14 @@ static int join_path_legacy(const char *controller, const char *path, const char
         if (!t)
                 return -ENOMEM;
 
-        *fs = t;
+        *ret = t;
         return 0;
 }
 
-static int join_path_unified(const char *path, const char *suffix, char **fs) {
+static int join_path_unified(const char *path, const char *suffix, char **ret) {
         char *t;
 
-        assert(fs);
+        assert(ret);
 
         if (isempty(path) && isempty(suffix))
                 t = strdup("/sys/fs/cgroup");
@@ -525,34 +528,34 @@ static int join_path_unified(const char *path, const char *suffix, char **fs) {
         if (!t)
                 return -ENOMEM;
 
-        *fs = t;
+        *ret = t;
         return 0;
 }
 
-int cg_get_path(const char *controller, const char *path, const char *suffix, char **fs) {
+int cg_get_path(const char *controller, const char *path, const char *suffix, char **ret) {
         int r;
 
-        assert(fs);
+        assert(ret);
 
         if (!controller) {
                 char *t;
 
-                /* If no controller is specified, we return the path
-                 * *below* the controllers, without any prefix. */
+                /* If no controller is specified, we return the path *below* the controllers, without any
+                 * prefix. */
 
-                if (!path && !suffix)
+                if (isempty(path) && isempty(suffix))
                         return -EINVAL;
 
-                if (!suffix)
+                if (isempty(suffix))
                         t = strdup(path);
-                else if (!path)
+                else if (isempty(path))
                         t = strdup(suffix);
                 else
                         t = path_join(path, suffix);
                 if (!t)
                         return -ENOMEM;
 
-                *fs = path_simplify(t);
+                *ret = path_simplify(t);
                 return 0;
         }
 
@@ -563,13 +566,13 @@ int cg_get_path(const char *controller, const char *path, const char *suffix, ch
         if (r < 0)
                 return r;
         if (r > 0)
-                r = join_path_unified(path, suffix, fs);
+                r = join_path_unified(path, suffix, ret);
         else
-                r = join_path_legacy(controller, path, suffix, fs);
+                r = join_path_legacy(controller, path, suffix, ret);
         if (r < 0)
                 return r;
 
-        path_simplify(*fs);
+        path_simplify(*ret);
         return 0;
 }
 
@@ -1196,6 +1199,28 @@ int cg_path_get_unit(const char *path, char **ret) {
         return 0;
 }
 
+int cg_path_get_unit_path(const char *path, char **ret) {
+        _cleanup_free_ char *path_copy = NULL;
+        char *unit_name;
+
+        assert(path);
+        assert(ret);
+
+        path_copy = strdup(path);
+        if (!path_copy)
+                return -ENOMEM;
+
+        unit_name = (char *)skip_slices(path_copy);
+        unit_name[strcspn(unit_name, "/")] = 0;
+
+        if (!unit_name_is_valid(cg_unescape(unit_name), UNIT_NAME_PLAIN|UNIT_NAME_INSTANCE))
+                return -ENXIO;
+
+        *ret = TAKE_PTR(path_copy);
+
+        return 0;
+}
+
 int cg_pid_get_unit(pid_t pid, char **unit) {
         _cleanup_free_ char *cgroup = NULL;
         int r;
@@ -1236,7 +1261,7 @@ static const char *skip_session(const char *p) {
                  * here. */
 
                 if (!session_id_valid(buf))
-                        return false;
+                        return NULL;
 
                 p += n;
                 p += strspn(p, "/");
@@ -1529,52 +1554,64 @@ int cg_pid_get_user_slice(pid_t pid, char **slice) {
         return cg_path_get_user_slice(cgroup, slice);
 }
 
-char *cg_escape(const char *p) {
-        bool need_prefix = false;
+bool cg_needs_escape(const char *p) {
 
-        /* This implements very minimal escaping for names to be used
-         * as file names in the cgroup tree: any name which might
-         * conflict with a kernel name or is prefixed with '_' is
-         * prefixed with a '_'. That way, when reading cgroup names it
-         * is sufficient to remove a single prefixing underscore if
-         * there is one. */
+        /* Checks if the specified path is a valid cgroup name by our rules, or if it must be escaped. Note
+         * that we consider escaped cgroup names invalid here, as they need to be escaped a second time if
+         * they shall be used. Also note that various names cannot be made valid by escaping even if we
+         * return true here (because too long, or contain the forbidden character "/"). */
 
-        /* The return value of this function (unlike cg_unescape())
-         * needs free()! */
+        if (!filename_is_valid(p))
+                return true;
 
-        if (IN_SET(p[0], 0, '_', '.') ||
-            STR_IN_SET(p, "notify_on_release", "release_agent", "tasks") ||
-            startswith(p, "cgroup."))
-                need_prefix = true;
-        else {
-                const char *dot;
+        if (IN_SET(p[0], '_', '.'))
+                return true;
 
-                dot = strrchr(p, '.');
-                if (dot) {
-                        CGroupController c;
-                        size_t l = dot - p;
+        if (STR_IN_SET(p, "notify_on_release", "release_agent", "tasks"))
+                return true;
 
-                        for (c = 0; c < _CGROUP_CONTROLLER_MAX; c++) {
-                                const char *n;
+        if (startswith(p, "cgroup."))
+                return true;
 
-                                n = cgroup_controller_to_string(c);
+        for (CGroupController c = 0; c < _CGROUP_CONTROLLER_MAX; c++) {
+                const char *q;
 
-                                if (l != strlen(n))
-                                        continue;
+                q = startswith(p, cgroup_controller_to_string(c));
+                if (!q)
+                        continue;
 
-                                if (memcmp(p, n, l) != 0)
-                                        continue;
-
-                                need_prefix = true;
-                                break;
-                        }
-                }
+                if (q[0] == '.')
+                        return true;
         }
 
-        if (need_prefix)
-                return strjoin("_", p);
+        return false;
+}
 
-        return strdup(p);
+int cg_escape(const char *p, char **ret) {
+        _cleanup_free_ char *n = NULL;
+
+        /* This implements very minimal escaping for names to be used as file names in the cgroup tree: any
+         * name which might conflict with a kernel name or is prefixed with '_' is prefixed with a '_'. That
+         * way, when reading cgroup names it is sufficient to remove a single prefixing underscore if there
+         * is one. */
+
+        /* The return value of this function (unlike cg_unescape()) needs free()! */
+
+        if (cg_needs_escape(p)) {
+                n = strjoin("_", p);
+                if (!n)
+                        return -ENOMEM;
+
+                if (!filename_is_valid(n)) /* became invalid due to the prefixing? Or contained things like a slash that cannot be fixed by prefixing? */
+                        return -EINVAL;
+        } else {
+                n = strdup(p);
+                if (!n)
+                        return -ENOMEM;
+        }
+
+        *ret = TAKE_PTR(n);
+        return 0;
 }
 
 char *cg_unescape(const char *p) {
@@ -1673,9 +1710,9 @@ int cg_slice_to_path(const char *unit, char **ret) {
                 if (!unit_name_is_valid(n, UNIT_NAME_PLAIN))
                         return -EINVAL;
 
-                escaped = cg_escape(n);
-                if (!escaped)
-                        return -ENOMEM;
+                r = cg_escape(n, &escaped);
+                if (r < 0)
+                        return r;
 
                 if (!strextend(&s, escaped, "/"))
                         return -ENOMEM;
@@ -1683,16 +1720,39 @@ int cg_slice_to_path(const char *unit, char **ret) {
                 dash = strchr(dash+1, '-');
         }
 
-        e = cg_escape(unit);
-        if (!e)
-                return -ENOMEM;
+        r = cg_escape(unit, &e);
+        if (r < 0)
+                return r;
 
         if (!strextend(&s, e))
                 return -ENOMEM;
 
         *ret = TAKE_PTR(s);
-
         return 0;
+}
+
+int cg_is_threaded(const char *controller, const char *path) {
+        _cleanup_free_ char *fs = NULL, *contents = NULL;
+        _cleanup_strv_free_ char **v = NULL;
+        int r;
+
+        r = cg_get_path(controller, path, "cgroup.type", &fs);
+        if (r < 0)
+                return r;
+
+        r = read_full_virtual_file(fs, &contents, NULL);
+        if (r == -ENOENT)
+                return false; /* Assume no. */
+        if (r < 0)
+                return r;
+
+        v = strv_split(contents, NULL);
+        if (!v)
+                return -ENOMEM;
+
+        /* If the cgroup is in the threaded mode, it contains "threaded".
+         * If one of the parents or siblings is in the threaded mode, it may contain "invalid". */
+        return strv_contains(v, "threaded") || strv_contains(v, "invalid");
 }
 
 int cg_set_attribute(const char *controller, const char *path, const char *attribute, const char *value) {

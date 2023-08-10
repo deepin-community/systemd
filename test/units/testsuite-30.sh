@@ -4,7 +4,6 @@ set -eux
 set -o pipefail
 
 systemd-analyze log-level debug
-systemd-analyze log-target console
 
 systemctl disable --now systemd-timesyncd.service
 
@@ -27,6 +26,4 @@ while test ! -f /tmp/clock-changed ; do sleep .5 ; done
 
 systemd-analyze log-level info
 
-echo OK >/testok
-
-exit 0
+touch /testok

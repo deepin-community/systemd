@@ -11,7 +11,6 @@
 #include "ratelimit.h"
 #include "string-util.h"
 #include "tmpfile-util.h"
-#include "util.h"
 
 #define COPY_BUFFER_SIZE (16*1024)
 
@@ -91,8 +90,8 @@ int tar_export_new(
                 return -ENOMEM;
 
         *e = (TarExport) {
-                .output_fd = -1,
-                .tar_fd = -1,
+                .output_fd = -EBADF,
+                .tar_fd = -EBADF,
                 .on_finished = on_finished,
                 .userdata = userdata,
                 .quota_referenced = UINT64_MAX,
@@ -251,7 +250,7 @@ static int tar_export_on_defer(sd_event_source *s, void *userdata) {
 }
 
 int tar_export_start(TarExport *e, const char *path, int fd, ImportCompressType compress) {
-        _cleanup_close_ int sfd = -1;
+        _cleanup_close_ int sfd = -EBADF;
         int r;
 
         assert(e);
@@ -294,7 +293,7 @@ int tar_export_start(TarExport *e, const char *path, int fd, ImportCompressType 
                         return r;
 
                 /* Let's try to make a snapshot, if we can, so that the export is atomic */
-                r = btrfs_subvol_snapshot_fd(sfd, e->temp_path, BTRFS_SNAPSHOT_READ_ONLY|BTRFS_SNAPSHOT_RECURSIVE);
+                r = btrfs_subvol_snapshot_at(sfd, NULL, AT_FDCWD, e->temp_path, BTRFS_SNAPSHOT_READ_ONLY|BTRFS_SNAPSHOT_RECURSIVE);
                 if (r < 0) {
                         log_debug_errno(r, "Couldn't create snapshot %s of %s, not exporting atomically: %m", e->temp_path, path);
                         e->temp_path = mfree(e->temp_path);

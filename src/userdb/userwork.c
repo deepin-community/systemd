@@ -503,7 +503,7 @@ static int run(int argc, char *argv[]) {
         start_time = now(CLOCK_MONOTONIC);
 
         for (;;) {
-                _cleanup_close_ int fd = -1;
+                _cleanup_close_ int fd = -EBADF;
                 usec_t n;
 
                 /* Exit the worker in regular intervals, to flush out all memory use */
@@ -553,10 +553,10 @@ static int run(int argc, char *argv[]) {
 
                                 parent = getppid();
                                 if (parent <= 1)
-                                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Parent already died?");
+                                        return log_error_errno(SYNTHETIC_ERRNO(ESRCH), "Parent already died?");
 
                                 if (kill(parent, SIGUSR2) < 0)
-                                        return log_error_errno(errno, "Failed to kill our own parent.");
+                                        return log_error_errno(errno, "Failed to kill our own parent: %m");
                         }
                 }
 

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: CC0-1.0
+# SPDX-License-Identifier: MIT-0
 
 # Destroy any old key on the Yubikey (careful!)
 ykman piv reset
@@ -25,4 +25,4 @@ sudo /usr/lib/systemd/systemd-cryptsetup attach mytest /dev/sdXn - pkcs11-uri=au
 
 # If that worked, let's now add the same line persistently to /etc/crypttab,
 # for the future.
-sudo bash -c 'echo "mytest /dev/sdXn - pkcs11-uri=auto" >> /etc/crypttab'
+sudo bash -c 'echo "mytest /dev/sdXn - pkcs11-uri=auto" >>/etc/crypttab'

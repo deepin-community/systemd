@@ -2,6 +2,7 @@
 #pragma once
 
 #include <alloca.h>
+#include <malloc.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,8 @@
 #endif
 
 typedef void (*free_func_t)(void *p);
+typedef void* (*mfree_func_t)(void *p);
+typedef void (*free_array_func_t)(void *p, size_t n);
 
 /* If for some reason more than 4M are allocated on the stack, let's abort immediately. It's better than
  * proceeding and smashing the stack limits. Note that by default RLIMIT_STACK is 8M on Linux. */
@@ -49,14 +52,28 @@ typedef void (*free_func_t)(void *p);
 
 #define malloc0(n) (calloc(1, (n) ?: 1))
 
-#define free_and_replace(a, b)                  \
+#define free_and_replace_full(a, b, free_func)  \
         ({                                      \
                 typeof(a)* _a = &(a);           \
                 typeof(b)* _b = &(b);           \
-                free(*_a);                      \
-                (*_a) = (*_b);                  \
-                (*_b) = NULL;                   \
+                free_func(*_a);                 \
+                *_a = *_b;                      \
+                *_b = NULL;                     \
                 0;                              \
+        })
+
+#define free_and_replace(a, b)                  \
+        free_and_replace_full(a, b, free)
+
+/* This is similar to free_and_replace_full(), but NULL is not assigned to 'b', and its reference counter is
+ * increased. */
+#define unref_and_replace_full(a, b, ref_func, unref_func)      \
+        ({                                       \
+                typeof(a)* _a = &(a);            \
+                typeof(b) _b = ref_func(b);      \
+                unref_func(*_a);                 \
+                *_a = _b;                        \
+                0;                               \
         })
 
 void* memdup(const void *p, size_t l) _alloc_(2);
@@ -130,12 +147,16 @@ static inline void *memdup_suffix0_multiply(const void *p, size_t size, size_t n
 
 void* greedy_realloc(void **p, size_t need, size_t size);
 void* greedy_realloc0(void **p, size_t need, size_t size);
+void* greedy_realloc_append(void **p, size_t *n_p, const void *from, size_t n_from, size_t size);
 
 #define GREEDY_REALLOC(array, need)                                     \
         greedy_realloc((void**) &(array), (need), sizeof((array)[0]))
 
 #define GREEDY_REALLOC0(array, need)                                    \
         greedy_realloc0((void**) &(array), (need), sizeof((array)[0]))
+
+#define GREEDY_REALLOC_APPEND(array, n_array, from, n_from)             \
+        greedy_realloc_append((void**) &(array), (size_t*) &(n_array), (from), (n_from), sizeof((array)[0]))
 
 #define alloca0(n)                                      \
         ({                                              \
@@ -169,17 +190,35 @@ void* greedy_realloc0(void **p, size_t need, size_t size);
 #  define msan_unpoison(r, s)
 #endif
 
-/* This returns the number of usable bytes in a malloc()ed region as per malloc_usable_size(), in a way that
- * is compatible with _FORTIFY_SOURCES. If _FORTIFY_SOURCES is used many memory operations will take the
- * object size as returned by __builtin_object_size() into account. Hence, let's return the smaller size of
- * malloc_usable_size() and __builtin_object_size() here, so that we definitely operate in safe territory by
- * both the compiler's and libc's standards. Note that __builtin_object_size() evaluates to SIZE_MAX if the
- * size cannot be determined, hence the MIN() expression should be safe with dynamically sized memory,
- * too. Moreover, when NULL is passed malloc_usable_size() is documented to return zero, and
- * __builtin_object_size() returns SIZE_MAX too, hence we also return a sensible value of 0 in this corner
- * case. */
+/* Dummy allocator to tell the compiler that the new size of p is newsize. The implementation returns the
+ * pointer as is; the only reason for its existence is as a conduit for the _alloc_ attribute.  This must not
+ * be inlined (hence a non-static function with _noinline_ because LTO otherwise tries to inline it) because
+ * gcc then loses the attributes on the function.
+ * See: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=96503 */
+void *expand_to_usable(void *p, size_t newsize) _alloc_(2) _returns_nonnull_ _noinline_;
+
+static inline size_t malloc_sizeof_safe(void **xp) {
+        if (_unlikely_(!xp || !*xp))
+                return 0;
+
+        size_t sz = malloc_usable_size(*xp);
+        *xp = expand_to_usable(*xp, sz);
+        /* GCC doesn't see the _returns_nonnull_ when built with ubsan, so yet another hint to make it doubly
+         * clear that expand_to_usable won't return NULL.
+         * See: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=79265 */
+        if (!*xp)
+                assert_not_reached();
+        return sz;
+}
+
+/* This returns the number of usable bytes in a malloc()ed region as per malloc_usable_size(), which may
+ * return a value larger than the size that was actually allocated. Access to that additional memory is
+ * discouraged because it violates the C standard; a compiler cannot see that this as valid. To help the
+ * compiler out, the MALLOC_SIZEOF_SAFE macro 'allocates' the usable size using a dummy allocator function
+ * expand_to_usable. There is a possibility of malloc_usable_size() returning different values during the
+ * lifetime of an object, which may cause problems, but the glibc allocator does not do that at the moment. */
 #define MALLOC_SIZEOF_SAFE(x) \
-        MIN(malloc_usable_size(x), __builtin_object_size(x, 0))
+        malloc_sizeof_safe((void**) &__builtin_choose_expr(__builtin_constant_p(x), (void*) { NULL }, (x)))
 
 /* Inspired by ELEMENTSOF() but operates on malloc()'ed memory areas: typesafely returns the number of items
  * that fit into the specified memory block */

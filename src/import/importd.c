@@ -10,7 +10,8 @@
 #include "bus-get-properties.h"
 #include "bus-log-control-api.h"
 #include "bus-polkit.h"
-#include "def.h"
+#include "common-signal.h"
+#include "constants.h"
 #include "env-util.h"
 #include "fd-util.h"
 #include "float.h"
@@ -32,7 +33,6 @@
 #include "strv.h"
 #include "syslog-util.h"
 #include "user-util.h"
-#include "util.h"
 #include "web-util.h"
 
 typedef struct Transfer Transfer;
@@ -95,6 +95,9 @@ struct Manager {
         int notify_fd;
 
         sd_event_source *notify_event_source;
+
+        bool use_btrfs_subvol;
+        bool use_btrfs_quota;
 };
 
 #define TRANSFERS_MAX 64
@@ -155,9 +158,9 @@ static int transfer_new(Manager *m, Transfer **ret) {
 
         *t = (Transfer) {
                 .type = _TRANSFER_TYPE_INVALID,
-                .log_fd = -1,
-                .stdin_fd = -1,
-                .stdout_fd = -1,
+                .log_fd = -EBADF,
+                .stdin_fd = -EBADF,
+                .stdout_fd = -EBADF,
                 .verify = _IMPORT_VERIFY_INVALID,
                 .progress_percent= UINT_MAX,
         };
@@ -306,11 +309,10 @@ static int transfer_cancel(Transfer *t) {
 }
 
 static int transfer_on_pid(sd_event_source *s, const siginfo_t *si, void *userdata) {
-        Transfer *t = userdata;
+        Transfer *t = ASSERT_PTR(userdata);
         bool success = false;
 
         assert(s);
-        assert(t);
 
         if (si->si_code == CLD_EXITED) {
                 if (si->si_status != 0)
@@ -331,11 +333,10 @@ static int transfer_on_pid(sd_event_source *s, const siginfo_t *si, void *userda
 }
 
 static int transfer_on_log(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
-        Transfer *t = userdata;
+        Transfer *t = ASSERT_PTR(userdata);
         ssize_t l;
 
         assert(s);
-        assert(t);
 
         l = read(fd, t->log_message + t->log_message_size, sizeof(t->log_message) - t->log_message_size);
         if (l < 0)
@@ -356,7 +357,7 @@ static int transfer_on_log(sd_event_source *s, int fd, uint32_t revents, void *u
 }
 
 static int transfer_start(Transfer *t) {
-        _cleanup_close_pair_ int pipefd[2] = { -1, -1 };
+        _cleanup_close_pair_ int pipefd[2] = PIPE_EBADF;
         int r;
 
         assert(t);
@@ -365,7 +366,10 @@ static int transfer_start(Transfer *t) {
         if (pipe2(pipefd, O_CLOEXEC) < 0)
                 return -errno;
 
-        r = safe_fork("(sd-transfer)", FORK_RESET_SIGNALS|FORK_DEATHSIG, &t->pid);
+        r = safe_fork_full("(sd-transfer)",
+                           (int[]) { t->stdin_fd, t->stdout_fd < 0 ? pipefd[1] : t->stdout_fd, pipefd[1] },
+                           NULL, 0,
+                           FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG|FORK_REARRANGE_STDIO, &t->pid);
         if (r < 0)
                 return r;
         if (r == 0) {
@@ -386,17 +390,6 @@ static int transfer_start(Transfer *t) {
                 unsigned k = 0;
 
                 /* Child */
-
-                pipefd[0] = safe_close(pipefd[0]);
-
-                r = rearrange_stdio(TAKE_FD(t->stdin_fd),
-                                    t->stdout_fd < 0 ? pipefd[1] : TAKE_FD(t->stdout_fd),
-                                    pipefd[1]);
-                TAKE_FD(pipefd[1]);
-                if (r < 0) {
-                        log_error_errno(r, "Failed to set stdin/stdout/stderr: %m");
-                        _exit(EXIT_FAILURE);
-                }
 
                 if (setenv("SYSTEMD_LOG_TARGET", "console-prefixed", 1) < 0 ||
                     setenv("NOTIFY_SOCKET", "/run/systemd/import/notify", 1) < 0) {
@@ -561,9 +554,9 @@ static int manager_on_notify(sd_event_source *s, int fd, uint32_t revents, void 
         };
         struct ucred *ucred;
         Manager *m = userdata;
-        char *p, *e;
         Transfer *t;
         ssize_t n;
+        char *p;
         int r;
 
         n = recvmsg_safe(fd, &msghdr, MSG_DONTWAIT|MSG_CMSG_CLOEXEC);
@@ -597,17 +590,11 @@ static int manager_on_notify(sd_event_source *s, int fd, uint32_t revents, void 
 
         buf[n] = 0;
 
-        p = startswith(buf, "X_IMPORT_PROGRESS=");
-        if (!p) {
-                p = strstr(buf, "\nX_IMPORT_PROGRESS=");
-                if (!p)
-                        return 0;
+        p = find_line_startswith(buf, "X_IMPORT_PROGRESS=");
+        if (!p)
+                return 0;
 
-                p += 19;
-        }
-
-        e = strchrnul(p, '\n');
-        *e = 0;
+        truncate_nl(p);
 
         r = parse_percent(p);
         if (r < 0) {
@@ -631,15 +618,36 @@ static int manager_new(Manager **ret) {
 
         assert(ret);
 
-        m = new0(Manager, 1);
+        m = new(Manager, 1);
         if (!m)
                 return -ENOMEM;
+
+        *m = (Manager) {
+                .use_btrfs_subvol = true,
+                .use_btrfs_quota = true,
+        };
 
         r = sd_event_default(&m->event);
         if (r < 0)
                 return r;
 
-        sd_event_set_watchdog(m->event, true);
+        (void) sd_event_set_watchdog(m->event, true);
+
+        r = sd_event_add_signal(m->event, NULL, SIGINT, NULL, NULL);
+        if (r < 0)
+                return r;
+
+        r = sd_event_add_signal(m->event, NULL, SIGTERM, NULL, NULL);
+        if (r < 0)
+                return r;
+
+        r = sd_event_add_signal(m->event, NULL, SIGRTMIN+18, sigrtmin18_handler, NULL);
+        if (r < 0)
+                return r;
+
+        r = sd_event_add_memory_pressure(m->event, NULL, NULL, NULL);
+        if (r < 0)
+                log_debug_errno(r, "Failed allocate memory pressure event source, ignoring: %m");
 
         r = sd_bus_default_system(&m->bus);
         if (r < 0)
@@ -687,13 +695,12 @@ static int method_import_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
         _cleanup_(transfer_unrefp) Transfer *t = NULL;
         int fd, force, read_only, r;
         const char *local, *object;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         TransferType type;
         struct stat st;
         uint32_t id;
 
         assert(msg);
-        assert(m);
 
         r = bus_verify_polkit_async(
                         msg,
@@ -723,7 +730,7 @@ static int method_import_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
                                          "Local name %s is invalid", local);
 
-        r = setup_machine_directory(error);
+        r = setup_machine_directory(error, m->use_btrfs_subvol, m->use_btrfs_quota);
         if (r < 0)
                 return r;
 
@@ -761,11 +768,10 @@ static int method_import_fs(sd_bus_message *msg, void *userdata, sd_bus_error *e
         _cleanup_(transfer_unrefp) Transfer *t = NULL;
         int fd, force, read_only, r;
         const char *local, *object;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         uint32_t id;
 
         assert(msg);
-        assert(m);
 
         r = bus_verify_polkit_async(
                         msg,
@@ -793,7 +799,7 @@ static int method_import_fs(sd_bus_message *msg, void *userdata, sd_bus_error *e
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
                                          "Local name %s is invalid", local);
 
-        r = setup_machine_directory(error);
+        r = setup_machine_directory(error, m->use_btrfs_subvol, m->use_btrfs_quota);
         if (r < 0)
                 return r;
 
@@ -828,13 +834,12 @@ static int method_export_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
         _cleanup_(transfer_unrefp) Transfer *t = NULL;
         int fd, r;
         const char *local, *object, *format;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         TransferType type;
         struct stat st;
         uint32_t id;
 
         assert(msg);
-        assert(m);
 
         r = bus_verify_polkit_async(
                         msg,
@@ -901,14 +906,13 @@ static int method_export_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
 static int method_pull_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
         _cleanup_(transfer_unrefp) Transfer *t = NULL;
         const char *remote, *local, *verify, *object;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         ImportVerify v;
         TransferType type;
         int force, r;
         uint32_t id;
 
         assert(msg);
-        assert(m);
 
         r = bus_verify_polkit_async(
                         msg,
@@ -946,7 +950,7 @@ static int method_pull_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_er
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
                                          "Unknown verification mode %s", verify);
 
-        r = setup_machine_directory(error);
+        r = setup_machine_directory(error, m->use_btrfs_subvol, m->use_btrfs_quota);
         if (r < 0)
                 return r;
 
@@ -988,12 +992,11 @@ static int method_pull_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_er
 
 static int method_list_transfers(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         Transfer *t;
         int r;
 
         assert(msg);
-        assert(m);
 
         r = sd_bus_message_new_method_return(msg, &reply);
         if (r < 0)
@@ -1026,11 +1029,10 @@ static int method_list_transfers(sd_bus_message *msg, void *userdata, sd_bus_err
 }
 
 static int method_cancel(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
-        Transfer *t = userdata;
+        Transfer *t = ASSERT_PTR(userdata);
         int r;
 
         assert(msg);
-        assert(t);
 
         r = bus_verify_polkit_async(
                         msg,
@@ -1054,13 +1056,12 @@ static int method_cancel(sd_bus_message *msg, void *userdata, sd_bus_error *erro
 }
 
 static int method_cancel_transfer(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         Transfer *t;
         uint32_t id;
         int r;
 
         assert(msg);
-        assert(m);
 
         r = bus_verify_polkit_async(
                         msg,
@@ -1102,11 +1103,10 @@ static int property_get_progress(
                 void *userdata,
                 sd_bus_error *error) {
 
-        Transfer *t = userdata;
+        Transfer *t = ASSERT_PTR(userdata);
 
         assert(bus);
         assert(reply);
-        assert(t);
 
         return sd_bus_message_append(reply, "d", transfer_percent_as_double(t));
 }
@@ -1122,7 +1122,7 @@ static int transfer_object_find(
                 void **found,
                 sd_bus_error *error) {
 
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         Transfer *t;
         const char *p;
         uint32_t id;
@@ -1132,7 +1132,6 @@ static int transfer_object_find(
         assert(path);
         assert(interface);
         assert(found);
-        assert(m);
 
         p = startswith(path, "/org/freedesktop/import1/transfer/_");
         if (!p)
@@ -1363,6 +1362,28 @@ static int manager_run(Manager *m) {
                         m);
 }
 
+static void manager_parse_env(Manager *m) {
+        int r;
+
+        assert(m);
+
+        /* Same as src/import/{import,pull}.c:
+         * Let's make these relatively low-level settings also controllable via env vars. User can then set
+         * them for systemd-importd.service if they like to tweak behaviour */
+
+        r = getenv_bool("SYSTEMD_IMPORT_BTRFS_SUBVOL");
+        if (r >= 0)
+                m->use_btrfs_subvol = r;
+        else if (r != -ENXIO)
+                log_warning_errno(r, "Failed to parse $SYSTEMD_IMPORT_BTRFS_SUBVOL: %m");
+
+        r = getenv_bool("SYSTEMD_IMPORT_BTRFS_QUOTA");
+        if (r >= 0)
+                m->use_btrfs_quota = r;
+        else if (r != -ENXIO)
+                log_warning_errno(r, "Failed to parse $SYSTEMD_IMPORT_BTRFS_QUOTA: %m");
+}
+
 static int run(int argc, char *argv[]) {
         _cleanup_(manager_unrefp) Manager *m = NULL;
         int r;
@@ -1379,11 +1400,13 @@ static int run(int argc, char *argv[]) {
 
         umask(0022);
 
-        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGCHLD, -1) >= 0);
+        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGCHLD, SIGTERM, SIGINT, SIGRTMIN+18, -1) >= 0);
 
         r = manager_new(&m);
         if (r < 0)
                 return log_error_errno(r, "Failed to allocate manager object: %m");
+
+        manager_parse_env(m);
 
         r = manager_add_bus_objects(m);
         if (r < 0)

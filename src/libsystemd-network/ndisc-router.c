@@ -21,6 +21,9 @@ DEFINE_PUBLIC_TRIVIAL_REF_UNREF_FUNC(sd_ndisc_router, sd_ndisc_router, mfree);
 sd_ndisc_router *ndisc_router_new(size_t raw_size) {
         sd_ndisc_router *rt;
 
+        if (raw_size > SIZE_MAX - ALIGN(sizeof(sd_ndisc_router)))
+                return NULL;
+
         rt = malloc0(ALIGN(sizeof(sd_ndisc_router)) + raw_size);
         if (!rt)
                 return NULL;
@@ -29,27 +32,6 @@ sd_ndisc_router *ndisc_router_new(size_t raw_size) {
         rt->n_ref = 1;
 
         return rt;
-}
-
-int sd_ndisc_router_from_raw(sd_ndisc_router **ret, const void *raw, size_t raw_size) {
-        _cleanup_(sd_ndisc_router_unrefp) sd_ndisc_router *rt = NULL;
-        int r;
-
-        assert_return(ret, -EINVAL);
-        assert_return(raw || raw_size <= 0, -EINVAL);
-
-        rt = ndisc_router_new(raw_size);
-        if (!rt)
-                return -ENOMEM;
-
-        memcpy(NDISC_ROUTER_RAW(rt), raw, raw_size);
-        r = ndisc_router_parse(NULL, rt);
-        if (r < 0)
-                return r;
-
-        *ret = TAKE_PTR(rt);
-
-        return r;
 }
 
 int sd_ndisc_router_get_address(sd_ndisc_router *rt, struct in6_addr *ret_addr) {
@@ -99,7 +81,7 @@ int ndisc_router_parse(sd_ndisc *nd, sd_ndisc_router *rt) {
                 return log_ndisc_errno(nd, SYNTHETIC_ERRNO(EBADMSG),
                                        "Too small to be a router advertisement, ignoring.");
 
-        /* Router advertisement packets are neatly aligned to 64bit boundaries, hence we can access them directly */
+        /* Router advertisement packets are neatly aligned to 64-bit boundaries, hence we can access them directly */
         a = NDISC_ROUTER_RAW(rt);
 
         if (a->nd_ra_type != ND_ROUTER_ADVERT)
@@ -111,7 +93,7 @@ int ndisc_router_parse(sd_ndisc *nd, sd_ndisc_router *rt) {
                                        "Received ND packet with wrong RA code, ignoring.");
 
         rt->hop_limit = a->nd_ra_curhoplimit;
-        rt->flags = a->nd_ra_flags_reserved; /* the first 8bit */
+        rt->flags = a->nd_ra_flags_reserved; /* the first 8 bits */
         rt->lifetime = be16toh(a->nd_ra_router_lifetime);
 
         rt->preference = (rt->flags >> 3) & 3;
@@ -731,5 +713,47 @@ int sd_ndisc_router_dnssl_get_lifetime(sd_ndisc_router *rt, uint32_t *ret_sec) {
                 return r;
 
         *ret_sec = be32toh(*(uint32_t*) (ri + 4));
+        return 0;
+}
+
+int sd_ndisc_router_captive_portal_get_uri(sd_ndisc_router *rt, const char **ret_uri, size_t *ret_size) {
+        int r;
+        const char *nd_opt_captive_portal;
+        size_t length;
+
+        assert_return(rt, -EINVAL);
+        assert_return(ret_uri, -EINVAL);
+
+        r = sd_ndisc_router_option_is_type(rt, SD_NDISC_OPTION_CAPTIVE_PORTAL);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -EMEDIUMTYPE;
+
+        r = sd_ndisc_router_option_get_raw(rt, (void *)&nd_opt_captive_portal, &length);
+        if (r < 0)
+                return r;
+
+        /* The length field has units of 8 octets */
+        assert(length % 8 == 0);
+        if (length == 0)
+                return -EBADMSG;
+
+        /* Check that the message is not truncated by an embedded NUL.
+         * NUL padding to a multiple of 8 is expected. */
+        size_t size = strnlen(nd_opt_captive_portal + 2, length - 2);
+        if (DIV_ROUND_UP(size + 2, 8) != length / 8)
+                return -EBADMSG;
+
+        /* Let's not return an empty buffer */
+        if (size == 0) {
+                *ret_uri = NULL;
+                *ret_size = 0;
+                return 0;
+        }
+
+        *ret_uri = nd_opt_captive_portal + 2;
+        *ret_size = size;
+
         return 0;
 }

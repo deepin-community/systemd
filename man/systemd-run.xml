@@ -67,11 +67,12 @@
     command has begun execution (unless <option>--no-block</option> or <option>--wait</option> are specified, see
     below).</para>
 
-    <para>If a command is run as transient scope unit, it will be executed by <command>systemd-run</command> itself as
-    parent process and will thus inherit the execution environment of the caller. However, the processes of the command
-    are managed by the service manager similar to normal services, and will show up in the output of <command>systemctl
-    list-units</command>. Execution in this case is synchronous, and will return only when the command finishes. This
-    mode is enabled via the <option>--scope</option> switch (see below). </para>
+    <para>If a command is run as transient scope unit, it will be executed by <command>systemd-run</command>
+    itself as parent process and will thus inherit the execution environment of the caller. However, the
+    processes of the command are managed by the service manager similarly to normal services, and will show
+    up in the output of <command>systemctl list-units</command>. Execution in this case is synchronous, and
+    will return only when the command finishes. This mode is enabled via the <option>--scope</option> switch
+    (see below).</para>
 
     <para>If a command is run with path, socket, or timer options such as <option>--on-calendar=</option> (see below),
     a transient path, socket, or timer unit is created alongside the service unit for the specified command. Only the
@@ -81,15 +82,21 @@
     <filename>.path</filename>, <filename>.socket</filename>, or <filename>.timer</filename> unit that triggers the
     specified unit.</para>
 
-    <para>By default, services created with <command>systemd-run</command> default to the <option>simple</option> type,
-    see the description of <varname>Type=</varname> in
+    <para>By default, services created with <command>systemd-run</command> default to the
+    <option>simple</option> type, see the description of <varname>Type=</varname> in
     <citerefentry><refentrytitle>systemd.service</refentrytitle><manvolnum>5</manvolnum></citerefentry> for
-    details. Note that when this type is used the service manager (and thus the <command>systemd-run</command> command)
-    considers service start-up successful as soon as the <function>fork()</function> for the main service process
-    succeeded, i.e. before the <function>execve()</function> is invoked, and thus even if the specified command cannot
-    be started. Consider using the <option>exec</option> service type (i.e. <option>--property=Type=exec</option>) to
-    ensure that <command>systemd-run</command> returns successfully only if the specified command line has been
-    successfully started.</para>
+    details. Note that when this type is used, the service manager (and thus the
+    <command>systemd-run</command> command) considers service start-up successful as soon as the
+    <function>fork()</function> for the main service process succeeded, i.e. before the
+    <function>execve()</function> is invoked, and thus even if the specified command cannot be started.
+    Consider using the <option>exec</option> service type (i.e. <option>--property=Type=exec</option>) to
+    ensure that <command>systemd-run</command> returns successfully only if the specified command line has
+    been successfully started.</para>
+
+    <para>After <command>systemd-run</command> passes the command to the service manager, the manager
+    performs variable expansion. This means that dollar characters (<literal>$</literal>) which should not be
+    expanded need to be escaped as <literal>$$</literal>. Expansion can also be disabled using
+    <varname>--expand-environment=no</varname>.</para>
   </refsect1>
 
   <refsect1>
@@ -168,6 +175,29 @@
       </varlistentry>
 
       <varlistentry>
+        <term><option>--expand-environment=<replaceable>BOOL</replaceable></option></term>
+
+        <listitem><para>Expand environment variables in command arguments. If enabled, environment variables
+        specified as <literal>${<replaceable>VARIABLE</replaceable>}</literal> will be expanded in the same
+        way as in commands specified via <varname>ExecStart=</varname> in units. With
+        <varname>--scope</varname>, this expansion is performed by <command>systemd-run</command> itself, and
+        in other cases by the service manager that spawns the command. Note that this is similar to, but not
+        the same as variable expansion in
+        <citerefentry project='man-pages'><refentrytitle>bash</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+        and other shells.</para>
+
+        <para>The default is to enable this option in all cases, except for <varname>--scope</varname> where
+        it is disabled by default, for backward compatibility reasons. Note that this will be changed in a
+        future release, where it will be switched to enabled by default as well.</para>
+
+        <para>See
+        <citerefentry><refentrytitle>systemd.service</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+        for a description of variable expansion. Disabling variable expansion is useful if the specified
+        command includes or may include a <literal>$</literal> sign.</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><option>-r</option></term>
         <term><option>--remain-after-exit</option></term>
 
@@ -234,8 +264,8 @@
         <term><option>--same-dir</option></term>
         <term><option>-d</option></term>
 
-        <listitem><para>Similar to <option>--working-directory=</option> but uses the current working directory of the
-        caller for the service to execute.</para></listitem>
+        <listitem><para>Similar to <option>--working-directory=</option>, but uses the current working
+        directory of the caller for the service to execute.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -287,7 +317,7 @@
         to the service processes as-is. If the service runs with different privileges than
         <command>systemd-run</command>, this means the service might not be able to re-open the passed file
         descriptors, due to normal file descriptor access restrictions. If the invoked process is a shell script that
-        uses the <command>echo "hello" > /dev/stderr</command> construct for writing messages to stderr, this might
+        uses the <command>echo "hello" >/dev/stderr</command> construct for writing messages to stderr, this might
         cause problems, as this only works if stderr can be re-opened. To mitigate this use the construct <command>echo
         "hello" >&amp;2</command> instead, which is mostly equivalent and avoids this pitfall.</para></listitem>
       </varlistentry>
@@ -354,9 +384,9 @@
         <term><option>--socket-property=</option></term>
         <term><option>--timer-property=</option></term>
 
-        <listitem><para>Sets a property on the path, socket, or timer unit that is created. This option is similar to
-        <option>--property=</option> but applies to the transient path, socket, or timer unit rather than the
-        transient service unit created. This option takes an assignment in the same format as
+        <listitem><para>Sets a property on the path, socket, or timer unit that is created. This option is
+        similar to <option>--property=</option>, but applies to the transient path, socket, or timer unit
+        rather than the transient service unit created. This option takes an assignment in the same format as
         <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>'s
         <command>set-property</command> command. These options may not be combined with
         <option>--scope</option> or <option>--pty</option>.</para>
@@ -410,10 +440,8 @@
       <xi:include href="standard-options.xml" xpointer="version" />
     </variablelist>
 
-    <para>All command line arguments after the first non-option
-    argument become part of the command line of the launched
-    process. If a command is run as service unit, the first argument
-    needs to be an absolute program path.</para>
+    <para>All command line arguments after the first non-option argument become part of the command line of
+    the launched process.</para>
   </refsect1>
 
   <refsect1>
@@ -447,14 +475,13 @@ Sep 08 07:37:21 bupkis env[19948]: BOOT_IMAGE=/vmlinuz-3.11.0-0.rc5.git6.2.fc20.
     <example>
       <title>Limiting resources available to a command</title>
 
-      <programlisting># systemd-run -p BlockIOWeight=10 updatedb</programlisting>
+      <programlisting># systemd-run -p IOWeight=10 updatedb</programlisting>
 
-      <para>This command invokes the
-      <citerefentry project='man-pages'><refentrytitle>updatedb</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+      <para>This command invokes the <citerefentry
+      project='man-pages'><refentrytitle>updatedb</refentrytitle><manvolnum>8</manvolnum></citerefentry>
       tool, but lowers the block I/O weight for it to 10. See
       <citerefentry><refentrytitle>systemd.resource-control</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-      for more information on the <varname>BlockIOWeight=</varname>
-      property.</para>
+      for more information on the <varname>IOWeight=</varname> property.</para>
     </example>
 
     <example>
@@ -479,7 +506,7 @@ Dec 08 20:44:48 container systemd[1]: Started /bin/touch /tmp/foo.</programlisti
     <example>
       <title>Allowing access to the tty</title>
 
-      <para>The following command invokes <citerefentry><refentrytitle>bash</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+      <para>The following command invokes <citerefentry project='man-pages'><refentrytitle>bash</refentrytitle><manvolnum>1</manvolnum></citerefentry>
       as a service passing its standard input, output and error to the calling TTY.</para>
 
       <programlisting># systemd-run -t --send-sighup bash</programlisting>
@@ -530,11 +557,48 @@ There is a screen on:
     </example>
 
     <example>
+      <title>Variable expansion by the manager</title>
+
+      <programlisting>$ systemd-run -t echo "&lt;${INVOCATION_ID}>" '&lt;${INVOCATION_ID}>'
+      &lt;> &lt;5d0149bfa2c34b79bccb13074001eb20>
+      </programlisting>
+
+      <para>The first argument is expanded by the shell (double quotes), but the second one is not expanded
+      by the shell (single quotes). <command>echo</command> is called with [<literal>/usr/bin/echo</literal>,
+      <literal>[]</literal>, <literal>[${INVOCATION_ID}]</literal>] as the argument array, and then
+      <command>systemd</command> generates <varname>${INVOCATION_ID}</varname> and substitutes it in the
+      command-line. This substitution could not be done on the client side, because the target ID that will
+      be set for the service isn't known before the call is made.</para>
+    </example>
+
+    <example>
+      <title>Variable expansion and output redirection using a shell</title>
+
+      <para>Variable expansion by <command>systemd</command> can be disabled with
+      <varname>--expand-environment=no</varname>.</para>
+
+      <para>Disabling variable expansion can be useful if the command to execute contains dollar characters
+      and escaping them would be inconvenient. For example, when a shell is used:</para>
+
+      <programlisting>$ systemd-run --expand-environment=no -t bash \
+      -c 'echo $SHELL $$ >/dev/stdout'
+/bin/bash 12345
+      </programlisting>
+
+      <para>The last argument is passed verbatim to the <command>bash</command> shell which is started by the
+      service unit. The shell expands <literal>$SHELL</literal> to the path of the shell, and
+      <literal>$$</literal> to its process number, and then those strings are passed to the
+      <command>echo</command> built-in and printed to standard output (which in this case is connected to the
+      calling terminal).</para>
+    </example>
+
+    <example>
       <title>Return value</title>
 
       <programlisting>$ systemd-run --user --wait true
 $ systemd-run --user --wait -p SuccessExitStatus=11 bash -c 'exit 11'
-$ systemd-run --user --wait -p SuccessExitStatus=SIGUSR1 bash -c 'kill -SIGUSR1 $$$$'</programlisting>
+$ systemd-run --user --wait -p SuccessExitStatus=SIGUSR1 --expand-environment=no \
+      bash -c 'kill -SIGUSR1 $$'</programlisting>
 
       <para>Those three invocations will succeed, i.e. terminate with an exit code of 0.</para>
     </example>

@@ -49,7 +49,9 @@ static int determine_default(char **ret_name) {
         int r;
 
         if (install_client_side()) {
-                r = unit_file_get_default(arg_scope, arg_root, ret_name);
+                r = unit_file_get_default(arg_runtime_scope, arg_root, ret_name);
+                if (r == -ERFKILL)
+                        return log_error_errno(r, "Failed to get default target: Unit file is masked.");
                 if (r < 0)
                         return log_error_errno(r, "Failed to get default target: %m");
                 return 0;
@@ -76,7 +78,7 @@ static int determine_default(char **ret_name) {
         }
 }
 
-int get_default(int argc, char *argv[], void *userdata) {
+int verb_get_default(int argc, char *argv[], void *userdata) {
         _cleanup_free_ char *name = NULL;
         int r;
 
@@ -91,10 +93,8 @@ int get_default(int argc, char *argv[], void *userdata) {
         return 0;
 }
 
-int set_default(int argc, char *argv[], void *userdata) {
+int verb_set_default(int argc, char *argv[], void *userdata) {
         _cleanup_free_ char *unit = NULL;
-        UnitFileChange *changes = NULL;
-        size_t n_changes = 0;
         int r;
 
         assert(argc >= 2);
@@ -107,11 +107,15 @@ int set_default(int argc, char *argv[], void *userdata) {
                 return log_error_errno(r, "Failed to mangle unit name: %m");
 
         if (install_client_side()) {
-                r = unit_file_set_default(arg_scope, UNIT_FILE_FORCE, arg_root, unit, &changes, &n_changes);
-                unit_file_dump_changes(r, "set default", changes, n_changes, arg_quiet);
+                InstallChange *changes = NULL;
+                size_t n_changes = 0;
 
-                if (r > 0)
-                        r = 0;
+                CLEANUP_ARRAY(changes, n_changes, install_changes_free);
+
+                r = unit_file_set_default(arg_runtime_scope, UNIT_FILE_FORCE, arg_root, unit, &changes, &n_changes);
+                install_changes_dump(r, "set default", changes, n_changes, arg_quiet);
+                if (r < 0)
+                        return r;
         } else {
                 _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
                 _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
@@ -127,15 +131,16 @@ int set_default(int argc, char *argv[], void *userdata) {
                 if (r < 0)
                         return log_error_errno(r, "Failed to set default target: %s", bus_error_message(&error, r));
 
-                r = bus_deserialize_and_dump_unit_file_changes(reply, arg_quiet, &changes, &n_changes);
+                r = bus_deserialize_and_dump_unit_file_changes(reply, arg_quiet);
                 if (r < 0)
-                        goto finish;
+                        return r;
 
                 /* Try to reload if enabled */
-                if (!arg_no_reload)
-                        r = daemon_reload(argc, argv, userdata);
-                else
-                        r = 0;
+                if (!arg_no_reload) {
+                        r = daemon_reload(ACTION_RELOAD, /* graceful= */ false);
+                        if (r < 0)
+                                return r;
+                }
         }
 
         emit_cmdline_warning();
@@ -151,8 +156,5 @@ int set_default(int argc, char *argv[], void *userdata) {
                         log_notice("Note: \"%s\" is the default unit (possibly a runtime override).", final);
         }
 
-finish:
-        unit_file_changes_free(changes, n_changes);
-
-        return r;
+        return 0;
 }

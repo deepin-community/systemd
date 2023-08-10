@@ -28,7 +28,7 @@ static int get_acl(int fd, const char *name, acl_type_t type, acl_t *ret) {
         assert(ret);
 
         if (name) {
-                _cleanup_close_ int child_fd = -1;
+                _cleanup_close_ int child_fd = -EBADF;
 
                 child_fd = openat(fd, name, O_PATH|O_CLOEXEC|O_NOFOLLOW);
                 if (child_fd < 0)
@@ -53,7 +53,7 @@ static int set_acl(int fd, const char *name, acl_type_t type, acl_t acl) {
         assert(acl);
 
         if (name) {
-                _cleanup_close_ int child_fd = -1;
+                _cleanup_close_ int child_fd = -EBADF;
 
                 child_fd = openat(fd, name, O_PATH|O_CLOEXEC|O_NOFOLLOW);
                 if (child_fd < 0)
@@ -181,7 +181,9 @@ static int patch_acls(int fd, const char *name, const struct stat *st, uid_t shi
 
         if (S_ISDIR(st->st_mode)) {
                 acl_free(acl);
-                acl_free(shifted);
+
+                if (shifted)
+                        acl_free(shifted);
 
                 acl = shifted = NULL;
 
@@ -406,7 +408,7 @@ static int fd_patch_uid_internal(int fd, bool donate_fd, uid_t shift, uid_t rang
 
         /* Recursively adjusts the UID/GIDs of all files of a directory tree. This is used to automatically fix up an
          * OS tree to the used user namespace UID range. Note that this automatic adjustment only works for UID ranges
-         * following the concept that the upper 16bit of a UID identify the container, and the lower 16bit are the actual
+         * following the concept that the upper 16-bit of a UID identify the container, and the lower 16-bit are the actual
          * UID within the container. */
 
         if ((shift & 0xFFFF) != 0) {
@@ -421,7 +423,7 @@ static int fd_patch_uid_internal(int fd, bool donate_fd, uid_t shift, uid_t rang
         }
 
         if (range != 0x10000) {
-                /* We only support containers with 16bit UID ranges for the patching logic */
+                /* We only support containers with 16-bit UID ranges for the patching logic */
                 r = -EOPNOTSUPP;
                 goto finish;
         }
@@ -438,7 +440,7 @@ static int fd_patch_uid_internal(int fd, bool donate_fd, uid_t shift, uid_t rang
         }
 
         /* Try to detect if the range is already right. Of course, this a pretty drastic optimization, as we assume
-         * that if the top-level dir has the right upper 16bit assigned, then everything below will have too... */
+         * that if the top-level dir has the right upper 16-bit assigned, then everything below will have too... */
         if (((uint32_t) (st.st_uid ^ shift) >> 16) == 0)
                 return 0;
 

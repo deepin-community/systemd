@@ -13,27 +13,21 @@
 #include "user-util.h"
 
 static int specifier_prefix_and_instance(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
-        const Unit *u = userdata;
-
-        assert(u);
+        const Unit *u = ASSERT_PTR(userdata);
 
         return unit_name_to_prefix_and_instance(u->id, ret);
 }
 
 static int specifier_prefix(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
-        const Unit *u = userdata;
-
-        assert(u);
+        const Unit *u = ASSERT_PTR(userdata);
 
         return unit_name_to_prefix(u->id, ret);
 }
 
 static int specifier_prefix_unescaped(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
         _cleanup_free_ char *p = NULL;
-        const Unit *u = userdata;
+        const Unit *u = ASSERT_PTR(userdata);
         int r;
-
-        assert(u);
 
         r = unit_name_to_prefix(u->id, &p);
         if (r < 0)
@@ -43,20 +37,16 @@ static int specifier_prefix_unescaped(char specifier, const void *data, const ch
 }
 
 static int specifier_instance_unescaped(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
-        const Unit *u = userdata;
-
-        assert(u);
+        const Unit *u = ASSERT_PTR(userdata);
 
         return unit_name_unescape(strempty(u->instance), ret);
 }
 
 static int specifier_last_component(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
-        const Unit *u = userdata;
+        const Unit *u = ASSERT_PTR(userdata);
         _cleanup_free_ char *prefix = NULL;
         char *dash;
         int r;
-
-        assert(u);
 
         r = unit_name_to_prefix(u->id, &prefix);
         if (r < 0)
@@ -82,9 +72,7 @@ static int specifier_last_component_unescaped(char specifier, const void *data, 
 }
 
 static int specifier_filename(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
-        const Unit *u = userdata;
-
-        assert(u);
+        const Unit *u = ASSERT_PTR(userdata);
 
         if (u->instance)
                 return unit_name_path_unescape(u->instance, ret);
@@ -97,29 +85,27 @@ static void bad_specifier(const Unit *u, char specifier) {
 }
 
 static int specifier_cgroup(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
-        const Unit *u = userdata;
-        char *n;
-
-        assert(u);
+        const Unit *u = ASSERT_PTR(userdata);
 
         bad_specifier(u, specifier);
 
-        if (u->cgroup_path)
-                n = strdup(u->cgroup_path);
-        else
-                n = unit_default_cgroup_path(u);
-        if (!n)
-                return -ENOMEM;
+        if (u->cgroup_path) {
+                char *n;
 
-        *ret = n;
-        return 0;
+                n = strdup(u->cgroup_path);
+                if (!n)
+                        return -ENOMEM;
+
+                *ret = n;
+                return 0;
+        }
+
+        return unit_default_cgroup_path(u, ret);
 }
 
 static int specifier_cgroup_root(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
-        const Unit *u = userdata;
+        const Unit *u = ASSERT_PTR(userdata);
         char *n;
-
-        assert(u);
 
         bad_specifier(u, specifier);
 
@@ -132,10 +118,8 @@ static int specifier_cgroup_root(char specifier, const void *data, const char *r
 }
 
 static int specifier_cgroup_slice(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
-        const Unit *u = userdata, *slice;
+        const Unit *u = ASSERT_PTR(userdata), *slice;
         char *n;
-
-        assert(u);
 
         bad_specifier(u, specifier);
 
@@ -144,7 +128,7 @@ static int specifier_cgroup_slice(char specifier, const void *data, const char *
                 if (slice->cgroup_path)
                         n = strdup(slice->cgroup_path);
                 else
-                        n = unit_default_cgroup_path(slice);
+                        return unit_default_cgroup_path(slice, ret);
         } else
                 n = strdup(u->manager->cgroup_root);
         if (!n)
@@ -155,10 +139,8 @@ static int specifier_cgroup_slice(char specifier, const void *data, const char *
 }
 
 static int specifier_special_directory(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
-        const Unit *u = userdata;
-        char *n = NULL;
-
-        assert(u);
+        const Unit *u = ASSERT_PTR(userdata);
+        char *n;
 
         n = strdup(u->manager->prefix[PTR_TO_UINT(data)]);
         if (!n)
@@ -168,8 +150,21 @@ static int specifier_special_directory(char specifier, const void *data, const c
         return 0;
 }
 
-int unit_name_printf(const Unit *u, const char* format, char **ret) {
+static int specifier_credentials_dir(char specifier, const void *data, const char *root, const void *userdata, char **ret) {
+        const Unit *u = ASSERT_PTR(userdata);
+        char *d;
 
+        assert(ret);
+
+        d = strjoin(u->manager->prefix[EXEC_DIRECTORY_RUNTIME], "/credentials/", u->id);
+        if (!d)
+                return -ENOMEM;
+
+        *ret = d;
+        return 0;
+}
+
+int unit_name_printf(const Unit *u, const char* format, char **ret) {
         /*
          * This will use the passed string as format string and replace the following specifiers (which should all be
          * safe for inclusion in unit names):
@@ -190,7 +185,7 @@ int unit_name_printf(const Unit *u, const char* format, char **ret) {
 
                 COMMON_SYSTEM_SPECIFIERS,
 
-                COMMON_CREDS_SPECIFIERS,
+                COMMON_CREDS_SPECIFIERS(u->manager->runtime_scope),
                 {}
         };
 
@@ -202,8 +197,8 @@ int unit_name_printf(const Unit *u, const char* format, char **ret) {
 }
 
 int unit_full_printf_full(const Unit *u, const char *format, size_t max_length, char **ret) {
-        /* This is similar to unit_name_printf() but also supports unescaping. Also, adds a couple of additional codes
-         * (which are likely not suitable for unescaped inclusion in unit names):
+        /* This is similar to unit_name_printf() but also supports unescaping. Also, adds a couple of
+         * additional codes (which are likely not suitable for unescaped inclusion in unit names):
          *
          * %f: the unescaped instance if set, otherwise the id unescaped as path
          *
@@ -212,17 +207,18 @@ int unit_full_printf_full(const Unit *u, const char *format, size_t max_length, 
          * %R: the root of this systemd's instance tree (deprecated)
          *
          * %C: the cache directory root (e.g. /var/cache or $XDG_CACHE_HOME)
+         * %d: the credentials directory ($CREDENTIALS_DIRECTORY)
          * %E: the configuration directory root (e.g. /etc or $XDG_CONFIG_HOME)
-         * %L: the log directory root (e.g. /var/log or $XDG_CONFIG_HOME/log)
-         * %S: the state directory root (e.g. /var/lib or $XDG_CONFIG_HOME)
+         * %L: the log directory root (e.g. /var/log or $XDG_STATE_HOME/log)
+         * %S: the state directory root (e.g. /var/lib or $XDG_STATE_HOME)
          * %t: the runtime directory root (e.g. /run or $XDG_RUNTIME_DIR)
          *
          * %h: the homedir of the running user
          * %s: the shell of the running user
          *
-         * NOTICE: When you add new entries here, please be careful: specifiers which depend on settings of the unit
-         * file itself are broken by design, as they would resolve differently depending on whether they are used
-         * before or after the relevant configuration setting. Hence: don't add them.
+         * NOTICE: When you add new entries here, please be careful: specifiers which depend on settings of
+         * the unit file itself are broken by design, as they would resolve differently depending on whether
+         * they are used before or after the relevant configuration setting. Hence: don't add them.
          */
 
         assert(u);
@@ -240,12 +236,15 @@ int unit_full_printf_full(const Unit *u, const char *format, size_t max_length, 
                 { 'P', specifier_prefix_unescaped,         NULL },
 
                 { 'f', specifier_filename,                 NULL },
+                { 'y', specifier_real_path,                u->fragment_path },
+                { 'Y', specifier_real_directory,           u->fragment_path },
 
-                { 'c', specifier_cgroup,                   NULL },
-                { 'r', specifier_cgroup_slice,             NULL },
-                { 'R', specifier_cgroup_root,              NULL },
+                { 'c', specifier_cgroup,                   NULL },  /* deprecated, see 1b89b0c499cd4bf0ff389caab4ecaae6e75f9d4e */
+                { 'r', specifier_cgroup_slice,             NULL },  /* deprecated, see 1b89b0c499cd4bf0ff389caab4ecaae6e75f9d4e */
+                { 'R', specifier_cgroup_root,              NULL },  /* deprecated, see 1b89b0c499cd4bf0ff389caab4ecaae6e75f9d4e */
 
                 { 'C', specifier_special_directory,        UINT_TO_PTR(EXEC_DIRECTORY_CACHE) },
+                { 'd', specifier_credentials_dir,          NULL },
                 { 'E', specifier_special_directory,        UINT_TO_PTR(EXEC_DIRECTORY_CONFIGURATION) },
                 { 'L', specifier_special_directory,        UINT_TO_PTR(EXEC_DIRECTORY_LOGS) },
                 { 'S', specifier_special_directory,        UINT_TO_PTR(EXEC_DIRECTORY_STATE) },
@@ -256,7 +255,7 @@ int unit_full_printf_full(const Unit *u, const char *format, size_t max_length, 
 
                 COMMON_SYSTEM_SPECIFIERS,
 
-                COMMON_CREDS_SPECIFIERS,
+                COMMON_CREDS_SPECIFIERS(u->manager->runtime_scope),
 
                 COMMON_TMP_SPECIFIERS,
                 {}

@@ -6,7 +6,6 @@
 #include "btrfs-util.h"
 #include "qcow2-util.h"
 #include "sparse-endian.h"
-#include "util.h"
 
 #define QCOW2_MAGIC 0x514649fb
 
@@ -70,7 +69,7 @@ static int copy_cluster(
         ssize_t l;
         int r;
 
-        r = btrfs_clone_range(sfd, soffset, dfd, doffset, cluster_size);
+        r = reflink_range(sfd, soffset, dfd, doffset, cluster_size);
         if (r >= 0)
                 return r;
 

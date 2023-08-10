@@ -14,7 +14,7 @@
   Lesser General Public License for more details.
 
   You should have received a copy of the GNU Lesser General Public License
-  along with systemd; If not, see <http://www.gnu.org/licenses/>.
+  along with systemd; If not, see <https://www.gnu.org/licenses/>.
 ***/
 
 #include <inttypes.h>
@@ -53,9 +53,10 @@ enum {
         SD_PATH_USER_SHARED,
 
         /* User configuration, state, runtime ... */
-        SD_PATH_USER_CONFIGURATION, /* takes both actual configuration (like /etc) and state (like /var/lib) */
+        SD_PATH_USER_CONFIGURATION,
         SD_PATH_USER_RUNTIME,
         SD_PATH_USER_STATE_CACHE,
+        /* → SD_PATH_USER_STATE_PRIVATE is added at the bottom */
 
         /* User resources */
         SD_PATH_USER, /* $HOME itself */
@@ -82,6 +83,7 @@ enum {
          * replaces "path" by "search"), since this API is about dirs/paths anyway, and contains "path"
          * already in the prefix */
         SD_PATH_SYSTEMD_UTIL,
+
         SD_PATH_SYSTEMD_SYSTEM_UNIT,
         SD_PATH_SYSTEMD_SYSTEM_PRESET,
         SD_PATH_SYSTEMD_SYSTEM_CONF,
@@ -110,7 +112,15 @@ enum {
         /* systemd-networkd search paths */
         SD_PATH_SYSTEMD_SEARCH_NETWORK,
 
-        _SD_PATH_MAX,
+        /* systemd environment generators */
+        SD_PATH_SYSTEMD_SYSTEM_ENVIRONMENT_GENERATOR,
+        SD_PATH_SYSTEMD_USER_ENVIRONMENT_GENERATOR,
+        SD_PATH_SYSTEMD_SEARCH_SYSTEM_ENVIRONMENT_GENERATOR,
+        SD_PATH_SYSTEMD_SEARCH_USER_ENVIRONMENT_GENERATOR,
+
+        SD_PATH_USER_STATE_PRIVATE,
+
+        _SD_PATH_MAX
 };
 
 int sd_path_lookup(uint64_t type, const char *suffix, char **path);

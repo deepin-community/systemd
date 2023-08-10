@@ -4,6 +4,8 @@
 typedef struct ExecStatus ExecStatus;
 typedef struct ExecCommand ExecCommand;
 typedef struct ExecContext ExecContext;
+typedef struct ExecSharedRuntime ExecSharedRuntime;
+typedef struct DynamicCreds DynamicCreds;
 typedef struct ExecRuntime ExecRuntime;
 typedef struct ExecParameters ExecParameters;
 typedef struct Manager Manager;
@@ -23,7 +25,10 @@ typedef struct Manager Manager;
 #include "namespace.h"
 #include "nsflags.h"
 #include "numa-util.h"
+#include "open-file.h"
 #include "path-util.h"
+#include "runtime-scope.h"
+#include "set.h"
 #include "time-util.h"
 
 #define EXEC_STDIN_DATA_MAX (64U*1024U*1024U)
@@ -104,7 +109,7 @@ struct ExecCommand {
  * invocations of commands. Specifically, this allows sharing of /tmp and /var/tmp data as well as network namespaces
  * between invocations of commands. This is a reference counted object, with one reference taken by each currently
  * active command invocation that wants to share this runtime. */
-struct ExecRuntime {
+struct ExecSharedRuntime {
         unsigned n_ref;
 
         Manager *manager;
@@ -122,8 +127,21 @@ struct ExecRuntime {
         int ipcns_storage_socket[2];
 };
 
+struct ExecRuntime {
+        ExecSharedRuntime *shared;
+        DynamicCreds *dynamic_creds;
+
+        /* The path to the ephemeral snapshot of the root directory or root image if one was requested. */
+        char *ephemeral_copy;
+
+        /* An AF_UNIX socket pair that receives the locked file descriptor referring to the ephemeral copy of
+         * the root directory or root image. The lock prevents tmpfiles from removing the ephemeral snapshot
+         * until we're done using it. */
+        int ephemeral_storage_socket[2];
+};
+
 typedef enum ExecDirectoryType {
-        EXEC_DIRECTORY_RUNTIME = 0,
+        EXEC_DIRECTORY_RUNTIME,
         EXEC_DIRECTORY_STATE,
         EXEC_DIRECTORY_CACHE,
         EXEC_DIRECTORY_LOGS,
@@ -135,6 +153,7 @@ typedef enum ExecDirectoryType {
 typedef struct ExecDirectoryItem {
         char *path;
         char **symlinks;
+        bool only_create;
 } ExecDirectoryItem;
 
 typedef struct ExecDirectory {
@@ -151,8 +170,9 @@ typedef enum ExecCleanMask {
         EXEC_CLEAN_CACHE         = 1U << EXEC_DIRECTORY_CACHE,
         EXEC_CLEAN_LOGS          = 1U << EXEC_DIRECTORY_LOGS,
         EXEC_CLEAN_CONFIGURATION = 1U << EXEC_DIRECTORY_CONFIGURATION,
+        EXEC_CLEAN_FDSTORE       = 1U << _EXEC_DIRECTORY_TYPE_MAX,
         EXEC_CLEAN_NONE          = 0,
-        EXEC_CLEAN_ALL           = (1U << _EXEC_DIRECTORY_TYPE_MAX) - 1,
+        EXEC_CLEAN_ALL           = (1U << (_EXEC_DIRECTORY_TYPE_MAX+1)) - 1,
         _EXEC_CLEAN_MASK_INVALID = -EINVAL,
 } ExecCleanMask;
 
@@ -184,6 +204,7 @@ struct ExecContext {
         void *root_hash, *root_hash_sig;
         size_t root_hash_size, root_hash_sig_size;
         LIST_HEAD(MountOptions, root_image_options);
+        bool root_ephemeral;
         bool working_directory_missing_ok:1;
         bool working_directory_home:1;
 
@@ -264,7 +285,7 @@ struct ExecContext {
 
         char **read_write_paths, **read_only_paths, **inaccessible_paths, **exec_paths, **no_exec_paths;
         char **exec_search_path;
-        unsigned long mount_flags;
+        unsigned long mount_propagation_flag;
         BindMount *bind_mounts;
         size_t n_bind_mounts;
         TemporaryFileSystem *temporary_filesystems;
@@ -273,6 +294,7 @@ struct ExecContext {
         size_t n_mount_images;
         MountImage *extension_images;
         size_t n_extension_images;
+        char **extension_directories;
 
         uint64_t capability_bounding_set;
         uint64_t capability_ambient_set;
@@ -284,6 +306,8 @@ struct ExecContext {
 
         struct iovec* log_extra_fields;
         size_t n_log_extra_fields;
+        Set *log_filter_allowed_patterns;
+        Set *log_filter_denied_patterns;
 
         usec_t log_ratelimit_interval_usec;
         unsigned log_ratelimit_burst;
@@ -295,11 +319,12 @@ struct ExecContext {
         ProtectProc protect_proc;  /* hidepid= */
         ProcSubset proc_subset;    /* subset= */
 
+        int private_mounts;
+        int memory_ksm;
         bool private_tmp;
         bool private_network;
         bool private_devices;
         bool private_users;
-        bool private_mounts;
         bool private_ipc;
         bool protect_kernel_tunables;
         bool protect_kernel_modules;
@@ -346,6 +371,9 @@ struct ExecContext {
 
         Hashmap *set_credentials; /* output id → ExecSetCredential */
         Hashmap *load_credentials; /* output id → ExecLoadCredential */
+        Set *import_credentials;
+
+        ImagePolicy *root_image_policy, *mount_image_policy, *extension_image_policy;
 };
 
 static inline bool exec_context_restrict_namespaces_set(const ExecContext *c) {
@@ -385,11 +413,14 @@ typedef enum ExecFlags {
         EXEC_PASS_FDS              = 1 << 10,
         EXEC_SETENV_RESULT         = 1 << 11,
         EXEC_SET_WATCHDOG          = 1 << 12,
+        EXEC_SETENV_MONITOR_RESULT = 1 << 13, /* Pass exit status to OnFailure= and OnSuccess= dependencies. */
 } ExecFlags;
 
 /* Parameters for a specific invocation of a command. This structure is put together right before a command is
  * executed. */
 struct ExecParameters {
+        RuntimeScope runtime_scope;
+
         char **environment;
 
         int *fds;
@@ -404,7 +435,8 @@ struct ExecParameters {
         const char *cgroup_path;
 
         char **prefix;
-        const char *received_credentials;
+        const char *received_credentials_directory;
+        const char *received_encrypted_credentials_directory;
 
         const char *confirm_spawn;
 
@@ -420,6 +452,8 @@ struct ExecParameters {
         int exec_fd;
 
         const char *notify_socket;
+
+        LIST_HEAD(OpenFile, open_files);
 };
 
 #include "unit.h"
@@ -430,7 +464,7 @@ int exec_spawn(Unit *unit,
                const ExecContext *context,
                const ExecParameters *exec_params,
                ExecRuntime *runtime,
-               DynamicCreds *dynamic_creds,
+               const CGroupContext *cgroup_context,
                pid_t *ret);
 
 void exec_command_done_array(ExecCommand *c, size_t n);
@@ -449,11 +483,14 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix);
 
 int exec_context_destroy_runtime_directory(const ExecContext *c, const char *runtime_root);
 int exec_context_destroy_credentials(const ExecContext *c, const char *runtime_root, const char *unit);
+int exec_context_destroy_mount_ns_dir(Unit *u);
 
 const char* exec_context_fdname(const ExecContext *c, int fd_index);
 
 bool exec_context_may_touch_console(const ExecContext *c);
 bool exec_context_maintains_privileges(const ExecContext *c);
+bool exec_context_has_encrypted_credentials(ExecContext *c);
+bool exec_context_has_credentials(const ExecContext *context);
 
 int exec_context_get_effective_ioprio(const ExecContext *c);
 bool exec_context_get_effective_mount_apivfs(const ExecContext *c);
@@ -470,13 +507,20 @@ void exec_status_exit(ExecStatus *s, const ExecContext *context, pid_t pid, int 
 void exec_status_dump(const ExecStatus *s, FILE *f, const char *prefix);
 void exec_status_reset(ExecStatus *s);
 
-int exec_runtime_acquire(Manager *m, const ExecContext *c, const char *name, bool create, ExecRuntime **ret);
-ExecRuntime *exec_runtime_unref(ExecRuntime *r, bool destroy);
+int exec_shared_runtime_acquire(Manager *m, const ExecContext *c, const char *name, bool create, ExecSharedRuntime **ret);
+ExecSharedRuntime *exec_shared_runtime_destroy(ExecSharedRuntime *r);
+ExecSharedRuntime *exec_shared_runtime_unref(ExecSharedRuntime *r);
+DEFINE_TRIVIAL_CLEANUP_FUNC(ExecSharedRuntime*, exec_shared_runtime_unref);
 
-int exec_runtime_serialize(const Manager *m, FILE *f, FDSet *fds);
-int exec_runtime_deserialize_compat(Unit *u, const char *key, const char *value, FDSet *fds);
-int exec_runtime_deserialize_one(Manager *m, const char *value, FDSet *fds);
-void exec_runtime_vacuum(Manager *m);
+int exec_shared_runtime_serialize(const Manager *m, FILE *f, FDSet *fds);
+int exec_shared_runtime_deserialize_compat(Unit *u, const char *key, const char *value, FDSet *fds);
+int exec_shared_runtime_deserialize_one(Manager *m, const char *value, FDSet *fds);
+void exec_shared_runtime_vacuum(Manager *m);
+
+int exec_runtime_make(const Unit *unit, const ExecContext *context, ExecSharedRuntime *shared, DynamicCreds *creds, ExecRuntime **ret);
+ExecRuntime* exec_runtime_free(ExecRuntime *rt);
+DEFINE_TRIVIAL_CLEANUP_FUNC(ExecRuntime*, exec_runtime_free);
+ExecRuntime* exec_runtime_destroy(ExecRuntime *rt);
 
 void exec_params_clear(ExecParameters *p);
 
@@ -489,7 +533,10 @@ ExecLoadCredential *exec_load_credential_free(ExecLoadCredential *lc);
 DEFINE_TRIVIAL_CLEANUP_FUNC(ExecLoadCredential*, exec_load_credential_free);
 
 void exec_directory_done(ExecDirectory *d);
-int exec_directory_add(ExecDirectoryItem **d, size_t *n, const char *path, char **symlinks);
+int exec_directory_add(ExecDirectory *d, const char *path, const char *symlink);
+void exec_directory_sort(ExecDirectory *d);
+
+ExecCleanMask exec_clean_mask_from_string(const char *s);
 
 extern const struct hash_ops exec_set_credential_hash_ops;
 extern const struct hash_ops exec_load_credential_hash_ops;
@@ -519,3 +566,4 @@ const char* exec_resource_type_to_string(ExecDirectoryType i) _const_;
 ExecDirectoryType exec_resource_type_from_string(const char *s) _pure_;
 
 bool exec_needs_mount_namespace(const ExecContext *context, const ExecParameters *params, const ExecRuntime *runtime);
+bool exec_needs_network_namespace(const ExecContext *context);

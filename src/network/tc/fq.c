@@ -6,6 +6,7 @@
 #include "alloc-util.h"
 #include "conf-parser.h"
 #include "fq.h"
+#include "logarithm.h"
 #include "netlink-util.h"
 #include "parse-util.h"
 #include "string-util.h"
@@ -32,46 +33,46 @@ static int fair_queueing_fill_message(Link *link, QDisc *qdisc, sd_netlink_messa
         assert(qdisc);
         assert(req);
 
-        fq = FQ(qdisc);
+        assert_se(fq = FQ(qdisc));
 
         r = sd_netlink_message_open_container_union(req, TCA_OPTIONS, "fq");
         if (r < 0)
-                return log_link_error_errno(link, r, "Could not open container TCA_OPTIONS: %m");
+                return r;
 
         if (fq->packet_limit > 0) {
                 r = sd_netlink_message_append_u32(req, TCA_FQ_PLIMIT, fq->packet_limit);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_FQ_PLIMIT attribute: %m");
+                        return r;
         }
 
         if (fq->flow_limit > 0) {
                 r = sd_netlink_message_append_u32(req, TCA_FQ_FLOW_PLIMIT, fq->flow_limit);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_FQ_FLOW_PLIMIT attribute: %m");
+                        return r;
         }
 
         if (fq->quantum > 0) {
                 r = sd_netlink_message_append_u32(req, TCA_FQ_QUANTUM, fq->quantum);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_FQ_QUANTUM attribute: %m");
+                        return r;
         }
 
         if (fq->initial_quantum > 0) {
                 r = sd_netlink_message_append_u32(req, TCA_FQ_INITIAL_QUANTUM, fq->initial_quantum);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_FQ_INITIAL_QUANTUM attribute: %m");
+                        return r;
         }
 
         if (fq->pacing >= 0) {
                 r = sd_netlink_message_append_u32(req, TCA_FQ_RATE_ENABLE, fq->pacing);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_FQ_RATE_ENABLE attribute: %m");
+                        return r;
         }
 
         if (fq->max_rate > 0) {
                 r = sd_netlink_message_append_u32(req, TCA_FQ_FLOW_MAX_RATE, fq->max_rate);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_FQ_FLOW_MAX_RATE attribute: %m");
+                        return r;
         }
 
         if (fq->buckets > 0) {
@@ -80,24 +81,24 @@ static int fair_queueing_fill_message(Link *link, QDisc *qdisc, sd_netlink_messa
                 l = log2u(fq->buckets);
                 r = sd_netlink_message_append_u32(req, TCA_FQ_BUCKETS_LOG, l);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_FQ_BUCKETS_LOG attribute: %m");
+                        return r;
         }
 
         if (fq->orphan_mask > 0) {
                 r = sd_netlink_message_append_u32(req, TCA_FQ_ORPHAN_MASK, fq->orphan_mask);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_FQ_ORPHAN_MASK attribute: %m");
+                        return r;
         }
 
         if (fq->ce_threshold_usec != USEC_INFINITY) {
                 r = sd_netlink_message_append_u32(req, TCA_FQ_CE_THRESHOLD, fq->ce_threshold_usec);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Could not append TCA_FQ_CE_THRESHOLD attribute: %m");
+                        return r;
         }
 
         r = sd_netlink_message_close_container(req);
         if (r < 0)
-                return log_link_error_errno(link, r, "Could not close container TCA_OPTIONS: %m");
+                return r;
 
         return 0;
 }
@@ -116,14 +117,13 @@ int config_parse_fair_queueing_u32(
 
         _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
         FairQueueing *fq;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint32_t *p;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_FQ, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -181,7 +181,7 @@ int config_parse_fair_queueing_size(
 
         _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
         FairQueueing *fq;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint64_t sz;
         uint32_t *p;
         int r;
@@ -189,7 +189,6 @@ int config_parse_fair_queueing_size(
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_FQ, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -250,13 +249,12 @@ int config_parse_fair_queueing_bool(
 
         _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
         FairQueueing *fq;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_FQ, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -304,14 +302,13 @@ int config_parse_fair_queueing_usec(
 
         _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
         FairQueueing *fq;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         usec_t sec;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_FQ, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -365,14 +362,13 @@ int config_parse_fair_queueing_max_rate(
 
         _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
         FairQueueing *fq;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint64_t sz;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_FQ, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)

@@ -97,7 +97,7 @@ test "$(stat -c %U:%G:%a /tmp/e/3/f1)" = "root:root:644"
 # 'C'
 #
 
-mkdir /tmp/C/{1,2,3}-origin
+mkdir /tmp/C/{0,1,2,3}-origin
 touch /tmp/C/{1,2,3}-origin/f1
 chmod 755 /tmp/C/{1,2,3}-origin/f1
 
@@ -116,6 +116,52 @@ test "$(stat -c %U:%G:%a /tmp/C/2/f1)" = "daemon:daemon:755"
 
 systemd-tmpfiles --create - <<EOF
 C     /tmp/C/3    0755 daemon daemon - /tmp/C/3-origin
+C     /tmp/C/4    0755 daemon daemon - /tmp/C/definitely-missing
 EOF
 
 test "$(stat -c %U:%G:%a /tmp/C/3/f1)" = "root:root:644"
+test ! -e /tmp/C/4
+
+touch /tmp/C/3-origin/f{2,3,4}
+echo -n ABC > /tmp/C/3/f1
+
+systemd-tmpfiles --create - <<EOF
+C+     /tmp/C/3    0755 daemon daemon - /tmp/C/3-origin
+EOF
+
+# Test that the trees got merged, even though /tmp/C/3 already exists.
+test -e /tmp/C/3/f1
+test -e /tmp/C/3/f2
+test -e /tmp/C/3/f3
+test -e /tmp/C/3/f4
+
+# Test that /tmp/C/3/f1 did not get overwritten.
+test "$(cat /tmp/C/3/f1)" = "ABC"
+
+# Check that %U expands to 0, both in the path and in the argument.
+home='/tmp/C'
+systemd-tmpfiles --create - <<EOF
+C     $home/%U    - - - - $home/%U-origin
+EOF
+
+test -d "$home/0"
+
+# Check that %h expands to $home, both in the path and in the argument.
+HOME="$home" \
+systemd-tmpfiles --create - <<EOF
+C     %h/5    - - - - %h/3-origin
+EOF
+
+test -f "$home/5/f1"
+
+# Check that %h in the path is expanded, but
+# the result of this expansion is not expanded once again.
+root='/tmp/C/6'
+home='/%U'
+mkdir -p "$root/usr/share/factory$home"
+HOME="$home" \
+systemd-tmpfiles --create --root="$root" - <<EOF
+C     %h    - - - -
+EOF
+
+test -d "$root$home"

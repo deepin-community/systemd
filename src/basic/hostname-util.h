@@ -4,7 +4,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "env-file.h"
 #include "macro.h"
 #include "strv.h"
 
@@ -61,6 +60,12 @@ static inline bool is_outbound_hostname(const char *hostname) {
         return STRCASE_IN_SET(hostname, "_outbound", "_outbound.");
 }
 
-static inline int get_pretty_hostname(char **ret) {
-        return parse_env_file(NULL, "/etc/machine-info", "PRETTY_HOSTNAME", ret);
+static inline bool is_dns_stub_hostname(const char *hostname) {
+        return STRCASE_IN_SET(hostname, "_localdnsstub", "_localdnsstub.");
 }
+
+static inline bool is_dns_proxy_stub_hostname(const char *hostname) {
+        return STRCASE_IN_SET(hostname, "_localdnsproxy", "_localdnsproxy.");
+}
+
+int get_pretty_hostname(char **ret);

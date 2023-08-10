@@ -3,7 +3,7 @@
   "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
-<refentry id="systemd-stub" conditional='HAVE_GNU_EFI'
+<refentry id="systemd-stub" conditional='ENABLE_BOOTLOADER'
     xmlns:xi="http://www.w3.org/2001/XInclude">
   <refentryinfo>
     <title>systemd-stub</title>
@@ -17,6 +17,7 @@
 
   <refnamediv>
     <refname>systemd-stub</refname>
+    <refname>sd-stub</refname>
     <refname>linuxx64.efi.stub</refname>
     <refname>linuxia32.efi.stub</refname>
     <refname>linuxaa64.efi.stub</refname>
@@ -27,8 +28,10 @@
     <para><filename>/usr/lib/systemd/boot/efi/linuxx64.efi.stub</filename></para>
     <para><filename>/usr/lib/systemd/boot/efi/linuxia32.efi.stub</filename></para>
     <para><filename>/usr/lib/systemd/boot/efi/linuxaa64.efi.stub</filename></para>
+    <para><filename><replaceable>ESP</replaceable>/.../<replaceable>foo</replaceable>.efi.extra.d/*.addon.efi</filename></para>
     <para><filename><replaceable>ESP</replaceable>/.../<replaceable>foo</replaceable>.efi.extra.d/*.cred</filename></para>
     <para><filename><replaceable>ESP</replaceable>/.../<replaceable>foo</replaceable>.efi.extra.d/*.raw</filename></para>
+    <para><filename><replaceable>ESP</replaceable>/loader/addons/*.addon.efi</filename></para>
     <para><filename><replaceable>ESP</replaceable>/loader/credentials/*.cred</filename></para>
   </refsynopsisdiv>
 
@@ -44,37 +47,75 @@
     system into the Linux world.</para>
 
     <para>The UEFI boot stub looks for various resources for the kernel invocation inside the UEFI PE binary
-    itself. This allows combining various resources inside a single PE binary image, which may then be signed
-    via UEFI SecureBoot as a whole, covering all individual resources at once. Specifically it may
-    include:</para>
+    itself. This allows combining various resources inside a single PE binary image (usually called "Unified
+    Kernel Image", or "UKI" for short), which may then be signed via UEFI SecureBoot as a whole, covering all
+    individual resources at once. Specifically it may include:</para>
 
     <itemizedlist>
       <listitem><para>The ELF Linux kernel images will be looked for in the <literal>.linux</literal> PE
       section of the executed image.</para></listitem>
 
-      <listitem><para>The initial RAM disk (initrd) will be looked for in the <literal>.initrd</literal> PE
-      section.</para></listitem>
+      <listitem><para>OS release information, i.e. the
+      <citerefentry><refentrytitle>os-release</refentrytitle><manvolnum>5</manvolnum></citerefentry> file of
+      the OS the kernel belongs to, in the <literal>.osrel</literal> PE section.</para></listitem>
+
+      <listitem><para>Kernel version information, i.e. the output of <command>uname -r</command> for the
+      kernel included in the UKI, in the <literal>.uname</literal> PE section.</para></listitem>
+
+      <listitem><para>The initrd will be loaded from the <literal>.initrd</literal> PE section.
+      </para></listitem>
 
       <listitem><para>A compiled binary DeviceTree will be looked for in the <literal>.dtb</literal> PE
       section.</para></listitem>
+
+      <listitem><para>Kernel version information, i.e. the output of <command>uname -r</command> for the
+      kernel included in the UKI, in the <literal>.uname</literal> PE section.</para></listitem>
 
       <listitem><para>The kernel command line to pass to the invoked kernel will be looked for in the
       <literal>.cmdline</literal> PE section.</para></listitem>
 
       <listitem><para>A boot splash (in Windows <filename>.BMP</filename> format) to show on screen before
       invoking the kernel will be looked for in the <literal>.splash</literal> PE section.</para></listitem>
+
+      <listitem><para>A set of cryptographic signatures for expected TPM2 PCR values when this kernel is
+      booted, in JSON format, in the <literal>.pcrsig</literal> section. This is useful for implementing TPM2
+      policies that bind disk encryption and similar to kernels that are signed by a specific
+      key.</para></listitem>
+
+      <listitem><para>A public key in PEM format matching this TPM2 PCR signature data in the
+      <literal>.pcrpkey</literal> section.</para></listitem>
     </itemizedlist>
 
     <para>If UEFI SecureBoot is enabled and the <literal>.cmdline</literal> section is present in the executed
     image, any attempts to override the kernel command line by passing one as invocation parameters to the
     EFI binary are ignored. Thus, in order to allow overriding the kernel command line, either disable UEFI
     SecureBoot, or don't include a kernel command line PE section in the kernel image file. If a command line
-    is accepted via EFI invocation parameters to the EFI binary it is measured into TPM PCR 8 (if a TPM is
+    is accepted via EFI invocation parameters to the EFI binary it is measured into TPM PCR 12 (if a TPM is
     present).</para>
 
     <para>If a DeviceTree is embedded in the <literal>.dtb</literal> section, it replaces an existing
     DeviceTree in the corresponding EFI configuration table. systemd-stub will ask the firmware via the
     <literal>EFI_DT_FIXUP_PROTOCOL</literal> for hardware specific fixups to the DeviceTree.</para>
+
+    <para>The contents of seven of these eight PE sections are measured into TPM PCR 11, that is otherwise
+    not used. Thus, it can be pre-calculated without too much effort. The <literal>.pcrsig</literal> section
+    is not included in this PCR measurement, since it's supposed to contain signatures for the expected
+    results for these measurements, i.e. of the outputs of the measurement operation, and thus cannot also be
+    input to it.</para>
+
+    <para>When <literal>.pcrsig</literal> and/or <literal>.pcrpkey</literal> are present in a unified kernel
+    image their contents are passed to the booted kernel in an synthetic initrd cpio archive that places them in the
+    <filename>/.extra/tpm2-pcr-signature.json</filename> and
+    <filename>/.extra/tpm2-pcr-public-key.pem</filename> files. Typically, a
+    <citerefentry><refentrytitle>tmpfiles.d</refentrytitle><manvolnum>5</manvolnum></citerefentry> line then
+    ensures they are copied into <filename>/run/systemd/tpm2-pcr-signature.json</filename> and
+    <filename>/run/systemd/tpm2-pcr-public-key.pem</filename> where they remain accessible even after the
+    system transitions out of the initrd environment into the host file system. Tools such
+    <citerefentry><refentrytitle>systemd-cryptsetup@.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
+    <citerefentry><refentrytitle>systemd-cryptenroll</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+    and <citerefentry><refentrytitle>systemd-creds</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+    will automatically use files present under these paths to unlock protected resources (encrypted storage
+    or credentials) or bind encryption to booted kernels.</para>
   </refsect1>
 
   <refsect1>
@@ -99,7 +140,7 @@
       <citerefentry><refentrytitle>systemd-creds</refentrytitle><manvolnum>1</manvolnum></citerefentry>
       for
       details on encrypted credentials. The generated <command>cpio</command> archive is measured into TPM
-      PCR 4 (if a TPM is present).</para></listitem>
+      PCR 12 (if a TPM is present).</para></listitem>
 
       <listitem><para>Similarly, files <filename><replaceable>foo</replaceable>.efi.extra.d/*.raw</filename>
       are packed up in a <command>cpio</command> archive and placed in the <filename>/.extra/sysext/</filename>
@@ -107,13 +148,43 @@
       images to the initrd. See
       <citerefentry><refentrytitle>systemd-sysext</refentrytitle><manvolnum>8</manvolnum></citerefentry> for
       details on system extension images. The generated <command>cpio</command> archive containing these
-      system extension images is measured into TPM PCR 8 (if a TPM is present).</para></listitem>
+      system extension images is measured into TPM PCR 13 (if a TPM is present).</para></listitem>
+
+      <listitem><para>Similarly, files
+      <filename><replaceable>foo</replaceable>.efi.extra.d/*.addon.efi</filename>
+      are loaded and verified as PE binaries, and a <literal>.cmdline</literal> section is parsed from them.
+      In case Secure Boot is enabled, these files will be validated using keys in UEFI DB, Shim's DB or
+      Shim's MOK, and will be rejected otherwise. Additionally, if the both the addon and the UKI contain a
+      a <literal>.uname</literal> section, the addon will be rejected if they do not exactly match. It is
+      recommended to always add a <literal>.sbat</literal> section to all signed addons, so that they may be
+      revoked with a SBAT policy update, without requiring blocklisting via DBX/MOKX. The
+      <citerefentry><refentrytitle>ukify</refentrytitle><manvolnum>1</manvolnum></citerefentry> tool will
+      add a SBAT policy by default if none is passed when building addons. For more information on SBAT see
+      <ulink url="https://github.com/rhboot/shim/blob/main/SBAT.md">Shim's documentation</ulink>.
+      Addons are supposed to be used to pass additional kernel command line parameters, regardless of the
+      kernel image being booted, for example to allow platform vendors to ship platform-specific
+      configuration. The loaded command line addon files are sorted, loaded, measured into TPM PCR 12 (if a
+      TPM is present) and appended to the kernel command line. UKI command line options are listed first,
+      then options from addons in <filename>/loader/addons/*.addon.efi</filename> are appended next, and
+      finally UKI-specific addons are appended last. Addons are always loaded in the same order based on the
+      filename, so that, given the same set of addons, the same set of measurements can be expected in
+      PCR12, however note that the filename is not protected by the PE signature, and as such an attacker
+      with write access to the ESP could potentially rename these files to change the order in which they
+      are loaded, in a way that could alter the functionality of the kernel, as some options might be order
+      dependent. If you sign such addons, you should pay attention to the PCR12 values and make use of an
+      attestation service so that improper use of your signed addons can be detected and dealt with using
+      one of the aforementioned revocation mechanisms.</para></listitem>
 
       <listitem><para>Files <filename>/loader/credentials/*.cred</filename> are packed up in a
       <command>cpio</command> archive and placed in the <filename>/.extra/global_credentials/</filename>
       directory of the initrd file hierarchy. This is supposed to be used to pass additional credentials to
       the initrd, regardless of the kernel being booted. The generated <command>cpio</command> archive is
-      measured into TPM PCR 4 (if a TPM is present)</para></listitem>
+      measured into TPM PCR 12 (if a TPM is present).</para></listitem>
+
+      <listitem><para>Additionally, files <filename>/loader/addons/*.addon.efi</filename> are loaded and
+      verified as PE binaries, and a <literal>.cmdline</literal> section is parsed from them. This is
+      supposed to be used to pass additional command line parameters to the kernel, regardless of the kernel
+      being booted.</para></listitem>
     </itemizedlist>
 
     <para>These mechanisms may be used to parameterize and extend trusted (i.e. signed), immutable initrd
@@ -122,6 +193,93 @@
     by <command>systemd-creds encrypt -T</command> (see
     <citerefentry><refentrytitle>systemd-creds</refentrytitle><manvolnum>1</manvolnum></citerefentry> for
     details); in case of the system extension images by using signed Verity images.</para>
+  </refsect1>
+
+  <refsect1>
+    <title>TPM PCR Notes</title>
+
+    <para>Note that when a unified kernel using <command>systemd-stub</command> is invoked the firmware will
+    measure it as a whole to TPM PCR 4, covering all embedded resources, such as the stub code itself, the
+    core kernel, the embedded initrd and kernel command line (see above for a full list).</para>
+
+    <para>Also note that the Linux kernel will measure all initrds it receives into TPM PCR 9. This means
+    every type of initrd will be measured two or three times: the initrd embedded in the kernel image will be
+    measured to PCR 4, PCR 9 and PCR 11; the initrd synthesized from credentials will be measured to both PCR
+    9 and PCR 12; the initrd synthesized from system extensions will be measured to both PCR 4 and PCR
+    9. Let's summarize the OS resources and the PCRs they are measured to:</para>
+
+    <table>
+      <title>OS Resource PCR Summary</title>
+
+      <tgroup cols='2' align='left' colsep='1' rowsep='1'>
+        <colspec colname="pcr" />
+        <colspec colname="definition" />
+
+        <thead>
+          <row>
+            <entry>OS Resource</entry>
+            <entry>Measurement PCR</entry>
+          </row>
+        </thead>
+
+        <tbody>
+          <row>
+            <entry><command>systemd-stub</command> code (the entry point of the unified PE binary)</entry>
+            <entry>4</entry>
+          </row>
+
+          <row>
+            <entry>Core kernel code (embedded in unified PE binary)</entry>
+            <entry>4 + 11</entry>
+          </row>
+
+          <row>
+            <entry>OS release information (embedded in the unified PE binary)</entry>
+            <entry>4 + 11</entry>
+          </row>
+
+          <row>
+            <entry>Main initrd (embedded in unified PE binary)</entry>
+            <entry>4 + 9 + 11</entry>
+          </row>
+
+          <row>
+            <entry>Default kernel command line (embedded in unified PE binary)</entry>
+            <entry>4 + 11</entry>
+          </row>
+
+          <row>
+            <entry>Overridden kernel command line</entry>
+            <entry>12</entry>
+          </row>
+
+          <row>
+            <entry>Boot splash (embedded in the unified PE binary)</entry>
+            <entry>4 + 11</entry>
+          </row>
+
+          <row>
+            <entry>TPM2 PCR signature JSON (embedded in unified PE binary, synthesized into initrd)</entry>
+            <entry>4 + 9</entry>
+          </row>
+
+          <row>
+            <entry>TPM2 PCR PEM public key (embedded in unified PE binary, synthesized into initrd)</entry>
+            <entry>4 + 9 + 11</entry>
+          </row>
+
+          <row>
+            <entry>Credentials (synthesized initrd from companion files)</entry>
+            <entry>9 + 12</entry>
+          </row>
+
+          <row>
+            <entry>System Extensions (synthesized initrd from companion files)</entry>
+            <entry>9 + 13</entry>
+          </row>
+        </tbody>
+      </tgroup>
+    </table>
   </refsect1>
 
   <refsect1>
@@ -166,6 +324,32 @@
         <citerefentry><refentrytitle>bootctl</refentrytitle><manvolnum>1</manvolnum></citerefentry> to view
         this data.</para></listitem>
       </varlistentry>
+
+      <varlistentry>
+        <term><varname>StubPcrKernelImage</varname></term>
+
+        <listitem><para>The PCR register index the kernel image, initrd image, boot splash, devicetree
+        database, and the embedded command line are measured into, formatted as decimal ASCII string (e.g.
+        <literal>11</literal>). This variable is set if a measurement was successfully completed, and remains
+        unset otherwise.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>StubPcrKernelParameters</varname></term>
+
+        <listitem><para>The PCR register index the kernel command line and credentials are measured into,
+        formatted as decimal ASCII string (e.g. <literal>12</literal>). This variable is set if a measurement
+        was successfully completed, and remains unset otherwise.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>StubPcrInitRDSysExts</varname></term>
+
+        <listitem><para>The PCR register index the systemd extensions for the initrd, which are picked up
+        from the file system the kernel image is located on. Formatted as decimal ASCII string (e.g.
+        <literal>13</literal>). This variable is set if a measurement was successfully completed, and remains
+        unset otherwise.</para></listitem>
+      </varlistentry>
     </variablelist>
 
     <para>Note that some of the variables above may also be set by the boot loader. The stub will only set
@@ -174,39 +358,87 @@
   </refsect1>
 
   <refsect1>
+    <title>initrd Resources</title>
+
+    <para>The following resources are passed as initrd cpio archives to the booted kernel, and thus make up
+    the initial file system hierarchy in the initrd execution environment:</para>
+
+    <variablelist>
+      <varlistentry>
+        <term><filename>/</filename></term>
+
+        <listitem><para>The main initrd from the <literal>.initrd</literal> PE section of the unified kernel image.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><filename>/.extra/credentials/*.cred</filename></term>
+        <listitem><para>Credential files (suffix <literal>.cred</literal>) that are placed next to the
+        unified kernel image (as described above) are copied into the
+        <filename>/.extra/credentials/</filename> directory in the initrd execution
+        environment.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><filename>/.extra/global_credentials/*.cred</filename></term>
+        <listitem><para>Similar, credential files in the <filename>/loader/credentials/</filename> directory
+        in the file system the unified kernel image is placed in are copied into the
+        <filename>/.extra/global_credentials/</filename> directory in the initrd execution
+        environment.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><filename>/.extra/sysext/*.raw</filename></term>
+        <listitem><para>System extension image files (suffix <literal>.raw</literal>) that are placed next to
+        the unified kernel image (as described above) are copied into the
+        <filename>/.extra/sysext/</filename> directory in the initrd execution environment.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><filename>/.extra/tpm2-pcr-signature.json</filename></term>
+        <listitem><para>The TPM2 PCR signature JSON object included in the <literal>.pcrsig</literal> PE
+        section of the unified kernel image is copied into the
+        <filename>/.extra/tpm2-pcr-signature.json</filename> file in the initrd execution
+        environment.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><filename>/.extra/tpm2-pcr-pkey.pem</filename></term>
+        <listitem><para>The PEM public key included in the <literal>.pcrpkey</literal> PE section of the
+        unified kernel image is copied into the <filename>/.extra/tpm2-pcr-public-key.pem</filename> file in
+        the initrd execution environment.</para></listitem>
+      </varlistentry>
+    </variablelist>
+
+    <para>Note that all these files are located in the <literal>tmpfs</literal> file system the kernel sets
+    up for the initrd file hierarchy and are thus lost when the system transitions from the initrd execution
+    environment into the host file system. If these resources shall be kept around over this transition they
+    need to be copied to a place that survives the transition first, for example via a suitable
+    <citerefentry><refentrytitle>tmpfiles.d</refentrytitle><manvolnum>5</manvolnum></citerefentry> line. By
+    default, this is done for the TPM2 PCR signature and public key files.</para>
+  </refsect1>
+
+  <refsect1>
+    <title>SMBIOS Type 11 Strings</title>
+
+    <para><command>systemd-stub</command> can be configured using SMBIOS Type 11 strings. Applicable strings
+    consist of a name, followed by <literal>=</literal>, followed by the value.
+    <command>systemd-stub</command> will search the table for a string with a specific name, and if found,
+    use its value. The following strings are read:</para>
+
+    <variablelist>
+      <varlistentry>
+        <term><varname>io.systemd.stub.kernel-cmdline-extra</varname></term>
+        <listitem><para>If set, the value of this string is added to the list of kernel command line
+        arguments that are measured in PCR12 and passed to the kernel.</para></listitem>
+      </varlistentry>
+    </variablelist>
+  </refsect1>
+
+  <refsect1>
     <title>Assembling Kernel Images</title>
 
-    <para>In order to assemble an UEFI PE kernel image from various components as described above, use an
-    <citerefentry><refentrytitle>objcopy</refentrytitle><manvolnum>1</manvolnum></citerefentry> command line
-    like this:</para>
-
-    <programlisting>objcopy \
-    --add-section .osrel=os-release --change-section-vma .osrel=0x20000 \
-    --add-section .cmdline=cmdline.txt --change-section-vma .cmdline=0x30000 \
-    --add-section .dtb=devicetree.dtb --change-section-vma .dtb=0x40000 \
-    --add-section .splash=splash.bmp --change-section-vma .splash=0x100000 \
-    --add-section .linux=vmlinux --change-section-vma .linux=0x2000000 \
-    --add-section .initrd=initrd.cpio --change-section-vma .initrd=0x3000000 \
-    /usr/lib/systemd/boot/efi/linuxx64.efi.stub \
-    foo-unsigned.efi</programlisting>
-
-    <para>This generates one PE executable file <filename>foo-unsigned.efi</filename> from the six individual
-    files for OS release information, kernel command line, boot splash image, kernel image, main initrd and
-    UEFI boot stub.</para>
-
-    <para>To then sign the resulting image for UEFI SecureBoot use an
-    <citerefentry><refentrytitle>sbsign</refentrytitle><manvolnum>1</manvolnum></citerefentry> command like
-    the following:</para>
-
-    <programlisting>sbsign \
-    --key mykey.pem \
-    --cert mykey.crt \
-    --output foo.efi \
-    foo-unsigned.efi</programlisting>
-
-    <para>This expects a pair of X.509 private key and certificate as parameters and then signs the UEFI PE
-    executable we generated above for UEFI SecureBoot and generates a signed UEFI PE executable as
-    result.</para>
+    <para>In order to assemble a bootable Unified Kernel Image from various components as described above, use
+    <citerefentry><refentrytitle>ukify</refentrytitle><manvolnum>1</manvolnum></citerefentry>.</para>
   </refsect1>
 
   <refsect1>
@@ -216,10 +448,10 @@
       <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
       <citerefentry><refentrytitle>systemd-creds</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
       <citerefentry><refentrytitle>systemd-sysext</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-      <ulink url="https://systemd.io/BOOT_LOADER_SPECIFICATION">Boot Loader Specification</ulink>,
+      <ulink url="https://uapi-group.org/specifications/specs/boot_loader_specification">Boot Loader Specification</ulink>,
       <ulink url="https://systemd.io/BOOT_LOADER_INTERFACE">Boot Loader Interface</ulink>,
-      <citerefentry><refentrytitle>objcopy</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sbsign</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+      <citerefentry><refentrytitle>ukify</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+      <citerefentry><refentrytitle>systemd-measure</refentrytitle><manvolnum>1</manvolnum></citerefentry>
     </para>
   </refsect1>
 </refentry>

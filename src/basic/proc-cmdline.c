@@ -7,17 +7,111 @@
 #include "efivars.h"
 #include "extract-word.h"
 #include "fileio.h"
+#include "getopt-defs.h"
+#include "initrd-util.h"
 #include "macro.h"
 #include "parse-util.h"
 #include "proc-cmdline.h"
 #include "process-util.h"
-#include "special.h"
 #include "string-util.h"
-#include "util.h"
+#include "strv.h"
 #include "virt.h"
+
+int proc_cmdline_filter_pid1_args(char **argv, char ***ret) {
+        enum {
+                COMMON_GETOPT_ARGS,
+                SYSTEMD_GETOPT_ARGS,
+                SHUTDOWN_GETOPT_ARGS,
+        };
+        static const struct option options[] = {
+                COMMON_GETOPT_OPTIONS,
+                SYSTEMD_GETOPT_OPTIONS,
+                SHUTDOWN_GETOPT_OPTIONS,
+        };
+        static const char *short_options = SYSTEMD_GETOPT_SHORT_OPTIONS;
+
+        _cleanup_strv_free_ char **filtered = NULL;
+        int state, r;
+
+        assert(argv);
+        assert(ret);
+
+        /* Currently, we do not support '-', '+', and ':' at the beginning. */
+        assert(!IN_SET(short_options[0], '-', '+', ':'));
+
+        /* Filter out all known options. */
+        state = no_argument;
+        STRV_FOREACH(p, strv_skip(argv, 1)) {
+                int prev_state = state;
+                const char *a = *p;
+
+                /* Reset the state for the next step. */
+                state = no_argument;
+
+                if (prev_state == required_argument ||
+                    (prev_state == optional_argument && a[0] != '-'))
+                        /* Handled as an argument of the previous option, filtering out the string. */
+                        continue;
+
+                if (a[0] != '-') {
+                        /* Not an option, accepting the string. */
+                        r = strv_extend(&filtered, a);
+                        if (r < 0)
+                                return r;
+                        continue;
+                }
+
+                if (a[1] == '-') {
+                        if (a[2] == '\0') {
+                                /* "--" is specified, accepting remaining strings. */
+                                r = strv_extend_strv(&filtered, strv_skip(p, 1), /* filter_duplicates = */ false);
+                                if (r < 0)
+                                        return r;
+                                break;
+                        }
+
+                        /* long option, e.g. --foo */
+                        for (size_t i = 0; i < ELEMENTSOF(options); i++) {
+                                const char *q = startswith(a + 2, options[i].name);
+                                if (!q || !IN_SET(q[0], '=', '\0'))
+                                        continue;
+
+                                /* Found matching option, updating the state if necessary. */
+                                if (q[0] == '\0' && options[i].has_arg == required_argument)
+                                        state = required_argument;
+
+                                break;
+                        }
+                        continue;
+                }
+
+                /* short option(s), e.g. -x or -xyz */
+                while (a && *++a != '\0')
+                        for (const char *q = short_options; *q != '\0'; q++) {
+                                if (*q != *a)
+                                        continue;
+
+                                /* Found matching short option. */
+
+                                if (q[1] == ':') {
+                                        /* An argument is required or optional, and remaining part
+                                         * is handled as argument if exists. */
+                                        state = a[1] != '\0' ? no_argument :
+                                                q[2] == ':' ? optional_argument : required_argument;
+
+                                        a = NULL; /* Not necessary to parse remaining part. */
+                                }
+                                break;
+                        }
+        }
+
+        *ret = TAKE_PTR(filtered);
+        return 0;
+}
 
 int proc_cmdline(char **ret) {
         const char *e;
+
         assert(ret);
 
         /* For testing purposes it is sometimes useful to be able to override what we consider /proc/cmdline to be */
@@ -36,74 +130,89 @@ int proc_cmdline(char **ret) {
         if (detect_container() > 0)
                 return get_process_cmdline(1, SIZE_MAX, 0, ret);
         else
-                return read_one_line_file("/proc/cmdline", ret);
+                return read_full_file("/proc/cmdline", ret, NULL);
 }
 
-static int proc_cmdline_extract_first(const char **p, char **ret_word, ProcCmdlineFlags flags) {
-        const char *q = *p;
+static int proc_cmdline_strv_internal(char ***ret, bool filter_pid1_args) {
+        const char *e;
         int r;
 
-        for (;;) {
-                _cleanup_free_ char *word = NULL;
-                const char *c;
+        assert(ret);
 
-                r = extract_first_word(&q, &word, NULL, EXTRACT_UNQUOTE|EXTRACT_RELAX|EXTRACT_RETAIN_ESCAPE);
+        /* For testing purposes it is sometimes useful to be able to override what we consider /proc/cmdline to be */
+        e = secure_getenv("SYSTEMD_PROC_CMDLINE");
+        if (e)
+                return strv_split_full(ret, e, NULL, EXTRACT_UNQUOTE|EXTRACT_RELAX|EXTRACT_RETAIN_ESCAPE);
+
+        if (detect_container() > 0) {
+                _cleanup_strv_free_ char **args = NULL;
+
+                r = get_process_cmdline_strv(1, /* flags = */ 0, &args);
                 if (r < 0)
                         return r;
-                if (r == 0)
-                        break;
 
-                /* Filter out arguments that are intended only for the initrd */
-                c = startswith(word, "rd.");
-                if (c) {
-                        if (!in_initrd())
-                                continue;
+                if (filter_pid1_args)
+                        return proc_cmdline_filter_pid1_args(args, ret);
 
-                        if (FLAGS_SET(flags, PROC_CMDLINE_STRIP_RD_PREFIX)) {
-                                r = free_and_strdup(&word, c);
-                                if (r < 0)
-                                        return r;
-                        }
+                *ret = TAKE_PTR(args);
+                return 0;
 
-                } else if (FLAGS_SET(flags, PROC_CMDLINE_RD_STRICT) && in_initrd())
-                        continue; /* And optionally filter out arguments that are intended only for the host */
+        } else {
+                _cleanup_free_ char *s = NULL;
 
-                *p = q;
-                *ret_word = TAKE_PTR(word);
-                return 1;
+                r = read_full_file("/proc/cmdline", &s, NULL);
+                if (r < 0)
+                        return r;
+
+                return strv_split_full(ret, s, NULL, EXTRACT_UNQUOTE|EXTRACT_RELAX|EXTRACT_RETAIN_ESCAPE);
         }
-
-        *p = q;
-        *ret_word = NULL;
-        return 0;
 }
 
-int proc_cmdline_parse_given(const char *line, proc_cmdline_parse_t parse_item, void *data, ProcCmdlineFlags flags) {
-        const char *p;
+int proc_cmdline_strv(char ***ret) {
+        return proc_cmdline_strv_internal(ret, /* filter_pid1_args = */ false);
+}
+
+static char *mangle_word(const char *word, ProcCmdlineFlags flags) {
+        char *c;
+
+        c = startswith(word, "rd.");
+        if (c) {
+                /* Filter out arguments that are intended only for the initrd */
+
+                if (!in_initrd())
+                        return NULL;
+
+                if (FLAGS_SET(flags, PROC_CMDLINE_STRIP_RD_PREFIX))
+                        return c;
+
+        } else if (FLAGS_SET(flags, PROC_CMDLINE_RD_STRICT) && in_initrd())
+                /* And optionally filter out arguments that are intended only for the host */
+                return NULL;
+
+        return (char*) word;
+}
+
+static int proc_cmdline_parse_strv(char **args, proc_cmdline_parse_t parse_item, void *data, ProcCmdlineFlags flags) {
         int r;
 
         assert(parse_item);
 
-        /* The PROC_CMDLINE_VALUE_OPTIONAL flag doesn't really make sense for proc_cmdline_parse(), let's make this
-         * clear. */
+        /* The PROC_CMDLINE_VALUE_OPTIONAL flag doesn't really make sense for proc_cmdline_parse(), let's
+         * make this clear. */
         assert(!FLAGS_SET(flags, PROC_CMDLINE_VALUE_OPTIONAL));
 
-        p = line;
-        for (;;) {
-                _cleanup_free_ char *word = NULL;
-                char *value;
+        STRV_FOREACH(word, args) {
+                char *key, *value;
 
-                r = proc_cmdline_extract_first(&p, &word, flags);
-                if (r < 0)
-                        return r;
-                if (r == 0)
-                        break;
+                key = mangle_word(*word, flags);
+                if (!key)
+                        continue;
 
-                value = strchr(word, '=');
+                value = strchr(key, '=');
                 if (value)
-                        *(value++) = 0;
+                        *(value++) = '\0';
 
-                r = parse_item(word, value, data);
+                r = parse_item(key, value, data);
                 if (r < 0)
                         return r;
         }
@@ -112,7 +221,7 @@ int proc_cmdline_parse_given(const char *line, proc_cmdline_parse_t parse_item, 
 }
 
 int proc_cmdline_parse(proc_cmdline_parse_t parse_item, void *data, ProcCmdlineFlags flags) {
-        _cleanup_free_ char *line = NULL;
+        _cleanup_strv_free_ char **args = NULL;
         int r;
 
         assert(parse_item);
@@ -120,24 +229,30 @@ int proc_cmdline_parse(proc_cmdline_parse_t parse_item, void *data, ProcCmdlineF
         /* We parse the EFI variable first, because later settings have higher priority. */
 
         if (!FLAGS_SET(flags, PROC_CMDLINE_IGNORE_EFI_OPTIONS)) {
+                _cleanup_free_ char *line = NULL;
+
                 r = systemd_efi_options_variable(&line);
                 if (r < 0) {
                         if (r != -ENODATA)
                                 log_debug_errno(r, "Failed to get SystemdOptions EFI variable, ignoring: %m");
                 } else {
-                        r = proc_cmdline_parse_given(line, parse_item, data, flags);
+                        r = strv_split_full(&args, line, NULL, EXTRACT_UNQUOTE|EXTRACT_RELAX|EXTRACT_RETAIN_ESCAPE);
                         if (r < 0)
                                 return r;
 
-                        line = mfree(line);
+                        r = proc_cmdline_parse_strv(args, parse_item, data, flags);
+                        if (r < 0)
+                                return r;
+
+                        args = strv_free(args);
                 }
         }
 
-        r = proc_cmdline(&line);
+        r = proc_cmdline_strv_internal(&args, /* filter_pid1_args = */ true);
         if (r < 0)
                 return r;
 
-        return proc_cmdline_parse_given(line, parse_item, data, flags);
+        return proc_cmdline_parse_strv(args, parse_item, data, flags);
 }
 
 static bool relaxed_equal_char(char a, char b) {
@@ -172,24 +287,19 @@ bool proc_cmdline_key_streq(const char *x, const char *y) {
         return true;
 }
 
-static int cmdline_get_key(const char *line, const char *key, ProcCmdlineFlags flags, char **ret_value) {
-        _cleanup_free_ char *ret = NULL;
+static int cmdline_get_key(char **args, const char *key, ProcCmdlineFlags flags, char **ret_value) {
+        _cleanup_free_ char *v = NULL;
         bool found = false;
-        const char *p;
         int r;
 
-        assert(line);
         assert(key);
 
-        p = line;
-        for (;;) {
-                _cleanup_free_ char *word = NULL;
+        STRV_FOREACH(p, args) {
+                const char *word;
 
-                r = proc_cmdline_extract_first(&p, &word, flags);
-                if (r < 0)
-                        return r;
-                if (r == 0)
-                        break;
+                word = mangle_word(*p, flags);
+                if (!word)
+                        continue;
 
                 if (ret_value) {
                         const char *e;
@@ -199,7 +309,7 @@ static int cmdline_get_key(const char *line, const char *key, ProcCmdlineFlags f
                                 continue;
 
                         if (*e == '=') {
-                                r = free_and_strdup(&ret, e+1);
+                                r = free_and_strdup(&v, e+1);
                                 if (r < 0)
                                         return r;
 
@@ -209,7 +319,7 @@ static int cmdline_get_key(const char *line, const char *key, ProcCmdlineFlags f
                                 found = true;
 
                 } else {
-                        if (streq(word, key)) {
+                        if (proc_cmdline_key_streq(word, key)) {
                                 found = true;
                                 break; /* we found what we were looking for */
                         }
@@ -217,12 +327,13 @@ static int cmdline_get_key(const char *line, const char *key, ProcCmdlineFlags f
         }
 
         if (ret_value)
-                *ret_value = TAKE_PTR(ret);
+                *ret_value = TAKE_PTR(v);
 
         return found;
 }
 
 int proc_cmdline_get_key(const char *key, ProcCmdlineFlags flags, char **ret_value) {
+        _cleanup_strv_free_ char **args = NULL;
         _cleanup_free_ char *line = NULL, *v = NULL;
         int r;
 
@@ -246,14 +357,14 @@ int proc_cmdline_get_key(const char *key, ProcCmdlineFlags flags, char **ret_val
         if (FLAGS_SET(flags, PROC_CMDLINE_VALUE_OPTIONAL) && !ret_value)
                 return -EINVAL;
 
-        r = proc_cmdline(&line);
+        r = proc_cmdline_strv_internal(&args, /* filter_pid1_args = */ true);
         if (r < 0)
                 return r;
 
         if (FLAGS_SET(flags, PROC_CMDLINE_IGNORE_EFI_OPTIONS)) /* Shortcut */
-                return cmdline_get_key(line, key, flags, ret_value);
+                return cmdline_get_key(args, key, flags, ret_value);
 
-        r = cmdline_get_key(line, key, flags, ret_value ? &v : NULL);
+        r = cmdline_get_key(args, key, flags, ret_value ? &v : NULL);
         if (r < 0)
                 return r;
         if (r > 0) {
@@ -263,7 +374,6 @@ int proc_cmdline_get_key(const char *key, ProcCmdlineFlags flags, char **ret_val
                 return r;
         }
 
-        line = mfree(line);
         r = systemd_efi_options_variable(&line);
         if (r == -ENODATA) {
                 if (ret_value)
@@ -274,7 +384,12 @@ int proc_cmdline_get_key(const char *key, ProcCmdlineFlags flags, char **ret_val
         if (r < 0)
                 return r;
 
-        return cmdline_get_key(line, key, flags, ret_value);
+        args = strv_free(args);
+        r = strv_split_full(&args, line, NULL, EXTRACT_UNQUOTE|EXTRACT_RELAX|EXTRACT_RETAIN_ESCAPE);
+        if (r < 0)
+                return r;
+
+        return cmdline_get_key(args, key, flags, ret_value);
 }
 
 int proc_cmdline_get_bool(const char *key, bool *ret) {
@@ -302,12 +417,44 @@ int proc_cmdline_get_bool(const char *key, bool *ret) {
         return 1;
 }
 
-int proc_cmdline_get_key_many_internal(ProcCmdlineFlags flags, ...) {
-        _cleanup_free_ char *line = NULL;
-        bool processing_efi = true;
-        const char *p;
-        va_list ap;
+static int cmdline_get_key_ap(ProcCmdlineFlags flags, char* const* args, va_list ap) {
         int r, ret = 0;
+
+        for (;;) {
+                char **v;
+                const char *k, *e;
+
+                k = va_arg(ap, const char*);
+                if (!k)
+                        break;
+
+                assert_se(v = va_arg(ap, char**));
+
+                STRV_FOREACH(p, args) {
+                        const char *word;
+
+                        word = mangle_word(*p, flags);
+                        if (!word)
+                                continue;
+
+                        e = proc_cmdline_key_startswith(word, k);
+                        if (e && *e == '=') {
+                                r = free_and_strdup(v, e + 1);
+                                if (r < 0)
+                                        return r;
+
+                                ret++;
+                        }
+                }
+        }
+
+        return ret;
+}
+
+int proc_cmdline_get_key_many_internal(ProcCmdlineFlags flags, ...) {
+        _cleanup_strv_free_ char **args = NULL;
+        int r, ret = 0;
+        va_list ap;
 
         /* The PROC_CMDLINE_VALUE_OPTIONAL flag doesn't really make sense for proc_cmdline_get_key_many(), let's make
          * this clear. */
@@ -316,61 +463,36 @@ int proc_cmdline_get_key_many_internal(ProcCmdlineFlags flags, ...) {
         /* This call may clobber arguments on failure! */
 
         if (!FLAGS_SET(flags, PROC_CMDLINE_IGNORE_EFI_OPTIONS)) {
+                _cleanup_free_ char *line = NULL;
+
                 r = systemd_efi_options_variable(&line);
                 if (r < 0 && r != -ENODATA)
                         log_debug_errno(r, "Failed to get SystemdOptions EFI variable, ignoring: %m");
+                if (r >= 0) {
+                        r = strv_split_full(&args, line, NULL, EXTRACT_UNQUOTE|EXTRACT_RELAX|EXTRACT_RETAIN_ESCAPE);
+                        if (r < 0)
+                                return r;
+
+                        va_start(ap, flags);
+                        r = cmdline_get_key_ap(flags, args, ap);
+                        va_end(ap);
+                        if (r < 0)
+                                return r;
+
+                        ret = r;
+                        args = strv_free(args);
+                }
         }
 
-        p = line;
-        for (;;) {
-                _cleanup_free_ char *word = NULL;
+        r = proc_cmdline_strv(&args);
+        if (r < 0)
+                return r;
 
-                r = proc_cmdline_extract_first(&p, &word, flags);
-                if (r < 0)
-                        return r;
-                if (r == 0) {
-                        /* We finished with this command line. If this was the EFI one, then let's proceed with the regular one */
-                        if (processing_efi) {
-                                processing_efi = false;
+        va_start(ap, flags);
+        r = cmdline_get_key_ap(flags, args, ap);
+        va_end(ap);
+        if (r < 0)
+                return r;
 
-                                line = mfree(line);
-                                r = proc_cmdline(&line);
-                                if (r < 0)
-                                        return r;
-
-                                p = line;
-                                continue;
-                        }
-
-                        break;
-                }
-
-                va_start(ap, flags);
-
-                for (;;) {
-                        char **v;
-                        const char *k, *e;
-
-                        k = va_arg(ap, const char*);
-                        if (!k)
-                                break;
-
-                        assert_se(v = va_arg(ap, char**));
-
-                        e = proc_cmdline_key_startswith(word, k);
-                        if (e && *e == '=') {
-                                r = free_and_strdup(v, e + 1);
-                                if (r < 0) {
-                                        va_end(ap);
-                                        return r;
-                                }
-
-                                ret++;
-                        }
-                }
-
-                va_end(ap);
-        }
-
-        return ret;
+        return ret + r;
 }

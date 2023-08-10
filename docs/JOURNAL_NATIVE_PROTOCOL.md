@@ -17,7 +17,7 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 
 The latter is what this document is about: if you are developing a program and
 want to pass structured log data to `journald`, it's the Journal's native
-protocol what you want to use. The systemd project provides the
+protocol that you want to use. The systemd project provides the
 [`sd_journal_print(3)`](https://www.freedesktop.org/software/systemd/man/sd_journal_print.html)
 API that implements the client side of this protocol. This document explains
 what this interface does behind the scenes, in case you'd like to implement a
@@ -60,7 +60,7 @@ bytes however, as well as any other binary data. Keys may not include the `=`
 or newline characters (or any other control characters or non-ASCII characters)
 and may not be empty.
 
-Serialization into the datagram payload or `memfd` is straight-forward: each
+Serialization into the datagram payload or `memfd` is straightforward: each
 key/value pair is serialized via one of two methods:
 
 * The first method inserts a `=` character between key and value, and suffixes
@@ -70,7 +70,7 @@ key `FOO` with a value `BAR` is serialized `F`, `O`, `O`, `=`, `B`, `A`, `R`,
 
 * The second method should be used if the value of a field contains a `\n`
 byte. In this case, the key name is serialized as is, followed by a `\n`
-character, followed by a (non-aligned) little-endian unsigned 64bit integer
+character, followed by a (non-aligned) little-endian unsigned 64-bit integer
 encoding the size of the value, followed by the literal value data, followed by
 `\n`. Example: a key `FOO` with a value `BAR` may be serialized using this
 second method as: `F`, `O`, `O`, `\n`, `\003`, `\000`, `\000`, `\000`, `\000`,
@@ -185,7 +185,7 @@ took place for the current program.
 
 If you are looking for alternative implementations of this protocol (besides
 systemd's own in `sd_journal_print()`), consider
-[GLib's](https://gitlab.gnome.org/GNOME/glib/-/blob/master/glib/gmessages.c) or
+[GLib's](https://gitlab.gnome.org/GNOME/glib/-/blob/main/glib/gmessages.c) or
 [`dbus-broker`'s](https://github.com/bus1/dbus-broker/blob/main/src/util/log.c).
 
 And that's already all there is to it.

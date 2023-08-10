@@ -3,6 +3,7 @@
 set -eux
 set -o pipefail
 
+# shellcheck disable=SC2317
 at_exit() {
     # shellcheck disable=SC2181
     if [[ $? -ne 0 ]]; then
@@ -72,7 +73,7 @@ checkNUMA() {
 writePID1NUMAPolicy() {
     cat >"$confDir/numa.conf" <<EOF
 [Manager]
-NUMAPolicy=${1:?missing argument: NUMAPolicy}
+NUMAPolicy=${1:?}
 NUMAMask=${2:-""}
 EOF
 }
@@ -85,7 +86,7 @@ writeTestUnit() {
 writeTestUnitNUMAPolicy() {
     cat >"$testUnitNUMAConf" <<EOF
 [Service]
-NUMAPolicy=${1:?missing argument: NUMAPolicy}
+NUMAPolicy=${1:?}
 NUMAMask=${2:-""}
 EOF
     systemctl daemon-reload
@@ -106,25 +107,25 @@ pid1ReloadWithJournal() {
 
 pid1StartUnitWithStrace() {
     startStrace '-f'
-    systemctl start "${1:?missing unit name}"
+    systemctl start "${1:?}"
     sleep $sleepAfterStart
     stopStrace
 }
 
 pid1StartUnitWithJournal() {
     startJournalctl
-    systemctl start "${1:?missing unit name}"
+    systemctl start "${1:?}"
     sleep $sleepAfterStart
     stopJournalctl
 }
 
 pid1StopUnit() {
-    systemctl stop "${1:?missing unit name}"
+    systemctl stop "${1:?}"
 }
 
 systemctlCheckNUMAProperties() {
-    local UNIT_NAME="${1:?missing unit name}"
-    local NUMA_POLICY="${2:?missing NUMAPolicy}"
+    local UNIT_NAME="${1:?}"
+    local NUMA_POLICY="${2:?}"
     local NUMA_MASK="${3:-""}"
     local LOGFILE
 
@@ -181,7 +182,7 @@ else
     echo "PID1 NUMAPolicy support - Bind policy w/o mask"
     writePID1NUMAPolicy "bind"
     pid1ReloadWithJournal
-    grep "Failed to set NUMA memory policy: Invalid argument" "$journalLog"
+    grep "Failed to set NUMA memory policy, ignoring: Invalid argument" "$journalLog"
 
     echo "PID1 NUMAPolicy support - Bind policy w/ mask"
     writePID1NUMAPolicy "bind" "0"
@@ -191,7 +192,7 @@ else
     echo "PID1 NUMAPolicy support - Interleave policy w/o mask"
     writePID1NUMAPolicy "interleave"
     pid1ReloadWithJournal
-    grep "Failed to set NUMA memory policy: Invalid argument" "$journalLog"
+    grep "Failed to set NUMA memory policy, ignoring: Invalid argument" "$journalLog"
 
     echo "PID1 NUMAPolicy support - Interleave policy w/ mask"
     writePID1NUMAPolicy "interleave" "0"
@@ -202,7 +203,7 @@ else
     writePID1NUMAPolicy "preferred"
     pid1ReloadWithJournal
     # Preferred policy with empty node mask is actually allowed and should reset allocation policy to default
-    grep "Failed to set NUMA memory policy: Invalid argument" "$journalLog" && { echo >&2 "unexpected pass"; exit 1; }
+    grep "Failed to set NUMA memory policy, ignoring: Invalid argument" "$journalLog" && { echo >&2 "unexpected pass"; exit 1; }
 
     echo "PID1 NUMAPolicy support - Preferred policy w/ mask"
     writePID1NUMAPolicy "preferred" "0"
@@ -243,7 +244,7 @@ else
     writeTestUnitNUMAPolicy "bind"
     pid1StartUnitWithJournal "$testUnit"
     pid1StopUnit "$testUnit"
-    grep "numa-test.service: Main process exited, code=exited, status=242/NUMA" "$journalLog"
+    [[ $(systemctl show "$testUnit" -P ExecMainStatus) == "242" ]]
 
     echo "Unit file NUMAPolicy support - Bind policy w/ mask"
     writeTestUnitNUMAPolicy "bind" "0"
@@ -256,7 +257,7 @@ else
     writeTestUnitNUMAPolicy "interleave"
     pid1StartUnitWithStrace "$testUnit"
     pid1StopUnit "$testUnit"
-    grep "numa-test.service: Main process exited, code=exited, status=242/NUMA" "$journalLog"
+    [[ $(systemctl show "$testUnit" -P ExecMainStatus) == "242" ]]
 
     echo "Unit file NUMAPolicy support - Interleave policy w/ mask"
     writeTestUnitNUMAPolicy "interleave" "0"
@@ -270,7 +271,7 @@ else
     pid1StartUnitWithJournal "$testUnit"
     systemctlCheckNUMAProperties "$testUnit" "preferred"
     pid1StopUnit "$testUnit"
-    grep "numa-test.service: Main process exited, code=exited, status=242/NUMA" "$journalLog" && { echo >&2 "unexpected pass"; exit 1; }
+    [[ $(systemctl show "$testUnit" -P ExecMainStatus) == "242" ]] && { echo >&2 "unexpected pass"; exit 1; }
 
     echo "Unit file NUMAPolicy support - Preferred policy w/ mask"
     writeTestUnitNUMAPolicy "preferred" "0"
@@ -348,6 +349,4 @@ systemctl daemon-reload
 
 systemd-analyze log-level info
 
-echo OK >/testok
-
-exit 0
+touch /testok

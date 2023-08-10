@@ -197,7 +197,6 @@ static int bus_method_reconfigure_link(sd_bus_message *message, void *userdata, 
 
 static int bus_method_reload(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         Manager *manager = userdata;
-        Link *link;
         int r;
 
         r = bus_verify_polkit_async(message, CAP_NET_ADMIN,
@@ -209,19 +208,9 @@ static int bus_method_reload(sd_bus_message *message, void *userdata, sd_bus_err
         if (r == 0)
                 return 1; /* Polkit will call us back */
 
-        r = netdev_load(manager, true);
+        r = manager_reload(manager);
         if (r < 0)
                 return r;
-
-        r = network_reload(manager);
-        if (r < 0)
-                return r;
-
-        HASHMAP_FOREACH(link, manager->links_by_index) {
-                r = link_reconfigure(link, /* force = */ false);
-                if (r < 0)
-                        return r;
-        }
 
         return sd_bus_reply_method_return(message, NULL);
 }
@@ -234,11 +223,10 @@ static int bus_method_describe(sd_bus_message *message, void *userdata, sd_bus_e
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
         _cleanup_free_ char *text = NULL;
-        Manager *manager = userdata;
+        Manager *manager = ASSERT_PTR(userdata);
         int r;
 
         assert(message);
-        assert(manager);
 
         r = manager_build_json(manager, &v);
         if (r < 0)

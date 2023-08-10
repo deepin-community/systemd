@@ -3,6 +3,7 @@
 #include <getopt.h>
 #include <locale.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -11,8 +12,10 @@
 
 #include "alloc-util.h"
 #include "architecture.h"
+#include "build.h"
 #include "bus-common-errors.h"
 #include "bus-error.h"
+#include "bus-locator.h"
 #include "bus-map-properties.h"
 #include "format-table.h"
 #include "hostname-setup.h"
@@ -23,7 +26,6 @@
 #include "pretty-print.h"
 #include "spawn-polkit-agent.h"
 #include "terminal-util.h"
-#include "util.h"
 #include "verbs.h"
 
 static bool arg_ask_password = true;
@@ -46,30 +48,50 @@ typedef struct StatusInfo {
         const char *kernel_release;
         const char *os_pretty_name;
         const char *os_cpe_name;
+        usec_t os_support_end;
         const char *virtualization;
         const char *architecture;
         const char *home_url;
         const char *hardware_vendor;
         const char *hardware_model;
+        const char *firmware_version;
+        usec_t firmware_date;
 } StatusInfo;
 
 static const char* chassis_string_to_glyph(const char *chassis) {
         if (streq_ptr(chassis, "laptop"))
-                return "\U0001F4BB"; /* Personal Computer */
+                return u8"💻"; /* Personal Computer */
         if (streq_ptr(chassis, "desktop"))
-                return "\U0001F5A5"; /* Desktop Computer */
+                return u8"🖥️"; /* Desktop Computer */
         if (streq_ptr(chassis, "server"))
-                return "\U0001F5B3"; /* Old Personal Computer */
+                return u8"🖳"; /* Old Personal Computer */
         if (streq_ptr(chassis, "tablet"))
-                return "\u5177";     /* Ideograph tool, implement; draw up, write, looks vaguely tabletty */
+                return u8"具"; /* Ideograph tool, implement; draw up, write, looks vaguely tabletty */
         if (streq_ptr(chassis, "watch"))
-                return "\u231A";     /* Watch */
+                return u8"⌚"; /* Watch */
         if (streq_ptr(chassis, "handset"))
-                return "\U0001F57B"; /* Left Hand Telephone Receiver */
+                return u8"🕻"; /* Left Hand Telephone Receiver */
         if (streq_ptr(chassis, "vm"))
-                return "\U0001F5B4"; /* Hard disk */
+                return u8"🖴"; /* Hard disk */
         if (streq_ptr(chassis, "container"))
-                return "\u2610";     /* Ballot Box  */
+                return u8"☐"; /* Ballot Box  */
+        return NULL;
+}
+
+static const char *os_support_end_color(usec_t n, usec_t eol) {
+        usec_t left;
+
+        /* If the end of support is over, color output in red. If only a month is left, color output in
+         * yellow. If more than a year is left, color green. In between just show in regular color. */
+
+        if (n >= eol)
+                return ANSI_HIGHLIGHT_RED;
+        left = eol - n;
+        if (left < USEC_PER_MONTH)
+                return ANSI_HIGHLIGHT_YELLOW;
+        if (left > USEC_PER_YEAR)
+                return ANSI_HIGHLIGHT_GREEN;
+
         return NULL;
 }
 
@@ -81,22 +103,17 @@ static int print_status_info(StatusInfo *i) {
 
         assert(i);
 
-        table = table_new("key", "value");
+        table = table_new_vertical();
         if (!table)
                 return log_oom();
 
         assert_se(cell = table_get_cell(table, 0, 0));
         (void) table_set_ellipsize_percent(table, cell, 100);
-        (void) table_set_align_percent(table, cell, 100);
 
-        table_set_header(table, false);
-
-        r = table_set_empty_string(table, "n/a");
-        if (r < 0)
-                return log_oom();
+        table_set_ersatz_string(table, TABLE_ERSATZ_UNSET);
 
         r = table_add_many(table,
-                           TABLE_STRING, "Static hostname:",
+                           TABLE_FIELD, "Static hostname",
                            TABLE_STRING, i->static_hostname);
         if (r < 0)
                 return table_log_add_error(r);
@@ -104,7 +121,7 @@ static int print_status_info(StatusInfo *i) {
         if (!isempty(i->pretty_hostname) &&
             !streq_ptr(i->pretty_hostname, i->static_hostname)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Pretty hostname:",
+                                   TABLE_FIELD, "Pretty hostname",
                                    TABLE_STRING, i->pretty_hostname);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -113,7 +130,7 @@ static int print_status_info(StatusInfo *i) {
         if (!isempty(i->hostname) &&
             !streq_ptr(i->hostname, i->static_hostname)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Transient hostname:",
+                                   TABLE_FIELD, "Transient hostname",
                                    TABLE_STRING, i->hostname);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -121,7 +138,7 @@ static int print_status_info(StatusInfo *i) {
 
         if (!isempty(i->icon_name)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Icon name:",
+                                   TABLE_FIELD, "Icon name",
                                    TABLE_STRING, i->icon_name);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -135,7 +152,7 @@ static int print_status_info(StatusInfo *i) {
                         v = strjoina(i->chassis, " ", v);
 
                 r = table_add_many(table,
-                                   TABLE_STRING, "Chassis:",
+                                   TABLE_FIELD, "Chassis",
                                    TABLE_STRING, v ?: i->chassis);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -143,7 +160,7 @@ static int print_status_info(StatusInfo *i) {
 
         if (!isempty(i->deployment)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Deployment:",
+                                   TABLE_FIELD, "Deployment",
                                    TABLE_STRING, i->deployment);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -151,7 +168,7 @@ static int print_status_info(StatusInfo *i) {
 
         if (!isempty(i->location)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Location:",
+                                   TABLE_FIELD, "Location",
                                    TABLE_STRING, i->location);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -160,7 +177,7 @@ static int print_status_info(StatusInfo *i) {
         r = sd_id128_get_machine(&mid);
         if (r >= 0) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Machine ID:",
+                                   TABLE_FIELD, "Machine ID",
                                    TABLE_ID128, mid);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -169,7 +186,7 @@ static int print_status_info(StatusInfo *i) {
         r = sd_id128_get_boot(&bid);
         if (r >= 0) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Boot ID:",
+                                   TABLE_FIELD, "Boot ID",
                                    TABLE_ID128, bid);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -177,7 +194,7 @@ static int print_status_info(StatusInfo *i) {
 
         if (!isempty(i->virtualization)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Virtualization:",
+                                   TABLE_FIELD, "Virtualization",
                                    TABLE_STRING, i->virtualization);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -185,7 +202,7 @@ static int print_status_info(StatusInfo *i) {
 
         if (!isempty(i->os_pretty_name)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Operating System:",
+                                   TABLE_FIELD, "Operating System",
                                    TABLE_STRING, i->os_pretty_name,
                                    TABLE_SET_URL, i->home_url);
                 if (r < 0)
@@ -194,8 +211,21 @@ static int print_status_info(StatusInfo *i) {
 
         if (!isempty(i->os_cpe_name)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "CPE OS Name:",
+                                   TABLE_FIELD, "CPE OS Name",
                                    TABLE_STRING, i->os_cpe_name);
+                if (r < 0)
+                        return table_log_add_error(r);
+        }
+
+        if (i->os_support_end != USEC_INFINITY) {
+                usec_t n = now(CLOCK_REALTIME);
+
+                r = table_add_many(table,
+                                   TABLE_FIELD, "OS Support End",
+                                   TABLE_TIMESTAMP_DATE, i->os_support_end,
+                                   TABLE_FIELD, n < i->os_support_end ? "OS Support Remaining" : "OS Support Expired",
+                                   TABLE_TIMESPAN_DAY, n < i->os_support_end ? i->os_support_end - n : n - i->os_support_end,
+                                   TABLE_SET_COLOR, os_support_end_color(n, i->os_support_end));
                 if (r < 0)
                         return table_log_add_error(r);
         }
@@ -205,7 +235,7 @@ static int print_status_info(StatusInfo *i) {
 
                 v = strjoina(i->kernel_name, " ", i->kernel_release);
                 r = table_add_many(table,
-                                   TABLE_STRING, "Kernel:",
+                                   TABLE_FIELD, "Kernel",
                                    TABLE_STRING, v);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -213,7 +243,7 @@ static int print_status_info(StatusInfo *i) {
 
         if (!isempty(i->architecture)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Architecture:",
+                                   TABLE_FIELD, "Architecture",
                                    TABLE_STRING, i->architecture);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -221,7 +251,7 @@ static int print_status_info(StatusInfo *i) {
 
         if (!isempty(i->hardware_vendor)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Hardware Vendor:",
+                                   TABLE_FIELD, "Hardware Vendor",
                                    TABLE_STRING, i->hardware_vendor);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -229,10 +259,37 @@ static int print_status_info(StatusInfo *i) {
 
         if (!isempty(i->hardware_model)) {
                 r = table_add_many(table,
-                                   TABLE_STRING, "Hardware Model:",
+                                   TABLE_FIELD, "Hardware Model",
                                    TABLE_STRING, i->hardware_model);
                 if (r < 0)
                         return table_log_add_error(r);
+        }
+
+        if (!isempty(i->firmware_version)) {
+                r = table_add_many(table,
+                                   TABLE_FIELD, "Firmware Version",
+                                   TABLE_STRING, i->firmware_version);
+                if (r < 0)
+                        return table_log_add_error(r);
+        }
+
+        if (timestamp_is_set(i->firmware_date)) {
+                usec_t n = now(CLOCK_REALTIME);
+
+                r = table_add_many(table,
+                                   TABLE_FIELD, "Firmware Date",
+                                   TABLE_TIMESTAMP_DATE, i->firmware_date);
+                if (r < 0)
+                        return table_log_add_error(r);
+
+                if (i->firmware_date < n) {
+                        r = table_add_many(table,
+                                           TABLE_FIELD, "Firmware Age",
+                                           TABLE_TIMESPAN_DAY, n - i->firmware_date,
+                                           TABLE_SET_COLOR, n - i->firmware_date > USEC_PER_YEAR*2 ? ANSI_HIGHLIGHT_YELLOW : NULL);
+                        if (r < 0)
+                                return table_log_add_error(r);
+                }
         }
 
         r = table_print(table, NULL);
@@ -253,13 +310,7 @@ static int get_one_name(sd_bus *bus, const char* attr, char **ret) {
 
         /* This obtains one string property, and copy it if 'ret' is set, or print it otherwise. */
 
-        r = sd_bus_get_property(
-                        bus,
-                        "org.freedesktop.hostname1",
-                        "/org/freedesktop/hostname1",
-                        "org.freedesktop.hostname1",
-                        attr,
-                        &error, &reply, "s");
+        r = bus_get_property(bus, bus_hostname, attr, &error, &reply, "s");
         if (r < 0)
                 return log_error_errno(r, "Could not get property: %s", bus_error_message(&error, r));
 
@@ -285,20 +336,23 @@ static int show_all_names(sd_bus *bus) {
         StatusInfo info = {};
 
         static const struct bus_properties_map hostname_map[]  = {
-                { "Hostname",                  "s", NULL, offsetof(StatusInfo, hostname)        },
-                { "StaticHostname",            "s", NULL, offsetof(StatusInfo, static_hostname) },
-                { "PrettyHostname",            "s", NULL, offsetof(StatusInfo, pretty_hostname) },
-                { "IconName",                  "s", NULL, offsetof(StatusInfo, icon_name)       },
-                { "Chassis",                   "s", NULL, offsetof(StatusInfo, chassis)         },
-                { "Deployment",                "s", NULL, offsetof(StatusInfo, deployment)      },
-                { "Location",                  "s", NULL, offsetof(StatusInfo, location)        },
-                { "KernelName",                "s", NULL, offsetof(StatusInfo, kernel_name)     },
-                { "KernelRelease",             "s", NULL, offsetof(StatusInfo, kernel_release)  },
-                { "OperatingSystemPrettyName", "s", NULL, offsetof(StatusInfo, os_pretty_name)  },
-                { "OperatingSystemCPEName",    "s", NULL, offsetof(StatusInfo, os_cpe_name)     },
-                { "HomeURL",                   "s", NULL, offsetof(StatusInfo, home_url)        },
-                { "HardwareVendor",            "s", NULL, offsetof(StatusInfo, hardware_vendor) },
-                { "HardwareModel",             "s", NULL, offsetof(StatusInfo, hardware_model)  },
+                { "Hostname",                  "s", NULL, offsetof(StatusInfo, hostname)         },
+                { "StaticHostname",            "s", NULL, offsetof(StatusInfo, static_hostname)  },
+                { "PrettyHostname",            "s", NULL, offsetof(StatusInfo, pretty_hostname)  },
+                { "IconName",                  "s", NULL, offsetof(StatusInfo, icon_name)        },
+                { "Chassis",                   "s", NULL, offsetof(StatusInfo, chassis)          },
+                { "Deployment",                "s", NULL, offsetof(StatusInfo, deployment)       },
+                { "Location",                  "s", NULL, offsetof(StatusInfo, location)         },
+                { "KernelName",                "s", NULL, offsetof(StatusInfo, kernel_name)      },
+                { "KernelRelease",             "s", NULL, offsetof(StatusInfo, kernel_release)   },
+                { "OperatingSystemPrettyName", "s", NULL, offsetof(StatusInfo, os_pretty_name)   },
+                { "OperatingSystemCPEName",    "s", NULL, offsetof(StatusInfo, os_cpe_name)      },
+                { "OperatingSystemSupportEnd", "t", NULL, offsetof(StatusInfo, os_support_end)   },
+                { "HomeURL",                   "s", NULL, offsetof(StatusInfo, home_url)         },
+                { "HardwareVendor",            "s", NULL, offsetof(StatusInfo, hardware_vendor)  },
+                { "HardwareModel",             "s", NULL, offsetof(StatusInfo, hardware_model)   },
+                { "FirmwareVersion",           "s", NULL, offsetof(StatusInfo, firmware_version) },
+                { "FirmwareDate",              "t", NULL, offsetof(StatusInfo, firmware_date)    },
                 {}
         };
 
@@ -360,15 +414,7 @@ static int show_status(int argc, char **argv, void *userdata) {
                 _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
                 const char *text = NULL;
 
-                r = sd_bus_call_method(
-                                bus,
-                                "org.freedesktop.hostname1",
-                                "/org/freedesktop/hostname1",
-                                "org.freedesktop.hostname1",
-                                "Describe",
-                                &error,
-                                &reply,
-                                NULL);
+                r = bus_call_method(bus, bus_hostname, "Describe", &error, &reply, NULL);
                 if (r < 0)
                         return log_error_errno(r, "Could not get description: %s", bus_error_message(&error, r));
 
@@ -400,14 +446,7 @@ static int set_simple_string_internal(sd_bus *bus, sd_bus_error *error, const ch
         if (!error)
                 error = &e;
 
-        r = sd_bus_call_method(
-                        bus,
-                        "org.freedesktop.hostname1",
-                        "/org/freedesktop/hostname1",
-                        "org.freedesktop.hostname1",
-                        method,
-                        error, NULL,
-                        "sb", value, arg_ask_password);
+        r = bus_call_method(bus, bus_hostname, method, error, NULL, "sb", value, arg_ask_password);
         if (r < 0)
                 return log_error_errno(r, "Could not set %s: %s", target, bus_error_message(error, r));
 
@@ -684,7 +723,7 @@ static int run(int argc, char *argv[]) {
         if (r <= 0)
                 return r;
 
-        r = bus_connect_transport(arg_transport, arg_host, false, &bus);
+        r = bus_connect_transport(arg_transport, arg_host, RUNTIME_SCOPE_SYSTEM, &bus);
         if (r < 0)
                 return bus_log_connect_error(r, arg_transport);
 

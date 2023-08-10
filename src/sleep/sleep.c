@@ -12,80 +12,129 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/timerfd.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
+#include "sd-bus.h"
+#include "sd-device.h"
+#include "sd-id128.h"
 #include "sd-messages.h"
 
+#include "battery-util.h"
 #include "btrfs-util.h"
+#include "build.h"
 #include "bus-error.h"
-#include "def.h"
+#include "bus-locator.h"
+#include "bus-util.h"
+#include "constants.h"
+#include "devnum-util.h"
+#include "efivars.h"
 #include "exec-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
+#include "id128-util.h"
 #include "io-util.h"
+#include "json.h"
 #include "log.h"
 #include "main-func.h"
+#include "os-util.h"
 #include "parse-util.h"
 #include "pretty-print.h"
-#include "sleep-config.h"
+#include "sleep-util.h"
+#include "special.h"
 #include "stdio-util.h"
 #include "string-util.h"
 #include "strv.h"
 #include "time-util.h"
-#include "util.h"
+
+#define DEFAULT_HIBERNATE_DELAY_USEC_NO_BATTERY (2 * USEC_PER_HOUR)
 
 static SleepOperation arg_operation = _SLEEP_OPERATION_INVALID;
 
-static int write_hibernate_location_info(const HibernateLocation *hibernate_location) {
-        char offset_str[DECIMAL_STR_MAX(uint64_t)];
-        char resume_str[DECIMAL_STR_MAX(unsigned) * 2 + STRLEN(":")];
-        int r;
+static int write_efi_hibernate_location(const HibernateLocation *hibernate_location, bool required) {
+        int log_level = required ? LOG_ERR : LOG_DEBUG;
+
+#if ENABLE_EFI
+        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+        _cleanup_free_ char *formatted = NULL, *id = NULL, *image_id = NULL,
+                       *version_id = NULL, *image_version = NULL;
+        _cleanup_(sd_device_unrefp) sd_device *device = NULL;
+        const char *uuid_str;
+        sd_id128_t uuid;
+        struct utsname uts = {};
+        int r, log_level_ignore = required ? LOG_WARNING : LOG_DEBUG;
 
         assert(hibernate_location);
         assert(hibernate_location->swap);
 
-        xsprintf(resume_str, "%u:%u", major(hibernate_location->devno), minor(hibernate_location->devno));
-        r = write_string_file("/sys/power/resume", resume_str, WRITE_STRING_FILE_DISABLE_BUFFER);
+        if (!is_efi_boot())
+                return log_full_errno(log_level, SYNTHETIC_ERRNO(EOPNOTSUPP),
+                                      "Not an EFI boot, passing HibernateLocation via EFI variable is not possible.");
+
+        r = sd_device_new_from_devnum(&device, 'b', hibernate_location->devno);
         if (r < 0)
-                return log_debug_errno(r, "Failed to write partition device to /sys/power/resume for '%s': '%s': %m",
-                                       hibernate_location->swap->device, resume_str);
+                return log_full_errno(log_level, r, "Failed to create sd-device object for '%s': %m",
+                                      hibernate_location->swap->path);
 
-        log_debug("Wrote resume= value for %s to /sys/power/resume: %s", hibernate_location->swap->device, resume_str);
-
-        /* if it's a swap partition, we're done */
-        if (streq(hibernate_location->swap->type, "partition"))
-                return r;
-
-        if (!streq(hibernate_location->swap->type, "file"))
-                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
-                                       "Invalid hibernate type: %s", hibernate_location->swap->type);
-
-        /* Only available in 4.17+ */
-        if (hibernate_location->offset > 0 && access("/sys/power/resume_offset", W_OK) < 0) {
-                if (errno == ENOENT) {
-                        log_debug("Kernel too old, can't configure resume_offset for %s, ignoring: %" PRIu64,
-                                  hibernate_location->swap->device, hibernate_location->offset);
-                        return 0;
-                }
-
-                return log_debug_errno(errno, "/sys/power/resume_offset not writable: %m");
-        }
-
-        xsprintf(offset_str, "%" PRIu64, hibernate_location->offset);
-        r = write_string_file("/sys/power/resume_offset", offset_str, WRITE_STRING_FILE_DISABLE_BUFFER);
+        r = sd_device_get_property_value(device, "ID_FS_UUID", &uuid_str);
         if (r < 0)
-                return log_debug_errno(r, "Failed to write swap file offset to /sys/power/resume_offset for '%s': '%s': %m",
-                                       hibernate_location->swap->device, offset_str);
+                return log_full_errno(log_level, r, "Failed to get filesystem UUID for device '%s': %m",
+                                      hibernate_location->swap->path);
 
-        log_debug("Wrote resume_offset= value for %s to /sys/power/resume_offset: %s", hibernate_location->swap->device, offset_str);
+        r = sd_id128_from_string(uuid_str, &uuid);
+        if (r < 0)
+                return log_full_errno(log_level, r, "Failed to parse ID_FS_UUID '%s' for device '%s': %m",
+                                      uuid_str, hibernate_location->swap->path);
 
+        if (uname(&uts) < 0)
+                log_full_errno(log_level_ignore, errno, "Failed to get kernel info, ignoring: %m");
+
+        r = parse_os_release(NULL,
+                             "ID", &id,
+                             "IMAGE_ID", &image_id,
+                             "VERSION_ID", &version_id,
+                             "IMAGE_VERSION", &image_version);
+        if (r < 0)
+                log_full_errno(log_level_ignore, r, "Failed to parse os-release, ignoring: %m");
+
+        r = json_build(&v, JSON_BUILD_OBJECT(
+                               JSON_BUILD_PAIR_UUID("uuid", uuid),
+                               JSON_BUILD_PAIR_UNSIGNED("offset", hibernate_location->offset),
+                               JSON_BUILD_PAIR_CONDITION(!isempty(uts.release), "kernelVersion", JSON_BUILD_STRING(uts.release)),
+                               JSON_BUILD_PAIR_CONDITION(id, "osReleaseId", JSON_BUILD_STRING(id)),
+                               JSON_BUILD_PAIR_CONDITION(image_id, "osReleaseImageId", JSON_BUILD_STRING(image_id)),
+                               JSON_BUILD_PAIR_CONDITION(version_id, "osReleaseVersionId", JSON_BUILD_STRING(version_id)),
+                               JSON_BUILD_PAIR_CONDITION(image_version, "osReleaseImageVersion", JSON_BUILD_STRING(image_version))));
+        if (r < 0)
+                return log_full_errno(log_level, r, "Failed to build JSON object: %m");
+
+        r = json_variant_format(v, 0, &formatted);
+        if (r < 0)
+                return log_full_errno(log_level, r, "Failed to format JSON object: %m");
+
+        r = efi_set_variable_string(EFI_SYSTEMD_VARIABLE(HibernateLocation), formatted);
+        if (r < 0)
+                return log_full_errno(log_level, r, "Failed to set EFI variable HibernateLocation: %m");
+
+        log_debug("Set EFI variable HibernateLocation to '%s'.", formatted);
         return 0;
+#else
+        return log_full_errno(log_level, SYNTHETIC_ERRNO(EOPNOTSUPP),
+                              "EFI support not enabled, passing HibernateLocation via EFI variable is not possible.");
+#endif
+}
+
+static int write_kernel_hibernate_location(const HibernateLocation *hibernate_location) {
+        assert(hibernate_location);
+        assert(hibernate_location->swap);
+        assert(IN_SET(hibernate_location->swap->type, SWAP_BLOCK, SWAP_FILE));
+
+        return write_resume_config(hibernate_location->devno, hibernate_location->offset, hibernate_location->swap->path);
 }
 
 static int write_mode(char **modes) {
         int r = 0;
-        char **mode;
 
         STRV_FOREACH(mode, modes) {
                 int k;
@@ -103,7 +152,6 @@ static int write_mode(char **modes) {
 }
 
 static int write_state(FILE **f, char **states) {
-        char **state;
         int r = 0;
 
         assert(f);
@@ -141,13 +189,7 @@ static int lock_all_homes(void) {
         if (r < 0)
                 return log_warning_errno(r, "Failed to connect to system bus, ignoring: %m");
 
-        r = sd_bus_message_new_method_call(
-                        bus,
-                        &m,
-                        "org.freedesktop.home1",
-                        "/org/freedesktop/home1",
-                        "org.freedesktop.home1.Manager",
-                        "LockAllHomes");
+        r = bus_message_new_method_call(bus, &m, bus_home_mgr, "LockAllHomes");
         if (r < 0)
                 return bus_log_create_error(r);
 
@@ -213,20 +255,28 @@ static int execute(
 
         /* Configure hibernation settings if we are supposed to hibernate */
         if (!strv_isempty(modes)) {
+                bool resume_set;
+
                 r = find_hibernate_location(&hibernate_location);
                 if (r < 0)
                         return log_error_errno(r, "Failed to find location to hibernate to: %m");
-                if (r == 0) { /* 0 means: no hibernation location was configured in the kernel so far, let's
-                               * do it ourselves then. > 0 means: kernel already had a configured hibernation
-                               * location which we shouldn't touch. */
-                        r = write_hibernate_location_info(hibernate_location);
+                resume_set = r > 0;
+
+                r = write_efi_hibernate_location(hibernate_location, !resume_set);
+                if (!resume_set) {
+                        if (r == -EOPNOTSUPP)
+                                return log_error_errno(r, "No valid 'resume=' option found, refusing to hibernate.");
+                        if (r < 0)
+                                return r;
+
+                        r = write_kernel_hibernate_location(hibernate_location);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to prepare for hibernation: %m");
                 }
 
                 r = write_mode(modes);
                 if (r < 0)
-                        return log_error_errno(r, "Failed to write mode to /sys/power/disk: %m");;
+                        return log_error_errno(r, "Failed to write mode to /sys/power/disk: %m");
         }
 
         /* Pass an action string to the call-outs. This is mostly our operation string, except if the
@@ -264,42 +314,180 @@ static int execute(
         return r;
 }
 
-static int execute_s2h(const SleepConfig *sleep_config) {
-        _cleanup_close_ int tfd = -1;
-        struct itimerspec ts = {};
+static int custom_timer_suspend(const SleepConfig *sleep_config) {
+        usec_t hibernate_timestamp;
         int r;
 
         assert(sleep_config);
 
-        tfd = timerfd_create(CLOCK_BOOTTIME_ALARM, TFD_NONBLOCK|TFD_CLOEXEC);
-        if (tfd < 0)
-                return log_error_errno(errno, "Error creating timerfd: %m");
+        hibernate_timestamp = usec_add(now(CLOCK_BOOTTIME), sleep_config->hibernate_delay_usec);
 
-        log_debug("Set timerfd wake alarm for %s",
-                  FORMAT_TIMESPAN(sleep_config->hibernate_delay_sec, USEC_PER_SEC));
+        while (battery_is_discharging_and_low() == 0) {
+                _cleanup_hashmap_free_ Hashmap *last_capacity = NULL, *current_capacity = NULL;
+                _cleanup_close_ int tfd = -EBADF;
+                struct itimerspec ts = {};
+                usec_t suspend_interval;
+                bool woken_by_timer;
 
-        timespec_store(&ts.it_value, sleep_config->hibernate_delay_sec);
+                tfd = timerfd_create(CLOCK_BOOTTIME_ALARM, TFD_NONBLOCK|TFD_CLOEXEC);
+                if (tfd < 0)
+                        return log_error_errno(errno, "Error creating timerfd: %m");
 
-        r = timerfd_settime(tfd, 0, &ts, NULL);
-        if (r < 0)
-                return log_error_errno(errno, "Error setting hibernate timer: %m");
+                /* Store current battery capacity before suspension */
+                r = fetch_batteries_capacity_by_name(&last_capacity);
+                if (r < 0)
+                        return log_error_errno(r, "Error fetching battery capacity percentage: %m");
 
-        r = execute(sleep_config, SLEEP_SUSPEND, NULL);
-        if (r < 0)
-                return r;
+                if (hashmap_isempty(last_capacity))
+                        /* In case of no battery, system suspend interval will be set to HibernateDelaySec= or 2 hours. */
+                        suspend_interval = timestamp_is_set(hibernate_timestamp)
+                                           ? sleep_config->hibernate_delay_usec : DEFAULT_HIBERNATE_DELAY_USEC_NO_BATTERY;
+                else {
+                        r = get_total_suspend_interval(last_capacity, &suspend_interval);
+                        if (r < 0) {
+                                log_debug_errno(r, "Failed to estimate suspend interval using previous discharge rate, ignoring: %m");
+                                /* In case of any errors, especially when we do not know the battery
+                                 * discharging rate, system suspend interval will be set to
+                                 * SuspendEstimationSec=. */
+                                suspend_interval = sleep_config->suspend_estimation_usec;
+                        }
+                }
 
-        r = fd_wait_for_event(tfd, POLLIN, 0);
-        if (r < 0)
-                return log_error_errno(r, "Error polling timerfd: %m");
-        if (!FLAGS_SET(r, POLLIN)) /* We woke up before the alarm time, we are done. */
+                /* Do not suspend more than HibernateDelaySec= */
+                usec_t before_timestamp = now(CLOCK_BOOTTIME);
+                suspend_interval = MIN(suspend_interval, usec_sub_unsigned(hibernate_timestamp, before_timestamp));
+                if (suspend_interval <= 0)
+                        break; /* system should hibernate */
+
+                log_debug("Set timerfd wake alarm for %s", FORMAT_TIMESPAN(suspend_interval, USEC_PER_SEC));
+                /* Wake alarm for system with or without battery to hibernate or estimate discharge rate whichever is applicable */
+                timespec_store(&ts.it_value, suspend_interval);
+
+                if (timerfd_settime(tfd, 0, &ts, NULL) < 0)
+                        return log_error_errno(errno, "Error setting battery estimate timer: %m");
+
+                r = execute(sleep_config, SLEEP_SUSPEND, NULL);
+                if (r < 0)
+                        return r;
+
+                r = fd_wait_for_event(tfd, POLLIN, 0);
+                if (r < 0)
+                        return log_error_errno(r, "Error polling timerfd: %m");
+                /* Store fd_wait status */
+                woken_by_timer = FLAGS_SET(r, POLLIN);
+
+                r = fetch_batteries_capacity_by_name(&current_capacity);
+                if (r < 0 || hashmap_isempty(current_capacity)) {
+                        /* In case of no battery or error while getting charge level, no need to measure
+                         * discharge rate. Instead the system should wake up if it is manual wakeup or
+                         * hibernate if this is a timer wakeup. */
+                        if (r < 0)
+                                log_debug_errno(r, "Battery capacity percentage unavailable, cannot estimate discharge rate: %m");
+                        else
+                                log_debug("No battery found.");
+                        if (!woken_by_timer)
+                                return 0;
+                        break;
+                }
+
+                usec_t after_timestamp = now(CLOCK_BOOTTIME);
+                log_debug("Attempting to estimate battery discharge rate after wakeup from %s sleep",
+                          FORMAT_TIMESPAN(after_timestamp - before_timestamp, USEC_PER_HOUR));
+
+                if (after_timestamp != before_timestamp) {
+                        r = estimate_battery_discharge_rate_per_hour(last_capacity, current_capacity, before_timestamp, after_timestamp);
+                        if (r < 0)
+                                log_warning_errno(r, "Failed to estimate and update battery discharge rate, ignoring: %m");
+                } else
+                        log_debug("System woke up too early to estimate discharge rate");
+
+                if (!woken_by_timer)
+                        /* Return as manual wakeup done. This also will return in case battery was charged during suspension */
+                        return 0;
+
+                r = check_wakeup_type();
+                if (r < 0)
+                        log_debug_errno(r, "Failed to check hardware wakeup type, ignoring: %m");
+                if (r > 0) {
+                        log_debug("wakeup type is APM timer");
+                        /* system should hibernate */
+                        break;
+                }
+        }
+
+        return 1;
+}
+
+/* Freeze when invoked and thaw on cleanup */
+static int freeze_thaw_user_slice(const char **method) {
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
+        int r;
+
+        if (!method || !*method)
                 return 0;
 
-        tfd = safe_close(tfd);
+        r = bus_connect_system_systemd(&bus);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to open connection to systemd: %m");
 
-        /* If woken up after alarm time, hibernate */
-        log_debug("Attempting to hibernate after waking from %s timer",
-                  FORMAT_TIMESPAN(sleep_config->hibernate_delay_sec, USEC_PER_SEC));
+        (void) sd_bus_set_method_call_timeout(bus, FREEZE_TIMEOUT);
 
+        r = bus_call_method(bus, bus_systemd_mgr, *method, &error, NULL, "s", SPECIAL_USER_SLICE);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to execute operation: %s", bus_error_message(&error, r));
+
+        return 1;
+}
+
+static int execute_s2h(const SleepConfig *sleep_config) {
+        _unused_ _cleanup_(freeze_thaw_user_slice) const char *auto_method_thaw = "ThawUnit";
+        int r;
+
+        assert(sleep_config);
+
+        r = freeze_thaw_user_slice(&(const char*) { "FreezeUnit" });
+        if (r < 0)
+                log_debug_errno(r, "Failed to freeze unit user.slice, ignoring: %m");
+
+        /* Only check if we have automated battery alarms if HibernateDelaySec= is not set, as in that case
+         * we'll busy poll for the configured interval instead */
+        if (!timestamp_is_set(sleep_config->hibernate_delay_usec)) {
+                r = check_wakeup_type();
+                if (r < 0)
+                        log_debug_errno(r, "Failed to check hardware wakeup type, ignoring: %m");
+                else {
+                        r = battery_trip_point_alarm_exists();
+                        if (r < 0)
+                                log_debug_errno(r, "Failed to check whether acpi_btp support is enabled or not, ignoring: %m");
+                }
+        } else
+                r = 0;  /* Force fallback path */
+
+        if (r > 0) { /* If we have both wakeup alarms and battery trip point support, use them */
+                log_debug("Attempting to suspend...");
+                r = execute(sleep_config, SLEEP_SUSPEND, NULL);
+                if (r < 0)
+                        return r;
+
+                r = check_wakeup_type();
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to check hardware wakeup type: %m");
+
+                if (r == 0)
+                        /* For APM Timer wakeup, system should hibernate else wakeup */
+                        return 0;
+        } else {
+                r = custom_timer_suspend(sleep_config);
+                if (r < 0)
+                        return log_debug_errno(r, "Suspend cycle with manual battery discharge rate estimation failed: %m");
+                if (r == 0)
+                        /* manual wakeup */
+                        return 0;
+        }
+        /* For above custom timer, if 1 is returned, system will directly hibernate */
+
+        log_debug("Attempting to hibernate");
         r = execute(sleep_config, SLEEP_HIBERNATE, NULL);
         if (r < 0) {
                 log_notice("Couldn't hibernate, will try to suspend again.");
@@ -354,7 +542,7 @@ static int parse_argv(int argc, char *argv[]) {
         assert(argv);
 
         while ((c = getopt_long(argc, argv, "h", options, NULL)) >= 0)
-                switch(c) {
+                switch (c) {
                 case 'h':
                         return help();
 

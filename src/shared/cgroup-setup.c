@@ -8,6 +8,7 @@
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
+#include "missing_threads.h"
 #include "mkdir.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -22,7 +23,6 @@
 static int cg_any_controller_used_for_v1(void) {
         _cleanup_free_ char *buf = NULL;
         _cleanup_strv_free_ char **lines = NULL;
-        char **line;
         int r;
 
         r = read_full_virtual_file("/proc/cgroups", &buf, NULL);
@@ -174,6 +174,12 @@ int cg_weight_parse(const char *s, uint64_t *ret) {
         return 0;
 }
 
+int cg_cpu_weight_parse(const char *s, uint64_t *ret) {
+        if (streq_ptr(s, "idle"))
+                return *ret = CGROUP_WEIGHT_IDLE;
+        return cg_weight_parse(s, ret);
+}
+
 int cg_cpu_shares_parse(const char *s, uint64_t *ret) {
         uint64_t u;
         int r;
@@ -257,7 +263,7 @@ int cg_trim(const char *controller, const char *path, bool delete_root) {
         else if (r < 0)
                 log_debug_errno(r, "Failed to iterate through cgroup %s: %m", path);
 
-        /* If we shall delete the top-level cgroup, then propagate the faiure to do so (except if it is
+        /* If we shall delete the top-level cgroup, then propagate the failure to do so (except if it is
          * already gone anyway). Also, let's debug log about this failure, except if the error code is an
          * expected one. */
         if (delete_root && !empty_or_root(path) &&
@@ -346,6 +352,9 @@ int cg_attach(const char *controller, const char *path, pid_t pid) {
         xsprintf(c, PID_FMT "\n", pid);
 
         r = write_string_file(fs, c, WRITE_STRING_FILE_DISABLE_BUFFER);
+        if (r == -EOPNOTSUPP && cg_is_threaded(controller, path) > 0)
+                /* When the threaded mode is used, we cannot read/write the file. Let's return recognizable error. */
+                return -EUCLEAN;
         if (r < 0)
                 return r;
 
@@ -472,6 +481,82 @@ int cg_set_access(
         }
 
         return 0;
+}
+
+struct access_callback_data {
+        uid_t uid;
+        gid_t gid;
+        int error;
+};
+
+static int access_callback(
+                RecurseDirEvent event,
+                const char *path,
+                int dir_fd,
+                int inode_fd,
+                const struct dirent *de,
+                const struct statx *sx,
+                void *userdata) {
+
+        struct access_callback_data *d = ASSERT_PTR(userdata);
+
+        if (!IN_SET(event, RECURSE_DIR_ENTER, RECURSE_DIR_ENTRY))
+                return RECURSE_DIR_CONTINUE;
+
+        assert(inode_fd >= 0);
+
+        /* fchown() doesn't support O_PATH fds, hence we use the /proc/self/fd/ trick */
+        if (chown(FORMAT_PROC_FD_PATH(inode_fd), d->uid, d->gid) < 0) {
+                log_debug_errno(errno, "Failed to change ownership of '%s', ignoring: %m", ASSERT_PTR(path));
+
+                if (d->error == 0) /* Return last error to caller */
+                        d->error = errno;
+        }
+
+        return RECURSE_DIR_CONTINUE;
+}
+
+int cg_set_access_recursive(
+                const char *controller,
+                const char *path,
+                uid_t uid,
+                gid_t gid) {
+
+        _cleanup_close_ int fd = -EBADF;
+        _cleanup_free_ char *fs = NULL;
+        int r;
+
+        /* A recursive version of cg_set_access(). But note that this one changes ownership of *all* files,
+         * not just the allowlist that cg_set_access() uses. Use cg_set_access() on the cgroup you want to
+         * delegate, and cg_set_access_recursive() for any subcrgoups you might want to create below it. */
+
+        if (!uid_is_valid(uid) && !gid_is_valid(gid))
+                return 0;
+
+        r = cg_get_path(controller, path, NULL, &fs);
+        if (r < 0)
+                return r;
+
+        fd = open(fs, O_DIRECTORY|O_CLOEXEC|O_RDONLY);
+        if (fd < 0)
+                return -errno;
+
+        struct access_callback_data d = {
+                .uid = uid,
+                .gid = gid,
+        };
+
+        r = recurse_dir(fd,
+                        fs,
+                        /* statx_mask= */ 0,
+                        /* n_depth_max= */ UINT_MAX,
+                        RECURSE_DIR_SAME_MOUNT|RECURSE_DIR_INODE_FD|RECURSE_DIR_TOPLEVEL,
+                        access_callback,
+                        &d);
+        if (r < 0)
+                return r;
+
+        return -d.error;
 }
 
 int cg_migrate(
@@ -760,6 +845,8 @@ int cg_migrate_v1_controllers(CGroupMask supported, CGroupMask mask, const char 
                 /* Remember first error and try continuing */
                 q = cg_migrate_recursive_fallback(SYSTEMD_CGROUP_CONTROLLER, from, cgroup_controller_to_string(c), to, 0);
                 r = (r < 0) ? r : q;
+
+                done |= CGROUP_MASK_EXTEND_JOINED(bit);
         }
 
         return r;

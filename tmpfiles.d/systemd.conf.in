@@ -18,12 +18,6 @@ d /run/systemd/sessions 0755 root root -
 d /run/systemd/users 0755 root root -
 d /run/systemd/machines 0755 root root -
 d /run/systemd/shutdown 0755 root root -
-{% if ENABLE_NETWORKD %}
-d /run/systemd/netif 0755 systemd-network systemd-network -
-d /run/systemd/netif/links 0755 systemd-network systemd-network -
-d /run/systemd/netif/leases 0755 systemd-network systemd-network -
-d /run/systemd/netif/lldp 0755 systemd-network systemd-network -
-{% endif %}
 
 d /run/log 0755 root root -
 
@@ -66,7 +60,17 @@ a+ /var/log/journal/%m/system.journal - - - - group:wheel:r--
 
 d /var/lib/systemd 0755 root root -
 d /var/lib/systemd/coredump 0755 root root 3d
+# Files and directories in /var/lib/systemd/ephemeral-trees are locked by pid 1 to prevent tmpfiles from
+# removing them, and tmpfiles is told to clean up anything in /var/lib/systemd/ephemeral-trees that isn't
+# locked unconditionally.
+d /var/lib/systemd/ephemeral-trees 0755 root root 0
 
 d /var/lib/private 0700 root root -
 d /var/log/private 0700 root root -
 d /var/cache/private 0700 root root -
+
+{% if ENABLE_EFI %}
+# Copy sd-stub provided PCR signature and public key file from initrd into /run/, so that it will survive the initrd stage
+C /run/systemd/tpm2-pcr-signature.json 0444 root root - /.extra/tpm2-pcr-signature.json
+C /run/systemd/tpm2-pcr-public-key.pem 0444 root root - /.extra/tpm2-pcr-public-key.pem
+{% endif %}

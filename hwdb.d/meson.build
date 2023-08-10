@@ -27,10 +27,13 @@ hwdb_files_test = files(
         '60-seat.hwdb',
         '60-sensor.hwdb',
         '70-analyzers.hwdb',
+        '70-av-production.hwdb',
         '70-cameras.hwdb',
         '70-joystick.hwdb',
         '70-mouse.hwdb',
+        '70-pda.hwdb',
         '70-pointingstick.hwdb',
+        '70-sound-card.hwdb',
         '70-touchpad.hwdb',
         '80-ieee1394-unit-function.hwdb')
 
@@ -59,6 +62,7 @@ if conf.get('ENABLE_HWDB') == 1
                 parse_hwdb_py = find_program('parse_hwdb.py')
                 test('parse-hwdb',
                      parse_hwdb_py,
+                     suite : 'dist',
                      args : [hwdb_files_test,
                              auto_suspend_rules],
                      timeout : 90)

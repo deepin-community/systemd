@@ -10,6 +10,7 @@
 
 #include "env-util.h"
 #include "errno-util.h"
+#include "glyph-util.h"
 #include "in-addr-util.h"
 #include "macro.h"
 #include "nss-util.h"
@@ -94,11 +95,10 @@ static uint32_t ifindex_to_scopeid(int family, const void *a, int ifindex) {
 }
 
 static int json_dispatch_ifindex(const char *name, JsonVariant *variant, JsonDispatchFlags flags, void *userdata) {
-        int *ifi = userdata;
+        int *ifi = ASSERT_PTR(userdata);
         int64_t t;
 
         assert(variant);
-        assert(ifi);
 
         if (!json_variant_is_integer(variant))
                 return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL), "JSON field '%s' is not an integer.", strna(name));
@@ -112,11 +112,10 @@ static int json_dispatch_ifindex(const char *name, JsonVariant *variant, JsonDis
 }
 
 static int json_dispatch_family(const char *name, JsonVariant *variant, JsonDispatchFlags flags, void *userdata) {
-        int *family = userdata;
+        int *family = ASSERT_PTR(userdata);
         int64_t t;
 
         assert(variant);
-        assert(family);
 
         if (!json_variant_is_integer(variant))
                 return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL), "JSON field '%s' is not an integer.", strna(name));
@@ -157,13 +156,12 @@ typedef struct AddressParameters {
 } AddressParameters;
 
 static int json_dispatch_address(const char *name, JsonVariant *variant, JsonDispatchFlags flags, void *userdata) {
-        AddressParameters *p = userdata;
+        AddressParameters *p = ASSERT_PTR(userdata);
         union in_addr_union buf = {};
         JsonVariant *i;
         size_t n, k = 0;
 
         assert(variant);
-        assert(p);
 
         if (!json_variant_is_array(variant))
                 return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL), "JSON field '%s' is not an array.", strna(name));
@@ -180,7 +178,9 @@ static int json_dispatch_address(const char *name, JsonVariant *variant, JsonDis
 
                 b = json_variant_integer(i);
                 if (b < 0 || b > 0xff)
-                        return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL), "Element %zu of JSON field '%s' is out of range 0…255.", k, strna(name));
+                        return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL),
+                                        "Element %zu of JSON field '%s' is out of range 0%s255.",
+                                        k, strna(name), special_glyph(SPECIAL_GLYPH_ELLIPSIS));
 
                 buf.bytes[k++] = (uint8_t) b;
         }
@@ -269,6 +269,8 @@ enum nss_status _nss_resolve_gethostbyname4_r(
                         goto try_again;
                 if (error_shall_fallback(error_id))
                         goto fail;
+                if (streq(error_id, "io.systemd.Resolve.NoSuchResourceRecord"))
+                        goto no_data;
                 goto not_found;
         }
 
@@ -367,6 +369,10 @@ not_found:
         *h_errnop = HOST_NOT_FOUND;
         return NSS_STATUS_NOTFOUND;
 
+no_data:
+        *h_errnop = NO_DATA;
+        return NSS_STATUS_NOTFOUND;
+
 try_again:
         UNPROTECT_ERRNO;
         *errnop = -r;
@@ -425,6 +431,8 @@ enum nss_status _nss_resolve_gethostbyname3_r(
                         goto try_again;
                 if (error_shall_fallback(error_id))
                         goto fail;
+                if (streq(error_id, "io.systemd.Resolve.NoSuchResourceRecord"))
+                        goto no_data;
                 goto not_found;
         }
 
@@ -540,6 +548,10 @@ fail:
 
 not_found:
         *h_errnop = HOST_NOT_FOUND;
+        return NSS_STATUS_NOTFOUND;
+
+no_data:
+        *h_errnop = NO_DATA;
         return NSS_STATUS_NOTFOUND;
 
 try_again:

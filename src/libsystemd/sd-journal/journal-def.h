@@ -24,7 +24,6 @@ typedef struct HashTableObject HashTableObject;
 typedef struct EntryArrayObject EntryArrayObject;
 typedef struct TagObject TagObject;
 
-typedef struct EntryItem EntryItem;
 typedef struct HashItem HashItem;
 
 typedef struct FSSHeader FSSHeader;
@@ -39,16 +38,16 @@ typedef enum ObjectType {
         OBJECT_FIELD_HASH_TABLE,
         OBJECT_ENTRY_ARRAY,
         OBJECT_TAG,
-        _OBJECT_TYPE_MAX
+        _OBJECT_TYPE_MAX,
+        _OBJECT_TYPE_INVALID = -EINVAL,
 } ObjectType;
 
-/* Object flags */
+/* Object flags (note that src/basic/compress.h uses the same values for the compression types) */
 enum {
         OBJECT_COMPRESSED_XZ   = 1 << 0,
         OBJECT_COMPRESSED_LZ4  = 1 << 1,
         OBJECT_COMPRESSED_ZSTD = 1 << 2,
-        OBJECT_COMPRESSION_MASK = (OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD),
-        _OBJECT_COMPRESSED_MAX = OBJECT_COMPRESSION_MASK,
+        _OBJECT_COMPRESSED_MASK = OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD,
 };
 
 struct ObjectHeader {
@@ -67,8 +66,17 @@ struct ObjectHeader {
         le64_t entry_offset; /* the first array entry we store inline */ \
         le64_t entry_array_offset;                                      \
         le64_t n_entries;                                               \
-        uint8_t payload[];                                              \
-        }
+        union {                                                         \
+                struct {                                                \
+                        uint8_t payload[0];                             \
+                } regular;                                              \
+                struct {                                                \
+                        le32_t tail_entry_array_offset;                 \
+                        le32_t tail_entry_array_n_entries;              \
+                        uint8_t payload[0];                             \
+                } compact;                                              \
+        };                                                              \
+}
 
 struct DataObject DataObject__contents;
 struct DataObject__packed DataObject__contents _packed_;
@@ -86,20 +94,29 @@ struct FieldObject FieldObject__contents;
 struct FieldObject__packed FieldObject__contents _packed_;
 assert_cc(sizeof(struct FieldObject) == sizeof(struct FieldObject__packed));
 
-struct EntryItem {
-        le64_t object_offset;
-        le64_t hash;
-} _packed_;
-
-#define EntryObject__contents { \
-        ObjectHeader object;    \
-        le64_t seqnum;          \
-        le64_t realtime;        \
-        le64_t monotonic;       \
-        sd_id128_t boot_id;     \
-        le64_t xor_hash;        \
-        EntryItem items[];      \
-        }
+#define EntryObject__contents {                        \
+        ObjectHeader object;                           \
+        le64_t seqnum;                                 \
+        le64_t realtime;                               \
+        le64_t monotonic;                              \
+        sd_id128_t boot_id;                            \
+        le64_t xor_hash;                               \
+        union {                                        \
+                struct {                               \
+                        dummy_t __empty__regular;      \
+                        struct {                       \
+                                le64_t object_offset;  \
+                                le64_t hash;           \
+                        } regular[];                   \
+                };                                     \
+                struct {                               \
+                        dummy_t __empty_compact;       \
+                        struct {                       \
+                                le32_t object_offset;  \
+                        } compact[];                   \
+                };                                     \
+        } items;                                       \
+}
 
 struct EntryObject EntryObject__contents;
 struct EntryObject__packed EntryObject__contents _packed_;
@@ -118,7 +135,10 @@ struct HashTableObject {
 struct EntryArrayObject {
         ObjectHeader object;
         le64_t next_entry_array_offset;
-        le64_t items[];
+        union {
+                DECLARE_FLEX_ARRAY(le64_t, regular);
+                DECLARE_FLEX_ARRAY(le32_t, compact);
+        } items;
 } _packed_;
 
 #define TAG_LENGTH (256/8)
@@ -153,33 +173,35 @@ enum {
         HEADER_INCOMPATIBLE_COMPRESSED_LZ4  = 1 << 1,
         HEADER_INCOMPATIBLE_KEYED_HASH      = 1 << 2,
         HEADER_INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3,
+        HEADER_INCOMPATIBLE_COMPACT         = 1 << 4,
+
+        HEADER_INCOMPATIBLE_ANY             = HEADER_INCOMPATIBLE_COMPRESSED_XZ |
+                                              HEADER_INCOMPATIBLE_COMPRESSED_LZ4 |
+                                              HEADER_INCOMPATIBLE_KEYED_HASH |
+                                              HEADER_INCOMPATIBLE_COMPRESSED_ZSTD |
+                                              HEADER_INCOMPATIBLE_COMPACT,
+
+        HEADER_INCOMPATIBLE_SUPPORTED       = (HAVE_XZ ? HEADER_INCOMPATIBLE_COMPRESSED_XZ : 0) |
+                                              (HAVE_LZ4 ? HEADER_INCOMPATIBLE_COMPRESSED_LZ4 : 0) |
+                                              (HAVE_ZSTD ? HEADER_INCOMPATIBLE_COMPRESSED_ZSTD : 0) |
+                                              HEADER_INCOMPATIBLE_KEYED_HASH |
+                                              HEADER_INCOMPATIBLE_COMPACT,
 };
 
-#define HEADER_INCOMPATIBLE_ANY               \
-        (HEADER_INCOMPATIBLE_COMPRESSED_XZ |  \
-         HEADER_INCOMPATIBLE_COMPRESSED_LZ4 | \
-         HEADER_INCOMPATIBLE_KEYED_HASH |     \
-         HEADER_INCOMPATIBLE_COMPRESSED_ZSTD)
-
-#define HEADER_INCOMPATIBLE_SUPPORTED                            \
-        ((HAVE_XZ ? HEADER_INCOMPATIBLE_COMPRESSED_XZ : 0) |     \
-         (HAVE_LZ4 ? HEADER_INCOMPATIBLE_COMPRESSED_LZ4 : 0) |   \
-         (HAVE_ZSTD ? HEADER_INCOMPATIBLE_COMPRESSED_ZSTD : 0) | \
-         HEADER_INCOMPATIBLE_KEYED_HASH)
 
 enum {
-        HEADER_COMPATIBLE_SEALED = 1 << 0,
+        HEADER_COMPATIBLE_SEALED             = 1 << 0,
+        HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID = 1 << 1, /* if set, the last_entry_boot_id field in the header is exclusively refreshed when an entry is appended */
+        HEADER_COMPATIBLE_ANY                = HEADER_COMPATIBLE_SEALED|
+                                               HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID,
+
+        HEADER_COMPATIBLE_SUPPORTED          = (HAVE_GCRYPT ? HEADER_COMPATIBLE_SEALED : 0) |
+                                               HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID,
 };
 
-#define HEADER_COMPATIBLE_ANY HEADER_COMPATIBLE_SEALED
-#if HAVE_GCRYPT
-#  define HEADER_COMPATIBLE_SUPPORTED HEADER_COMPATIBLE_SEALED
-#else
-#  define HEADER_COMPATIBLE_SUPPORTED 0
-#endif
 
 #define HEADER_SIGNATURE                                                \
-        ((const char[]) { 'L', 'P', 'K', 'S', 'H', 'H', 'R', 'H' })
+        ((const uint8_t[]) { 'L', 'P', 'K', 'S', 'H', 'H', 'R', 'H' })
 
 #define struct_Header__contents {                       \
         uint8_t signature[8]; /* "LPKSHHRH" */          \
@@ -189,7 +211,7 @@ enum {
         uint8_t reserved[7];                            \
         sd_id128_t file_id;                             \
         sd_id128_t machine_id;                          \
-        sd_id128_t boot_id;    /* last writer */        \
+        sd_id128_t tail_entry_boot_id;                  \
         sd_id128_t seqnum_id;                           \
         le64_t header_size;                             \
         le64_t arena_size;                              \
@@ -215,12 +237,17 @@ enum {
         /* Added in 246 */                              \
         le64_t data_hash_chain_depth;                   \
         le64_t field_hash_chain_depth;                  \
+        /* Added in 252 */                              \
+        le32_t tail_entry_array_offset;                 \
+        le32_t tail_entry_array_n_entries;              \
+        /* Added in 254 */                              \
+        le64_t tail_entry_offset;                       \
         }
 
 struct Header struct_Header__contents;
 struct Header__packed struct_Header__contents _packed_;
 assert_cc(sizeof(struct Header) == sizeof(struct Header__packed));
-assert_cc(sizeof(struct Header) == 256);
+assert_cc(sizeof(struct Header) == 272);
 
 #define FSS_HEADER_SIGNATURE                                            \
         ((const char[]) { 'K', 'S', 'H', 'H', 'R', 'H', 'L', 'P' })

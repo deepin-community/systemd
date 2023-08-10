@@ -16,7 +16,7 @@
   Lesser General Public License for more details.
 
   You should have received a copy of the GNU Lesser General Public License
-  along with systemd; If not, see <http://www.gnu.org/licenses/>.
+  along with systemd; If not, see <https://www.gnu.org/licenses/>.
 ***/
 
 #include <inttypes.h>
@@ -48,6 +48,7 @@ int sd_dhcp6_lease_get_domains(sd_dhcp6_lease *lease, char ***ret);
 int sd_dhcp6_lease_get_ntp_addrs(sd_dhcp6_lease *lease, const struct in6_addr **ret);
 int sd_dhcp6_lease_get_ntp_fqdn(sd_dhcp6_lease *lease, char ***ret);
 int sd_dhcp6_lease_get_fqdn(sd_dhcp6_lease *lease, const char **ret);
+int sd_dhcp6_lease_get_captive_portal(sd_dhcp6_lease *lease, const char **ret);
 
 sd_dhcp6_lease *sd_dhcp6_lease_ref(sd_dhcp6_lease *lease);
 sd_dhcp6_lease *sd_dhcp6_lease_unref(sd_dhcp6_lease *lease);

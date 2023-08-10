@@ -25,7 +25,6 @@
 #include "string-util.h"
 #include "strv.h"
 #include "terminal-util.h"
-#include "util.h"
 
 static pid_t pager_pid = 0;
 
@@ -84,8 +83,9 @@ static int no_quit_on_interrupt(int exe_name_fd, const char *less_opts) {
 }
 
 void pager_open(PagerFlags flags) {
-        _cleanup_close_pair_ int fd[2] = { -1, -1 }, exe_name_pipe[2] = { -1, -1 };
+        _cleanup_close_pair_ int fd[2] = PIPE_EBADF, exe_name_pipe[2] = PIPE_EBADF;
         _cleanup_strv_free_ char **pager_args = NULL;
+        _cleanup_free_ char *l = NULL;
         const char *pager, *less_opts;
         int r;
 
@@ -131,15 +131,19 @@ void pager_open(PagerFlags flags) {
         less_opts = getenv("SYSTEMD_LESS");
         if (!less_opts)
                 less_opts = "FRSXMK";
-        if (flags & PAGER_JUMP_TO_END)
-                less_opts = strjoina(less_opts, " +G");
+        if (flags & PAGER_JUMP_TO_END) {
+                l = strjoin(less_opts, " +G");
+                if (!l)
+                        return (void) log_oom();
+                less_opts = l;
+        }
 
         /* We set SIGINT as PR_DEATHSIG signal here, to match the "K" parameter we set in $LESS, which enables SIGINT behaviour. */
         r = safe_fork("(pager)", FORK_RESET_SIGNALS|FORK_DEATHSIG_SIGINT|FORK_RLIMIT_NOFILE_SAFE|FORK_LOG, &pager_pid);
         if (r < 0)
                 return;
         if (r == 0) {
-                const char *less_charset, *exe;
+                const char *less_charset;
 
                 /* In the child start the pager */
 
@@ -214,31 +218,30 @@ void pager_open(PagerFlags flags) {
                 /* Debian's alternatives command for pagers is called 'pager'. Note that we do not call
                  * sensible-pagers here, since that is just a shell script that implements a logic that is
                  * similar to this one anyway, but is Debian-specific. */
-                FOREACH_STRING(exe, "pager", "less", "more") {
-                        /* Only less implements secure mode right now. */
-                        if (use_secure_mode && !streq(exe, "less"))
+                static const char* pagers[] = { "pager", "less", "more", "(built-in)" };
+
+                for (unsigned i = 0; i < ELEMENTSOF(pagers); i++) {
+                        /* Only less (and our trivial fallback) implement secure mode right now. */
+                        if (use_secure_mode && !STR_IN_SET(pagers[i], "less", "(built-in)"))
                                 continue;
 
-                        r = loop_write(exe_name_pipe[1], exe, strlen(exe) + 1, false);
-                        if (r  < 0) {
+                        r = loop_write(exe_name_pipe[1], pagers[i], strlen(pagers[i]) + 1, false);
+                        if (r < 0) {
                                 log_error_errno(r, "Failed to write pager name to socket: %m");
                                 _exit(EXIT_FAILURE);
                         }
-                        execlp(exe, exe, NULL);
-                        log_full_errno(errno == ENOENT ? LOG_DEBUG : LOG_WARNING, errno,
-                                       "Failed to execute '%s', using next fallback pager: %m", exe);
-                }
 
-                /* Our builtin is also very secure. */
-                r = loop_write(exe_name_pipe[1], "(built-in)", strlen("(built-in)") + 1, false);
-                if (r < 0) {
-                        log_error_errno(r, "Failed to write pager name to socket: %m");
-                        _exit(EXIT_FAILURE);
+                        if (i < ELEMENTSOF(pagers) - 1) {
+                                execlp(pagers[i], pagers[i], NULL);
+                                log_full_errno(errno == ENOENT ? LOG_DEBUG : LOG_WARNING, errno,
+                                               "Failed to execute '%s', will try '%s' next: %m", pagers[i], pagers[i+1]);
+                        } else {
+                                /* Close pipe to signal the parent to start sending data */
+                                safe_close_pair(exe_name_pipe);
+                                pager_fallback();
+                                assert_not_reached();
+                        }
                 }
-                /* Close pipe to signal the parent to start sending data */
-                safe_close_pair(exe_name_pipe);
-                pager_fallback();
-                /* not reached */
         }
 
         /* Return in the parent */
@@ -313,7 +316,7 @@ int show_man_page(const char *desc, bool null_stdio) {
         } else
                 args[1] = desc;
 
-        r = safe_fork("(man)", FORK_RESET_SIGNALS|FORK_DEATHSIG|(null_stdio ? FORK_NULL_STDIO : 0)|FORK_RLIMIT_NOFILE_SAFE|FORK_LOG, &pid);
+        r = safe_fork("(man)", FORK_RESET_SIGNALS|FORK_DEATHSIG|(null_stdio ? FORK_REARRANGE_STDIO : 0)|FORK_RLIMIT_NOFILE_SAFE|FORK_LOG, &pid);
         if (r < 0)
                 return r;
         if (r == 0) {

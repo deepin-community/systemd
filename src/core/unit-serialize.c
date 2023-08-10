@@ -391,7 +391,7 @@ int unit_deserialize(Unit *u, FILE *f, FDSet *fds) {
                 else if (STR_IN_SET(l, "ipv4-socket-bind-bpf-link-fd", "ipv6-socket-bind-bpf-link-fd")) {
                         int fd;
 
-                        if (safe_atoi(v, &fd) < 0 || fd < 0 || !fdset_contains(fds, fd))
+                        if ((fd = parse_fd(v)) < 0 || !fdset_contains(fds, fd))
                                 log_unit_debug(u, "Failed to parse %s value: %s, ignoring.", l, v);
                         else {
                                 if (fdset_remove(fds, fd) < 0) {
@@ -423,7 +423,7 @@ int unit_deserialize(Unit *u, FILE *f, FDSet *fds) {
                 } else if (streq(l, "restrict-ifaces-bpf-fd")) {
                         int fd;
 
-                        if (safe_atoi(v, &fd) < 0 || fd < 0 || !fdset_contains(fds, fd)) {
+                        if ((fd = parse_fd(v)) < 0 || !fdset_contains(fds, fd)) {
                                 log_unit_debug(u, "Failed to parse restrict-ifaces-bpf-fd value: %s", v);
                                 continue;
                         }
@@ -522,7 +522,7 @@ int unit_deserialize(Unit *u, FILE *f, FDSet *fds) {
                         continue;
                 }
 
-                r = exec_runtime_deserialize_compat(u, l, v, fds);
+                r = exec_shared_runtime_deserialize_compat(u, l, v, fds);
                 if (r < 0) {
                         log_unit_warning(u, "Failed to deserialize runtime parameter '%s', ignoring.", l);
                         continue;
@@ -590,8 +590,8 @@ static void print_unit_dependency_mask(FILE *f, const char *kind, UnitDependency
                 { UNIT_DEPENDENCY_DEFAULT,            "default"            },
                 { UNIT_DEPENDENCY_UDEV,               "udev"               },
                 { UNIT_DEPENDENCY_PATH,               "path"               },
-                { UNIT_DEPENDENCY_MOUNTINFO_IMPLICIT, "mountinfo-implicit" },
-                { UNIT_DEPENDENCY_MOUNTINFO_DEFAULT,  "mountinfo-default"  },
+                { UNIT_DEPENDENCY_MOUNT_FILE,         "mount-file"         },
+                { UNIT_DEPENDENCY_MOUNTINFO,          "mountinfo"          },
                 { UNIT_DEPENDENCY_PROC_SWAP,          "proc-swap"          },
                 { UNIT_DEPENDENCY_SLICE_PROPERTY,     "slice-property"     },
         };
@@ -623,7 +623,7 @@ static void print_unit_dependency_mask(FILE *f, const char *kind, UnitDependency
 }
 
 void unit_dump(Unit *u, FILE *f, const char *prefix) {
-        char *t, **j;
+        char *t;
         const char *prefix2;
         Unit *following;
         _cleanup_set_free_ Set *following_set = NULL;
@@ -731,6 +731,9 @@ void unit_dump(Unit *u, FILE *f, const char *prefix) {
 
         STRV_FOREACH(j, u->documentation)
                 fprintf(f, "%s\tDocumentation: %s\n", prefix, *j);
+
+        if (u->access_selinux_context)
+                fprintf(f, "%s\tAccess SELinux Context: %s\n", prefix, u->access_selinux_context);
 
         following = unit_following(u);
         if (following)
@@ -845,8 +848,10 @@ void unit_dump(Unit *u, FILE *f, const char *prefix) {
                 fprintf(f,
                         "%s\tMerged into: %s\n",
                         prefix, u->merged_into->id);
-        else if (u->load_state == UNIT_ERROR)
-                fprintf(f, "%s\tLoad Error Code: %s\n", prefix, strerror_safe(u->load_error));
+        else if (u->load_state == UNIT_ERROR) {
+                errno = abs(u->load_error);
+                fprintf(f, "%s\tLoad Error Code: %m\n", prefix);
+        }
 
         for (const char *n = sd_bus_track_first(u->bus_track); n; n = sd_bus_track_next(u->bus_track))
                 fprintf(f, "%s\tBus Ref: %s\n", prefix, n);

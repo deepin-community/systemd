@@ -4,7 +4,6 @@
 
 #include "hwdb-util.h"
 #include "udevadm.h"
-#include "util.h"
 
 static const char *arg_test = NULL;
 static const char *arg_root = NULL;
@@ -48,7 +47,7 @@ static int parse_argv(int argc, char *argv[]) {
         int c;
 
         while ((c = getopt_long(argc, argv, "ust:r:Vh", options, NULL)) >= 0)
-                switch(c) {
+                switch (c) {
                 case 'u':
                         arg_update = true;
                         break;
@@ -88,6 +87,8 @@ int hwdb_main(int argc, char *argv[], void *userdata) {
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "Either --update or --test must be used.");
 
+        log_notice("udevadm hwdb is deprecated. Use systemd-hwdb instead.");
+
         if (arg_update) {
                 r = hwdb_update(arg_root, arg_hwdb_bin_dir, arg_strict, true);
                 if (r < 0)
@@ -95,7 +96,7 @@ int hwdb_main(int argc, char *argv[], void *userdata) {
         }
 
         if (arg_test)
-                return hwdb_query(arg_test);
+                return hwdb_query(arg_test, NULL);
 
         return 0;
 }

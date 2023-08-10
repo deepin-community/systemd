@@ -7,11 +7,10 @@
 #include "systemctl-util.h"
 #include "systemctl.h"
 
-int clean_or_freeze_unit(int argc, char *argv[], void *userdata) {
+int verb_clean_or_freeze(int argc, char *argv[], void *userdata) {
         _cleanup_(bus_wait_for_units_freep) BusWaitForUnits *w = NULL;
         _cleanup_strv_free_ char **names = NULL;
         int r, ret = EXIT_SUCCESS;
-        char **name;
         const char *method;
         sd_bus *bus;
 
@@ -22,7 +21,7 @@ int clean_or_freeze_unit(int argc, char *argv[], void *userdata) {
         polkit_agent_open_maybe();
 
         if (!arg_clean_what) {
-                arg_clean_what = strv_new("cache", "runtime");
+                arg_clean_what = strv_new("cache", "runtime", "fdstore");
                 if (!arg_clean_what)
                         return log_oom();
         }

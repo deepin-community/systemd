@@ -116,8 +116,10 @@
   int r;
   …
   r = sd_login_monitor_new(NULL, &amp;m);
-  if (r &lt; 0)
-    fprintf(stderr, "Failed to allocate login monitor object: %s\n", strerror(-r));
+  if (r &lt; 0) {
+    errno = -r;
+    fprintf(stderr, "Failed to allocate login monitor object: %m\n");
+  }
   …
 }</programlisting>
 
@@ -166,7 +168,7 @@
     is no timeout to wait for this will fill in <constant>(uint64_t)
     -1</constant> instead. Note that <function>poll()</function> takes
     a relative timeout in milliseconds rather than an absolute timeout
-    in microseconds. To convert the absolute 'µs' timeout into
+    in microseconds. To convert the absolute 'μs' timeout into
     relative 'ms', use code like the following:</para>
 
     <programlisting>uint64_t t;

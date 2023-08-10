@@ -12,6 +12,7 @@
 #include "bus-log-control-api.h"
 #include "bus-polkit.h"
 #include "cgroup-util.h"
+#include "common-signal.h"
 #include "daemon-util.h"
 #include "dirent-util.h"
 #include "discover-image.h"
@@ -60,6 +61,15 @@ static int manager_new(Manager **ret) {
         r = sd_event_add_signal(m->event, NULL, SIGTERM, NULL, NULL);
         if (r < 0)
                 return r;
+
+        r = sd_event_add_signal(m->event, NULL, SIGRTMIN+18, sigrtmin18_handler, NULL);
+        if (r < 0)
+                return r;
+
+        r = sd_event_add_memory_pressure(m->event, NULL, NULL, NULL);
+        if (r < 0)
+                log_full_errno(ERRNO_IS_NOT_SUPPORTED(r) || ERRNO_IS_PRIVILEGE(r) || r == -EHOSTDOWN ? LOG_DEBUG : LOG_NOTICE, r,
+                               "Unable to create memory pressure event source, ignoring: %m");
 
         (void) sd_event_set_watchdog(m->event, true);
 
@@ -117,9 +127,9 @@ static int manager_add_host_machine(Manager *m) {
         if (!unit)
                 return log_oom();
 
-        t = machine_new(m, MACHINE_HOST, ".host");
-        if (!t)
-                return log_oom();
+        r = machine_new(m, MACHINE_HOST, ".host", &t);
+        if (r < 0)
+                return log_error_errno(r, "Failed to create machine: %m");
 
         t->leader = 1;
         t->id = mid;
@@ -127,7 +137,7 @@ static int manager_add_host_machine(Manager *m) {
         t->root_directory = TAKE_PTR(rd);
         t->unit = TAKE_PTR(unit);
 
-        dual_timestamp_from_boottime_or_monotonic(&t->timestamp, 0);
+        dual_timestamp_from_boottime(&t->timestamp, 0);
 
         m->host_machine = t;
 
@@ -339,7 +349,7 @@ static int run(int argc, char *argv[]) {
          * make sure this check stays in. */
         (void) mkdir_label("/run/systemd/machines", 0755);
 
-        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGCHLD, SIGTERM, SIGINT, -1) >= 0);
+        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGCHLD, SIGTERM, SIGINT, SIGRTMIN+18, -1) >= 0);
 
         r = manager_new(&m);
         if (r < 0)

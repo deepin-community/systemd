@@ -18,14 +18,14 @@ validity for GIDs too.
 
 ## Special Linux UIDs
 
-In theory, the range of the C type `uid_t` is 32bit wide on Linux,
+In theory, the range of the C type `uid_t` is 32-bit wide on Linux,
 i.e. 0…4294967295. However, four UIDs are special on Linux:
 
 1. 0 → The `root` super-user
 
 2. 65534 → The `nobody` UID, also called the "overflow" UID or similar. It's
    where various subsystems map unmappable users to, for example file systems
-   only supporting 16bit UIDs, NFS or user namespacing. (The latter can be
+   only supporting 16-bit UIDs, NFS or user namespacing. (The latter can be
    changed with a sysctl during runtime, but that's not supported on
    `systemd`. If you do change it you void your warranty.) Because Fedora is a
    bit confused the `nobody` user is called `nfsnobody` there (and they have a
@@ -33,13 +33,13 @@ i.e. 0…4294967295. However, four UIDs are special on Linux:
    though. (Also, some distributions call the `nobody` group `nogroup`. I wish
    they didn't.)
 
-3. 4294967295, aka "32bit `(uid_t) -1`" → This UID is not a valid user ID, as
+3. 4294967295, aka "32-bit `(uid_t) -1`" → This UID is not a valid user ID, as
    `setresuid()`, `chown()` and friends treat -1 as a special request to not
    change the UID of the process/file. This UID is hence not available for
    assignment to users in the user database.
 
-4. 65535, aka "16bit `(uid_t) -1`" → Before Linux kernel 2.4 `uid_t` used to be
-   16bit, and programs compiled for that would hence assume that `(uid_t) -1`
+4. 65535, aka "16-bit `(uid_t) -1`" → Before Linux kernel 2.4 `uid_t` used to be
+   16-bit, and programs compiled for that would hence assume that `(uid_t) -1`
    is 65535. This UID is hence not usable either.
 
 The `nss-systemd` glibc NSS module will synthesize user database records for
@@ -73,7 +73,7 @@ Note that systemd requires that system users and groups are resolvable without
 networking available — a requirement that is not made for regular users. This
 means regular users may be stored in remote LDAP or NIS databases, but system
 users may not (except when there's a consistent local cache kept, that is
-available during earliest boot, including in the initial RAM disk).
+available during earliest boot, including in the initrd).
 
 ## Special `systemd` GIDs
 
@@ -81,7 +81,7 @@ available during earliest boot, including in the initial RAM disk).
 above). However, it does define some special group/GID assignments, which are
 primarily used for `systemd-udevd`'s device management. The precise list of the
 currently defined groups is found in this `sysusers.d` snippet:
-[basic.conf](https://raw.githubusercontent.com/systemd/systemd/master/sysusers.d/basic.conf.in)
+[basic.conf](https://raw.githubusercontent.com/systemd/systemd/main/sysusers.d/basic.conf.in)
 
 It's strongly recommended that downstream distributions include these groups in
 their default group databases.
@@ -108,7 +108,7 @@ but downstreams are strongly advised against doing that.)
 2. 61184…65519 → UIDs for dynamic users are allocated from this range (see the
    `DynamicUser=` documentation in
    [`systemd.exec(5)`](https://www.freedesktop.org/software/systemd/man/systemd.exec.html)). This
-   range has been chosen so that it is below the 16bit boundary (i.e. below
+   range has been chosen so that it is below the 16-bit boundary (i.e. below
    65535), in order to provide compatibility with container environments that
    assign a 64K range of UIDs to containers using user namespacing. This range
    is above the 60000 boundary, so that its allocations are unlikely to be
@@ -122,22 +122,22 @@ but downstreams are strongly advised against doing that.)
 
 3. 524288…1879048191 → UID range for `systemd-nspawn`'s automatic allocation of
    per-container UID ranges. When the `--private-users=pick` switch is used (or
-   `-U`) then it will automatically find a so far unused 16bit subrange of this
+   `-U`) then it will automatically find a so far unused 16-bit subrange of this
    range and assign it to the container. The range is picked so that the upper
-   16bit of the 32bit UIDs are constant for all users of the container, while
-   the lower 16bit directly encode the 65536 UIDs assigned to the
-   container. This mode of allocation means that the upper 16bit of any UID
-   assigned to a container are kind of a "container ID", while the lower 16bit
+   16-bit of the 32-bit UIDs are constant for all users of the container, while
+   the lower 16-bit directly encode the 65536 UIDs assigned to the
+   container. This mode of allocation means that the upper 16-bit of any UID
+   assigned to a container are kind of a "container ID", while the lower 16-bit
    directly expose the container's own UID numbers. If you wonder why precisely
    these numbers, consider them in hexadecimal: 0x00080000…0x6FFFFFFF. This
-   range is above the 16bit boundary. Moreover it's below the 31bit boundary,
+   range is above the 16-bit boundary. Moreover it's below the 31-bit boundary,
    as some broken code (specifically: the kernel's `devpts` file system)
    erroneously considers UIDs signed integers, and hence can't deal with values
    above 2^31. The `systemd-machined.service` service will synthesize user
    database records for all UIDs assigned to a running container from this
    range.
 
-Note for both allocation ranges: when an UID allocation takes place NSS is
+Note for both allocation ranges: when a UID allocation takes place NSS is
 checked for collisions first, and a different UID is picked if an entry is
 found. Thus, the user database is used as synchronization mechanism to ensure
 exclusive ownership of UIDs and UID ranges. To ensure compatibility with other
@@ -176,7 +176,7 @@ Systemd has compile-time default for these boundaries. Using those defaults is
 recommended. It will nevertheless query `/etc/login.defs` at runtime, when
 compiled with `-Dcompat-mutable-uid-boundaries=true` and that file is present.
 Support for this is considered only a compatibility feature and should not be
-used except when upgrading systems which were creating with different defaults.
+used except when upgrading systems which were created with different defaults.
 
 ## Considerations for container managers
 
@@ -185,7 +185,7 @@ assign to your containers, here are a few recommendations:
 
 1. Definitely, don't assign less than 65536 UIDs/GIDs. After all the `nobody`
 user has magic properties, and hence should be available in your container, and
-given that it's assigned the UID 65534, you should really cover the full 16bit
+given that it's assigned the UID 65534, you should really cover the full 16-bit
 range in your container. Note that systemd will — as mentioned — synthesize
 user records for the `nobody` user, and assumes its availability in various
 other parts of its codebase, too, hence assigning fewer users means you lose
@@ -195,15 +195,15 @@ other packages make similar restrictions.
 2. While it's fine to assign more than 65536 UIDs/GIDs to a container, there's
 most likely not much value in doing so, as Linux distributions won't use the
 higher ranges by default (as mentioned neither `adduser` nor `systemd`'s
-dynamic user concept allocate from above the 16bit range). Unless you actively
+dynamic user concept allocate from above the 16-bit range). Unless you actively
 care for nested containers, it's hence probably a good idea to allocate exactly
 65536 UIDs per container, and neither less nor more. A pretty side-effect is
 that by doing so, you expose the same number of UIDs per container as Linux 2.2
 supported for the whole system, back in the days.
 
 3. Consider allocating UID ranges for containers so that the first UID you
-assign has the lower 16bits all set to zero. That way, the upper 16bits become
-a container ID of some kind, while the lower 16bits directly encode the
+assign has the lower 16-bits all set to zero. That way, the upper 16-bits become
+a container ID of some kind, while the lower 16-bits directly encode the
 internal container UID. This is the way `systemd-nspawn` allocates UID ranges
 (see above). Following this allocation logic ensures best compatibility with
 `systemd-nspawn` and all other container managers following the scheme, as it
@@ -212,7 +212,7 @@ as that's what they do, too. Moreover, it makes `chown()`ing container file
 system trees nicely robust to interruptions: as the external UID encodes the
 internal UID in a fixed way, it's very easy to adjust the container's base UID
 without the need to know the original base UID: to change the container base,
-just mask away the upper 16bit, and insert the upper 16bit of the new container
+just mask away the upper 16-bit, and insert the upper 16-bit of the new container
 base instead. Here are the easy conversions to derive the internal UID, the
 external UID, and the container base UID from each other:
 
@@ -233,6 +233,27 @@ safely use the NSS user database as allocation check, too. Note that if you
 follow this scheme no changes to `/etc/passwd` need to be made, thus minimizing
 the artifacts the container manager persistently leaves in the system.
 
+5. `systemd-homed` by default mounts the home directories it manages with UID
+mapping applied. It will map four UID ranges into that uidmap, and leave
+everything else unmapped: the range from 0…60000, the user's own UID, the range
+60514…65534, and the container range 524288…1879048191. This means
+files/directories in home directories managed by `systemd-homed` cannot be
+owned by UIDs/GIDs outside of these four ranges (attempts to `chown()` files to
+UIDs outside of these ranges will fail). Thus, if container trees are to be
+placed within a home directory managed by `systemd-homed` they should take
+these ranges into consideration and either place the trees at base UID 0 (and
+then map them to a higher UID range for use in user namespacing via another
+level of UID mapped mounts, at *runtime*) or at a base UID from the container
+UID range. That said, placing container trees (and in fact any
+files/directories not owned by the home directory's user) in home directories
+is generally a questionable idea (regardless of whether `systemd-homed` is used
+or not), given this typically breaks quota assumptions, makes it impossible for
+users to properly manage all files in their own home directory due to
+permission problems, introduces security issues around SETUID and severely
+restricts compatibility with networked home directories. Typically, it's a much
+better idea to place container images outside of the home directory,
+i.e. somewhere below `/var/` or similar.
+
 ## Summary
 
 |               UID/GID | Purpose               | Defined By    | Listed in                     |
@@ -243,30 +264,31 @@ the artifacts the container manager persistently leaves in the system.
 |                 6…999 | System users          | Distributions | `/etc/passwd`                 |
 |            1000…60000 | Regular users         | Distributions | `/etc/passwd` + LDAP/NIS/…    |
 |           60001…60513 | Human users (homed)   | `systemd`     | `nss-systemd`                 |
-|           60514…60577 | Host users mapped into containers | `systemd` | `systemd-nspawn`           |
+|           60514…60577 | Host users mapped into containers | `systemd` | `systemd-nspawn`      |
 |           60578…61183 | Unused                |               |                               |
 |           61184…65519 | Dynamic service users | `systemd`     | `nss-systemd`                 |
 |           65520…65533 | Unused                |               |                               |
 |                 65534 | `nobody` user         | Linux         | `/etc/passwd` + `nss-systemd` |
-|                 65535 | 16bit `(uid_t) -1`    | Linux         |                               |
+|                 65535 | 16-bit `(uid_t) -1`   | Linux         |                               |
 |          65536…524287 | Unused                |               |                               |
 |     524288…1879048191 | Container UID ranges  | `systemd`     | `nss-systemd`                 |
 | 1879048192…2147483647 | Unused                |               |                               |
 | 2147483648…4294967294 | HIC SVNT LEONES       |               |                               |
-|            4294967295 | 32bit `(uid_t) -1`    | Linux         |                               |
+|            4294967295 | 32-bit `(uid_t) -1`   | Linux         |                               |
 
-Note that "Unused" in the table above doesn't meant that these ranges are
+Note that "Unused" in the table above doesn't mean that these ranges are
 really unused. It just means that these ranges have no well-established
 pre-defined purposes between Linux, generic low-level distributions and
 `systemd`. There might very well be other packages that allocate from these
 ranges.
 
 Note that the range 2147483648…4294967294 (i.e. 2^31…2^32-2) should be handled
-with care. Various programs (including kernel file systems, see `devpts`) have
-trouble with UIDs outside of the signed 32bit range, i.e any UIDs equal to or
-above 2147483648. It is thus strongly recommended to stay away from this range
-in order to avoid complications. This range should be considered reserved for
-future, special purposes.
+with care. Various programs (including kernel file systems — see `devpts` — or
+even kernel syscalls – see `setfsuid()`) have trouble with UIDs outside of the
+signed 32-bit range, i.e any UIDs equal to or above 2147483648. It is thus
+strongly recommended to stay away from this range in order to avoid
+complications. This range should be considered reserved for future, special
+purposes.
 
 ## Notes on resolvability of user and group names
 
@@ -279,7 +301,7 @@ means they should not be provided by any networked service (as those usually
 become available during late boot only), except if a local cache is kept that
 makes them available during early boot too (i.e. before networking is
 up). Specifically, system users need to be resolvable at least before
-`systemd-udevd.service` and `systemd-tmpfiles.service` are started, as both
+`systemd-udevd.service` and `systemd-tmpfiles-setup.service` are started, as both
 need to resolve system users — but note that there might be more services
 requiring full resolvability of system users than just these two.
 

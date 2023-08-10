@@ -78,11 +78,11 @@ static int map_keycode(sd_device *dev, int fd, int scancode, const char *keycode
         map.scan = scancode;
         map.key = keycode_num;
 
-        log_device_debug(dev, "keyboard: mapping scan code %d (0x%x) to key code %d (0x%x)",
+        log_device_debug(dev, "keyboard: mapping scan code %u (0x%x) to key code %u (0x%x)",
                          map.scan, map.scan, map.key, map.key);
 
         if (ioctl(fd, EVIOCSKEYCODE, &map) < 0)
-                return log_device_error_errno(dev, errno, "Failed to call EVIOCSKEYCODE with scan code 0x%x, and key code %d: %m", map.scan, map.key);
+                return log_device_error_errno(dev, errno, "Failed to call EVIOCSKEYCODE with scan code 0x%x, and key code %u: %m", map.scan, map.key);
 
         return 0;
 }
@@ -159,11 +159,12 @@ static int set_trackpoint_sensitivity(sd_device *dev, const char *value) {
         return 0;
 }
 
-static int builtin_keyboard(sd_device *dev, sd_netlink **rtnl, int argc, char *argv[], bool test) {
+static int builtin_keyboard(UdevEvent *event, int argc, char *argv[], bool test) {
+        sd_device *dev = ASSERT_PTR(ASSERT_PTR(event)->dev);
         unsigned release[1024];
         unsigned release_count = 0;
-        _cleanup_close_ int fd = -1;
-        const char *node, *key, *value;
+        _cleanup_close_ int fd = -EBADF;
+        const char *node;
         int has_abs = -1, r;
 
         r = sd_device_get_devname(dev, &node);
@@ -195,9 +196,9 @@ static int builtin_keyboard(sd_device *dev, sd_netlink **rtnl, int argc, char *a
                         }
 
                         if (fd < 0) {
-                                fd = open(node, O_RDWR|O_CLOEXEC|O_NONBLOCK|O_NOCTTY);
+                                fd = sd_device_open(dev, O_RDWR|O_CLOEXEC|O_NONBLOCK|O_NOCTTY);
                                 if (fd < 0)
-                                        return log_device_error_errno(dev, errno, "Failed to open device '%s': %m", node);
+                                        return log_device_error_errno(dev, fd, "Failed to open device '%s': %m", node);
                         }
 
                         (void) map_keycode(dev, fd, scancode, keycode);
@@ -212,9 +213,9 @@ static int builtin_keyboard(sd_device *dev, sd_netlink **rtnl, int argc, char *a
                         }
 
                         if (fd < 0) {
-                                fd = open(node, O_RDWR|O_CLOEXEC|O_NONBLOCK|O_NOCTTY);
+                                fd = sd_device_open(dev, O_RDWR|O_CLOEXEC|O_NONBLOCK|O_NOCTTY);
                                 if (fd < 0)
-                                        return log_device_error_errno(dev, errno, "Failed to open device '%s': %m", node);
+                                        return log_device_error_errno(dev, fd, "Failed to open device '%s': %m", node);
                         }
 
                         if (has_abs == -1) {
@@ -247,5 +248,5 @@ static int builtin_keyboard(sd_device *dev, sd_netlink **rtnl, int argc, char *a
 const UdevBuiltin udev_builtin_keyboard = {
         .name = "keyboard",
         .cmd = builtin_keyboard,
-        .help = "Keyboard scan code to key mapping",
+        .help = "Keyboard scancode mapping and touchpad/pointingstick characteristics",
 };

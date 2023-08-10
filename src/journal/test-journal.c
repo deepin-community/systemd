@@ -6,9 +6,9 @@
 #include "chattr-util.h"
 #include "io-util.h"
 #include "journal-authenticate.h"
-#include "journald-file.h"
 #include "journal-vacuum.h"
 #include "log.h"
+#include "managed-journal-file.h"
 #include "rm-rf.h"
 #include "tests.h"
 
@@ -23,37 +23,35 @@ static void mkdtemp_chdir_chattr(char *path) {
         (void) chattr_path(path, FS_NOCOW_FL, FS_NOCOW_FL, NULL);
 }
 
-static void test_non_empty(void) {
+static void test_non_empty_one(void) {
         _cleanup_(mmap_cache_unrefp) MMapCache *m = NULL;
         dual_timestamp ts;
-        JournaldFile *f;
+        ManagedJournalFile *f;
         struct iovec iovec;
         static const char test[] = "TEST1=1", test2[] = "TEST2=2";
-        Object *o;
+        Object *o, *d;
         uint64_t p;
         sd_id128_t fake_boot_id;
         char t[] = "/var/tmp/journal-XXXXXX";
-
-        test_setup_logging(LOG_DEBUG);
 
         m = mmap_cache_new();
         assert_se(m != NULL);
 
         mkdtemp_chdir_chattr(t);
 
-        assert_se(journald_file_open(-1, "test.journal", O_RDWR|O_CREAT, 0666, true, UINT64_MAX, true, NULL, m, NULL, NULL, &f) == 0);
+        assert_se(managed_journal_file_open(-1, "test.journal", O_RDWR|O_CREAT, JOURNAL_COMPRESS|JOURNAL_SEAL, 0666, UINT64_MAX, NULL, m, NULL, NULL, &f) == 0);
 
         assert_se(dual_timestamp_get(&ts));
         assert_se(sd_id128_randomize(&fake_boot_id) == 0);
 
         iovec = IOVEC_MAKE_STRING(test);
-        assert_se(journal_file_append_entry(f->file, &ts, NULL, &iovec, 1, NULL, NULL, NULL) == 0);
+        assert_se(journal_file_append_entry(f->file, &ts, NULL, &iovec, 1, NULL, NULL, NULL, NULL) == 0);
 
         iovec = IOVEC_MAKE_STRING(test2);
-        assert_se(journal_file_append_entry(f->file, &ts, NULL, &iovec, 1, NULL, NULL, NULL) == 0);
+        assert_se(journal_file_append_entry(f->file, &ts, NULL, &iovec, 1, NULL, NULL, NULL, NULL) == 0);
 
         iovec = IOVEC_MAKE_STRING(test);
-        assert_se(journal_file_append_entry(f->file, &ts, &fake_boot_id, &iovec, 1, NULL, NULL, NULL) == 0);
+        assert_se(journal_file_append_entry(f->file, &ts, &fake_boot_id, &iovec, 1, NULL, NULL, NULL, NULL) == 0);
 
 #if HAVE_GCRYPT
         journal_file_append_tag(f->file);
@@ -75,21 +73,21 @@ static void test_non_empty(void) {
         assert_se(journal_file_next_entry(f->file, 0, DIRECTION_DOWN, &o, &p) == 1);
         assert_se(le64toh(o->entry.seqnum) == 1);
 
-        assert_se(journal_file_find_data_object(f->file, test, strlen(test), NULL, &p) == 1);
-        assert_se(journal_file_next_entry_for_data(f->file, p, DIRECTION_DOWN, &o, NULL) == 1);
+        assert_se(journal_file_find_data_object(f->file, test, strlen(test), &d, NULL) == 1);
+        assert_se(journal_file_next_entry_for_data(f->file, d, DIRECTION_DOWN, &o, NULL) == 1);
         assert_se(le64toh(o->entry.seqnum) == 1);
 
-        assert_se(journal_file_next_entry_for_data(f->file, p, DIRECTION_UP, &o, NULL) == 1);
+        assert_se(journal_file_next_entry_for_data(f->file, d, DIRECTION_UP, &o, NULL) == 1);
         assert_se(le64toh(o->entry.seqnum) == 3);
 
-        assert_se(journal_file_find_data_object(f->file, test2, strlen(test2), NULL, &p) == 1);
-        assert_se(journal_file_next_entry_for_data(f->file, p, DIRECTION_UP, &o, NULL) == 1);
+        assert_se(journal_file_find_data_object(f->file, test2, strlen(test2), &d, NULL) == 1);
+        assert_se(journal_file_next_entry_for_data(f->file, d, DIRECTION_UP, &o, NULL) == 1);
         assert_se(le64toh(o->entry.seqnum) == 2);
 
-        assert_se(journal_file_next_entry_for_data(f->file, p, DIRECTION_DOWN, &o, NULL) == 1);
+        assert_se(journal_file_next_entry_for_data(f->file, d, DIRECTION_DOWN, &o, NULL) == 1);
         assert_se(le64toh(o->entry.seqnum) == 2);
 
-        assert_se(journal_file_find_data_object(f->file, "quux", 4, NULL, &p) == 0);
+        assert_se(journal_file_find_data_object(f->file, "quux", 4, &d, NULL) == 0);
 
         assert_se(journal_file_move_to_entry_by_seqnum(f->file, 1, DIRECTION_DOWN, &o, NULL) == 1);
         assert_se(le64toh(o->entry.seqnum) == 1);
@@ -102,10 +100,10 @@ static void test_non_empty(void) {
 
         assert_se(journal_file_move_to_entry_by_seqnum(f->file, 10, DIRECTION_DOWN, &o, NULL) == 0);
 
-        journald_file_rotate(&f, m, true, UINT64_MAX, true, NULL);
-        journald_file_rotate(&f, m, true, UINT64_MAX, true, NULL);
+        managed_journal_file_rotate(&f, m, JOURNAL_SEAL|JOURNAL_COMPRESS, UINT64_MAX, NULL);
+        managed_journal_file_rotate(&f, m, JOURNAL_SEAL|JOURNAL_COMPRESS, UINT64_MAX, NULL);
 
-        (void) journald_file_close(f);
+        (void) managed_journal_file_close(f);
 
         log_info("Done...");
 
@@ -120,22 +118,28 @@ static void test_non_empty(void) {
         puts("------------------------------------------------------------");
 }
 
-static void test_empty(void) {
-        _cleanup_(mmap_cache_unrefp) MMapCache *m = NULL;
-        JournaldFile *f1, *f2, *f3, *f4;
-        char t[] = "/var/tmp/journal-XXXXXX";
+TEST(non_empty) {
+        assert_se(setenv("SYSTEMD_JOURNAL_COMPACT", "0", 1) >= 0);
+        test_non_empty_one();
 
-        test_setup_logging(LOG_DEBUG);
+        assert_se(setenv("SYSTEMD_JOURNAL_COMPACT", "1", 1) >= 0);
+        test_non_empty_one();
+}
+
+static void test_empty_one(void) {
+        _cleanup_(mmap_cache_unrefp) MMapCache *m = NULL;
+        ManagedJournalFile *f1, *f2, *f3, *f4;
+        char t[] = "/var/tmp/journal-XXXXXX";
 
         m = mmap_cache_new();
         assert_se(m != NULL);
 
         mkdtemp_chdir_chattr(t);
 
-        assert_se(journald_file_open(-1, "test.journal", O_RDWR|O_CREAT, 0666, false, UINT64_MAX, false, NULL, m, NULL, NULL, &f1) == 0);
-        assert_se(journald_file_open(-1, "test-compress.journal", O_RDWR|O_CREAT, 0666, true, UINT64_MAX, false, NULL, m, NULL, NULL, &f2) == 0);
-        assert_se(journald_file_open(-1, "test-seal.journal", O_RDWR|O_CREAT, 0666, false, UINT64_MAX, true, NULL, m, NULL, NULL, &f3) == 0);
-        assert_se(journald_file_open(-1, "test-seal-compress.journal", O_RDWR|O_CREAT, 0666, true, UINT64_MAX, true, NULL, m, NULL, NULL, &f4) == 0);
+        assert_se(managed_journal_file_open(-1, "test.journal", O_RDWR|O_CREAT, 0, 0666, UINT64_MAX, NULL, m, NULL, NULL, &f1) == 0);
+        assert_se(managed_journal_file_open(-1, "test-compress.journal", O_RDWR|O_CREAT, JOURNAL_COMPRESS, 0666, UINT64_MAX, NULL, m, NULL, NULL, &f2) == 0);
+        assert_se(managed_journal_file_open(-1, "test-seal.journal", O_RDWR|O_CREAT, JOURNAL_SEAL, 0666, UINT64_MAX, NULL, m, NULL, NULL, &f3) == 0);
+        assert_se(managed_journal_file_open(-1, "test-seal-compress.journal", O_RDWR|O_CREAT, JOURNAL_COMPRESS|JOURNAL_SEAL, 0666, UINT64_MAX, NULL, m, NULL, NULL, &f4) == 0);
 
         journal_file_print_header(f1->file);
         puts("");
@@ -156,17 +160,25 @@ static void test_empty(void) {
                 assert_se(rm_rf(t, REMOVE_ROOT|REMOVE_PHYSICAL) >= 0);
         }
 
-        (void) journald_file_close(f1);
-        (void) journald_file_close(f2);
-        (void) journald_file_close(f3);
-        (void) journald_file_close(f4);
+        (void) managed_journal_file_close(f1);
+        (void) managed_journal_file_close(f2);
+        (void) managed_journal_file_close(f3);
+        (void) managed_journal_file_close(f4);
+}
+
+TEST(empty) {
+        assert_se(setenv("SYSTEMD_JOURNAL_COMPACT", "0", 1) >= 0);
+        test_empty_one();
+
+        assert_se(setenv("SYSTEMD_JOURNAL_COMPACT", "1", 1) >= 0);
+        test_empty_one();
 }
 
 #if HAVE_COMPRESSION
 static bool check_compressed(uint64_t compress_threshold, uint64_t data_size) {
         _cleanup_(mmap_cache_unrefp) MMapCache *m = NULL;
         dual_timestamp ts;
-        JournaldFile *f;
+        ManagedJournalFile *f;
         struct iovec iovec;
         Object *o;
         uint64_t p;
@@ -177,19 +189,17 @@ static bool check_compressed(uint64_t compress_threshold, uint64_t data_size) {
 
         assert_se(data_size <= sizeof(data));
 
-        test_setup_logging(LOG_DEBUG);
-
         m = mmap_cache_new();
         assert_se(m != NULL);
 
         mkdtemp_chdir_chattr(t);
 
-        assert_se(journald_file_open(-1, "test.journal", O_RDWR|O_CREAT, 0666, true, compress_threshold, true, NULL, m, NULL, NULL, &f) == 0);
+        assert_se(managed_journal_file_open(-1, "test.journal", O_RDWR|O_CREAT, JOURNAL_COMPRESS|JOURNAL_SEAL, 0666, compress_threshold, NULL, m, NULL, NULL, &f) == 0);
 
         dual_timestamp_get(&ts);
 
         iovec = IOVEC_MAKE(data, data_size);
-        assert_se(journal_file_append_entry(f->file, &ts, NULL, &iovec, 1, NULL, NULL, NULL) == 0);
+        assert_se(journal_file_append_entry(f->file, &ts, NULL, &iovec, 1, NULL, NULL, NULL, NULL) == 0);
 
 #if HAVE_GCRYPT
         journal_file_append_tag(f->file);
@@ -209,9 +219,9 @@ static bool check_compressed(uint64_t compress_threshold, uint64_t data_size) {
                 p = p + ALIGN64(le64toh(o->object.size));
         }
 
-        is_compressed = (o->object.flags & OBJECT_COMPRESSION_MASK) != 0;
+        is_compressed = COMPRESSION_FROM_OBJECT(o) != COMPRESSION_NONE;
 
-        (void) journald_file_close(f);
+        (void) managed_journal_file_close(f);
 
         log_info("Done...");
 
@@ -228,7 +238,7 @@ static bool check_compressed(uint64_t compress_threshold, uint64_t data_size) {
         return is_compressed;
 }
 
-static void test_min_compress_size(void) {
+static void test_min_compress_size_one(void) {
         /* Note that XZ will actually fail to compress anything under 80 bytes, so you have to choose the limits
          * carefully */
 
@@ -247,22 +257,24 @@ static void test_min_compress_size(void) {
         assert_se(check_compressed(256, 256));
         assert_se(!check_compressed(256, 255));
 }
+
+TEST(min_compress_size) {
+        assert_se(setenv("SYSTEMD_JOURNAL_COMPACT", "0", 1) >= 0);
+        test_min_compress_size_one();
+
+        assert_se(setenv("SYSTEMD_JOURNAL_COMPACT", "1", 1) >= 0);
+        test_min_compress_size_one();
+}
 #endif
 
-int main(int argc, char *argv[]) {
-        arg_keep = argc > 1;
+static int intro(void) {
+        arg_keep = saved_argc > 1;
 
-        test_setup_logging(LOG_INFO);
-
-        /* journald_file_open requires a valid machine id */
+        /* managed_journal_file_open requires a valid machine id */
         if (access("/etc/machine-id", F_OK) != 0)
                 return log_tests_skipped("/etc/machine-id not found");
 
-        test_non_empty();
-        test_empty();
-#if HAVE_COMPRESSION
-        test_min_compress_size();
-#endif
-
-        return 0;
+        return EXIT_SUCCESS;
 }
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_DEBUG, intro);

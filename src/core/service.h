@@ -6,6 +6,7 @@ typedef struct ServiceFDStore ServiceFDStore;
 
 #include "exit-status.h"
 #include "kill.h"
+#include "open-file.h"
 #include "path.h"
 #include "ratelimit.h"
 #include "socket.h"
@@ -24,13 +25,14 @@ typedef enum ServiceRestart {
 } ServiceRestart;
 
 typedef enum ServiceType {
-        SERVICE_SIMPLE,   /* we fork and go on right-away (i.e. modern socket activated daemons) */
-        SERVICE_FORKING,  /* forks by itself (i.e. traditional daemons) */
-        SERVICE_ONESHOT,  /* we fork and wait until the program finishes (i.e. programs like fsck which run and need to finish before we continue) */
-        SERVICE_DBUS,     /* we fork and wait until a specific D-Bus name appears on the bus */
-        SERVICE_NOTIFY,   /* we fork and wait until a daemon sends us a ready message with sd_notify() */
-        SERVICE_IDLE,     /* much like simple, but delay exec() until all jobs are dispatched. */
-        SERVICE_EXEC,     /* we fork and wait until we execute exec() (this means our own setup is waited for) */
+        SERVICE_SIMPLE,        /* we fork and go on right-away (i.e. modern socket activated daemons) */
+        SERVICE_FORKING,       /* forks by itself (i.e. traditional daemons) */
+        SERVICE_ONESHOT,       /* we fork and wait until the program finishes (i.e. programs like fsck which run and need to finish before we continue) */
+        SERVICE_DBUS,          /* we fork and wait until a specific D-Bus name appears on the bus */
+        SERVICE_NOTIFY,        /* we fork and wait until a daemon sends us a ready message with sd_notify() */
+        SERVICE_NOTIFY_RELOAD, /* just like SERVICE_NOTIFY, but also implements a reload protocol via SIGHUP */
+        SERVICE_IDLE,          /* much like simple, but delay exec() until all jobs are dispatched. */
+        SERVICE_EXEC,          /* we fork and wait until we execute exec() (this means our own setup is waited for) */
         _SERVICE_TYPE_MAX,
         _SERVICE_TYPE_INVALID = -EINVAL,
 } ServiceType;
@@ -75,7 +77,7 @@ typedef enum ServiceResult {
         SERVICE_FAILURE_CORE_DUMP,
         SERVICE_FAILURE_WATCHDOG,
         SERVICE_FAILURE_START_LIMIT_HIT,
-        SERVICE_FAILURE_OOM_KILL,
+        SERVICE_FAILURE_OOM_KILL, /* OOM Kill by the Kernel or systemd-oomd */
         SERVICE_SKIP_CONDITION,
         _SERVICE_RESULT_MAX,
         _SERVICE_RESULT_INVALID = -EINVAL,
@@ -88,6 +90,13 @@ typedef enum ServiceTimeoutFailureMode {
         _SERVICE_TIMEOUT_FAILURE_MODE_MAX,
         _SERVICE_TIMEOUT_FAILURE_MODE_INVALID = -EINVAL,
 } ServiceTimeoutFailureMode;
+
+typedef enum ServiceRestartMode {
+        SERVICE_RESTART_MODE_NORMAL,
+        SERVICE_RESTART_MODE_DIRECT,
+        _SERVICE_RESTART_MODE_MAX,
+        _SERVICE_RESTART_MODE_INVALID = -EINVAL,
+} ServiceRestartMode;
 
 struct ServiceFDStore {
         Service *service;
@@ -106,6 +115,7 @@ struct Service {
         ServiceType type;
         ServiceExitType exit_type;
         ServiceRestart restart;
+        ServiceRestartMode restart_mode;
         ExitStatusSet restart_prevent_status;
         ExitStatusSet restart_force_status;
         ExitStatusSet success_status;
@@ -114,6 +124,8 @@ struct Service {
         char *pid_file;
 
         usec_t restart_usec;
+        unsigned restart_steps;
+        usec_t restart_max_delay_usec;
         usec_t timeout_start_usec;
         usec_t timeout_stop_usec;
         usec_t timeout_abort_usec;
@@ -154,7 +166,6 @@ struct Service {
 
         /* Runtime data of the execution context */
         ExecRuntime *exec_runtime;
-        DynamicCreds dynamic_creds;
 
         pid_t main_pid, control_pid;
 
@@ -178,8 +189,6 @@ struct Service {
         bool main_pid_alien:1;
         bool bus_name_good:1;
         bool forbid_restart:1;
-        /* Keep restart intention between UNIT_FAILED and UNIT_ACTIVATING */
-        bool will_auto_restart:1;
         bool start_timeout_defined:1;
         bool exec_fd_hot:1;
 
@@ -193,6 +202,7 @@ struct Service {
         PathSpec *pid_file_pathspec;
 
         NotifyAccess notify_access;
+        NotifyAccess notify_access_override;
         NotifyState notify_state;
 
         sd_bus_slot *bus_name_pid_lookup_slot;
@@ -202,7 +212,7 @@ struct Service {
         ServiceFDStore *fd_store;
         size_t n_fd_store;
         unsigned n_fd_store_max;
-        unsigned n_keep_fd_store;
+        ExecPreserveMode fd_store_preserve_mode;
 
         char *usb_function_descriptors;
         char *usb_function_strings;
@@ -215,11 +225,21 @@ struct Service {
         bool flush_n_restarts;
 
         OOMPolicy oom_policy;
+
+        LIST_HEAD(OpenFile, open_files);
+
+        int reload_signal;
+        usec_t reload_begin_usec;
 };
 
 static inline usec_t service_timeout_abort_usec(Service *s) {
         assert(s);
         return s->timeout_abort_set ? s->timeout_abort_usec : s->timeout_stop_usec;
+}
+
+static inline NotifyAccess service_get_notify_access(Service *s) {
+        assert(s);
+        return s->notify_access_override < 0 ? s->notify_access : s->notify_access_override;
 }
 
 static inline usec_t service_get_watchdog_usec(Service *s) {
@@ -230,10 +250,15 @@ static inline usec_t service_get_watchdog_usec(Service *s) {
 extern const UnitVTable service_vtable;
 
 int service_set_socket_fd(Service *s, int fd, struct Socket *socket, struct SocketPeer *peer, bool selinux_context_net);
-void service_close_socket_fd(Service *s);
+void service_release_socket_fd(Service *s);
+
+usec_t service_restart_usec_next(Service *s);
 
 const char* service_restart_to_string(ServiceRestart i) _const_;
 ServiceRestart service_restart_from_string(const char *s) _pure_;
+
+const char* service_restart_mode_to_string(ServiceRestartMode i) _const_;
+ServiceRestartMode service_restart_mode_from_string(const char *s) _pure_;
 
 const char* service_type_to_string(ServiceType i) _const_;
 ServiceType service_type_from_string(const char *s) _pure_;

@@ -25,7 +25,6 @@
 #include "rm-rf.h"
 #include "string-util.h"
 #include "tmpfile-util.h"
-#include "util.h"
 
 struct RawImport {
         sd_event *event;
@@ -106,8 +105,8 @@ int raw_import_new(
                 return -ENOMEM;
 
         *i = (RawImport) {
-                .input_fd = -1,
-                .output_fd = -1,
+                .input_fd = -EBADF,
+                .output_fd = -EBADF,
                 .on_finished = on_finished,
                 .userdata = userdata,
                 .last_percent = UINT_MAX,
@@ -155,7 +154,7 @@ static void raw_import_report_progress(RawImport *i) {
 }
 
 static int raw_import_maybe_convert_qcow2(RawImport *i) {
-        _cleanup_close_ int converted_fd = -1;
+        _cleanup_close_ int converted_fd = -EBADF;
         _cleanup_(unlink_and_freep) char *t = NULL;
         _cleanup_free_ char *f = NULL;
         int r;
@@ -195,7 +194,7 @@ static int raw_import_maybe_convert_qcow2(RawImport *i) {
 
         unlink_and_free(i->temp_path);
         i->temp_path = TAKE_PTR(t);
-        CLOSE_AND_REPLACE(i->output_fd, converted_fd);
+        close_and_replace(i->output_fd, converted_fd);
 
         return 1;
 }
@@ -235,7 +234,7 @@ static int raw_import_finish(RawImport *i) {
 
                 if (S_ISREG(i->input_stat.st_mode)) {
                         (void) copy_times(i->input_fd, i->output_fd, COPY_CRTIME);
-                        (void) copy_xattr(i->input_fd, i->output_fd, 0);
+                        (void) copy_xattr(i->input_fd, NULL, i->output_fd, NULL, 0);
                 }
         }
 
@@ -336,7 +335,7 @@ static int raw_import_try_reflink(RawImport *i) {
         if ((uint64_t) p != (uint64_t) i->buffer_size)
                 return 0;
 
-        r = btrfs_reflink(i->input_fd, i->output_fd);
+        r = reflink(i->input_fd, i->output_fd);
         if (r >= 0)
                 return 1;
 
@@ -345,11 +344,10 @@ static int raw_import_try_reflink(RawImport *i) {
 }
 
 static int raw_import_write(const void *p, size_t sz, void *userdata) {
-        RawImport *i = userdata;
+        RawImport *i = ASSERT_PTR(userdata);
         bool too_much = false;
         int r;
 
-        assert(i);
         assert(p);
         assert(sz > 0);
 

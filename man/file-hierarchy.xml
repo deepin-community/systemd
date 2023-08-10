@@ -30,8 +30,8 @@
     specification and <citerefentry
     project='man-pages'><refentrytitle>hier</refentrytitle><manvolnum>7</manvolnum></citerefentry>, with various
     extensions, partially documented in the <ulink
-    url="http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html">XDG Base Directory
-    Specification</ulink> and <ulink url="https://www.freedesktop.org/wiki/Software/xdg-user-dirs/">XDG User
+    url="https://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html">XDG Base Directory
+    Specification</ulink> and <ulink url="https://www.freedesktop.org/wiki/Software/xdg-user-dirs">XDG User
     Directories</ulink>. This manual page describes a more generalized, though minimal and modernized subset of these
     specifications that defines more strictly the suggestions and restrictions systemd makes on the file system
     hierarchy.</para>
@@ -177,7 +177,7 @@
         directory directly, but via the
         <varname>$XDG_RUNTIME_DIR</varname> environment variable, as
         documented in the <ulink
-        url="http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html">XDG
+        url="https://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html">XDG
         Base Directory Specification</ulink>.</para></listitem>
       </varlistentry>
     </variablelist>
@@ -496,78 +496,73 @@
     the user's home directory. They should follow the following basic
     structure. Note that some of these directories are also
     standardized (though more weakly) by the <ulink
-    url="http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html">XDG
+    url="https://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html">XDG
     Base Directory Specification</ulink>. Additional locations for
     high-level user resources are defined by <ulink
-    url="https://www.freedesktop.org/wiki/Software/xdg-user-dirs/">xdg-user-dirs</ulink>.</para>
+    url="https://www.freedesktop.org/wiki/Software/xdg-user-dirs">xdg-user-dirs</ulink>.</para>
 
     <variablelist>
       <varlistentry>
         <term><filename>~/.cache/</filename></term>
 
-        <listitem><para>Persistent user cache data. User programs may
-        place non-essential data in this directory. Flushing this
-        directory should have no effect on operation of programs,
-        except for increased runtimes necessary to rebuild these
-        caches. If an application finds
-        <varname>$XDG_CACHE_HOME</varname> set, it should use the
-        directory specified in it instead of this
+        <listitem><para>Persistent user cache data. User programs may place non-essential data in this
+        directory. Flushing this directory should have no effect on operation of programs, except for
+        increased runtimes necessary to rebuild these caches. If an application finds
+        <varname>$XDG_CACHE_HOME</varname> set, it should use the directory specified in it instead of this
         directory.</para></listitem>
       </varlistentry>
 
       <varlistentry>
         <term><filename>~/.config/</filename></term>
 
-        <listitem><para>Application configuration and state. When a
-        new user is created, this directory will be empty or not exist
-        at all. Applications should fall back to defaults should their
-        configuration or state in this directory be missing. If an
-        application finds <varname>$XDG_CONFIG_HOME</varname> set, it
-        should use the directory specified in it instead of this
-        directory.</para></listitem>
+        <listitem><para>Application configuration. When a new user is created, this directory will be empty
+        or not exist at all. Applications should fall back to defaults should their configuration in this
+        directory be missing. If an application finds <varname>$XDG_CONFIG_HOME</varname> set, it should use
+        the directory specified in it instead of this directory.</para></listitem>
       </varlistentry>
 
       <varlistentry>
         <term><filename>~/.local/bin/</filename></term>
 
-        <listitem><para>Executables that shall appear in the user's
-        <varname>$PATH</varname> search path. It is recommended not to
-        place executables in this directory that are not useful for
-        invocation from a shell; these should be placed in a
-        subdirectory of <filename>~/.local/lib/</filename> instead.
-        Care should be taken when placing architecture-dependent
-        binaries in this place, which might be problematic if the home
-        directory is shared between multiple hosts with different
+        <listitem><para>Executables that shall appear in the user's <varname>$PATH</varname> search path. It
+        is recommended not to place executables in this directory that are not useful for invocation from a
+        shell; these should be placed in a subdirectory of <filename>~/.local/lib/</filename> instead. Care
+        should be taken when placing architecture-dependent binaries in this place, which might be
+        problematic if the home directory is shared between multiple hosts with different
         architectures.</para></listitem>
       </varlistentry>
 
       <varlistentry>
         <term><filename>~/.local/lib/</filename></term>
 
-        <listitem><para>Static, private vendor data that is compatible
-        with all architectures.</para></listitem>
+        <listitem><para>Static, private vendor data that is compatible with all
+        architectures.</para></listitem>
       </varlistentry>
 
       <varlistentry>
         <term><filename>~/.local/lib/<replaceable>arch-id</replaceable>/</filename></term>
 
-        <listitem><para>Location for placing public dynamic libraries.
-        The architecture identifier to use is defined on <ulink
-        url="https://wiki.debian.org/Multiarch/Tuples">Multiarch
-        Architecture Specifiers (Tuples)</ulink>
-        list.</para></listitem>
+        <listitem><para>Location for placing public dynamic libraries. The architecture identifier to use is
+        defined on <ulink url="https://wiki.debian.org/Multiarch/Tuples">Multiarch Architecture Specifiers
+        (Tuples)</ulink> list.</para></listitem>
       </varlistentry>
 
       <varlistentry>
         <term><filename>~/.local/share/</filename></term>
 
-        <listitem><para>Resources shared between multiple packages,
-        such as fonts or artwork. Usually, the precise location and
-        format of files stored below this directory is subject to
-        specifications that ensure interoperability. If an application
-        finds <varname>$XDG_DATA_HOME</varname> set, it should use the
-        directory specified in it instead of this
-        directory.</para></listitem>
+        <listitem><para>Resources shared between multiple packages, such as fonts or artwork. Usually, the
+        precise location and format of files stored below this directory is subject to specifications that
+        ensure interoperability. If an application finds <varname>$XDG_DATA_HOME</varname> set, it should use
+        the directory specified in it instead of this directory.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><filename>~/.local/state/</filename></term>
+
+        <listitem><para>Application state. When a new user is created, this directory will be empty or not
+        exist at all. Applications should fall back to defaults should their state in this directory be
+        missing. If an application finds <varname>$XDG_STATE_HOME</varname> set, it should use the directory
+        specified in it instead of this directory.</para></listitem>
       </varlistentry>
 
     </variablelist>
@@ -737,7 +732,7 @@
           </row>
           <row>
       <entry><filename>/var/log/<replaceable>package</replaceable>/</filename></entry>
-      <entry>Persistent log data of the package. As above, the package should make sure to create this directory if necessary, possibly using <citerefentry><refentrytitle>tmpfiles.d</refentrytitle><manvolnum>5</manvolnum></citerefentry> or <varname>LogsDirectory=</varname> (see <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>), as it might be missing.</entry>
+      <entry>Persistent log data of the package. As above, the package should make sure to create this directory if necessary, possibly using <citerefentry><refentrytitle>tmpfiles.d</refentrytitle><manvolnum>5</manvolnum></citerefentry> or <varname>LogsDirectory=</varname> (see <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>), as it might be missing.</entry>
           </row>
           <row>
       <entry><filename>/var/spool/<replaceable>package</replaceable>/</filename></entry>

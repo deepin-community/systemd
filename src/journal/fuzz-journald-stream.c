@@ -9,14 +9,14 @@
 #include "fuzz-journald.h"
 #include "journald-stream.h"
 
-static int stream_fds[2] = { -1, -1 };
+static int stream_fds[2] = PIPE_EBADF;
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         Server s;
         StdoutStream *stream;
         int v;
 
-        if (size == 0 || size > 65536)
+        if (outside_size_range(size, 1, 65536))
                 return 0;
 
         if (!getenv("SYSTEMD_LOG_LEVEL"))

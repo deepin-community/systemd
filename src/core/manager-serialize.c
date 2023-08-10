@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include "clean-ipc.h"
+#include "core-varlink.h"
 #include "dbus.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
+#include "initrd-util.h"
 #include "macro.h"
 #include "manager-serialize.h"
 #include "manager.h"
@@ -13,9 +15,10 @@
 #include "syslog-util.h"
 #include "unit-serialize.h"
 #include "user-util.h"
+#include "varlink-internal.h"
 
 int manager_open_serialization(Manager *m, FILE **ret_f) {
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         FILE *f;
 
         assert(ret_f);
@@ -103,9 +106,6 @@ int manager_serialize(
         (void) serialize_bool(f, "taint-logged", m->taint_logged);
         (void) serialize_bool(f, "service-watchdogs", m->service_watchdogs);
 
-        /* After switching root, udevd has not been started yet. So, enumeration results should not be emitted. */
-        (void) serialize_bool(f, "honor-device-enumeration", !switching_root);
-
         if (m->show_status_overridden != _SHOW_STATUS_INVALID)
                 (void) serialize_item(f, "show-status-overridden",
                                       show_status_to_string(m->show_status_overridden));
@@ -118,6 +118,8 @@ int manager_serialize(
         (void) serialize_usec(f, "runtime-watchdog-overridden", m->watchdog_overridden[WATCHDOG_RUNTIME]);
         (void) serialize_usec(f, "reboot-watchdog-overridden", m->watchdog_overridden[WATCHDOG_REBOOT]);
         (void) serialize_usec(f, "kexec-watchdog-overridden", m->watchdog_overridden[WATCHDOG_KEXEC]);
+        (void) serialize_usec(f, "pretimeout-watchdog-overridden", m->watchdog_overridden[WATCHDOG_PRETIMEOUT]);
+        (void) serialize_item(f, "pretimeout-watchdog-governor-overridden", m->watchdog_pretimeout_governor_overridden);
 
         for (ManagerTimestamp q = 0; q < _MANAGER_TIMESTAMP_MAX; q++) {
                 _cleanup_free_ char *joined = NULL;
@@ -163,6 +165,14 @@ int manager_serialize(
                 (void) serialize_item_format(f, "user-lookup", "%i %i", copy0, copy1);
         }
 
+        (void) serialize_item_format(f,
+                                     "dump-ratelimit",
+                                     USEC_FMT " " USEC_FMT " %u %u",
+                                     m->dump_ratelimit.begin,
+                                     m->dump_ratelimit.interval,
+                                     m->dump_ratelimit.num,
+                                     m->dump_ratelimit.burst);
+
         bus_track_serialize(m->subscribed, f, "subscribed");
 
         r = dynamic_user_serialize(m, f, fds);
@@ -172,7 +182,11 @@ int manager_serialize(
         manager_serialize_uid_refs(m, f);
         manager_serialize_gid_refs(m, f);
 
-        r = exec_runtime_serialize(m, f, fds);
+        r = exec_shared_runtime_serialize(m, f, fds);
+        if (r < 0)
+                return r;
+
+        r = varlink_server_serialize(m->varlink_server, f, fds);
         if (r < 0)
                 return r;
 
@@ -260,7 +274,7 @@ static void manager_deserialize_uid_refs_one_internal(
 
         r = parse_uid(value, &uid);
         if (r < 0 || uid == 0) {
-                log_debug("Unable to parse UID/GID reference serialization: " UID_FMT, uid);
+                log_debug("Unable to parse UID/GID reference serialization: %s", value);
                 return;
         }
 
@@ -291,6 +305,7 @@ static void manager_deserialize_gid_refs_one(Manager *m, const char *value) {
 }
 
 int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
+        bool deserialize_varlink_sockets = false;
         int r = 0;
 
         assert(m);
@@ -307,9 +322,11 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
 
                                 r = fd_get_path(fd, &fn);
                                 if (r < 0)
-                                        log_debug_errno(r, "Received serialized fd %i → %m", fd);
+                                        log_debug_errno(r, "Received serialized fd %i %s %m",
+                                                        fd, special_glyph(SPECIAL_GLYPH_ARROW_RIGHT));
                                 else
-                                        log_debug("Received serialized fd %i → %s", fd, strna(fn));
+                                        log_debug("Received serialized fd %i %s %s",
+                                                  fd, special_glyph(SPECIAL_GLYPH_ARROW_RIGHT), strna(fn));
                         }
                 }
         }
@@ -395,15 +412,6 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                         else
                                 m->service_watchdogs = b;
 
-                } else if ((val = startswith(l, "honor-device-enumeration="))) {
-                        int b;
-
-                        b = parse_boolean(val);
-                        if (b < 0)
-                                log_notice("Failed to parse honor-device-enumeration flag '%s', ignoring.", val);
-                        else
-                                m->honor_device_enumeration = b;
-
                 } else if ((val = startswith(l, "show-status-overridden="))) {
                         ShowStatus s;
 
@@ -455,6 +463,19 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                         else
                                 manager_override_watchdog(m, WATCHDOG_KEXEC, t);
 
+                } else if ((val = startswith(l, "pretimeout-watchdog-overridden="))) {
+                        usec_t t;
+
+                        if (deserialize_usec(val, &t) < 0)
+                                log_notice("Failed to parse pretimeout-watchdog-overridden value '%s', ignoring.", val);
+                        else
+                                manager_override_watchdog(m, WATCHDOG_PRETIMEOUT, t);
+
+                } else if ((val = startswith(l, "pretimeout-watchdog-governor-overridden="))) {
+                        r = free_and_strdup(&m->watchdog_pretimeout_governor_overridden, val);
+                        if (r < 0)
+                                return r;
+
                 } else if (startswith(l, "env=")) {
                         r = deserialize_environment(l + 4, &m->client_environment);
                         if (r < 0)
@@ -463,7 +484,7 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                 } else if ((val = startswith(l, "notify-fd="))) {
                         int fd;
 
-                        if (safe_atoi(val, &fd) < 0 || fd < 0 || !fdset_contains(fds, fd))
+                        if ((fd = parse_fd(val)) < 0 || !fdset_contains(fds, fd))
                                 log_notice("Failed to parse notify fd, ignoring: \"%s\"", val);
                         else {
                                 m->notify_event_source = sd_event_source_disable_unref(m->notify_event_source);
@@ -479,7 +500,7 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                 } else if ((val = startswith(l, "cgroups-agent-fd="))) {
                         int fd;
 
-                        if (safe_atoi(val, &fd) < 0 || fd < 0 || !fdset_contains(fds, fd))
+                        if ((fd = parse_fd(val)) < 0 || !fdset_contains(fds, fd))
                                 log_notice("Failed to parse cgroups agent fd, ignoring.: %s", val);
                         else {
                                 m->cgroups_agent_event_source = sd_event_source_disable_unref(m->cgroups_agent_event_source);
@@ -506,11 +527,51 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                 else if ((val = startswith(l, "destroy-ipc-gid=")))
                         manager_deserialize_gid_refs_one(m, val);
                 else if ((val = startswith(l, "exec-runtime=")))
-                        (void) exec_runtime_deserialize_one(m, val, fds);
+                        (void) exec_shared_runtime_deserialize_one(m, val, fds);
                 else if ((val = startswith(l, "subscribed="))) {
 
                         if (strv_extend(&m->deserialized_subscribed, val) < 0)
                                 return -ENOMEM;
+                } else if ((val = startswith(l, "varlink-server-socket-address="))) {
+                        if (!m->varlink_server && MANAGER_IS_SYSTEM(m)) {
+                                _cleanup_(varlink_server_unrefp) VarlinkServer *s = NULL;
+
+                                r = manager_setup_varlink_server(m, &s);
+                                if (r < 0) {
+                                        log_warning_errno(r, "Failed to setup varlink server, ignoring: %m");
+                                        continue;
+                                }
+
+                                r = varlink_server_attach_event(s, m->event, SD_EVENT_PRIORITY_NORMAL);
+                                if (r < 0) {
+                                        log_warning_errno(r, "Failed to attach varlink connection to event loop, ignoring: %m");
+                                        continue;
+                                }
+
+                                m->varlink_server = TAKE_PTR(s);
+                                deserialize_varlink_sockets = true;
+                        }
+
+                        /* To void unnecessary deserialization (i.e. during reload vs. reexec) we only deserialize
+                         * the FDs if we had to create a new m->varlink_server. The deserialize_varlink_sockets flag
+                         * is initialized outside of the loop, is flipped after the VarlinkServer is setup, and
+                         * remains set until all serialized contents are handled. */
+                        if (deserialize_varlink_sockets)
+                                (void) varlink_server_deserialize_one(m->varlink_server, val, fds);
+                } else if ((val = startswith(l, "dump-ratelimit="))) {
+                        usec_t begin, interval;
+                        unsigned num, burst;
+
+                        if (sscanf(val, USEC_FMT " " USEC_FMT " %u %u", &begin, &interval, &num, &burst) != 4)
+                                log_notice("Failed to parse dump ratelimit, ignoring: %s", val);
+                        else {
+                                /* If we changed the values across versions, flush the counter */
+                                if (interval != m->dump_ratelimit.interval || burst != m->dump_ratelimit.burst)
+                                        m->dump_ratelimit.num = 0;
+                                else
+                                        m->dump_ratelimit.num = num;
+                                m->dump_ratelimit.begin = begin;
+                        }
 
                 } else {
                         ManagerTimestamp q;
@@ -527,7 +588,7 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
 
                         if (q < _MANAGER_TIMESTAMP_MAX) /* found it */
                                 (void) deserialize_dual_timestamp(val, m->timestamps + q);
-                        else if (!startswith(l, "kdbus-fd=")) /* ignore kdbus */
+                        else if (!STARTSWITH_SET(l, "kdbus-fd=", "honor-device-enumeration=")) /* ignore deprecated values */
                                 log_notice("Unknown serialization item '%s', ignoring.", l);
                 }
         }

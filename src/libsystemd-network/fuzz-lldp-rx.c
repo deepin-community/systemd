@@ -10,7 +10,7 @@
 #include "fuzz.h"
 #include "lldp-network.h"
 
-static int test_fd[2] = { -1, -1 };
+static int test_fd[2] = PIPE_EBADF;
 
 int lldp_network_bind_raw_socket(int ifindex) {
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, test_fd) < 0)
@@ -23,7 +23,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         _cleanup_(sd_event_unrefp) sd_event *e = NULL;
         _cleanup_(sd_lldp_rx_unrefp) sd_lldp_rx *lldp_rx = NULL;
 
-        if (size > 2048)
+        if (outside_size_range(size, 0, 2048))
                 return 0;
 
         assert_se(sd_event_new(&e) == 0);

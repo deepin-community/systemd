@@ -3,9 +3,184 @@
 # shellcheck disable=SC2016
 set -eux
 
-systemd-analyze log-level debug
+# shellcheck source=test/units/util.sh
+. "$(dirname "$0")"/util.sh
+
+systemctl log-level debug
 export SYSTEMD_LOG_LEVEL=debug
 
+# Sanity checks
+#
+# We can't really test time, critical-chain and plot verbs here, as
+# the testsuite service is a part of the boot transaction, so let's assume
+# they fail
+systemd-analyze || :
+systemd-analyze time || :
+systemd-analyze critical-chain || :
+# blame
+systemd-analyze blame
+systemd-run --wait --user --pipe -M testuser@.host systemd-analyze blame
+# plot
+systemd-analyze plot >/dev/null || :
+systemd-analyze plot --json=pretty >/dev/null || :
+systemd-analyze plot --json=short >/dev/null || :
+systemd-analyze plot --json=off >/dev/null || :
+systemd-analyze plot --json=pretty --no-legend >/dev/null || :
+systemd-analyze plot --json=short --no-legend >/dev/null || :
+systemd-analyze plot --json=off --no-legend >/dev/null || :
+systemd-analyze plot --table >/dev/null || :
+systemd-analyze plot --table --no-legend >/dev/null || :
+# legacy/deprecated options (moved to systemctl, but still usable from analyze)
+systemd-analyze log-level
+systemd-analyze log-level "$(systemctl log-level)"
+systemd-analyze get-log-level
+systemd-analyze set-log-level "$(systemctl log-level)"
+systemd-analyze log-target
+systemd-analyze log-target "$(systemctl log-target)"
+systemd-analyze get-log-target
+systemd-analyze set-log-target "$(systemctl log-target)"
+systemd-analyze service-watchdogs
+systemd-analyze service-watchdogs "$(systemctl service-watchdogs)"
+# dot
+systemd-analyze dot >/dev/null
+systemd-analyze dot systemd-journald.service >/dev/null
+systemd-analyze dot systemd-journald.service systemd-logind.service >/dev/null
+systemd-analyze dot --from-pattern="*" --from-pattern="*.service" systemd-journald.service >/dev/null
+systemd-analyze dot --to-pattern="*" --to-pattern="*.service" systemd-journald.service >/dev/null
+systemd-analyze dot --from-pattern="*.service" --to-pattern="*.service" systemd-journald.service >/dev/null
+systemd-analyze dot --order systemd-journald.service systemd-logind.service >/dev/null
+systemd-analyze dot --require systemd-journald.service systemd-logind.service >/dev/null
+systemd-analyze dot "systemd-*.service" >/dev/null
+(! systemd-analyze dot systemd-journald.service systemd-logind.service "*" bbb ccc)
+# dump
+# this should be rate limited to 10 calls in 10 minutes for unprivileged callers
+for _ in {1..10}; do
+    runas testuser systemd-analyze dump systemd-journald.service >/dev/null
+done
+(! runas testuser systemd-analyze dump >/dev/null)
+# still limited after a reload
+systemctl daemon-reload
+(! runas testuser systemd-analyze dump >/dev/null)
+# and a re-exec
+systemctl daemon-reexec
+(! runas testuser systemd-analyze dump >/dev/null)
+# privileged call, so should not be rate limited
+for _ in {1..10}; do
+    systemd-analyze dump systemd-journald.service >/dev/null
+done
+systemd-analyze dump >/dev/null
+systemd-analyze dump "*" >/dev/null
+systemd-analyze dump "*.socket" >/dev/null
+systemd-analyze dump "*.socket" "*.service" aaaaaaa ... >/dev/null
+systemd-analyze dump systemd-journald.service >/dev/null
+systemd-analyze malloc >/dev/null
+(! systemd-analyze dump "")
+# unit-files
+systemd-analyze unit-files >/dev/null
+systemd-analyze unit-files systemd-journald.service >/dev/null
+systemd-analyze unit-files "*" >/dev/null
+systemd-analyze unit-files "*" aaaaaa "*.service" "*.target" >/dev/null
+systemd-analyze unit-files --user >/dev/null
+systemd-analyze unit-files --user "*" aaaaaa "*.service" "*.target" >/dev/null
+# unit-paths
+systemd-analyze unit-paths
+systemd-analyze unit-paths --user
+systemd-analyze unit-paths --global
+# exist-status
+systemd-analyze exit-status
+systemd-analyze exit-status STDOUT BPF
+systemd-analyze exit-status 0 1 {63..65}
+(! systemd-analyze exit-status STDOUT BPF "hello*")
+# capability
+systemd-analyze capability
+systemd-analyze capability cap_chown CAP_KILL
+systemd-analyze capability 0 1 {30..32}
+(! systemd-analyze capability cap_chown CAP_KILL "hello*")
+# condition
+mkdir -p /run/systemd/system
+UNIT_NAME="analyze-condition-$RANDOM.service"
+cat >"/run/systemd/system/$UNIT_NAME" <<EOF
+[Unit]
+AssertPathExists=/etc/os-release
+AssertEnvironment=!FOOBAR
+ConditionKernelVersion=>1.0
+ConditionPathExists=/etc/os-release
+
+[Service]
+ExecStart=/bin/true
+EOF
+systemctl daemon-reload
+systemd-analyze condition --unit="$UNIT_NAME"
+systemd-analyze condition 'ConditionKernelVersion = ! <4.0' \
+                          'ConditionKernelVersion = >=3.1' \
+                          'ConditionACPower=|false' \
+                          'ConditionArchitecture=|!arm' \
+                          'AssertPathExists=/etc/os-release'
+(! systemd-analyze condition 'ConditionArchitecture=|!arm' 'AssertXYZ=foo')
+(! systemd-analyze condition 'ConditionKernelVersion=<1.0')
+(! systemd-analyze condition 'AssertKernelVersion=<1.0')
+# syscall-filter
+systemd-analyze syscall-filter >/dev/null
+systemd-analyze syscall-filter @chown @sync
+systemd-analyze syscall-filter @sync @sync @sync
+(! systemd-analyze syscall-filter @chown @sync @foobar)
+# filesystems (requires libbpf support)
+if systemctl --version | grep "+BPF_FRAMEWORK"; then
+    systemd-analyze filesystems >/dev/null
+    systemd-analyze filesystems @basic-api
+    systemd-analyze filesystems @basic-api @basic-api @basic-api
+    (! systemd-analyze filesystems @basic-api @basic-api @foobar @basic-api)
+fi
+# calendar
+systemd-analyze calendar '*-2-29 0:0:0'
+systemd-analyze calendar --iterations=5 '*-2-29 0:0:0'
+systemd-analyze calendar '*-* *:*:*'
+systemd-analyze calendar --iterations=5 '*-* *:*:*'
+systemd-analyze calendar --iterations=50 '*-* *:*:*'
+systemd-analyze calendar --iterations=0 '*-* *:*:*'
+systemd-analyze calendar --iterations=5 '01-01-22 01:00:00'
+systemd-analyze calendar --base-time=yesterday --iterations=5 '*-* *:*:*'
+(! systemd-analyze calendar --iterations=0 '*-* 99:*:*')
+(! systemd-analyze calendar --base-time=never '*-* *:*:*')
+(! systemd-analyze calendar 1)
+(! systemd-analyze calendar "")
+# timestamp
+systemd-analyze timestamp now
+systemd-analyze timestamp -- -1
+systemd-analyze timestamp yesterday now tomorrow
+(! systemd-analyze timestamp yesterday never tomorrow)
+(! systemd-analyze timestamp 1)
+(! systemd-analyze timestamp '*-2-29 0:0:0')
+(! systemd-analyze timestamp "")
+# timespan
+systemd-analyze timespan 1
+systemd-analyze timespan 1s 300s '1year 0.000001s'
+(! systemd-analyze timespan 1s 300s aaaaaa '1year 0.000001s')
+(! systemd-analyze timespan -- -1)
+(! systemd-analyze timespan '*-2-29 0:0:0')
+(! systemd-analyze timespan "")
+# cat-config
+systemd-analyze cat-config systemd/system.conf >/dev/null
+systemd-analyze cat-config /etc/systemd/system.conf >/dev/null
+systemd-analyze cat-config systemd/system.conf systemd/journald.conf >/dev/null
+systemd-analyze cat-config systemd/system.conf foo/bar systemd/journald.conf >/dev/null
+systemd-analyze cat-config foo/bar
+# security
+systemd-analyze security
+systemd-analyze security --json=off
+systemd-analyze security --json=pretty | jq
+systemd-analyze security --json=short | jq
+
+if [[ ! -v ASAN_OPTIONS ]]; then
+    # check that systemd-analyze cat-config paths work in a chroot
+    mkdir -p /tmp/root
+    mount --bind / /tmp/root
+    systemd-analyze cat-config systemd/system-preset >/tmp/out1
+    chroot /tmp/root systemd-analyze cat-config systemd/system-preset >/tmp/out2
+    diff /tmp/out{1,2}
+fi
+
+# verify
 mkdir -p /tmp/img/usr/lib/systemd/system/
 mkdir -p /tmp/img/opt/
 
@@ -19,16 +194,13 @@ EOF
 
 set +e
 # Default behaviour is to recurse through all dependencies when unit is loaded
-systemd-analyze verify --root=/tmp/img/ testfile.service \
-    && { echo 'unexpected success'; exit 1; }
+(! systemd-analyze verify --root=/tmp/img/ testfile.service)
 
 # As above, recurses through all dependencies when unit is loaded
-systemd-analyze verify --recursive-errors=yes --root=/tmp/img/ testfile.service \
-    && { echo 'unexpected success'; exit 1; }
+(! systemd-analyze verify --recursive-errors=yes --root=/tmp/img/ testfile.service)
 
 # Recurses through unit file and its direct dependencies when unit is loaded
-systemd-analyze verify --recursive-errors=one --root=/tmp/img/ testfile.service \
-    && { echo 'unexpected success'; exit 1; }
+(! systemd-analyze verify --recursive-errors=one --root=/tmp/img/ testfile.service)
 
 set -e
 
@@ -58,8 +230,7 @@ systemd-analyze verify --recursive-errors=no /tmp/testfile2.service
 
 set +e
 # Non-zero exit status since all associated dependencies are recursively loaded when the unit file is loaded
-systemd-analyze verify --recursive-errors=yes /tmp/testfile2.service \
-    && { echo 'unexpected success'; exit 1; }
+(! systemd-analyze verify --recursive-errors=yes /tmp/testfile2.service)
 set -e
 
 rm /tmp/testfile.service
@@ -68,6 +239,7 @@ rm /tmp/testfile2.service
 cat <<EOF >/tmp/testfile.service
 [Service]
 ExecStart = echo hello
+DeviceAllow=/dev/sda
 EOF
 
 # Prevent regression from #13380 and #20859 where we can't verify hidden files
@@ -80,19 +252,18 @@ rm /tmp/.testfile.service
 # Alias a unit file's name on disk (see #20061)
 cp /tmp/testfile.service /tmp/testsrvc
 
-systemd-analyze verify /tmp/testsrvc \
-    && { echo 'unexpected success'; exit 1; }
+(! systemd-analyze verify /tmp/testsrvc)
 
 systemd-analyze verify /tmp/testsrvc:alias.service
 
 # Zero exit status since the value used for comparison determine exposure to security threats is by default 100
 systemd-analyze security --offline=true /tmp/testfile.service
 
-set +e
 #The overall exposure level assigned to the unit is greater than the set threshold
-systemd-analyze security --threshold=90 --offline=true /tmp/testfile.service \
-    && { echo 'unexpected success'; exit 1; }
-set -e
+(! systemd-analyze security --threshold=90 --offline=true /tmp/testfile.service)
+
+# Ensure we print the list of ACLs, see https://github.com/systemd/systemd/issues/23185
+systemd-analyze security --offline=true /tmp/testfile.service | grep -q -F "/dev/sda"
 
 rm /tmp/testfile.service
 
@@ -575,24 +746,20 @@ systemd-analyze security --threshold=90 --offline=true \
                            --root=/tmp/img/ testfile.service
 
 # The strict profile adds a lot of sanboxing options
-systemd-analyze security --threshold=20 --offline=true \
+systemd-analyze security --threshold=25 --offline=true \
                            --security-policy=/tmp/testfile.json \
                            --profile=strict \
                            --root=/tmp/img/ testfile.service
 
-set +e
 # The trusted profile doesn't add any sanboxing options
-systemd-analyze security --threshold=20 --offline=true \
+(! systemd-analyze security --threshold=25 --offline=true \
                            --security-policy=/tmp/testfile.json \
                            --profile=/usr/lib/systemd/portable/profile/trusted/service.conf \
-                           --root=/tmp/img/ testfile.service \
-    && { echo 'unexpected success'; exit 1; }
+                           --root=/tmp/img/ testfile.service)
 
-systemd-analyze security --threshold=50 --offline=true \
+(! systemd-analyze security --threshold=50 --offline=true \
                            --security-policy=/tmp/testfile.json \
-                           --root=/tmp/img/ testfile.service \
-    && { echo 'unexpected success'; exit 1; }
-set -e
+                           --root=/tmp/img/ testfile.service)
 
 rm /tmp/img/usr/lib/systemd/system/testfile.service
 
@@ -600,8 +767,82 @@ if systemd-analyze --version | grep -q -F "+ELFUTILS"; then
     systemd-analyze inspect-elf --json=short /lib/systemd/systemd | grep -q -F '"elfType":"executable"'
 fi
 
+systemd-analyze --threshold=90 security systemd-journald.service
+
+# issue 23663
+check() {(
+    set +x
+    output=$(systemd-analyze security --offline="${2?}" "${3?}" | grep -F 'SystemCallFilter=')
+    assert_in "System call ${1?} list" "$output"
+    assert_in "[+✓] SystemCallFilter=~@swap" "$output"
+    assert_in "[+✓] SystemCallFilter=~@resources" "$output"
+    assert_in "[+✓] SystemCallFilter=~@reboot" "$output"
+    assert_in "[+✓] SystemCallFilter=~@raw-io" "$output"
+    assert_in "[-✗] SystemCallFilter=~@privileged" "$output"
+    assert_in "[+✓] SystemCallFilter=~@obsolete" "$output"
+    assert_in "[+✓] SystemCallFilter=~@mount" "$output"
+    assert_in "[+✓] SystemCallFilter=~@module" "$output"
+    assert_in "[+✓] SystemCallFilter=~@debug" "$output"
+    assert_in "[+✓] SystemCallFilter=~@cpu-emulation" "$output"
+    assert_in "[-✗] SystemCallFilter=~@clock" "$output"
+)}
+
+export -n SYSTEMD_LOG_LEVEL
+
+mkdir -p /run/systemd/system
+cat >/run/systemd/system/allow-list.service <<EOF
+[Service]
+ExecStart=false
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources:ENOANO @privileged
+SystemCallFilter=@clock
+EOF
+
+cat >/run/systemd/system/deny-list.service <<EOF
+[Service]
+ExecStart=false
+SystemCallFilter=~@known
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources:ENOANO @privileged
+SystemCallFilter=@clock
+EOF
+
+systemctl daemon-reload
+
+check allow yes /run/systemd/system/allow-list.service
+check allow no allow-list.service
+check deny yes /run/systemd/system/deny-list.service
+check deny no deny-list.service
+
+output=$(systemd-run -p "SystemCallFilter=@system-service" -p "SystemCallFilter=~@resources:ENOANO @privileged" -p "SystemCallFilter=@clock" sleep 60 2>&1)
+name=$(echo "$output" | awk '{ print $4 }')
+
+check allow yes /run/systemd/transient/"$name"
+check allow no "$name"
+
+output=$(systemd-run -p "SystemCallFilter=~@known" -p "SystemCallFilter=@system-service" -p "SystemCallFilter=~@resources:ENOANO @privileged" -p "SystemCallFilter=@clock" sleep 60 2>&1)
+name=$(echo "$output" | awk '{ print $4 }')
+
+check deny yes /run/systemd/transient/"$name"
+check deny no "$name"
+
+# Let's also test the "image-policy" verb
+
+systemd-analyze image-policy '*' 2>&1 | grep -q -F "Long form: =verity+signed+encrypted+unprotected+unused+absent"
+systemd-analyze image-policy '-' 2>&1 | grep -q -F "Long form: =unused+absent"
+systemd-analyze image-policy 'home=encrypted:usr=verity' 2>&1 | grep -q -F "Long form: usr=verity:home=encrypted:=unused+absent"
+systemd-analyze image-policy 'home=encrypted:usr=verity' 2>&1 | grep -q -e '^home \+encrypted \+'
+systemd-analyze image-policy 'home=encrypted:usr=verity' 2>&1 | grep -q -e '^usr \+verity \+'
+systemd-analyze image-policy 'home=encrypted:usr=verity' 2>&1 | grep -q -e '^root \+ignore \+'
+systemd-analyze image-policy 'home=encrypted:usr=verity' 2>&1 | grep -q -e '^usr-verity \+unprotected \+'
+
+(! systemd-analyze image-policy 'doedel')
+
+# Output is very hard to predict, but let's run it for coverage anyway
+systemd-analyze pcrs
+systemd-analyze pcrs --json=pretty
+systemd-analyze pcrs 14 7 0 ima
+
 systemd-analyze log-level info
 
-echo OK >/testok
-
-exit 0
+touch /testok

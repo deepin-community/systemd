@@ -11,7 +11,6 @@
 #include "string-util.h"
 #include "tests.h"
 #include "user-util.h"
-#include "util.h"
 #include "virt.h"
 
 TEST(namespace_cleanup_tmpdir) {
@@ -84,7 +83,7 @@ TEST(tmpdir) {
 }
 
 static void test_shareable_ns(unsigned long nsflag) {
-        _cleanup_close_pair_ int s[2] = { -1, -1 };
+        _cleanup_close_pair_ int s[2] = PIPE_EBADF;
         pid_t pid1, pid2, pid3;
         int r, n = 0;
         siginfo_t si;
@@ -171,12 +170,13 @@ TEST(protect_kernel_logs) {
         assert_se(pid >= 0);
 
         if (pid == 0) {
-                _cleanup_close_ int fd = -1;
+                _cleanup_close_ int fd = -EBADF;
 
                 fd = open("/dev/kmsg", O_RDONLY | O_CLOEXEC);
                 assert_se(fd > 0);
 
                 r = setup_namespace(NULL,
+                                    NULL,
                                     NULL,
                                     NULL,
                                     &ns_info,
@@ -194,7 +194,6 @@ TEST(protect_kernel_logs) {
                                     NULL,
                                     NULL,
                                     NULL,
-                                    0,
                                     NULL,
                                     0,
                                     NULL,
@@ -203,7 +202,7 @@ TEST(protect_kernel_logs) {
                                     NULL,
                                     NULL,
                                     NULL,
-                                    0,
+                                    NULL,
                                     NULL,
                                     NULL,
                                     NULL,
@@ -220,10 +219,11 @@ TEST(protect_kernel_logs) {
         assert_se(wait_for_terminate_and_check("ns-kernellogs", pid, WAIT_LOG) == EXIT_SUCCESS);
 }
 
-DEFINE_CUSTOM_TEST_MAIN(
-        LOG_INFO,
-        ({
-                if (!have_namespaces())
-                        return log_tests_skipped("Don't have namespace support");
-        }),
-        /* no outro */);
+static int intro(void) {
+        if (!have_namespaces())
+                return log_tests_skipped("Don't have namespace support");
+
+        return EXIT_SUCCESS;
+}
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_INFO, intro);

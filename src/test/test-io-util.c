@@ -32,12 +32,12 @@ TEST(sparse_write) {
         const char test_c[] = "\0\0test\0\0\0\0";
         const char test_d[] = "\0\0test\0\0\0test\0\0\0\0test\0\0\0\0\0test\0\0\0test\0\0\0\0test\0\0\0\0\0\0\0\0";
         const char test_e[] = "test\0\0\0\0test";
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         char fn[] = "/tmp/sparseXXXXXX";
 
         fd = mkostemp(fn, O_CLOEXEC);
         assert_se(fd >= 0);
-        unlink(fn);
+        (void) unlink(fn);
 
         test_sparse_write_one(fd, test_a, sizeof(test_a));
         test_sparse_write_one(fd, test_b, sizeof(test_b));

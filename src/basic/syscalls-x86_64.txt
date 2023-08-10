@@ -21,6 +21,7 @@ bpf	321
 brk	12
 cachectl
 cacheflush
+cachestat	451
 capget	125
 capset	126
 chdir	80
@@ -427,6 +428,7 @@ renameat2	316
 request_key	249
 restart_syscall	219
 riscv_flush_icache
+riscv_hwprobe
 rmdir	84
 rseq	334
 rt_sigaction	13
@@ -473,6 +475,7 @@ sendmmsg	307
 sendmsg	46
 sendto	44
 set_mempolicy	238
+set_mempolicy_home_node	450
 set_robust_list	273
 set_thread_area	205
 set_tid_address	218

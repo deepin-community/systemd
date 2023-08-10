@@ -12,17 +12,16 @@
 #include "fd-util.h"
 #include "log.h"
 #include "memory-util.h"
-#include "sleep-config.h"
+#include "sleep-util.h"
 #include "strv.h"
 #include "tests.h"
-#include "util.h"
 
 TEST(parse_sleep_config) {
         _cleanup_(free_sleep_configp) SleepConfig *sleep_config = NULL;
 
         assert_se(parse_sleep_config(&sleep_config) == 0);
 
-        _cleanup_free_ char *sum, *sus, *him, *his, *hym, *hys;
+        _cleanup_free_ char *sum = NULL, *sus = NULL, *him = NULL, *his = NULL, *hym = NULL, *hys = NULL;
 
         sum = strv_join(sleep_config->modes[SLEEP_SUSPEND], ", ");
         sus = strv_join(sleep_config->states[SLEEP_SUSPEND], ", ");
@@ -30,10 +29,10 @@ TEST(parse_sleep_config) {
         his = strv_join(sleep_config->states[SLEEP_HIBERNATE], ", ");
         hym = strv_join(sleep_config->modes[SLEEP_HYBRID_SLEEP], ", ");
         hys = strv_join(sleep_config->states[SLEEP_HYBRID_SLEEP], ", ");
-        log_debug("  allow_suspend: %u", sleep_config->allow[SLEEP_SUSPEND]);
-        log_debug("  allow_hibernate: %u", sleep_config->allow[SLEEP_HIBERNATE]);
-        log_debug("  allow_s2h: %u", sleep_config->allow[SLEEP_SUSPEND_THEN_HIBERNATE]);
-        log_debug("  allow_hybrid_sleep: %u", sleep_config->allow[SLEEP_HYBRID_SLEEP]);
+        log_debug("  allow_suspend: %s", yes_no(sleep_config->allow[SLEEP_SUSPEND]));
+        log_debug("  allow_hibernate: %s", yes_no(sleep_config->allow[SLEEP_HIBERNATE]));
+        log_debug("  allow_s2h: %s", yes_no(sleep_config->allow[SLEEP_SUSPEND_THEN_HIBERNATE]));
+        log_debug("  allow_hybrid_sleep: %s", yes_no(sleep_config->allow[SLEEP_HYBRID_SLEEP]));
         log_debug("  suspend modes: %s", sum);
         log_debug("         states: %s", sus);
         log_debug("  hibernate modes: %s", him);
@@ -44,7 +43,7 @@ TEST(parse_sleep_config) {
 
 static int test_fiemap_one(const char *path) {
         _cleanup_free_ struct fiemap *fiemap = NULL;
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         int r;
 
         log_info("/* %s */", __func__);
@@ -109,19 +108,47 @@ TEST(sleep) {
 
         log_info("/= high-level sleep verbs =/");
         r = can_sleep(SLEEP_SUSPEND);
-        log_info("Suspend configured and possible: %s", r >= 0 ? yes_no(r) : strerror_safe(r));
+        log_info("Suspend configured and possible: %s", r >= 0 ? yes_no(r) : STRERROR(r));
         r = can_sleep(SLEEP_HIBERNATE);
-        log_info("Hibernation configured and possible: %s", r >= 0 ? yes_no(r) : strerror_safe(r));
+        log_info("Hibernation configured and possible: %s", r >= 0 ? yes_no(r) : STRERROR(r));
         r = can_sleep(SLEEP_HYBRID_SLEEP);
-        log_info("Hybrid-sleep configured and possible: %s", r >= 0 ? yes_no(r) : strerror_safe(r));
+        log_info("Hybrid-sleep configured and possible: %s", r >= 0 ? yes_no(r) : STRERROR(r));
         r = can_sleep(SLEEP_SUSPEND_THEN_HIBERNATE);
-        log_info("Suspend-then-Hibernate configured and possible: %s", r >= 0 ? yes_no(r) : strerror_safe(r));
+        log_info("Suspend-then-Hibernate configured and possible: %s", r >= 0 ? yes_no(r) : STRERROR(r));
 }
 
-DEFINE_CUSTOM_TEST_MAIN(
-        LOG_DEBUG,
-        ({
-                if (getuid() != 0)
-                        log_warning("This program is unlikely to work for unprivileged users");
-        }),
-        /* no outro */);
+TEST(fetch_batteries_capacity_by_name) {
+        _cleanup_hashmap_free_ Hashmap *capacity = NULL;
+        int r;
+
+        assert_se(fetch_batteries_capacity_by_name(&capacity) >= 0);
+        log_debug("fetch_batteries_capacity_by_name: %u entries", hashmap_size(capacity));
+
+        const char *name;
+        void *cap;
+        HASHMAP_FOREACH_KEY(cap, name, capacity) {
+                assert(cap);  /* Anything non-null is fine. */
+                log_info("Battery %s: capacity = %i", name, get_capacity_by_name(capacity, name));
+        }
+
+        for (int i = 0; i < 2; i++) {
+                usec_t interval;
+
+                if (i > 0)
+                        sleep(1);
+
+                r = get_total_suspend_interval(capacity, &interval);
+                assert_se(r >= 0 || r == -ENOENT);
+                log_info("%d: get_total_suspend_interval: %s", i,
+                         r < 0 ? STRERROR(r) : FORMAT_TIMESPAN(interval, USEC_PER_SEC));
+        }
+}
+
+static int intro(void) {
+        if (getuid() != 0)
+                log_warning("This program is unlikely to work for unprivileged users");
+
+        return EXIT_SUCCESS;
+}
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_DEBUG, intro);
