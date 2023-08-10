@@ -24,7 +24,6 @@
 #include "string-table.h"
 #include "string-util.h"
 #include "udev-util.h"
-#include "util.h"
 
 /* Note that any write is delayed until exit and the rfkill state will not be
  * stored for rfkill indices that disappear after a change. */
@@ -75,12 +74,12 @@ static int find_device(
         assert(event);
         assert(ret);
 
-        if (asprintf(&sysname, "rfkill%i", event->idx) < 0)
+        if (asprintf(&sysname, "rfkill%u", event->idx) < 0)
                 return log_oom();
 
         r = sd_device_new_from_subsystem_sysname(&device, "rfkill", sysname);
         if (r < 0)
-                return log_full_errno(IN_SET(r, -ENOENT, -ENXIO, -ENODEV) ? LOG_DEBUG : LOG_ERR, r,
+                return log_full_errno(ERRNO_IS_DEVICE_ABSENT(r) ? LOG_DEBUG : LOG_ERR, r,
                                       "Failed to open device '%s': %m", sysname);
 
         r = sd_device_get_sysattr_value(device, "name", &name);
@@ -176,7 +175,7 @@ static int load_state(Context *c, const struct rfkill_event *event) {
 
         ssize_t l = write(c->rfkill_fd, &we, sizeof we);
         if (l < 0)
-                return log_error_errno(errno, "Failed to restore rfkill state for %i: %m", event->idx);
+                return log_error_errno(errno, "Failed to restore rfkill state for %u: %m", event->idx);
         if ((size_t)l < RFKILL_EVENT_SIZE_V1) /* l cannot be < 0 here. Cast to fix -Werror=sign-compare */
                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
                                        "Couldn't write rfkill event structure, too short (wrote %zd of %zu bytes).",
@@ -188,17 +187,14 @@ static int load_state(Context *c, const struct rfkill_event *event) {
 }
 
 static void save_state_queue_remove(Context *c, int idx, const char *state_file) {
-        struct write_queue_item *item, *tmp;
-
         assert(c);
 
-        LIST_FOREACH_SAFE(queue, item, tmp, c->write_queue) {
+        LIST_FOREACH(queue, item, c->write_queue)
                 if ((state_file && streq(item->file, state_file)) || idx == item->rfkill_idx) {
                         log_debug("Canceled previous save state of '%s' to %s.", one_zero(item->state), item->file);
                         LIST_REMOVE(queue, c->write_queue, item);
                         write_queue_item_free(item);
                 }
-        }
 }
 
 static int save_state_queue(Context *c, const struct rfkill_event *event) {
@@ -271,7 +267,7 @@ static void context_save_and_clear(Context *c) {
 }
 
 static int run(int argc, char *argv[]) {
-        _cleanup_(context_save_and_clear) Context c = { .rfkill_fd = -1 };
+        _cleanup_(context_save_and_clear) Context c = { .rfkill_fd = -EBADF };
         bool ready = false;
         int r, n;
 
@@ -350,29 +346,29 @@ static int run(int argc, char *argv[]) {
 
                 const char *type = rfkill_type_to_string(event.type);
                 if (!type) {
-                        log_debug("An rfkill device of unknown type %i discovered, ignoring.", event.type);
+                        log_debug("An rfkill device of unknown type %u discovered, ignoring.", event.type);
                         continue;
                 }
 
                 switch (event.op) {
 
                 case RFKILL_OP_ADD:
-                        log_debug("A new rfkill device has been added with index %i and type %s.", event.idx, type);
+                        log_debug("A new rfkill device has been added with index %u and type %s.", event.idx, type);
                         (void) load_state(&c, &event);
                         break;
 
                 case RFKILL_OP_DEL:
-                        log_debug("An rfkill device has been removed with index %i and type %s", event.idx, type);
+                        log_debug("An rfkill device has been removed with index %u and type %s", event.idx, type);
                         (void) save_state_cancel(&c, &event);
                         break;
 
                 case RFKILL_OP_CHANGE:
-                        log_debug("An rfkill device has changed state with index %i and type %s", event.idx, type);
+                        log_debug("An rfkill device has changed state with index %u and type %s", event.idx, type);
                         (void) save_state_queue(&c, &event);
                         break;
 
                 default:
-                        log_debug("Unknown event %i from /dev/rfkill for index %i and type %s, ignoring.", event.op, event.idx, type);
+                        log_debug("Unknown event %u from /dev/rfkill for index %u and type %s, ignoring.", event.op, event.idx, type);
                         break;
                 }
         }

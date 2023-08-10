@@ -10,21 +10,23 @@
 #include "sd-daemon.h"
 
 #include "alloc-util.h"
+#include "build.h"
 #include "conf-parser.h"
+#include "constants.h"
 #include "daemon-util.h"
-#include "def.h"
 #include "env-file.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
+#include "fs-util.h"
 #include "glob-util.h"
 #include "journal-upload.h"
+#include "journal-util.h"
 #include "log.h"
 #include "main-func.h"
 #include "mkdir.h"
 #include "parse-argument.h"
-#include "parse-util.h"
-#include "path-util.h"
+#include "parse-helpers.h"
 #include "pretty-print.h"
 #include "process-util.h"
 #include "rlimit-util.h"
@@ -33,7 +35,6 @@
 #include "string-util.h"
 #include "strv.h"
 #include "tmpfile-util.h"
-#include "util.h"
 #include "version.h"
 
 #define PRIV_KEY_FILE CERTIFICATE_ROOT "/private/journal-upload.pem"
@@ -50,7 +51,9 @@ static char **arg_file = NULL;
 static const char *arg_cursor = NULL;
 static bool arg_after_cursor = false;
 static int arg_journal_type = 0;
+static int arg_namespace_flags = 0;
 static const char *arg_machine = NULL;
+static const char *arg_namespace = NULL;
 static bool arg_merge = false;
 static int arg_follow = -1;
 static const char *arg_save_state = NULL;
@@ -80,9 +83,7 @@ static size_t output_callback(char *buf,
                               size_t size,
                               size_t nmemb,
                               void *userp) {
-        Uploader *u = userp;
-
-        assert(u);
+        Uploader *u = ASSERT_PTR(userp);
 
         log_debug("The server answers (%zu bytes): %.*s",
                   size*nmemb, (int)(size*nmemb), buf);
@@ -119,7 +120,7 @@ static int check_cursor_updating(Uploader *u) {
 }
 
 static int update_cursor_state(Uploader *u) {
-        _cleanup_free_ char *temp_path = NULL;
+        _cleanup_(unlink_and_freep) char *temp_path = NULL;
         _cleanup_fclose_ FILE *f = NULL;
         int r;
 
@@ -144,12 +145,10 @@ static int update_cursor_state(Uploader *u) {
                 goto fail;
         }
 
+        temp_path = mfree(temp_path);
         return 0;
 
 fail:
-        if (temp_path)
-                (void) unlink(temp_path);
-
         (void) unlink(u->state_file);
 
         return log_error_errno(r, "Failed to save state %s: %m", u->state_file);
@@ -275,8 +274,7 @@ int start_upload(Uploader *u,
                 /* truncate the potential old error message */
                 u->error[0] = '\0';
 
-                free(u->answer);
-                u->answer = 0;
+                u->answer = mfree(u->answer);
         }
 
         /* upload to this place */
@@ -292,10 +290,9 @@ int start_upload(Uploader *u,
 }
 
 static size_t fd_input_callback(void *buf, size_t size, size_t nmemb, void *userp) {
-        Uploader *u = userp;
+        Uploader *u = ASSERT_PTR(userp);
         ssize_t n;
 
-        assert(u);
         assert(nmemb < SSIZE_MAX / size);
 
         if (u->input < 0)
@@ -330,9 +327,8 @@ static int dispatch_fd_input(sd_event_source *event,
                              int fd,
                              uint32_t revents,
                              void *userp) {
-        Uploader *u = userp;
+        Uploader *u = ASSERT_PTR(userp);
 
-        assert(u);
         assert(fd >= 0);
 
         if (revents & EPOLLHUP) {
@@ -385,9 +381,7 @@ static int open_file_for_upload(Uploader *u, const char *filename) {
 static int dispatch_sigterm(sd_event_source *event,
                             const struct signalfd_siginfo *si,
                             void *userdata) {
-        Uploader *u = userdata;
-
-        assert(u);
+        Uploader *u = ASSERT_PTR(userdata);
 
         log_received_signal(LOG_INFO, si);
 
@@ -527,64 +521,19 @@ static int perform_upload(Uploader *u) {
         return update_cursor_state(u);
 }
 
-static int config_parse_path_or_ignore(
-                const char *unit,
-                const char *filename,
-                unsigned line,
-                const char *section,
-                unsigned section_line,
-                const char *lvalue,
-                int ltype,
-                const char *rvalue,
-                void *data,
-                void *userdata) {
-
-        _cleanup_free_ char *n = NULL;
-        bool fatal = ltype;
-        char **s = data;
-        int r;
-
-        assert(filename);
-        assert(lvalue);
-        assert(rvalue);
-        assert(data);
-
-        if (isempty(rvalue))
-                goto finalize;
-
-        n = strdup(rvalue);
-        if (!n)
-                return log_oom();
-
-        if (streq(n, "-"))
-                goto finalize;
-
-        r = path_simplify_and_warn(n, PATH_CHECK_ABSOLUTE | (fatal ? PATH_CHECK_FATAL : 0), unit, filename, line, lvalue);
-        if (r < 0)
-                return fatal ? -ENOEXEC : 0;
-
-finalize:
-        return free_and_replace(*s, n);
-}
-
 static int parse_config(void) {
         const ConfigTableItem items[] = {
-                { "Upload",  "URL",                    config_parse_string,         0, &arg_url                  },
-                { "Upload",  "ServerKeyFile",          config_parse_path_or_ignore, 0, &arg_key                  },
-                { "Upload",  "ServerCertificateFile",  config_parse_path_or_ignore, 0, &arg_cert                 },
-                { "Upload",  "TrustedCertificateFile", config_parse_path_or_ignore, 0, &arg_trust                },
-                { "Upload",  "NetworkTimeoutSec",      config_parse_sec,            0, &arg_network_timeout_usec },
+                { "Upload",  "URL",                    config_parse_string,         CONFIG_PARSE_STRING_SAFE, &arg_url                  },
+                { "Upload",  "ServerKeyFile",          config_parse_path_or_ignore, 0,                        &arg_key                  },
+                { "Upload",  "ServerCertificateFile",  config_parse_path_or_ignore, 0,                        &arg_cert                 },
+                { "Upload",  "TrustedCertificateFile", config_parse_path_or_ignore, 0,                        &arg_trust                },
+                { "Upload",  "NetworkTimeoutSec",      config_parse_sec,            0,                        &arg_network_timeout_usec },
                 {}
         };
 
-        return config_parse_many_nulstr(
-                        PKGSYSCONFDIR "/journal-upload.conf",
-                        CONF_PATHS_NULSTR("systemd/journal-upload.conf.d"),
-                        "Upload\0",
-                        config_item_table_lookup, items,
-                        CONFIG_PARSE_WARN,
-                        NULL,
-                        NULL);
+        return config_parse_config_file("journal-upload.conf", "Upload\0",
+                                        config_item_table_lookup, items,
+                                        CONFIG_PARSE_WARN, NULL);
 }
 
 static int help(void) {
@@ -611,6 +560,7 @@ static int help(void) {
                "     --user                 Use the user journal for the current user\n"
                "  -m --merge                Use  all available journals\n"
                "  -M --machine=CONTAINER    Operate on local container\n"
+               "     --namespace=NAMESPACE  Use journal files from namespace\n"
                "  -D --directory=PATH       Use journal files from directory\n"
                "     --file=PATH            Use this journal file\n"
                "     --cursor=CURSOR        Start at the specified cursor\n"
@@ -638,6 +588,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_AFTER_CURSOR,
                 ARG_FOLLOW,
                 ARG_SAVE_STATE,
+                ARG_NAMESPACE,
         };
 
         static const struct option options[] = {
@@ -651,6 +602,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "user",         no_argument,       NULL, ARG_USER           },
                 { "merge",        no_argument,       NULL, 'm'                },
                 { "machine",      required_argument, NULL, 'M'                },
+                { "namespace",    required_argument, NULL, ARG_NAMESPACE      },
                 { "directory",    required_argument, NULL, 'D'                },
                 { "file",         required_argument, NULL, ARG_FILE           },
                 { "cursor",       required_argument, NULL, ARG_CURSOR         },
@@ -668,7 +620,7 @@ static int parse_argv(int argc, char *argv[]) {
         opterr = 0;
 
         while ((c = getopt_long(argc, argv, "hu:mM:D:", options, NULL)) >= 0)
-                switch(c) {
+                switch (c) {
                 case 'h':
                         return help();
 
@@ -678,7 +630,7 @@ static int parse_argv(int argc, char *argv[]) {
                 case 'u':
                         if (arg_url)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "cannot use more than one --url");
+                                                       "Cannot use more than one --url=");
 
                         arg_url = optarg;
                         break;
@@ -686,7 +638,7 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_KEY:
                         if (arg_key)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "cannot use more than one --key");
+                                                       "Cannot use more than one --key=");
 
                         arg_key = optarg;
                         break;
@@ -694,7 +646,7 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_CERT:
                         if (arg_cert)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "cannot use more than one --cert");
+                                                       "Cannot use more than one --cert=");
 
                         arg_cert = optarg;
                         break;
@@ -702,7 +654,7 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_TRUST:
                         if (arg_trust)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "cannot use more than one --trust");
+                                                       "Cannot use more than one --trust=");
 
                         arg_trust = optarg;
                         break;
@@ -722,15 +674,32 @@ static int parse_argv(int argc, char *argv[]) {
                 case 'M':
                         if (arg_machine)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "cannot use more than one --machine/-M");
+                                                       "Cannot use more than one --machine=/-M");
 
                         arg_machine = optarg;
+                        break;
+
+                case ARG_NAMESPACE:
+                        if (streq(optarg, "*")) {
+                                arg_namespace_flags = SD_JOURNAL_ALL_NAMESPACES;
+                                arg_namespace = NULL;
+                        } else if (startswith(optarg, "+")) {
+                                arg_namespace_flags = SD_JOURNAL_INCLUDE_DEFAULT_NAMESPACE;
+                                arg_namespace = optarg + 1;
+                        } else if (isempty(optarg)) {
+                                arg_namespace_flags = 0;
+                                arg_namespace = NULL;
+                        } else {
+                                arg_namespace_flags = 0;
+                                arg_namespace = optarg;
+                        }
+
                         break;
 
                 case 'D':
                         if (arg_directory)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "cannot use more than one --directory/-D");
+                                                       "Cannot use more than one --directory=/-D");
 
                         arg_directory = optarg;
                         break;
@@ -744,7 +713,7 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_CURSOR:
                         if (arg_cursor)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "cannot use more than one --cursor/--after-cursor");
+                                                       "Cannot use more than one --cursor=/--after-cursor=");
 
                         arg_cursor = optarg;
                         break;
@@ -752,7 +721,7 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_AFTER_CURSOR:
                         if (arg_cursor)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "cannot use more than one --cursor/--after-cursor");
+                                                       "Cannot use more than one --cursor=/--after-cursor=");
 
                         arg_cursor = optarg;
                         arg_after_cursor = true;
@@ -785,11 +754,11 @@ static int parse_argv(int argc, char *argv[]) {
 
         if (!arg_url)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                       "Required --url/-u option missing.");
+                                       "Required --url=/-u option missing.");
 
         if (!!arg_key != !!arg_cert)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                       "Options --key and --cert must be used together.");
+                                       "Options --key= and --cert= must be used together.");
 
         if (optind < argc && (arg_directory || arg_file || arg_machine || arg_journal_type))
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
@@ -801,21 +770,20 @@ static int parse_argv(int argc, char *argv[]) {
 static int open_journal(sd_journal **j) {
         int r;
 
+        assert(j);
+
         if (arg_directory)
                 r = sd_journal_open_directory(j, arg_directory, arg_journal_type);
         else if (arg_file)
                 r = sd_journal_open_files(j, (const char**) arg_file, 0);
-        else if (arg_machine) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-                /* FIXME: replace with D-Bus call OpenMachineRootDirectory() so that things also work with raw disk images */
-                r = sd_journal_open_container(j, arg_machine, 0);
-#pragma GCC diagnostic pop
-        } else
-                r = sd_journal_open(j, (arg_merge ? 0 : SD_JOURNAL_LOCAL_ONLY) | arg_journal_type);
+        else if (arg_machine)
+                r = journal_open_machine(j, arg_machine);
+        else
+                r = sd_journal_open_namespace(j, arg_namespace,
+                                              (arg_merge ? 0 : SD_JOURNAL_LOCAL_ONLY) | arg_namespace_flags | arg_journal_type);
         if (r < 0)
                 log_error_errno(r, "Failed to open %s: %m",
-                                arg_directory ? arg_directory : arg_file ? "files" : "journal");
+                                arg_directory ?: (arg_file ? "files" : "journal"));
         return r;
 }
 

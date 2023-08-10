@@ -2,11 +2,8 @@
 
 systemd_oomd_sources = files(
         'oomd-manager-bus.c',
-        'oomd-manager-bus.h',
         'oomd-manager.c',
-        'oomd-manager.h',
         'oomd-util.c',
-        'oomd-util.h',
         'oomd.c',
 )
 
@@ -26,7 +23,11 @@ if conf.get('ENABLE_OOMD') == 1
 endif
 
 tests += [
-        [['src/oom/test-oomd-util.c',
-          'src/oom/oomd-util.c',
-          'src/oom/oomd-util.h']],
+        {
+                'sources' : files(
+                        'test-oomd-util.c',
+                        'oomd-util.c',
+                ),
+                'dependencies' : libatomic,
+        },
 ]

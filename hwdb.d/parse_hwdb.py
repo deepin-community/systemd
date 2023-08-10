@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# pylint: disable=line-too-long,invalid-name,global-statement,redefined-outer-name
+# pylint: disable=missing-function-docstring,missing-class-docstring,missing-module-docstring
 # SPDX-License-Identifier: MIT
 #
 # This file is distributed under the MIT license, see below.
@@ -33,10 +35,21 @@ try:
                            OneOrMore, Combine, Or, Optional, Suppress, Group,
                            nums, alphanums, printables,
                            stringEnd, pythonStyleComment,
-                           ParseBaseException, __diag__)
+                           ParseBaseException)
 except ImportError:
     print('pyparsing is not available')
     sys.exit(77)
+
+try:
+    from pyparsing import __diag__
+
+    __diag__.warn_multiple_tokens_in_named_alternation = True
+    __diag__.warn_ungrouped_named_tokens_in_collection = True
+    __diag__.warn_name_set_on_empty_Forward = True
+    __diag__.warn_on_multiple_string_args_to_oneof = True
+    __diag__.enable_debug_on_named_expressions = True
+except ImportError:
+    pass
 
 try:
     from evdev.ecodes import ecodes
@@ -49,12 +62,6 @@ try:
 except ImportError:
     # don't do caching on old python
     lru_cache = lambda: (lambda f: f)
-
-__diag__.warn_multiple_tokens_in_named_alternation = True
-__diag__.warn_ungrouped_named_tokens_in_collection = True
-__diag__.warn_name_set_on_empty_Forward = True
-__diag__.warn_on_multiple_string_args_to_oneof = True
-__diag__.enable_debug_on_named_expressions = True
 
 EOL = LineEnd().suppress()
 EMPTYLINE = LineEnd()
@@ -72,7 +79,20 @@ TYPES = {'mouse':    ('usb', 'bluetooth', 'ps2', '*'),
          'touchpad': ('i8042', 'rmi', 'bluetooth', 'usb'),
          'joystick': ('i8042', 'rmi', 'bluetooth', 'usb'),
          'keyboard': ('name', ),
-         'sensor':   ('modalias', ),
+         'sensor':   ('modalias',
+                      'accel-base',
+                      'accel-display',
+                      'accel-camera',
+                      'proximity-palmrest',
+                      'proximity-palmrest-left',
+                      'proximity-palmrest-right',
+                      'proximity-lap',
+                      'proximity-wifi',
+                      'proximity-lte',
+                      'proximity-wifi-lte',
+                      'proximity-wifi-left',
+                      'proximity-wifi-right',
+                      ),
          'ieee1394-unit-function' : ('node', ),
          'camera':   ('usb'),
         }
@@ -121,7 +141,7 @@ def hwdb_grammar():
 def property_grammar():
     ParserElement.setDefaultWhitespaceChars(' ')
 
-    dpi_setting = Group(Optional('*')('DEFAULT') + INTEGER('DPI') + Suppress('@') + INTEGER('HZ'))('SETTINGS*')
+    dpi_setting = Group(Optional('*')('DEFAULT') + INTEGER('DPI') + Optional(Suppress('@') + INTEGER('HZ')))('SETTINGS*')
     mount_matrix_row = SIGNED_REAL + ',' + SIGNED_REAL + ',' + SIGNED_REAL
     mount_matrix = Group(mount_matrix_row + ';' + mount_matrix_row + ';' + mount_matrix_row)('MOUNT_MATRIX')
     xkb_setting = Optional(Word(alphanums + '+-/@._'))
@@ -135,7 +155,10 @@ def property_grammar():
              ('MOUSE_WHEEL_CLICK_COUNT', INTEGER),
              ('MOUSE_WHEEL_CLICK_COUNT_HORIZONTAL', INTEGER),
              ('ID_AUTOSUSPEND', Or((Literal('0'), Literal('1')))),
+             ('ID_AUTOSUSPEND_DELAY_MS', INTEGER),
+             ('ID_AV_PRODUCTION_CONTROLLER', Or((Literal('0'), Literal('1')))),
              ('ID_PERSIST', Or((Literal('0'), Literal('1')))),
+             ('ID_PDA', Or((Literal('0'), Literal('1')))),
              ('ID_INPUT', Or((Literal('0'), Literal('1')))),
              ('ID_INPUT_ACCELEROMETER', Or((Literal('0'), Literal('1')))),
              ('ID_INPUT_JOYSTICK', Or((Literal('0'), Literal('1')))),
@@ -170,6 +193,7 @@ def property_grammar():
              ('ID_TAG_MASTER_OF_SEAT', Literal('1')),
              ('ID_INFRARED_CAMERA', Or((Literal('0'), Literal('1')))),
              ('ID_CAMERA_DIRECTION', Or(('front', 'rear'))),
+             ('SOUND_FORM_FACTOR', Or(('internal', 'webcam', 'speaker', 'headphone', 'headset', 'handset', 'microphone'))),
             )
     fixed_props = [Literal(name)('NAME') - Suppress('=') - val('VALUE')
                    for name, val in props]
@@ -179,7 +203,7 @@ def property_grammar():
                 ]
     abs_props = [Regex(r'EVDEV_ABS_[0-9a-f]{2}')('NAME')
                  - Suppress('=') -
-                 Word(nums + ':')('VALUE')
+                 Word('-' + nums + ':')('VALUE')
                 ]
 
     grammar = Or(fixed_props + kbd_props + abs_props) + EOL
@@ -256,7 +280,7 @@ def check_one_mount_matrix(prop, value):
               'x' if bad_x else ('y' if bad_y else 'z'),
               prop)
 
-def check_one_keycode(prop, value):
+def check_one_keycode(value):
     if value != '!' and ecodes is not None:
         key = 'KEY_' + value.upper()
         if not (key in ecodes or
@@ -276,14 +300,14 @@ def check_wheel_clicks(properties):
 
 def check_properties(groups):
     grammar = property_grammar()
-    for matches, props in groups:
+    for _, props in groups:
         seen_props = {}
         for prop in props:
             # print('--', prop)
             prop = prop.partition('#')[0].rstrip()
             try:
                 parsed = grammar.parseString(prop)
-            except ParseBaseException as e:
+            except ParseBaseException:
                 error('Failed to parse: {!r}', prop)
                 continue
             # print('{!r}'.format(parsed))
@@ -296,18 +320,17 @@ def check_properties(groups):
                 check_one_mount_matrix(prop, parsed.VALUE)
             elif parsed.NAME.startswith('KEYBOARD_KEY_'):
                 val = parsed.VALUE if isinstance(parsed.VALUE, str) else parsed.VALUE[0]
-                check_one_keycode(prop, val)
+                check_one_keycode(val)
 
         check_wheel_clicks(seen_props)
 
 def print_summary(fname, groups):
     n_matches = sum(len(matches) for matches, props in groups)
     n_props = sum(len(props) for matches, props in groups)
-    print('{}: {} match groups, {} matches, {} properties'
-          .format(fname, len(groups), n_matches, n_props))
+    print(f'{fname}: {len(groups)} match groups, {n_matches} matches, {n_props} properties')
 
     if n_matches == 0 or n_props == 0:
-        error('{}: no matches or props'.format(fname))
+        error(f'{fname}: no matches or props')
 
 if __name__ == '__main__':
     args = sys.argv[1:] or sorted(glob.glob(os.path.dirname(sys.argv[0]) + '/[678][0-9]-*.hwdb'))

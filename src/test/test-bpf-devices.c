@@ -30,7 +30,6 @@ static void test_policy_closed(const char *cgroup_path, BPFProgram **installed_p
         r = bpf_devices_apply_policy(&prog, CGROUP_DEVICE_POLICY_CLOSED, true, cgroup_path, installed_prog);
         assert_se(r >= 0);
 
-        const char *s;
         FOREACH_STRING(s, "/dev/null",
                           "/dev/zero",
                           "/dev/full",
@@ -38,7 +37,7 @@ static void test_policy_closed(const char *cgroup_path, BPFProgram **installed_p
                           "/dev/urandom",
                           "/dev/tty",
                           "/dev/ptmx") {
-                _cleanup_close_ int fd, fd2;
+                _cleanup_close_ int fd = -EBADF, fd2 = -EBADF;
 
                 fd = open(s, O_CLOEXEC|O_RDONLY|O_NOCTTY);
                 log_debug("open(%s, \"r\") = %d/%s", s, fd, fd < 0 ? errno_to_name(errno) : "-");
@@ -75,7 +74,7 @@ static void test_policy_strict(const char *cgroup_path, BPFProgram **installed_p
         assert_se(r >= 0);
 
         {
-                _cleanup_close_ int fd, fd2;
+                _cleanup_close_ int fd = -EBADF, fd2 = -EBADF;
                 const char *s = "/dev/null";
 
                 fd = open(s, O_CLOEXEC|O_RDONLY|O_NOCTTY);
@@ -88,7 +87,7 @@ static void test_policy_strict(const char *cgroup_path, BPFProgram **installed_p
         }
 
         {
-                _cleanup_close_ int fd, fd2;
+                _cleanup_close_ int fd = -EBADF, fd2 = -EBADF;
                 const char *s = "/dev/random";
 
                 fd = open(s, O_CLOEXEC|O_RDONLY|O_NOCTTY);
@@ -101,7 +100,7 @@ static void test_policy_strict(const char *cgroup_path, BPFProgram **installed_p
         }
 
         {
-                _cleanup_close_ int fd, fd2;
+                _cleanup_close_ int fd = -EBADF, fd2 = -EBADF;
                 const char *s = "/dev/zero";
 
                 fd = open(s, O_CLOEXEC|O_RDONLY|O_NOCTTY);
@@ -114,7 +113,7 @@ static void test_policy_strict(const char *cgroup_path, BPFProgram **installed_p
         }
 
         {
-                _cleanup_close_ int fd, fd2;
+                _cleanup_close_ int fd = -EBADF, fd2 = -EBADF;
                 const char *s = "/dev/full";
 
                 fd = open(s, O_CLOEXEC|O_RDONLY|O_NOCTTY);
@@ -147,7 +146,7 @@ static void test_policy_allow_list_major(const char *pattern, const char *cgroup
 
         /* /dev/null, /dev/full have major==1, /dev/tty has major==5 */
         {
-                _cleanup_close_ int fd, fd2;
+                _cleanup_close_ int fd = -EBADF, fd2 = -EBADF;
                 const char *s = "/dev/null";
 
                 fd = open(s, O_CLOEXEC|O_RDONLY|O_NOCTTY);
@@ -160,7 +159,7 @@ static void test_policy_allow_list_major(const char *pattern, const char *cgroup
         }
 
         {
-                _cleanup_close_ int fd, fd2;
+                _cleanup_close_ int fd = -EBADF, fd2 = -EBADF;
                 const char *s = "/dev/full";
 
                 fd = open(s, O_CLOEXEC|O_RDONLY|O_NOCTTY);
@@ -173,7 +172,7 @@ static void test_policy_allow_list_major(const char *pattern, const char *cgroup
         }
 
         {
-                _cleanup_close_ int fd, fd2;
+                _cleanup_close_ int fd = -EBADF, fd2 = -EBADF;
                 const char *s = "/dev/tty";
 
                 fd = open(s, O_CLOEXEC|O_RDONLY|O_NOCTTY);
@@ -205,7 +204,7 @@ static void test_policy_allow_list_major_star(char type, const char *cgroup_path
         assert_se(r >= 0);
 
         {
-                _cleanup_close_ int fd;
+                _cleanup_close_ int fd = -EBADF;
                 const char *s = "/dev/null";
 
                 fd = open(s, O_CLOEXEC|O_RDWR|O_NOCTTY);
@@ -238,7 +237,7 @@ static void test_policy_empty(bool add_mismatched, const char *cgroup_path, BPFP
         assert_se(r >= 0);
 
         {
-                _cleanup_close_ int fd;
+                _cleanup_close_ int fd = -EBADF;
                 const char *s = "/dev/null";
 
                 fd = open(s, O_CLOEXEC|O_RDWR|O_NOCTTY);
@@ -296,7 +295,7 @@ int main(int argc, char *argv[]) {
         test_policy_empty(false, cgroup, &prog);
         test_policy_empty(true, cgroup, &prog);
 
-        assert_se(parent = dirname_malloc(cgroup));
+        assert_se(path_extract_directory(cgroup, &parent) >= 0);
 
         assert_se(cg_mask_supported(&supported) >= 0);
         r = cg_attach_everywhere(supported, parent, 0, NULL, NULL);

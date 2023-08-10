@@ -21,6 +21,7 @@ bpf	5315
 brk	5012
 cachectl	5198
 cacheflush	5197
+cachestat	5451
 capget	5123
 capset	5124
 chdir	5078
@@ -427,6 +428,7 @@ renameat2	5311
 request_key	5240
 restart_syscall	5213
 riscv_flush_icache
+riscv_hwprobe
 rmdir	5082
 rseq	5327
 rt_sigaction	5013
@@ -473,6 +475,7 @@ sendmmsg	5302
 sendmsg	5045
 sendto	5043
 set_mempolicy	5229
+set_mempolicy_home_node	5450
 set_robust_list	5268
 set_thread_area	5242
 set_tid_address	5212

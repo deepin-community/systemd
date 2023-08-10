@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
-#include "chase-symlinks.h"
+#include "chase.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
@@ -9,9 +9,6 @@
 #include "path-util.h"
 #include "user-util.h"
 #include "userdb.h"
-
-#define MAP_UID_START 60514
-#define MAP_UID_END 60577
 
 static int check_etc_passwd_collisions(
                 const char *directory,
@@ -24,7 +21,7 @@ static int check_etc_passwd_collisions(
         assert(directory);
         assert(name || uid_is_valid(uid));
 
-        r = chase_symlinks_and_fopen_unlocked("/etc/passwd", directory, CHASE_PREFIX_ROOT, "re", NULL, &f);
+        r = chase_and_fopen_unlocked("/etc/passwd", directory, CHASE_PREFIX_ROOT, "re", NULL, &f);
         if (r == -ENOENT)
                 return 0; /* no user database? then no user, hence no collision */
         if (r < 0)
@@ -57,7 +54,7 @@ static int check_etc_group_collisions(
         assert(directory);
         assert(name || gid_is_valid(gid));
 
-        r = chase_symlinks_and_fopen_unlocked("/etc/group", directory, CHASE_PREFIX_ROOT, "re", NULL, &f);
+        r = chase_and_fopen_unlocked("/etc/group", directory, CHASE_PREFIX_ROOT, "re", NULL, &f);
         if (r == -ENOENT)
                 return 0; /* no group database? then no group, hence no collision */
         if (r < 0)
@@ -157,11 +154,11 @@ static int find_free_uid(const char *directory, uid_t max_uid, uid_t *current_ui
         assert(current_uid);
 
         for (;; (*current_uid) ++) {
-                if (*current_uid > MAP_UID_END || *current_uid > max_uid)
+                if (*current_uid > MAP_UID_MAX || *current_uid > max_uid)
                         return log_error_errno(
                                         SYNTHETIC_ERRNO(EBUSY),
                                         "No suitable available UID in range " UID_FMT "…" UID_FMT " in container detected, can't map user.",
-                                        MAP_UID_START, MAP_UID_END);
+                                        MAP_UID_MIN, MAP_UID_MAX);
 
                 r = check_etc_passwd_collisions(directory, NULL, *current_uid);
                 if (r < 0)
@@ -202,8 +199,7 @@ int bind_user_prepare(
                 BindUserContext **ret) {
 
         _cleanup_(bind_user_context_freep) BindUserContext *c = NULL;
-        uid_t current_uid = MAP_UID_START;
-        char **n;
+        uid_t current_uid = MAP_UID_MIN;
         int r;
 
         assert(custom_mounts);
@@ -398,7 +394,7 @@ int bind_user_setup(
 
         r = userns_mkdir(root, "/run/host/home", 0755, 0, 0);
         if (r < 0)
-                return log_error_errno(r, "Failed to create /run/host/userdb: %m");
+                return log_error_errno(r, "Failed to create /run/host/home: %m");
 
         r = userns_mkdir(root, "/run/host/userdb", 0755, 0, 0);
         if (r < 0)

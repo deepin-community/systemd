@@ -26,7 +26,7 @@ typedef enum DHCPRawOption {
 
 typedef struct DHCPClientId {
         size_t length;
-        void *data;
+        uint8_t *data;
 } DHCPClientId;
 
 typedef struct DHCPLease {
@@ -34,10 +34,13 @@ typedef struct DHCPLease {
 
         DHCPClientId client_id;
 
+        uint8_t htype; /* e.g. ARPHRD_ETHER */
+        uint8_t hlen;  /* e.g. ETH_ALEN */
         be32_t address;
         be32_t gateway;
         uint8_t chaddr[16];
         usec_t expiration;
+        char *hostname;
 } DHCPLease;
 
 struct sd_dhcp_server {
@@ -63,6 +66,9 @@ struct sd_dhcp_server {
         char *timezone;
 
         DHCPServerData servers[_SD_DHCP_LEASE_SERVER_TYPE_MAX];
+        struct in_addr boot_server_address;
+        char *boot_server_name;
+        char *boot_filename;
 
         OrderedSet *extra_options;
         OrderedSet *vendor_options;
@@ -97,6 +103,7 @@ typedef struct DHCPRequest {
         be32_t requested_ip;
         uint32_t lifetime;
         const uint8_t *agent_info_option;
+        char *hostname;
 } DHCPRequest;
 
 extern const struct hash_ops dhcp_lease_hash_ops;
@@ -109,6 +116,9 @@ int dhcp_server_send_packet(sd_dhcp_server *server,
 
 void client_id_hash_func(const DHCPClientId *p, struct siphash *state);
 int client_id_compare_func(const DHCPClientId *a, const DHCPClientId *b);
+
+DHCPLease *dhcp_lease_free(DHCPLease *lease);
+DEFINE_TRIVIAL_CLEANUP_FUNC(DHCPLease*, dhcp_lease_free);
 
 #define log_dhcp_server_errno(server, error, fmt, ...)          \
         log_interface_prefix_full_errno(                        \

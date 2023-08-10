@@ -23,12 +23,11 @@ static int reply_callback(Varlink *v, JsonVariant *p, const char *error_id, Varl
 }
 
 static int io_callback(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
-        struct iovec *iov = userdata;
+        struct iovec *iov = ASSERT_PTR(userdata);
         bool write_eof = false, read_eof = false;
 
         assert(s);
         assert(fd >= 0);
-        assert(iov);
 
         if ((revents & (EPOLLOUT|EPOLLHUP|EPOLLERR)) && iov->iov_len > 0) {
                 ssize_t n;
@@ -86,7 +85,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         struct iovec server_iov = IOVEC_MAKE((void*) data, size), client_iov = IOVEC_MAKE((void*) data, size);
         /* Important: the declaration order matters here! we want that the fds are closed on return after the
          * event sources, hence we declare the fds first, the event sources second */
-        _cleanup_close_pair_ int server_pair[2] = { -1, -1 }, client_pair[2] = { -1, -1 };
+        _cleanup_close_pair_ int server_pair[2] = PIPE_EBADF, client_pair[2] = PIPE_EBADF;
         _cleanup_(sd_event_source_unrefp) sd_event_source *idle_event_source = NULL,
                 *server_event_source = NULL, *client_event_source = NULL;
         _cleanup_(varlink_server_unrefp) VarlinkServer *s = NULL;

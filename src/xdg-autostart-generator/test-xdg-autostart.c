@@ -9,8 +9,8 @@
 #include "tmpfile-util.h"
 #include "xdg-autostart-service.h"
 
-static void test_translate_name(void) {
-        _cleanup_free_ char *t;
+TEST(translate_name) {
+        _cleanup_free_ char *t = NULL;
 
         assert_se(t = xdg_autostart_service_translate_name("a-b.blub.desktop"));
         assert_se(streq(t, "app-a\\x2db.blub@autostart.service"));
@@ -24,16 +24,29 @@ static void test_xdg_format_exec_start_one(const char *exec, const char *expecte
         assert_se(streq(out, expected));
 }
 
-static void test_xdg_format_exec_start(void) {
-        test_xdg_format_exec_start_one("/bin/sleep 100", "/bin/sleep \"100\"");
+TEST(xdg_format_exec_start) {
+        _cleanup_free_ char *home = NULL;
+        _cleanup_free_ char *expected1 = NULL, *expected2 = NULL;
+
+        assert_se(get_home_dir(&home) >= 0);
+
+        test_xdg_format_exec_start_one("/bin/sleep 100", "/bin/sleep 100");
 
         /* All standardised % identifiers are stripped. */
         test_xdg_format_exec_start_one("/bin/sleep %f \"%F\" %u %U %d %D\t%n %N %i %c %k %v %m", "/bin/sleep");
 
         /* Unknown % identifier currently remain, but are escaped. */
-        test_xdg_format_exec_start_one("/bin/sleep %X \"%Y\"", "/bin/sleep \"%%X\" \"%%Y\"");
+        test_xdg_format_exec_start_one("/bin/sleep %X \"%Y\"", "/bin/sleep %%X %%Y");
 
         test_xdg_format_exec_start_one("/bin/sleep \";\\\"\"", "/bin/sleep \";\\\"\"");
+
+        /* tilde is expanded only if standalone or at the start of a path */
+        expected1 = strjoin("/bin/ls ", home);
+        test_xdg_format_exec_start_one("/bin/ls ~", expected1);
+        expected2 = strjoin("/bin/ls ", home, "/foo");
+        test_xdg_format_exec_start_one("/bin/ls \"~/foo\"", expected2);
+        test_xdg_format_exec_start_one("/bin/ls ~foo", "/bin/ls ~foo");
+        test_xdg_format_exec_start_one("/bin/ls foo~", "/bin/ls foo~");
 }
 
 static const char* const xdg_desktop_file[] = {
@@ -48,14 +61,16 @@ static const char* const xdg_desktop_file[] = {
 
         ("[Desktop Entry]\n"
          "Hidden=\t true\n"),
+        ("[Desktop Entry]\n"
+         "Hidden=\t True\n"),
 };
 
-static void test_xdg_desktop_parse(unsigned i, const char *s) {
+static void test_xdg_desktop_parse_one(unsigned i, const char *s) {
         _cleanup_(unlink_tempfilep) char name[] = "/tmp/test-xdg-autostart-parser.XXXXXX";
         _cleanup_fclose_ FILE *f = NULL;
         _cleanup_(xdg_autostart_service_freep) XdgAutostartService *service = NULL;
 
-        log_info("== %s[%i] ==", __func__, i);
+        log_info("== %s[%u] ==", __func__, i);
 
         assert_se(fmkostemp_safe(name, "r+", &f) == 0);
         assert_se(fwrite(s, strlen(s), 1, f) == 1);
@@ -75,19 +90,15 @@ static void test_xdg_desktop_parse(unsigned i, const char *s) {
                 assert_se(streq(service->exec_string, "a"));
                 break;
         case 2:
+        case 3:
                 assert_se(service->hidden);
                 break;
         }
 }
 
-int main(int argc, char *argv[]) {
-        test_setup_logging(LOG_DEBUG);
-
-        test_translate_name();
-        test_xdg_format_exec_start();
-
+TEST(xdg_desktop_parse) {
         for (size_t i = 0; i < ELEMENTSOF(xdg_desktop_file); i++)
-                test_xdg_desktop_parse(i, xdg_desktop_file[i]);
-
-        return 0;
+                test_xdg_desktop_parse_one(i, xdg_desktop_file[i]);
 }
+
+DEFINE_TEST_MAIN(LOG_DEBUG);

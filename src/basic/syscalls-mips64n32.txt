@@ -21,6 +21,7 @@ bpf	6319
 brk	6012
 cachectl	6198
 cacheflush	6197
+cachestat	6451
 capget	6123
 capset	6124
 chdir	6078
@@ -427,6 +428,7 @@ renameat2	6315
 request_key	6244
 restart_syscall	6214
 riscv_flush_icache
+riscv_hwprobe
 rmdir	6082
 rseq	6331
 rt_sigaction	6013
@@ -473,6 +475,7 @@ sendmmsg	6307
 sendmsg	6045
 sendto	6043
 set_mempolicy	6233
+set_mempolicy_home_node	6450
 set_robust_list	6272
 set_thread_area	6246
 set_tid_address	6213

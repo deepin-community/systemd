@@ -114,8 +114,13 @@ static void test_route_tables_one(Manager *manager, const char *name, uint32_t n
         }
 
         assert_se(asprintf(&expected, "%s(%" PRIu32 ")", name, number) >= 0);
-        assert_se(manager_get_route_table_to_string(manager, number, &str) >= 0);
+        assert_se(manager_get_route_table_to_string(manager, number, /* append_num = */ true, &str) >= 0);
         assert_se(streq(str, expected));
+
+        str = mfree(str);
+
+        assert_se(manager_get_route_table_to_string(manager, number, /* append_num = */ false, &str) >= 0);
+        assert_se(streq(str, name));
 
         assert_se(manager_get_route_table_from_string(manager, name, &t) >= 0);
         assert_se(t == number);
@@ -148,6 +153,7 @@ static void test_route_tables(Manager *manager) {
 
         /* Invalid pairs */
         assert_se(config_parse_route_table_names("manager", "filename", 1, "section", 1, "RouteTable", 0, "main:123 default:333 local:999", manager, manager) >= 0);
+        assert_se(config_parse_route_table_names("manager", "filename", 1, "section", 1, "RouteTable", 0, "xxx:253 yyy:254 local:255", manager, manager) >= 0);
         assert_se(config_parse_route_table_names("manager", "filename", 1, "section", 1, "RouteTable", 0, "1234:321 :567 hoge:foo aaa:-888", manager, manager) >= 0);
         assert_se(!manager->route_table_names_by_number);
         assert_se(!manager->route_table_numbers_by_name);
@@ -171,19 +177,7 @@ static int test_load_config(Manager *manager) {
                 return r;
         assert_se(r >= 0);
 
-        assert_se(manager_should_reload(manager) == false);
-
         return 0;
-}
-
-static bool address_equal(const Address *a1, const Address *a2) {
-        if (a1 == a2)
-                return true;
-
-        if (!a1 || !a2)
-                return false;
-
-        return address_compare_func(a1, a2) == 0;
 }
 
 static void test_address_equality(void) {
@@ -208,8 +202,10 @@ static void test_address_equality(void) {
         assert_se(in_addr_from_string(AF_INET, "192.168.3.9", &a2->in_addr) >= 0);
         assert_se(address_equal(a1, a2));
         assert_se(in_addr_from_string(AF_INET, "192.168.3.10", &a1->in_addr_peer) >= 0);
-        assert_se(address_equal(a1, a2));
+        assert_se(!address_equal(a1, a2));
         assert_se(in_addr_from_string(AF_INET, "192.168.3.11", &a2->in_addr_peer) >= 0);
+        assert_se(!address_equal(a1, a2));
+        assert_se(in_addr_from_string(AF_INET, "192.168.3.10", &a2->in_addr_peer) >= 0);
         assert_se(address_equal(a1, a2));
         a1->prefixlen = 10;
         assert_se(!address_equal(a1, a2));
@@ -225,8 +221,9 @@ static void test_address_equality(void) {
         assert_se(address_equal(a1, a2));
 
         a2->prefixlen = 8;
-        assert_se(address_equal(a1, a2));
+        assert_se(!address_equal(a1, a2));
 
+        a2->prefixlen = 10;
         assert_se(in_addr_from_string(AF_INET6, "2001:4ca0:4f01::1", &a2->in_addr) >= 0);
         assert_se(!address_equal(a1, a2));
 }

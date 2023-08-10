@@ -21,9 +21,9 @@ static void log_cgroup_mask(CGroupMask got, CGroupMask expected) {
         _cleanup_free_ char *e_store = NULL, *g_store = NULL;
 
         assert_se(cg_mask_to_string(expected, &e_store) >= 0);
-        log_info("Expected mask: %s\n", e_store);
+        log_info("Expected mask: %s", e_store);
         assert_se(cg_mask_to_string(got, &g_store) >= 0);
-        log_info("Got mask: %s\n", g_store);
+        log_info("Got mask: %s", g_store);
 }
 
 TEST_RET(cgroup_mask, .sd_booted = true) {
@@ -42,7 +42,7 @@ TEST_RET(cgroup_mask, .sd_booted = true) {
         assert_se(get_testdata_dir("units", &unit_dir) >= 0);
         assert_se(set_unit_path(unit_dir) >= 0);
         assert_se(runtime_dir = setup_fake_runtime_dir());
-        r = manager_new(UNIT_FILE_USER, MANAGER_TEST_RUN_BASIC, &m);
+        r = manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_BASIC, &m);
         if (IN_SET(r, -EPERM, -EACCES)) {
                 log_error_errno(r, "manager_new: %m");
                 return log_tests_skipped("cannot create manager");

@@ -2,16 +2,18 @@
 
 #include "alloc-util.h"
 #include "conf-parser.h"
-#include "def.h"
+#include "constants.h"
+#include "creds-util.h"
+#include "dns-domain.h"
 #include "extract-word.h"
 #include "hexdecoct.h"
 #include "parse-util.h"
+#include "proc-cmdline.h"
 #include "resolved-conf.h"
-#include "resolved-dnssd.h"
-#include "resolved-manager.h"
 #include "resolved-dns-search-domain.h"
 #include "resolved-dns-stub.h"
-#include "dns-domain.h"
+#include "resolved-dnssd.h"
+#include "resolved-manager.h"
 #include "socket-netlink.h"
 #include "specifier.h"
 #include "string-table.h"
@@ -35,15 +37,14 @@ static int manager_add_dns_server_by_string(Manager *m, DnsServerType type, cons
         if (r < 0)
                 return r;
 
-        /* By default, the port number is determined by the transaction feature level.
+        /* Silently filter out 0.0.0.0, 127.0.0.53, 127.0.0.54 (our own stub DNS listener) */
+        if (!dns_server_address_valid(family, &address))
+                return 0;
+
+        /* By default, the port number is determined with the transaction feature level.
          * See dns_transaction_port() and dns_server_port(). */
         if (IN_SET(port, 53, 853))
                 port = 0;
-
-        /* Refuse 0.0.0.0, 127.0.0.53, 127.0.0.54 and the rest of our own stub DNS listeners. */
-        if (!dns_server_address_valid(family, &address) ||
-            manager_server_address_is_stub(m, family, &address, port ?: 53))
-                return -ELOOP;
 
         /* Filter out duplicates */
         s = dns_server_find(manager_get_first_dns_server(m, type), family, &address, port, ifindex, server_name);
@@ -57,7 +58,7 @@ static int manager_add_dns_server_by_string(Manager *m, DnsServerType type, cons
         return dns_server_new(m, NULL, type, NULL, family, &address, port, ifindex, server_name);
 }
 
-int manager_parse_dns_server_string_and_warn(Manager *m, DnsServerType type, const char *string, bool ignore_self_quietly) {
+int manager_parse_dns_server_string_and_warn(Manager *m, DnsServerType type, const char *string) {
         int r;
 
         assert(m);
@@ -71,10 +72,7 @@ int manager_parse_dns_server_string_and_warn(Manager *m, DnsServerType type, con
                         return r;
 
                 r = manager_add_dns_server_by_string(m, type, word);
-                if (r == -ELOOP)
-                        log_full(ignore_self_quietly ? LOG_DEBUG : LOG_INFO,
-                                 "DNS server string '%s' points to our own listener, ignoring.", word);
-                else if (r < 0)
+                if (r < 0)
                         log_warning_errno(r, "Failed to add DNS server address '%s', ignoring: %m", word);
         }
 }
@@ -142,20 +140,19 @@ int config_parse_dns_servers(
                 void *data,
                 void *userdata) {
 
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(m);
 
         if (isempty(rvalue))
                 /* Empty assignment means clear the list */
                 dns_server_unlink_all(manager_get_first_dns_server(m, ltype));
         else {
                 /* Otherwise, add to the list */
-                r = manager_parse_dns_server_string_and_warn(m, ltype, rvalue, false);
+                r = manager_parse_dns_server_string_and_warn(m, ltype, rvalue);
                 if (r < 0) {
                         log_syntax(unit, LOG_WARNING, filename, line, r,
                                    "Failed to parse DNS server string '%s', ignoring.", rvalue);
@@ -163,7 +160,8 @@ int config_parse_dns_servers(
                 }
         }
 
-        /* If we have a manual setting, then we stop reading /etc/resolv.conf */
+        /* If we have a manual setting, then we stop reading
+         * /etc/resolv.conf */
         if (ltype == DNS_SERVER_SYSTEM)
                 m->read_resolv_conf = false;
         if (ltype == DNS_SERVER_FALLBACK)
@@ -184,13 +182,12 @@ int config_parse_search_domains(
                 void *data,
                 void *userdata) {
 
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(m);
 
         if (isempty(rvalue))
                 /* Empty assignment means clear the list */
@@ -205,7 +202,8 @@ int config_parse_search_domains(
                 }
         }
 
-        /* If we have a manual setting, then we stop reading /etc/resolv.conf */
+        /* If we have a manual setting, then we stop reading
+         * /etc/resolv.conf */
         m->read_resolv_conf = false;
 
         return 0;
@@ -227,7 +225,7 @@ int config_parse_dnssd_service_name(
                 { 'a', specifier_architecture,    NULL },
                 { 'b', specifier_boot_id,         NULL },
                 { 'B', specifier_os_build_id,     NULL },
-                { 'H', specifier_host_name,       NULL }, /* We will use specifier_dnssd_host_name(). */
+                { 'H', specifier_hostname,        NULL }, /* We will use specifier_dnssd_hostname(). */
                 { 'm', specifier_machine_id,      NULL },
                 { 'o', specifier_os_id,           NULL },
                 { 'v', specifier_kernel_release,  NULL },
@@ -235,14 +233,13 @@ int config_parse_dnssd_service_name(
                 { 'W', specifier_os_variant_id,   NULL },
                 {}
         };
-        DnssdService *s = userdata;
+        DnssdService *s = ASSERT_PTR(userdata);
         _cleanup_free_ char *name = NULL;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(s);
 
         if (isempty(rvalue)) {
                 s->name_template = mfree(s->name_template);
@@ -278,13 +275,12 @@ int config_parse_dnssd_service_type(
                 void *data,
                 void *userdata) {
 
-        DnssdService *s = userdata;
+        DnssdService *s = ASSERT_PTR(userdata);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(s);
 
         if (isempty(rvalue)) {
                 s->type = mfree(s->type);
@@ -316,13 +312,12 @@ int config_parse_dnssd_txt(
                 void *userdata) {
 
         _cleanup_(dnssd_txtdata_freep) DnssdTxtData *txt_data = NULL;
-        DnssdService *s = userdata;
+        DnssdService *s = ASSERT_PTR(userdata);
         DnsTxtItem *last = NULL;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(s);
 
         if (isempty(rvalue)) {
                 /* Flush out collected items */
@@ -392,11 +387,11 @@ int config_parse_dnssd_txt(
                         assert_not_reached();
                 }
 
-                LIST_INSERT_AFTER(items, txt_data->txt, last, i);
+                LIST_INSERT_AFTER(items, txt_data->txts, last, i);
                 last = i;
         }
 
-        if (!LIST_IS_EMPTY(txt_data->txt)) {
+        if (txt_data->txts) {
                 LIST_PREPEND(items, s->txt_data_items, txt_data);
                 TAKE_PTR(txt_data);
         }
@@ -470,24 +465,114 @@ int config_parse_dns_stub_listener_extra(
         return 0;
 }
 
+static void read_credentials(Manager *m) {
+        _cleanup_free_ char *dns = NULL, *domains = NULL;
+        int r;
+
+        assert(m);
+
+        /* Hmm, if we aren't supposed to read /etc/resolv.conf because the DNS settings were already
+         * configured explicitly in our config file, we don't want to honour credentials either */
+        if (!m->read_resolv_conf)
+                return;
+
+        r = read_credential_strings_many("network.dns", &dns,
+                                         "network.search_domains", &domains);
+        if (r < 0)
+                log_warning_errno(r, "Failed to read credentials, ignoring: %m");
+
+        if (dns) {
+                r = manager_parse_dns_server_string_and_warn(m, DNS_SERVER_SYSTEM, dns);
+                if (r < 0)
+                        log_warning_errno(r, "Failed to parse credential network.dns '%s', ignoring.", dns);
+
+                m->read_resolv_conf = false;
+        }
+
+        if (domains) {
+                r = manager_parse_search_domains_and_warn(m, domains);
+                if (r < 0)
+                        log_warning_errno(r, "Failed to parse credential network.search_domains '%s', ignoring.", domains);
+
+                m->read_resolv_conf = false;
+        }
+}
+
+struct ProcCmdlineInfo {
+        Manager *manager;
+
+        /* If there's a setting configured via /proc/cmdline we want to reset the configured lists, but only
+         * once, so that multiple nameserver= or domain= settings can be specified on the kernel command line
+         * and will be combined. These booleans will be set once we erase the list once. */
+        bool dns_server_unlinked;
+        bool search_domain_unlinked;
+};
+
+static int proc_cmdline_callback(const char *key, const char *value, void *data) {
+        struct ProcCmdlineInfo *info = ASSERT_PTR(data);
+        int r;
+
+        assert(info->manager);
+
+        /* The kernel command line option names are chosen to be compatible with what various tools already
+         * interpret, for example dracut and SUSE Linux. */
+
+        if (proc_cmdline_key_streq(key, "nameserver")) {
+                if (!info->dns_server_unlinked) {
+                        /* The kernel command line overrides any prior configuration */
+                        dns_server_unlink_all(manager_get_first_dns_server(info->manager, DNS_SERVER_SYSTEM));
+                        info->dns_server_unlinked = true;
+                }
+
+                r = manager_parse_dns_server_string_and_warn(info->manager, DNS_SERVER_SYSTEM, value);
+                if (r < 0)
+                        log_warning_errno(r, "Failed to parse DNS server string '%s', ignoring.", value);
+
+                info->manager->read_resolv_conf = false;
+
+        } else if (proc_cmdline_key_streq(key, "domain")) {
+
+                if (!info->search_domain_unlinked) {
+                        dns_search_domain_unlink_all(info->manager->search_domains);
+                        info->search_domain_unlinked = true;
+                }
+
+                r = manager_parse_search_domains_and_warn(info->manager, value);
+                if (r < 0)
+                        log_warning_errno(r, "Failed to parse credential provided search domain string '%s', ignoring.", value);
+
+                info->manager->read_resolv_conf = false;
+        }
+
+        return 0;
+}
+
+static void read_proc_cmdline(Manager *m) {
+        int r;
+
+        assert(m);
+
+        r = proc_cmdline_parse(proc_cmdline_callback, &(struct ProcCmdlineInfo) { .manager = m }, 0);
+        if (r < 0)
+                log_warning_errno(r, "Failed to read kernel command line, ignoring: %m");
+}
+
 int manager_parse_config_file(Manager *m) {
         int r;
 
         assert(m);
 
-        r = config_parse_many_nulstr(
-                        PKGSYSCONFDIR "/resolved.conf",
-                        CONF_PATHS_NULSTR("systemd/resolved.conf.d"),
-                        "Resolve\0",
-                        config_item_perf_lookup, resolved_gperf_lookup,
-                        CONFIG_PARSE_WARN,
-                        m,
-                        NULL);
+        r = config_parse_config_file("resolved.conf", "Resolve\0",
+                                     config_item_perf_lookup, resolved_gperf_lookup,
+                                     CONFIG_PARSE_WARN, m);
         if (r < 0)
                 return r;
 
+        read_credentials(m);   /* credentials are only used when nothing is explicitly configured … */
+        read_proc_cmdline(m);  /* … but kernel command line overrides local configuration. */
+
         if (m->need_builtin_fallbacks) {
-                r = manager_parse_dns_server_string_and_warn(m, DNS_SERVER_FALLBACK, DNS_SERVERS, false);
+                r = manager_parse_dns_server_string_and_warn(m, DNS_SERVER_FALLBACK, DNS_SERVERS);
                 if (r < 0)
                         return r;
         }

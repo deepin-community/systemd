@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "sd-messages.h"
+
 #include "alloc-util.h"
 #include "dirent-util.h"
 #include "exit-status.h"
@@ -12,6 +14,7 @@
 #include "generator.h"
 #include "hashmap.h"
 #include "hexdecoct.h"
+#include "initrd-util.h"
 #include "install.h"
 #include "log.h"
 #include "main-func.h"
@@ -25,7 +28,9 @@
 #include "string-util.h"
 #include "strv.h"
 #include "unit-name.h"
-#include "util.h"
+
+/* 🚨 Note: this generator is deprecated! Please do not add new features! Instead, please port remaining SysV
+ * scripts over to native unit files! Thank you! 🚨 */
 
 static const struct {
         const char *path;
@@ -80,16 +85,16 @@ static void free_sysvstub_hashmapp(Hashmap **h) {
 }
 
 static int add_alias(const char *service, const char *alias) {
-        const char *link;
-        int r;
+        _cleanup_free_ char *link = NULL;
 
         assert(service);
         assert(alias);
 
-        link = prefix_roota(arg_dest, alias);
+        link = path_join(arg_dest, alias);
+        if (!link)
+                return -ENOMEM;
 
-        r = symlink(service, link);
-        if (r < 0) {
+        if (symlink(service, link) < 0) {
                 if (errno == EEXIST)
                         return 0;
 
@@ -100,10 +105,8 @@ static int add_alias(const char *service, const char *alias) {
 }
 
 static int generate_unit_file(SysvStub *s) {
-        _cleanup_free_ char *path_escaped = NULL;
+        _cleanup_free_ char *path_escaped = NULL, *unit = NULL;
         _cleanup_fclose_ FILE *f = NULL;
-        const char *unit;
-        char **p;
         int r;
 
         assert(s);
@@ -115,7 +118,9 @@ static int generate_unit_file(SysvStub *s) {
         if (!path_escaped)
                 return log_oom();
 
-        unit = prefix_roota(arg_dest, s->name);
+        unit = path_join(arg_dest, s->name);
+        if (!unit)
+                return log_oom();
 
         /* We might already have a symlink with the same name from a Provides:,
          * or from backup files like /etc/init.d/foo.bak. Real scripts always win,
@@ -245,21 +250,22 @@ static int sysv_translate_facility(SysvStub *s, unsigned line, const char *name,
                 "time",                 SPECIAL_TIME_SYNC_TARGET,
         };
 
-        const char *filename;
-        char *filename_no_sh, *e, *m;
+        _cleanup_free_ char *filename = NULL;
         const char *n;
-        unsigned i;
+        char *e, *m;
         int r;
 
         assert(name);
         assert(s);
         assert(ret);
 
-        filename = basename(s->path);
+        r = path_extract_filename(s->path, &filename);
+        if (r < 0)
+                return log_error_errno(r, "Failed to extract file name from path '%s': %m", s->path);
 
         n = *name == '$' ? name + 1 : name;
 
-        for (i = 0; i < ELEMENTSOF(table); i += 2) {
+        for (size_t i = 0; i < ELEMENTSOF(table); i += 2) {
                 if (!streq(table[i], n))
                         continue;
 
@@ -289,12 +295,9 @@ static int sysv_translate_facility(SysvStub *s, unsigned line, const char *name,
         }
 
         /* Strip ".sh" suffix from file name for comparison */
-        filename_no_sh = strdupa_safe(filename);
-        e = endswith(filename_no_sh, ".sh");
-        if (e) {
+        e = endswith(filename, ".sh");
+        if (e)
                 *e = '\0';
-                filename = filename_no_sh;
-        }
 
         /* Names equaling the file name of the services are redundant */
         if (streq_ptr(n, filename)) {
@@ -707,7 +710,6 @@ static int acquire_search_path(const char *def, const char *envvar, char ***ret)
 
 static int enumerate_sysv(const LookupPaths *lp, Hashmap *all_services) {
         _cleanup_strv_free_ char **sysvinit_path = NULL;
-        char **path;
         int r;
 
         assert(lp);
@@ -749,7 +751,7 @@ static int enumerate_sysv(const LookupPaths *lp, Hashmap *all_services) {
                         if (hashmap_contains(all_services, name))
                                 continue;
 
-                        r = unit_file_exists(UNIT_FILE_SYSTEM, lp, name);
+                        r = unit_file_exists(RUNTIME_SCOPE_SYSTEM, lp, name);
                         if (r < 0 && !IN_SET(r, -ELOOP, -ERFKILL, -EADDRNOTAVAIL)) {
                                 log_debug_errno(r, "Failed to detect whether %s exists, skipping: %m", name);
                                 continue;
@@ -762,9 +764,16 @@ static int enumerate_sysv(const LookupPaths *lp, Hashmap *all_services) {
                         if (!fpath)
                                 return log_oom();
 
-                        log_warning("SysV service '%s' lacks a native systemd unit file. "
-                                    "Automatically generating a unit file for compatibility. "
-                                    "Please update package to include a native systemd unit file, in order to make it more safe and robust.", fpath);
+                        log_struct(LOG_WARNING,
+                                   LOG_MESSAGE("SysV service '%s' lacks a native systemd unit file. "
+                                               "%s Automatically generating a unit file for compatibility. Please update package to include a native systemd unit file, in order to make it safe, robust and future-proof. "
+                                               "%s This compatibility logic is deprecated, expect removal soon. %s",
+                                               fpath,
+                                               special_glyph(SPECIAL_GLYPH_RECYCLING),
+                                               special_glyph(SPECIAL_GLYPH_WARNING_SIGN), special_glyph(SPECIAL_GLYPH_WARNING_SIGN)),
+                                   "MESSAGE_ID=" SD_MESSAGE_SYSV_GENERATOR_DEPRECATED_STR,
+                                   "SYSVSCRIPT=%s", fpath,
+                                   "UNIT=%s", name);
 
                         service = new(SysvStub, 1);
                         if (!service)
@@ -791,7 +800,6 @@ static int set_dependencies_from_rcnd(const LookupPaths *lp, Hashmap *all_servic
         Set *runlevel_services[ELEMENTSOF(rcnd_table)] = {};
         _cleanup_strv_free_ char **sysvrcnd_path = NULL;
         SysvStub *service;
-        char **p;
         int r;
 
         assert(lp);
@@ -892,11 +900,16 @@ static int run(const char *dest, const char *dest_early, const char *dest_late) 
         SysvStub *service;
         int r;
 
+        if (in_initrd()) {
+                log_debug("Skipping generator, running in the initrd.");
+                return EXIT_SUCCESS;
+        }
+
         assert_se(arg_dest = dest_late);
 
-        r = lookup_paths_init(&lp, UNIT_FILE_SYSTEM, LOOKUP_PATHS_EXCLUDE_GENERATED, NULL);
+        r = lookup_paths_init_or_warn(&lp, RUNTIME_SCOPE_SYSTEM, LOOKUP_PATHS_EXCLUDE_GENERATED, NULL);
         if (r < 0)
-                return log_error_errno(r, "Failed to find lookup paths: %m");
+                return r;
 
         all_services = hashmap_new(&string_hash_ops);
         if (!all_services)

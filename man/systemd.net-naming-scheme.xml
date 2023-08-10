@@ -98,10 +98,37 @@
     <variablelist>
         <varlistentry>
           <term><varname>ID_NET_NAME_ONBOARD=<replaceable>prefix</replaceable><constant>o</constant><replaceable>number</replaceable></varname></term>
+          <term><varname>ID_NET_NAME_ONBOARD=<replaceable>prefix</replaceable><constant>d</constant><replaceable>number</replaceable></varname></term>
 
           <listitem><para>This name is set based on the numeric ordering information given by the firmware
-          for on-board devices. The name consists of the prefix, letter <constant>o</constant>, and a number
-          specified by the firmware. This is only available for PCI devices.</para>
+          for on-board devices. Different schemes are used depending on the firmware type, as described in
+          the table below.</para>
+
+            <table>
+              <title>On-board naming schemes</title>
+
+              <tgroup cols='2'>
+                <thead>
+                  <row>
+                    <entry>Format</entry>
+                    <entry>Description</entry>
+                  </row>
+                </thead>
+
+                <tbody>
+                  <row>
+                    <entry><replaceable>prefix</replaceable><constant>o</constant><replaceable>number</replaceable></entry>
+                    <entry>PCI on-board index</entry>
+                  </row>
+
+                  <row>
+                    <entry><replaceable>prefix</replaceable><constant>d</constant><replaceable>number</replaceable></entry>
+                    <entry>Devicetree alias index</entry>
+                  </row>
+
+                </tbody>
+              </tgroup>
+            </table>
           </listitem>
         </varlistentry>
 
@@ -132,6 +159,7 @@
           <term><varname>ID_NET_NAME_SLOT=<replaceable>prefix</replaceable>[<constant>P</constant><replaceable>domain</replaceable>]<constant>s</constant><replaceable>slot</replaceable>[<constant>f</constant><replaceable>function</replaceable>][<constant>n</constant><replaceable>port_name</replaceable>|<constant>d</constant><replaceable>dev_port</replaceable>]<constant>b</constant><replaceable>number</replaceable></varname></term>
           <term><varname>ID_NET_NAME_SLOT=<replaceable>prefix</replaceable>[<constant>P</constant><replaceable>domain</replaceable>]<constant>s</constant><replaceable>slot</replaceable>[<constant>f</constant><replaceable>function</replaceable>][<constant>n</constant><replaceable>port_name</replaceable>|<constant>d</constant><replaceable>dev_port</replaceable>]<constant>u</constant><replaceable>port</replaceable>…[<constant>c</constant><replaceable>config</replaceable>][<constant>i</constant><replaceable>interface</replaceable>]</varname></term>
           <term><varname>ID_NET_NAME_SLOT=<replaceable>prefix</replaceable>[<constant>P</constant><replaceable>domain</replaceable>]<constant>s</constant><replaceable>slot</replaceable>[<constant>f</constant><replaceable>function</replaceable>][<constant>n</constant><replaceable>port_name</replaceable>|<constant>d</constant><replaceable>dev_port</replaceable>]<constant>v</constant><replaceable>slot</replaceable></varname></term>
+          <term><varname>ID_NET_NAME_SLOT=<replaceable>prefix</replaceable>[<constant>P</constant><replaceable>domain</replaceable>]<constant>s</constant><replaceable>slot</replaceable>[<constant>f</constant><replaceable>function</replaceable>][<constant>n</constant><replaceable>port_name</replaceable>|<constant>d</constant><replaceable>dev_port</replaceable>]<constant>r</constant><replaceable>slot</replaceable></varname></term>
 
           <listitem><para>This property describes the slot position. Different schemes are used depending on
           the bus type, as described in the table below. In case of USB, BCMA, and SR-VIO devices, the full
@@ -179,6 +207,11 @@
                   <entry>… <constant>v</constant><replaceable>slot</replaceable></entry>
                   <entry>SR-VIO slot number</entry>
                 </row>
+
+                <row>
+                  <entry>… <constant>r</constant><replaceable>slot</replaceable></entry>
+                  <entry>SR-IOV slot number</entry>
+                </row>
               </tbody>
             </tgroup>
           </table>
@@ -199,6 +232,11 @@
           <constant>v</constant> and the virtual device number, with any leading zeros removed. The bus
           number is ignored.</para>
 
+          <para>SR-IOV virtual device representors are named based on the name of the physical device
+          interface, with a suffix of <constant>r</constant> and the number of the virtual device that
+          is linked to the particular representor, with any leading zeros removed. The physical port
+          name and the bus number are ignored.</para>
+
           <para>In some configurations a parent PCI bridge of a given network controller may be associated
           with a slot. In such case we don't generate this device property to avoid possible naming conflicts.</para>
           </listitem>
@@ -208,6 +246,7 @@
           <term><varname>ID_NET_NAME_PATH=<replaceable>prefix</replaceable><constant>c</constant><replaceable>bus_id</replaceable></varname></term>
           <term><varname>ID_NET_NAME_PATH=<replaceable>prefix</replaceable><constant>a</constant><replaceable>vendor</replaceable><replaceable>model</replaceable><constant>i</constant><replaceable>instance</replaceable></varname></term>
           <term><varname>ID_NET_NAME_PATH=<replaceable>prefix</replaceable><constant>i</constant><replaceable>address</replaceable><constant>n</constant><replaceable>port_name</replaceable></varname></term>
+          <term><varname>ID_NET_NAME_PATH=<replaceable>prefix</replaceable><constant>u</constant><replaceable>port</replaceable>…</varname></term>
           <term><varname>ID_NET_NAME_PATH=<replaceable>prefix</replaceable>[<constant>P</constant><replaceable>domain</replaceable>]<constant>p</constant><replaceable>bus</replaceable><constant>s</constant><replaceable>slot</replaceable>[<constant>f</constant><replaceable>function</replaceable>][<constant>n</constant><replaceable>phys_port_name</replaceable>|<constant>d</constant><replaceable>dev_port</replaceable>]</varname></term>
           <term><varname>ID_NET_NAME_PATH=<replaceable>prefix</replaceable>[<constant>P</constant><replaceable>domain</replaceable>]<constant>p</constant><replaceable>bus</replaceable><constant>s</constant><replaceable>slot</replaceable>[<constant>f</constant><replaceable>function</replaceable>][<constant>n</constant><replaceable>phys_port_name</replaceable>|<constant>d</constant><replaceable>dev_port</replaceable>]<constant>b</constant><replaceable>number</replaceable></varname></term>
           <term><varname>ID_NET_NAME_PATH=<replaceable>prefix</replaceable>[<constant>P</constant><replaceable>domain</replaceable>]<constant>p</constant><replaceable>bus</replaceable><constant>s</constant><replaceable>slot</replaceable>[<constant>f</constant><replaceable>function</replaceable>][<constant>n</constant><replaceable>phys_port_name</replaceable>|<constant>d</constant><replaceable>dev_port</replaceable>]<constant>u</constant><replaceable>port</replaceable>…[<constant>c</constant><replaceable>config</replaceable>][<constant>i</constant><replaceable>interface</replaceable>]</varname></term>
@@ -384,10 +423,10 @@
           numbers, which could either result in an incorrect value of the <varname>ID_NET_NAME_SLOT</varname>
           property or none at all.</para>
 
-          <para>Some firmware and hypervisor implementations report unreasonably high numbers for the onboard
-          index. To prevent the generation of bogus onbard interface names, index numbers greater than 16381
-          (2¹⁴-1) were ignored. For s390 PCI devices index values up to 65535 (2¹⁶-1) are valid. To account
-          for that, the limit was increased to 65535.</para>
+          <para>Some firmware and hypervisor implementations report unreasonably high numbers for the
+          on-board index. To prevent the generation of bogus onbard interface names, index numbers greater
+          than 16381 (2¹⁴-1) were ignored. For s390 PCI devices index values up to 65535 (2¹⁶-1) are valid.
+          To account for that, the limit was increased to 65535.</para>
 
           <para>The udev rule <varname>NAME=</varname> replaces <literal>:</literal>,
           <literal>/</literal>, and <literal>%</literal> with an underscore (<literal>_</literal>), and
@@ -400,6 +439,43 @@
 
           <listitem><para>Added naming scheme for Xen netfront "vif" interfaces based on the guest side
           VIF number set from the Xen config (or the interface index in AWS EC2).</para>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term><constant>v251</constant></term>
+
+          <listitem><para>Since version <constant>v247</constant> we no longer set
+          <varname>ID_NET_NAME_SLOT</varname> if we detect that a PCI device associated with a slot is a PCI
+          bridge as that would create naming conflict when there are more child devices on that bridge. Now,
+          this is relaxed and we will use slot information to generate the name based on it but only if
+          the PCI device has multiple functions. This is safe because distinct function number is a part of
+          the device name for multifunction devices.</para>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term><constant>v252</constant></term>
+
+          <listitem><para>Added naming scheme for platform devices with devicetree aliases.</para>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term><constant>v253</constant></term>
+
+          <listitem><para>Set <varname>ID_NET_NAME_PATH</varname> for usb devices not connected via a PCI bus.</para>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term><constant>v254</constant></term>
+
+          <listitem><para>Naming was changed for SR-IOV virtual device representors.</para>
+
+          <para>The <literal>r<replaceable>slot</replaceable></literal> suffix was added to differentiate SR-IOV
+          virtual device representors attached to a single physical device interface.
+          </para>
           </listitem>
         </varlistentry>
 

@@ -13,7 +13,6 @@
 
 static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suffix) {
         _cleanup_strv_free_ char **paths = NULL;
-        char **p;
         int r;
 
         r = unit_file_find_dropin_paths(NULL,
@@ -85,17 +84,20 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suff
 
 int unit_load_dropin(Unit *u) {
         _cleanup_strv_free_ char **l = NULL;
-        char **f;
         int r;
 
         assert(u);
 
-        /* Load dependencies from .wants and .requires directories */
+        /* Load dependencies from .wants, .requires and .upholds directories */
         r = process_deps(u, UNIT_WANTS, ".wants");
         if (r < 0)
                 return r;
 
         r = process_deps(u, UNIT_REQUIRES, ".requires");
+        if (r < 0)
+                return r;
+
+        r = process_deps(u, UNIT_UPHOLDS, ".upholds");
         if (r < 0)
                 return r;
 

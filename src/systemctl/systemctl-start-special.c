@@ -18,7 +18,7 @@
 #include "systemctl.h"
 
 static int load_kexec_kernel(void) {
-        _cleanup_(boot_config_free) BootConfig config = {};
+        _cleanup_(boot_config_free) BootConfig config = BOOT_CONFIG_NULL;
         _cleanup_free_ char *kernel = NULL, *initrd = NULL, *options = NULL;
         const BootEntry *e;
         pid_t pid;
@@ -32,7 +32,7 @@ static int load_kexec_kernel(void) {
         if (access(KEXEC, X_OK) < 0)
                 return log_error_errno(errno, KEXEC" is not available: %m");
 
-        r = boot_entries_load_config_auto(NULL, NULL, &config);
+        r = boot_config_load_auto(&config, NULL, NULL);
         if (r == -ENOKEY)
                 /* The call doesn't log about ENOKEY, let's do so here. */
                 return log_error_errno(r,
@@ -40,6 +40,10 @@ static int load_kexec_kernel(void) {
                                        is_efi_boot()
                                        ? "Cannot automatically load kernel: ESP mount point not found."
                                        : "Automatic loading works only on systems booted with EFI.");
+        if (r < 0)
+                return r;
+
+        r = boot_config_select_special_entries(&config, /* skip_efivars= */ false);
         if (r < 0)
                 return r;
 
@@ -116,7 +120,7 @@ static int set_exit_code(uint8_t code) {
         return 0;
 }
 
-int start_special(int argc, char *argv[], void *userdata) {
+int verb_start_special(int argc, char *argv[], void *userdata) {
         bool termination_action; /* An action that terminates the manager, can be performed also by
                                   * signal. */
         enum action a;
@@ -149,19 +153,8 @@ int start_special(int argc, char *argv[], void *userdata) {
                 return r;
 
         if (a == ACTION_REBOOT) {
-                const char *arg = NULL;
-
-                if (argc > 1) {
-                        if (arg_reboot_argument)
-                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Both --reboot-argument= and positional argument passed to reboot command, refusing.");
-
-                        log_notice("Positional argument to reboot command is deprecated, please use --reboot-argument= instead. Accepting anyway.");
-                        arg = argv[1];
-                } else
-                        arg = arg_reboot_argument;
-
-                if (arg) {
-                        r = update_reboot_parameter_and_warn(arg, false);
+                if (arg_reboot_argument) {
+                        r = update_reboot_parameter_and_warn(arg_reboot_argument, false);
                         if (r < 0)
                                 return r;
                 }
@@ -197,39 +190,57 @@ int start_special(int argc, char *argv[], void *userdata) {
 
         if (arg_force >= 1 &&
             (termination_action || IN_SET(a, ACTION_KEXEC, ACTION_EXIT)))
-                r = trivial_method(argc, argv, userdata);
+                r = verb_trivial_method(argc, argv, userdata);
         else {
                 /* First try logind, to allow authentication with polkit */
-                if (IN_SET(a,
-                           ACTION_POWEROFF,
-                           ACTION_REBOOT,
-                           ACTION_KEXEC,
-                           ACTION_HALT,
-                           ACTION_SUSPEND,
-                           ACTION_HIBERNATE,
-                           ACTION_HYBRID_SLEEP,
-                           ACTION_SUSPEND_THEN_HIBERNATE)) {
+                switch (a) {
 
-                        r = logind_reboot(a);
-                        if (r >= 0)
-                                return r;
-                        if (IN_SET(r, -EOPNOTSUPP, -EINPROGRESS))
-                                /* Requested operation is not supported or already in progress */
+                case ACTION_POWEROFF:
+                case ACTION_REBOOT:
+                case ACTION_KEXEC:
+                case ACTION_HALT:
+                case ACTION_SOFT_REBOOT:
+                        if (arg_when == 0)
+                                r = logind_reboot(a);
+                        else if (arg_when != USEC_INFINITY)
+                                r = logind_schedule_shutdown(a);
+                        else /* arg_when == USEC_INFINITY */
+                                r = logind_cancel_shutdown();
+                        if (r >= 0 || IN_SET(r, -EACCES, -EOPNOTSUPP, -EINPROGRESS))
+                                /* The latter indicates that the requested operation requires auth,
+                                 * is not supported or already in progress, in which cases we ignore the error. */
                                 return r;
 
                         /* On all other errors, try low-level operation. In order to minimize the difference
                          * between operation with and without logind, we explicitly enable non-blocking mode
                          * for this, as logind's shutdown operations are always non-blocking. */
+                        arg_no_block = true;
+                        break;
+
+                case ACTION_SUSPEND:
+                case ACTION_HIBERNATE:
+                case ACTION_HYBRID_SLEEP:
+                case ACTION_SUSPEND_THEN_HIBERNATE:
+
+                        r = logind_reboot(a);
+                        if (r >= 0 || IN_SET(r, -EACCES, -EOPNOTSUPP, -EINPROGRESS))
+                                return r;
 
                         arg_no_block = true;
+                        break;
 
-                } else if (IN_SET(a, ACTION_EXIT))
+                case ACTION_EXIT:
                         /* Since exit is so close in behaviour to power-off/reboot, let's also make
                          * it asynchronous, in order to not confuse the user needlessly with unexpected
                          * behaviour. */
                         arg_no_block = true;
+                        break;
 
-                r = start_unit(argc, argv, userdata);
+                default:
+                        ;
+                }
+
+                r = verb_start(argc, argv, userdata);
         }
 
         if (termination_action && arg_force < 2 &&
@@ -239,13 +250,13 @@ int start_special(int argc, char *argv[], void *userdata) {
         return r;
 }
 
-int start_system_special(int argc, char *argv[], void *userdata) {
+int verb_start_system_special(int argc, char *argv[], void *userdata) {
         /* Like start_special above, but raises an error when running in user mode */
 
-        if (arg_scope != UNIT_FILE_SYSTEM)
+        if (arg_runtime_scope != RUNTIME_SCOPE_SYSTEM)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "Bad action for %s mode.",
-                                       arg_scope == UNIT_FILE_GLOBAL ? "--global" : "--user");
+                                       runtime_scope_cmdline_option_to_string(arg_runtime_scope));
 
-        return start_special(argc, argv, userdata);
+        return verb_start_special(argc, argv, userdata);
 }

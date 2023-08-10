@@ -3,24 +3,24 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "sd-id128.h"
 #include "sd-journal.h"
 
 #include "alloc-util.h"
 #include "chattr-util.h"
 #include "io-util.h"
-#include "journald-file.h"
 #include "journal-vacuum.h"
 #include "log.h"
+#include "managed-journal-file.h"
 #include "parse-util.h"
 #include "rm-rf.h"
 #include "tests.h"
-#include "util.h"
 
 /* This program tests skipping around in a multi-file journal. */
 
 static bool arg_keep = false;
 
-_noreturn_ static void log_assert_errno(const char *text, int error, const char *file, int line, const char *func) {
+_noreturn_ static void log_assert_errno(const char *text, int error, const char *file, unsigned line, const char *func) {
         log_internal(LOG_CRIT, error, file, line, func,
                      "'%s' failed at %s:%u (%s): %m", text, file, line, func);
         abort();
@@ -30,25 +30,25 @@ _noreturn_ static void log_assert_errno(const char *text, int error, const char 
         do {                                                            \
                 int _r_ = (expr);                                       \
                 if (_unlikely_(_r_ < 0))                                \
-                        log_assert_errno(#expr, -_r_, PROJECT_FILE, __LINE__, __PRETTY_FUNCTION__); \
+                        log_assert_errno(#expr, -_r_, PROJECT_FILE, __LINE__, __func__); \
         } while (false)
 
-static JournaldFile *test_open(const char *name) {
+static ManagedJournalFile *test_open(const char *name) {
         _cleanup_(mmap_cache_unrefp) MMapCache *m = NULL;
-        JournaldFile *f;
+        ManagedJournalFile *f;
 
         m = mmap_cache_new();
         assert_se(m != NULL);
 
-        assert_ret(journald_file_open(-1, name, O_RDWR|O_CREAT, 0644, true, UINT64_MAX, false, NULL, m, NULL, NULL, &f));
+        assert_ret(managed_journal_file_open(-1, name, O_RDWR|O_CREAT, JOURNAL_COMPRESS, 0644, UINT64_MAX, NULL, m, NULL, NULL, &f));
         return f;
 }
 
-static void test_close(JournaldFile *f) {
-        (void) journald_file_close(f);
+static void test_close(ManagedJournalFile *f) {
+        (void) managed_journal_file_close(f);
 }
 
-static void append_number(JournaldFile *f, int n, uint64_t *seqnum) {
+static void append_number(ManagedJournalFile *f, int n, uint64_t *seqnum) {
         char *p;
         dual_timestamp ts;
         static dual_timestamp previous_ts = {};
@@ -66,25 +66,25 @@ static void append_number(JournaldFile *f, int n, uint64_t *seqnum) {
 
         assert_se(asprintf(&p, "NUMBER=%d", n) >= 0);
         iovec[0] = IOVEC_MAKE_STRING(p);
-        assert_ret(journal_file_append_entry(f->file, &ts, NULL, iovec, 1, seqnum, NULL, NULL));
+        assert_ret(journal_file_append_entry(f->file, &ts, NULL, iovec, 1, seqnum, NULL, NULL, NULL));
         free(p);
 }
 
-static void test_check_number (sd_journal *j, int n) {
+static void test_check_number(sd_journal *j, int n) {
         const void *d;
-        _cleanup_free_ char *k;
+        _cleanup_free_ char *k = NULL;
         size_t l;
         int x;
 
         assert_ret(sd_journal_get_data(j, "NUMBER", &d, &l));
         assert_se(k = strndup(d, l));
-        printf("%s\n", k);
+        printf("%s (expected=%i)\n", k, n);
 
-        assert_se(safe_atoi(k + 7, &x) >= 0);
+        assert_se(safe_atoi(k + STRLEN("NUMBER="), &x) >= 0);
         assert_se(n == x);
 }
 
-static void test_check_numbers_down (sd_journal *j, int count) {
+static void test_check_numbers_down(sd_journal *j, int count) {
         int i;
 
         for (i = 1; i <= count; i++) {
@@ -99,7 +99,7 @@ static void test_check_numbers_down (sd_journal *j, int count) {
 
 }
 
-static void test_check_numbers_up (sd_journal *j, int count) {
+static void test_check_numbers_up(sd_journal *j, int count) {
         for (int i = count; i >= 1; i--) {
                 int r;
                 test_check_number(j, i);
@@ -113,27 +113,43 @@ static void test_check_numbers_up (sd_journal *j, int count) {
 }
 
 static void setup_sequential(void) {
-        JournaldFile *one, *two;
-        one = test_open("one.journal");
-        two = test_open("two.journal");
-        append_number(one, 1, NULL);
-        append_number(one, 2, NULL);
-        append_number(two, 3, NULL);
-        append_number(two, 4, NULL);
-        test_close(one);
-        test_close(two);
+        ManagedJournalFile *f1, *f2, *f3;
+
+        f1 = test_open("one.journal");
+        f2 = test_open("two.journal");
+        f3 = test_open("three.journal");
+        append_number(f1, 1, NULL);
+        append_number(f1, 2, NULL);
+        append_number(f1, 3, NULL);
+        append_number(f2, 4, NULL);
+        append_number(f2, 5, NULL);
+        append_number(f2, 6, NULL);
+        append_number(f3, 7, NULL);
+        append_number(f3, 8, NULL);
+        append_number(f3, 9, NULL);
+        test_close(f1);
+        test_close(f2);
+        test_close(f3);
 }
 
 static void setup_interleaved(void) {
-        JournaldFile *one, *two;
-        one = test_open("one.journal");
-        two = test_open("two.journal");
-        append_number(one, 1, NULL);
-        append_number(two, 2, NULL);
-        append_number(one, 3, NULL);
-        append_number(two, 4, NULL);
-        test_close(one);
-        test_close(two);
+        ManagedJournalFile *f1, *f2, *f3;
+
+        f1 = test_open("one.journal");
+        f2 = test_open("two.journal");
+        f3 = test_open("three.journal");
+        append_number(f1, 1, NULL);
+        append_number(f2, 2, NULL);
+        append_number(f3, 3, NULL);
+        append_number(f1, 4, NULL);
+        append_number(f2, 5, NULL);
+        append_number(f3, 6, NULL);
+        append_number(f1, 7, NULL);
+        append_number(f2, 8, NULL);
+        append_number(f3, 9, NULL);
+        test_close(f1);
+        test_close(f2);
+        test_close(f3);
 }
 
 static void mkdtemp_chdir_chattr(char *path) {
@@ -145,7 +161,7 @@ static void mkdtemp_chdir_chattr(char *path) {
         (void) chattr_path(path, FS_NOCOW_FL, FS_NOCOW_FL, NULL);
 }
 
-static void test_skip(void (*setup)(void)) {
+static void test_skip_one(void (*setup)(void)) {
         char t[] = "/var/tmp/journal-skip-XXXXXX";
         sd_journal *j;
         int r;
@@ -154,38 +170,130 @@ static void test_skip(void (*setup)(void)) {
 
         setup();
 
-        /* Seek to head, iterate down.
-         */
+        /* Seek to head, iterate down. */
         assert_ret(sd_journal_open_directory(&j, t, 0));
         assert_ret(sd_journal_seek_head(j));
-        assert_ret(sd_journal_next(j));
-        test_check_numbers_down(j, 4);
+        assert_ret(sd_journal_next(j));     /* pointing the first entry */
+        test_check_numbers_down(j, 9);
         sd_journal_close(j);
 
-        /* Seek to tail, iterate up.
-         */
+        /* Seek to head, iterate down. */
+        assert_ret(sd_journal_open_directory(&j, t, 0));
+        assert_ret(sd_journal_seek_head(j));
+        assert_ret(sd_journal_next(j));     /* pointing the first entry */
+        assert_ret(sd_journal_previous(j)); /* no-op */
+        test_check_numbers_down(j, 9);
+        sd_journal_close(j);
+
+        /* Seek to head, move to previous, then iterate down. */
+        assert_ret(sd_journal_open_directory(&j, t, 0));
+        assert_ret(sd_journal_seek_head(j));
+        assert_ret(sd_journal_previous(j)); /* no-op */
+        assert_ret(sd_journal_next(j)); /* pointing the first entry */
+        test_check_numbers_down(j, 9);
+        sd_journal_close(j);
+
+        /* Seek to head, walk several steps, then iterate down. */
+        assert_ret(sd_journal_open_directory(&j, t, 0));
+        assert_ret(sd_journal_seek_head(j));
+        assert_ret(sd_journal_previous(j)); /* no-op */
+        assert_ret(sd_journal_previous(j)); /* no-op */
+        assert_ret(sd_journal_previous(j)); /* no-op */
+        assert_ret(sd_journal_next(j));     /* pointing the first entry */
+        assert_ret(sd_journal_previous(j)); /* no-op */
+        assert_ret(sd_journal_previous(j)); /* no-op */
+        test_check_numbers_down(j, 9);
+        sd_journal_close(j);
+
+        /* Seek to tail, iterate up. */
         assert_ret(sd_journal_open_directory(&j, t, 0));
         assert_ret(sd_journal_seek_tail(j));
         assert_ret(sd_journal_previous(j));
-        test_check_numbers_up(j, 4);
+        test_check_numbers_up(j, 9);
         sd_journal_close(j);
 
-        /* Seek to tail, skip to head, iterate down.
-         */
+        /* Seek to tail, move to next, then iterate up. */
         assert_ret(sd_journal_open_directory(&j, t, 0));
         assert_ret(sd_journal_seek_tail(j));
-        assert_ret(r = sd_journal_previous_skip(j, 4));
-        assert_se(r == 4);
-        test_check_numbers_down(j, 4);
+        assert_ret(sd_journal_next(j));     /* no-op */
+        assert_ret(sd_journal_previous(j)); /* pointing the first entry */
+        test_check_numbers_up(j, 9);
         sd_journal_close(j);
 
-        /* Seek to head, skip to tail, iterate up.
-         */
+        /* Seek to tail, walk several steps, then iterate up. */
+        assert_ret(sd_journal_open_directory(&j, t, 0));
+        assert_ret(sd_journal_seek_tail(j));
+        assert_ret(sd_journal_next(j));     /* no-op */
+        assert_ret(sd_journal_next(j));     /* no-op */
+        assert_ret(sd_journal_next(j));     /* no-op */
+        assert_ret(sd_journal_previous(j)); /* pointing the last entry. */
+        assert_ret(sd_journal_next(j));     /* no-op */
+        assert_ret(sd_journal_next(j));     /* no-op */
+        test_check_numbers_up(j, 9);
+        sd_journal_close(j);
+
+        /* Seek to tail, skip to head, iterate down. */
+        assert_ret(sd_journal_open_directory(&j, t, 0));
+        assert_ret(sd_journal_seek_tail(j));
+        assert_ret(r = sd_journal_previous_skip(j, 9));
+        assert_se(r == 9);
+        test_check_numbers_down(j, 9);
+        sd_journal_close(j);
+
+        /* Seek to tail, skip to head in a more complex way, then iterate down. */
+        assert_ret(sd_journal_open_directory(&j, t, 0));
+        assert_ret(sd_journal_seek_tail(j));
+        assert_ret(sd_journal_next(j));    /* no-op */
+        assert_ret(r = sd_journal_previous_skip(j, 4));
+        assert_se(r == 4);
+        assert_ret(r = sd_journal_previous_skip(j, 5));
+        assert_se(r == 5);
+        assert_ret(sd_journal_previous(j)); /* no-op */
+        assert_ret(r = sd_journal_previous_skip(j, 5));
+        assert_se(r == 0);
+        assert_ret(sd_journal_next(j));
+        assert_ret(r = sd_journal_previous_skip(j, 5));
+        assert_se(r == 1);
+        assert_ret(sd_journal_next(j));
+        assert_ret(sd_journal_next(j));
+        assert_ret(sd_journal_previous(j));
+        assert_ret(sd_journal_next(j));
+        assert_ret(sd_journal_next(j));
+        assert_ret(r = sd_journal_previous_skip(j, 5));
+        assert_se(r == 3);
+        test_check_numbers_down(j, 9);
+        sd_journal_close(j);
+
+        /* Seek to head, skip to tail, iterate up. */
         assert_ret(sd_journal_open_directory(&j, t, 0));
         assert_ret(sd_journal_seek_head(j));
+        assert_ret(r = sd_journal_next_skip(j, 9));
+        assert_se(r == 9);
+        test_check_numbers_up(j, 9);
+        sd_journal_close(j);
+
+        /* Seek to head, skip to tail in a more complex way, then iterate up. */
+        assert_ret(sd_journal_open_directory(&j, t, 0));
+        assert_ret(sd_journal_seek_head(j));
+        assert_ret(sd_journal_previous(j)); /* no-op */
         assert_ret(r = sd_journal_next_skip(j, 4));
         assert_se(r == 4);
-        test_check_numbers_up(j, 4);
+        assert_ret(r = sd_journal_next_skip(j, 5));
+        assert_se(r == 5);
+        assert_ret(sd_journal_next(j));     /* no-op */
+        assert_ret(r = sd_journal_next_skip(j, 5));
+        assert_se(r == 0);
+        assert_ret(sd_journal_previous(j));
+        assert_ret(r = sd_journal_next_skip(j, 5));
+        assert_se(r == 1);
+        assert_ret(sd_journal_previous(j));
+        assert_ret(sd_journal_previous(j));
+        assert_ret(sd_journal_next(j));
+        assert_ret(sd_journal_previous(j));
+        assert_ret(sd_journal_previous(j));
+        assert_ret(r = sd_journal_next_skip(j, 5));
+        assert_se(r == 3);
+        test_check_numbers_up(j, 9);
         sd_journal_close(j);
 
         log_info("Done...");
@@ -201,11 +309,15 @@ static void test_skip(void (*setup)(void)) {
         puts("------------------------------------------------------------");
 }
 
-static void test_sequence_numbers(void) {
+TEST(skip) {
+        test_skip_one(setup_sequential);
+        test_skip_one(setup_interleaved);
+}
 
+static void test_sequence_numbers_one(void) {
         _cleanup_(mmap_cache_unrefp) MMapCache *m = NULL;
         char t[] = "/var/tmp/journal-seq-XXXXXX";
-        JournaldFile *one, *two;
+        ManagedJournalFile *one, *two;
         uint64_t seqnum = 0;
         sd_id128_t seqnum_id;
 
@@ -214,8 +326,8 @@ static void test_sequence_numbers(void) {
 
         mkdtemp_chdir_chattr(t);
 
-        assert_se(journald_file_open(-1, "one.journal", O_RDWR|O_CREAT, 0644,
-                                     true, UINT64_MAX, false, NULL, m, NULL, NULL, &one) == 0);
+        assert_se(managed_journal_file_open(-1, "one.journal", O_RDWR|O_CREAT, JOURNAL_COMPRESS, 0644,
+                                            UINT64_MAX, NULL, m, NULL, NULL, &one) == 0);
 
         append_number(one, 1, &seqnum);
         printf("seqnum=%"PRIu64"\n", seqnum);
@@ -226,18 +338,18 @@ static void test_sequence_numbers(void) {
 
         assert_se(one->file->header->state == STATE_ONLINE);
         assert_se(!sd_id128_equal(one->file->header->file_id, one->file->header->machine_id));
-        assert_se(!sd_id128_equal(one->file->header->file_id, one->file->header->boot_id));
+        assert_se(!sd_id128_equal(one->file->header->file_id, one->file->header->tail_entry_boot_id));
         assert_se(sd_id128_equal(one->file->header->file_id, one->file->header->seqnum_id));
 
         memcpy(&seqnum_id, &one->file->header->seqnum_id, sizeof(sd_id128_t));
 
-        assert_se(journald_file_open(-1, "two.journal", O_RDWR|O_CREAT, 0644,
-                                     true, UINT64_MAX, false, NULL, m, NULL, one, &two) == 0);
+        assert_se(managed_journal_file_open(-1, "two.journal", O_RDWR|O_CREAT, JOURNAL_COMPRESS, 0644,
+                                            UINT64_MAX, NULL, m, NULL, one, &two) == 0);
 
         assert_se(two->file->header->state == STATE_ONLINE);
         assert_se(!sd_id128_equal(two->file->header->file_id, one->file->header->file_id));
         assert_se(sd_id128_equal(one->file->header->machine_id, one->file->header->machine_id));
-        assert_se(sd_id128_equal(one->file->header->boot_id, one->file->header->boot_id));
+        assert_se(sd_id128_equal(one->file->header->tail_entry_boot_id, one->file->header->tail_entry_boot_id));
         assert_se(sd_id128_equal(one->file->header->seqnum_id, one->file->header->seqnum_id));
 
         append_number(two, 3, &seqnum);
@@ -259,22 +371,26 @@ static void test_sequence_numbers(void) {
 
         test_close(one);
 
-        /* restart server */
-        seqnum = 0;
+        /* If the machine-id is not initialized, the header file verification
+         * (which happens when re-opening a journal file) will fail. */
+        if (sd_id128_get_machine(NULL) >= 0) {
+                /* restart server */
+                seqnum = 0;
 
-        assert_se(journald_file_open(-1, "two.journal", O_RDWR, 0,
-                                     true, UINT64_MAX, false, NULL, m, NULL, NULL, &two) == 0);
+                assert_se(managed_journal_file_open(-1, "two.journal", O_RDWR, JOURNAL_COMPRESS, 0,
+                                                    UINT64_MAX, NULL, m, NULL, NULL, &two) == 0);
 
-        assert_se(sd_id128_equal(two->file->header->seqnum_id, seqnum_id));
+                assert_se(sd_id128_equal(two->file->header->seqnum_id, seqnum_id));
 
-        append_number(two, 7, &seqnum);
-        printf("seqnum=%"PRIu64"\n", seqnum);
-        assert_se(seqnum == 5);
+                append_number(two, 7, &seqnum);
+                printf("seqnum=%"PRIu64"\n", seqnum);
+                assert_se(seqnum == 5);
 
-        /* So..., here we have the same seqnum in two files with the
-         * same seqnum_id. */
+                /* So..., here we have the same seqnum in two files with the
+                 * same seqnum_id. */
 
-        test_close(two);
+                test_close(two);
+        }
 
         log_info("Done...");
 
@@ -287,19 +403,22 @@ static void test_sequence_numbers(void) {
         }
 }
 
-int main(int argc, char *argv[]) {
-        test_setup_logging(LOG_DEBUG);
+TEST(sequence_numbers) {
+        assert_se(setenv("SYSTEMD_JOURNAL_COMPACT", "0", 1) >= 0);
+        test_sequence_numbers_one();
 
-        /* journald_file_open requires a valid machine id */
+        assert_se(setenv("SYSTEMD_JOURNAL_COMPACT", "1", 1) >= 0);
+        test_sequence_numbers_one();
+}
+
+static int intro(void) {
+        /* managed_journal_file_open requires a valid machine id */
         if (access("/etc/machine-id", F_OK) != 0)
                 return log_tests_skipped("/etc/machine-id not found");
 
-        arg_keep = argc > 1;
+        arg_keep = saved_argc > 1;
 
-        test_skip(setup_sequential);
-        test_skip(setup_interleaved);
-
-        test_sequence_numbers();
-
-        return 0;
+        return EXIT_SUCCESS;
 }
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_DEBUG, intro);

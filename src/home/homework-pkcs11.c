@@ -15,12 +15,11 @@ int pkcs11_callback(
                 void *userdata) {
 
         _cleanup_(erase_and_freep) void *decrypted_key = NULL;
-        struct pkcs11_callback_data *data = userdata;
+        struct pkcs11_callback_data *data = ASSERT_PTR(userdata);
         _cleanup_free_ char *token_label = NULL;
         CK_TOKEN_INFO updated_token_info;
         size_t decrypted_key_size;
         CK_OBJECT_HANDLE object;
-        char **i;
         CK_RV rv;
         int r;
 
@@ -28,7 +27,6 @@ int pkcs11_callback(
         assert(slot_info);
         assert(token_info);
         assert(uri);
-        assert(data);
 
         /* Special return values:
          *

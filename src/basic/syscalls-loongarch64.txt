@@ -21,6 +21,7 @@ bpf	280
 brk	214
 cachectl
 cacheflush
+cachestat	451
 capget	90
 capset	91
 chdir	49
@@ -96,7 +97,7 @@ fsetxattr	7
 fsmount	432
 fsopen	430
 fspick	433
-fstat	80
+fstat
 fstat64
 fstatat64
 fstatfs	44
@@ -243,7 +244,7 @@ munlockall	231
 munmap	215
 name_to_handle_at	264
 nanosleep	101
-newfstatat	79
+newfstatat
 nfsservctl	42
 nice
 old_adjtimex
@@ -427,6 +428,7 @@ renameat2	276
 request_key	218
 restart_syscall	128
 riscv_flush_icache
+riscv_hwprobe
 rmdir
 rseq	293
 rt_sigaction	134
@@ -473,6 +475,7 @@ sendmmsg	269
 sendmsg	211
 sendto	206
 set_mempolicy	237
+set_mempolicy_home_node	450
 set_robust_list	99
 set_thread_area
 set_tid_address	96

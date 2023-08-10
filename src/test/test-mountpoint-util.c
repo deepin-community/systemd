@@ -5,7 +5,7 @@
 #include <unistd.h>
 
 #include "alloc-util.h"
-#include "def.h"
+#include "constants.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "hashmap.h"
@@ -17,19 +17,19 @@
 #include "tests.h"
 #include "tmpfile-util.h"
 
-static void test_mount_propagation_flags_one(const char *name, int ret, unsigned long expected) {
-        long unsigned flags;
+static void test_mount_propagation_flag_one(const char *name, int ret, unsigned long expected) {
+        unsigned long flags;
 
-        log_info("/* %s(%s) */", __func__, name);
+        log_info("/* %s(%s) */", __func__, strnull(name));
 
-        assert_se(mount_propagation_flags_from_string(name, &flags) == ret);
+        assert_se(mount_propagation_flag_from_string(name, &flags) == ret);
 
         if (ret >= 0) {
                 const char *c;
 
                 assert_se(flags == expected);
 
-                c = mount_propagation_flags_to_string(flags);
+                c = mount_propagation_flag_to_string(flags);
                 if (isempty(name))
                         assert_se(isempty(c));
                 else
@@ -37,14 +37,14 @@ static void test_mount_propagation_flags_one(const char *name, int ret, unsigned
         }
 }
 
-TEST(mount_propagation_flags) {
-        test_mount_propagation_flags_one("shared", 0, MS_SHARED);
-        test_mount_propagation_flags_one("slave", 0, MS_SLAVE);
-        test_mount_propagation_flags_one("private", 0, MS_PRIVATE);
-        test_mount_propagation_flags_one(NULL, 0, 0);
-        test_mount_propagation_flags_one("", 0, 0);
-        test_mount_propagation_flags_one("xxxx", -EINVAL, 0);
-        test_mount_propagation_flags_one(" ", -EINVAL, 0);
+TEST(mount_propagation_flag) {
+        test_mount_propagation_flag_one("shared", 0, MS_SHARED);
+        test_mount_propagation_flag_one("slave", 0, MS_SLAVE);
+        test_mount_propagation_flag_one("private", 0, MS_PRIVATE);
+        test_mount_propagation_flag_one(NULL, 0, 0);
+        test_mount_propagation_flag_one("", 0, 0);
+        test_mount_propagation_flag_one("xxxx", -EINVAL, 0);
+        test_mount_propagation_flag_one(" ", -EINVAL, 0);
 }
 
 TEST(mnt_id) {
@@ -53,8 +53,6 @@ TEST(mnt_id) {
         char *p;
         void *k;
         int r;
-
-        log_info("/* %s */", __func__);
 
         assert_se(f = fopen("/proc/self/mountinfo", "re"));
         assert_se(h = hashmap_new(&trivial_hash_ops));
@@ -85,24 +83,36 @@ TEST(mnt_id) {
 
         HASHMAP_FOREACH_KEY(p, k, h) {
                 int mnt_id = PTR_TO_INT(k), mnt_id2;
+                const char *q;
 
                 r = path_get_mnt_id(p, &mnt_id2);
                 if (r < 0) {
-                        log_debug_errno(r, "Failed to get the mnt id of %s: %m\n", p);
+                        log_debug_errno(r, "Failed to get the mnt id of %s: %m", p);
                         continue;
                 }
 
                 if (mnt_id == mnt_id2) {
-                        log_debug("mnt ids of %s is %i\n", p, mnt_id);
+                        log_debug("mnt ids of %s is %i.", p, mnt_id);
                         continue;
                 } else
-                        log_debug("mnt ids of %s are %i, %i\n", p, mnt_id, mnt_id2);
+                        log_debug("mnt ids of %s are %i (from /proc/self/mountinfo), %i (from path_get_mnt_id()).", p, mnt_id, mnt_id2);
 
-                /* The ids don't match? If so, then there are two mounts on the same path, let's check if
-                 * that's really the case */
-                char *t = hashmap_get(h, INT_TO_PTR(mnt_id2));
-                log_debug("the other path for mnt id %i is %s\n", mnt_id2, t);
-                assert_se(path_equal(p, t));
+                /* The ids don't match? This can easily happen e.g. running with "unshare --mount-proc".
+                 * See #11505. */
+                assert_se(q = hashmap_get(h, INT_TO_PTR(mnt_id2)));
+
+                assert_se((r = path_is_mount_point(p, NULL, 0)) >= 0);
+                if (r == 0) {
+                        /* If the path is not a mount point anymore, then it must be a sub directory of
+                         * the path corresponds to mnt_id2. */
+                        log_debug("The path %s for mnt id %i is not a mount point.", p, mnt_id2);
+                        assert_se(!isempty(path_startswith(p, q)));
+                } else {
+                        /* If the path is still a mount point, then it must be equivalent to the path
+                         * corresponds to mnt_id2 */
+                        log_debug("There are multiple mounts on the same path %s.", p);
+                        assert_se(path_equal(p, q));
+                }
         }
 }
 
@@ -260,13 +270,14 @@ TEST(path_is_mount_point) {
                 assert_se(rl1t == 0);
 
         } else
-                printf("Skipping bind mount file test: %m\n");
+                log_info("Skipping bind mount file test");
 
         assert_se(rm_rf(tmp_dir, REMOVE_ROOT|REMOVE_PHYSICAL) == 0);
 }
 
 TEST(fd_is_mount_point) {
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
+        int r;
 
         fd = open("/", O_RDONLY|O_CLOEXEC|O_DIRECTORY|O_NOCTTY);
         assert_se(fd >= 0);
@@ -292,19 +303,129 @@ TEST(fd_is_mount_point) {
          * the system is borked. Let's allow for it to be missing though. */
         assert_se(IN_SET(fd_is_mount_point(fd, "root", 0), -ENOENT, 0));
         assert_se(IN_SET(fd_is_mount_point(fd, "root/", 0), -ENOENT, 0));
+
+        safe_close(fd);
+        fd = open("/proc", O_RDONLY|O_CLOEXEC|O_DIRECTORY|O_NOCTTY);
+        assert_se(fd >= 0);
+
+        assert_se(fd_is_mount_point(fd, NULL, 0) > 0);
+        assert_se(fd_is_mount_point(fd, "", 0) == -EINVAL);
+        assert_se(fd_is_mount_point(fd, "version", 0) == 0);
+
+        safe_close(fd);
+        fd = open("/proc/version", O_RDONLY|O_CLOEXEC|O_NOCTTY);
+        assert_se(fd >= 0);
+
+        r = fd_is_mount_point(fd, NULL, 0);
+        assert_se(IN_SET(r, 0, -ENOTDIR)); /* on old kernels we can't determine if regular files are mount points if we have no directory fd */
+        assert_se(fd_is_mount_point(fd, "", 0) == -EINVAL);
 }
 
-DEFINE_CUSTOM_TEST_MAIN(
-        LOG_DEBUG,
-        ({
-                /* let's move into our own mount namespace with all propagation from the host turned off, so
-                 * that /proc/self/mountinfo is static and constant for the whole time our test runs. */
-                if (unshare(CLONE_NEWNS) < 0) {
-                        if (!ERRNO_IS_PRIVILEGE(errno))
-                                return log_error_errno(errno, "Failed to detach mount namespace: %m");
+TEST(ms_nosymfollow_supported) {
+        log_info("MS_NOSYMFOLLOW supported: %s", yes_no(ms_nosymfollow_supported()));
+}
 
-                        log_notice("Lacking privilege to create separate mount namespace, proceeding in originating mount namespace.");
-                } else
-                        assert_se(mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) >= 0);
-        }),
-        /* no outro */);
+TEST(mount_option_supported) {
+        int r;
+
+        r = mount_option_supported("tmpfs", "size", "64M");
+        log_info("tmpfs supports size=64M: %s (%i)", r < 0 ? "don't know" : yes_no(r), r);
+        assert_se(r > 0 || r == -EAGAIN || (r < 0 && ERRNO_IS_PRIVILEGE(r)));
+
+        r = mount_option_supported("ext4", "discard", NULL);
+        log_info("ext4 supports discard: %s (%i)", r < 0 ? "don't know" : yes_no(r), r);
+        assert_se(r > 0 || r == -EAGAIN || (r < 0 && ERRNO_IS_PRIVILEGE(r)));
+
+        r = mount_option_supported("tmpfs", "idontexist", "64M");
+        log_info("tmpfs supports idontexist: %s (%i)", r < 0 ? "don't know" : yes_no(r), r);
+        assert_se(r == 0 || r == -EAGAIN || (r < 0 && ERRNO_IS_PRIVILEGE(r)));
+
+        r = mount_option_supported("tmpfs", "ialsodontexist", NULL);
+        log_info("tmpfs supports ialsodontexist: %s (%i)", r < 0 ? "don't know" : yes_no(r), r);
+        assert_se(r == 0 || r == -EAGAIN || (r < 0 && ERRNO_IS_PRIVILEGE(r)));
+
+        r = mount_option_supported("proc", "hidepid", "1");
+        log_info("proc supports hidepid=1: %s (%i)", r < 0 ? "don't know" : yes_no(r), r);
+        assert_se(r >= 0 || r == -EAGAIN || (r < 0 && ERRNO_IS_PRIVILEGE(r)));
+}
+
+TEST(fstype_can_discard) {
+        assert_se(fstype_can_discard("ext4"));
+        assert_se(!fstype_can_discard("squashfs"));
+        assert_se(!fstype_can_discard("iso9660"));
+}
+
+TEST(fstype_can_norecovery) {
+        assert_se(fstype_can_norecovery("ext4"));
+        assert_se(!fstype_can_norecovery("vfat"));
+        assert_se(!fstype_can_norecovery("tmpfs"));
+}
+
+TEST(fstype_can_umask) {
+        assert_se(fstype_can_umask("vfat"));
+        assert_se(!fstype_can_umask("tmpfs"));
+}
+
+TEST(path_get_mnt_id_at_null) {
+        _cleanup_close_ int root_fd = -EBADF, run_fd = -EBADF;
+        int id1, id2;
+
+        assert_se(path_get_mnt_id_at(AT_FDCWD, "/run/", &id1) >= 0);
+        assert_se(id1 > 0);
+
+        assert_se(path_get_mnt_id_at(AT_FDCWD, "/run", &id2) >= 0);
+        assert_se(id1 == id2);
+        id2 = -1;
+
+        root_fd = open("/", O_DIRECTORY|O_CLOEXEC);
+        assert_se(root_fd >= 0);
+
+        assert_se(path_get_mnt_id_at(root_fd, "/run/", &id2) >= 0);
+        assert_se(id1 = id2);
+        id2 = -1;
+
+        assert_se(path_get_mnt_id_at(root_fd, "/run", &id2) >= 0);
+        assert_se(id1 = id2);
+        id2 = -1;
+
+        assert_se(path_get_mnt_id_at(root_fd, "run", &id2) >= 0);
+        assert_se(id1 = id2);
+        id2 = -1;
+
+        assert_se(path_get_mnt_id_at(root_fd, "run/", &id2) >= 0);
+        assert_se(id1 = id2);
+        id2 = -1;
+
+        run_fd = openat(root_fd, "run", O_DIRECTORY|O_CLOEXEC);
+        assert_se(run_fd >= 0);
+
+        id2 = -1;
+        assert_se(path_get_mnt_id_at(run_fd, "", &id2) >= 0);
+        assert_se(id1 = id2);
+        id2 = -1;
+
+        assert_se(path_get_mnt_id_at(run_fd, NULL, &id2) >= 0);
+        assert_se(id1 = id2);
+        id2 = -1;
+
+        assert_se(path_get_mnt_id_at(run_fd, ".", &id2) >= 0);
+        assert_se(id1 = id2);
+        id2 = -1;
+}
+
+static int intro(void) {
+        /* let's move into our own mount namespace with all propagation from the host turned off, so
+         * that /proc/self/mountinfo is static and constant for the whole time our test runs. */
+
+        if (unshare(CLONE_NEWNS) < 0) {
+                if (!ERRNO_IS_PRIVILEGE(errno))
+                        return log_error_errno(errno, "Failed to detach mount namespace: %m");
+
+                log_notice("Lacking privilege to create separate mount namespace, proceeding in originating mount namespace.");
+        } else
+                assert_se(mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) >= 0);
+
+        return EXIT_SUCCESS;
+}
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_DEBUG, intro);

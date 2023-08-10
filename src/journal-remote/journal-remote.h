@@ -6,6 +6,7 @@
 #include "hashmap.h"
 #include "journal-remote-parse.h"
 #include "journal-remote-write.h"
+#include "journal-vacuum.h"
 
 #if HAVE_MICROHTTPD
 #include "microhttpd-util.h"
@@ -19,6 +20,9 @@ struct MHDDaemonWrapper {
         sd_event_source *io_event;
         sd_event_source *timer_event;
 };
+
+MHDDaemonWrapper *MHDDaemonWrapper_free(MHDDaemonWrapper *d);
+DEFINE_TRIVIAL_CLEANUP_FUNC(MHDDaemonWrapper*, MHDDaemonWrapper_free);
 #endif
 
 struct RemoteServer {
@@ -38,9 +42,9 @@ struct RemoteServer {
         const char *output;                    /* either the output file or directory */
 
         JournalWriteSplitMode split_mode;
-        bool compress;
-        bool seal;
+        JournalFileFlags file_flags;
         bool check_trust;
+        JournalMetrics metrics;
 };
 extern RemoteServer *journal_remote_server_global;
 
@@ -48,8 +52,7 @@ int journal_remote_server_init(
                 RemoteServer *s,
                 const char *output,
                 JournalWriteSplitMode split_mode,
-                bool compress,
-                bool seal);
+                JournalFileFlags file_flags);
 
 int journal_remote_get_writer(RemoteServer *s, const char *host, Writer **writer);
 

@@ -1,223 +1,288 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <sys/file.h>
 
 #include "sd-id128.h"
 
 #include "alloc-util.h"
 #include "device-private.h"
 #include "device-util.h"
+#include "devnum-util.h"
 #include "dirent-util.h"
+#include "escape.h"
 #include "fd-util.h"
+#include "fileio.h"
 #include "format-util.h"
 #include "fs-util.h"
 #include "hexdecoct.h"
+#include "label-util.h"
 #include "mkdir-label.h"
 #include "parse-util.h"
 #include "path-util.h"
-#include "random-util.h"
 #include "selinux-util.h"
 #include "smack-util.h"
 #include "stat-util.h"
-#include "stdio-util.h"
 #include "string-util.h"
-#include "strxcpyx.h"
-#include "time-util.h"
 #include "udev-node.h"
 #include "user-util.h"
 
-#define CREATE_LINK_MAX_RETRIES        128
-#define LINK_UPDATE_MAX_RETRIES        128
-#define CREATE_STACK_LINK_MAX_RETRIES  128
-#define UPDATE_TIMESTAMP_MAX_RETRIES   128
-#define MAX_RANDOM_DELAY (250 * USEC_PER_MSEC)
-#define MIN_RANDOM_DELAY ( 50 * USEC_PER_MSEC)
 #define UDEV_NODE_HASH_KEY SD_ID128_MAKE(b9,6a,f1,ce,40,31,44,1a,9e,19,ec,8b,ae,f3,e3,2f)
 
-static int create_symlink(const char *target, const char *slink) {
-        int r;
+int udev_node_cleanup(void) {
+        _cleanup_closedir_ DIR *dir = NULL;
 
-        assert(target);
-        assert(slink);
+        /* This must not be called when any workers exist. It would cause a race between mkdir() called
+         * by stack_directory_lock() and unlinkat() called by this. */
 
-        for (unsigned i = 0; i < CREATE_LINK_MAX_RETRIES; i++) {
-                r = mkdir_parents_label(slink, 0755);
-                if (r == -ENOENT)
-                        continue;
-                if (r < 0)
-                        return r;
+        dir = opendir("/run/udev/links");
+        if (!dir) {
+                if (errno == ENOENT)
+                        return 0;
 
-                mac_selinux_create_file_prepare(slink, S_IFLNK);
-                r = RET_NERRNO(symlink(target, slink));
-                mac_selinux_create_file_clear();
-                if (r != -ENOENT)
-                        return r;
+                return log_debug_errno(errno, "Failed to open directory '/run/udev/links', ignoring: %m");
         }
 
-        return r;
-}
+        FOREACH_DIRENT_ALL(de, dir, break) {
+                _cleanup_free_ char *lockfile = NULL;
 
-static int node_symlink(sd_device *dev, const char *node, const char *slink) {
-        _cleanup_free_ char *slink_dirname = NULL, *target = NULL;
-        const char *id, *slink_tmp;
-        struct stat stats;
-        int r;
+                if (de->d_name[0] == '.')
+                        continue;
 
-        assert(dev);
-        assert(node);
-        assert(slink);
+                if (de->d_type != DT_DIR)
+                        continue;
 
-        if (lstat(slink, &stats) >= 0) {
-                if (!S_ISLNK(stats.st_mode))
-                        return log_device_debug_errno(dev, SYNTHETIC_ERRNO(EEXIST),
-                                                      "Conflicting inode '%s' found, link to '%s' will not be created.", slink, node);
-        } else if (errno != ENOENT)
-                return log_device_debug_errno(dev, errno, "Failed to lstat() '%s': %m", slink);
+                /* As commented in the above, this is called when no worker exists, hence the file is not
+                 * locked. On a later uevent, the lock file will be created if necessary. So, we can safely
+                 * remove the file now. */
+                lockfile = path_join(de->d_name, ".lock");
+                if (!lockfile)
+                        return log_oom_debug();
 
-        r = path_extract_directory(slink, &slink_dirname);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get parent directory of '%s': %m", slink);
+                if (unlinkat(dirfd(dir), lockfile, 0) < 0 && errno != ENOENT) {
+                        log_debug_errno(errno, "Failed to remove '/run/udev/links/%s', ignoring: %m", lockfile);
+                        continue;
+                }
 
-        /* use relative link */
-        r = path_make_relative(slink_dirname, node, &target);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get relative path from '%s' to '%s': %m", slink, node);
-
-        r = device_get_device_id(dev, &id);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get device id: %m");
-
-        slink_tmp = strjoina(slink, ".tmp-", id);
-        (void) unlink(slink_tmp);
-
-        r = create_symlink(target, slink_tmp);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to create symlink '%s' to '%s': %m", slink_tmp, target);
-
-        if (rename(slink_tmp, slink) < 0) {
-                r = log_device_debug_errno(dev, errno, "Failed to rename '%s' to '%s': %m", slink_tmp, slink);
-                (void) unlink(slink_tmp);
-                return r;
+                if (unlinkat(dirfd(dir), de->d_name, AT_REMOVEDIR) < 0 && errno != ENOTEMPTY)
+                        log_debug_errno(errno, "Failed to remove '/run/udev/links/%s', ignoring: %m", de->d_name);
         }
 
         return 0;
 }
 
-static int link_find_prioritized(sd_device *dev, bool add, const char *stackdir, char **ret) {
+static int node_symlink(sd_device *dev, const char *devnode, const char *slink) {
+        struct stat st;
+        int r;
+
+        assert(dev);
+        assert(slink);
+
+        if (!devnode) {
+                r = sd_device_get_devname(dev, &devnode);
+                if (r < 0)
+                        return log_device_debug_errno(dev, r, "Failed to get device node: %m");
+        }
+
+        if (lstat(slink, &st) >= 0) {
+                if (!S_ISLNK(st.st_mode))
+                        return log_device_debug_errno(dev, SYNTHETIC_ERRNO(EEXIST),
+                                                      "Conflicting inode '%s' found, symlink to '%s' will not be created.",
+                                                      slink, devnode);
+        } else if (errno != ENOENT)
+                return log_device_debug_errno(dev, errno, "Failed to lstat() '%s': %m", slink);
+
+        r = mkdir_parents_label(slink, 0755);
+        if (r < 0)
+                return log_device_debug_errno(dev, r, "Failed to create parent directory of '%s': %m", slink);
+
+        /* use relative link */
+        r = symlink_atomic_full_label(devnode, slink, /* make_relative = */ true);
+        if (r < 0)
+                return log_device_debug_errno(dev, r, "Failed to create symlink '%s' to '%s': %m", slink, devnode);
+
+        log_device_debug(dev, "Successfully created symlink '%s' to '%s'", slink, devnode);
+        return 0;
+}
+
+static int stack_directory_read_one(int dirfd, const char *id, char **devnode, int *priority) {
+        _cleanup_free_ char *buf = NULL;
+        int tmp_prio, r;
+
+        assert(dirfd >= 0);
+        assert(id);
+        assert(priority);
+
+        /* This reads priority and device node from the symlink under /run/udev/links (or udev database).
+         * If 'devnode' is NULL, obtained priority is always set to '*priority'. If 'devnode' is non-NULL,
+         * this updates '*devnode' and '*priority'. */
+
+        /* First, let's try to read the entry with the new format, which should replace the old format pretty
+         * quickly. */
+        r = readlinkat_malloc(dirfd, id, &buf);
+        if (r >= 0) {
+                char *colon;
+
+                /* With the new format, the devnode and priority can be obtained from symlink itself. */
+
+                colon = strchr(buf, ':');
+                if (!colon || colon == buf)
+                        return -EINVAL;
+
+                *colon = '\0';
+
+                /* Of course, this check is racy, but it is not necessary to be perfect. Even if the device
+                 * node will be removed after this check, we will receive 'remove' uevent, and the invalid
+                 * symlink will be removed during processing the event. The check is just for shortening the
+                 * timespan that the symlink points to a non-existing device node. */
+                if (access(colon + 1, F_OK) < 0)
+                        return -ENODEV;
+
+                r = safe_atoi(buf, &tmp_prio);
+                if (r < 0)
+                        return r;
+
+                if (!devnode)
+                        goto finalize;
+
+                if (*devnode && tmp_prio <= *priority)
+                        return 0; /* Unchanged */
+
+                r = free_and_strdup(devnode, colon + 1);
+                if (r < 0)
+                        return r;
+
+        } else if (r == -EINVAL) { /* Not a symlink ? try the old format */
+                _cleanup_(sd_device_unrefp) sd_device *dev = NULL;
+                const char *val;
+
+                /* Old format. The devnode and priority must be obtained from uevent and udev database. */
+
+                r = sd_device_new_from_device_id(&dev, id);
+                if (r < 0)
+                        return r;
+
+                r = device_get_devlink_priority(dev, &tmp_prio);
+                if (r < 0)
+                        return r;
+
+                if (!devnode)
+                        goto finalize;
+
+                if (*devnode && tmp_prio <= *priority)
+                        return 0; /* Unchanged */
+
+                r = sd_device_get_devname(dev, &val);
+                if (r < 0)
+                        return r;
+
+                r = free_and_strdup(devnode, val);
+                if (r < 0)
+                        return r;
+
+        } else
+                return r == -ENOENT ? -ENODEV : r;
+
+finalize:
+        *priority = tmp_prio;
+        return 1; /* Updated */
+}
+
+static int stack_directory_find_prioritized_devnode(sd_device *dev, int dirfd, bool add, char **ret) {
         _cleanup_closedir_ DIR *dir = NULL;
-        _cleanup_free_ char *target = NULL;
-        int r, priority = 0;
+        _cleanup_free_ char *devnode = NULL;
+        int r, priority;
         const char *id;
 
         assert(dev);
-        assert(stackdir);
+        assert(dirfd >= 0);
         assert(ret);
 
         /* Find device node of device with highest priority. This returns 1 if a device found, 0 if no
-         * device found, or a negative errno. */
+         * device found, or a negative errno on error. */
 
         if (add) {
-                const char *devnode;
+                const char *n;
 
                 r = device_get_devlink_priority(dev, &priority);
                 if (r < 0)
                         return r;
 
-                r = sd_device_get_devname(dev, &devnode);
+                r = sd_device_get_devname(dev, &n);
                 if (r < 0)
                         return r;
 
-                target = strdup(devnode);
-                if (!target)
+                devnode = strdup(n);
+                if (!devnode)
                         return -ENOMEM;
         }
 
-        dir = opendir(stackdir);
-        if (!dir) {
-                if (add) /* The stack directory must exist. */
-                        return -errno;
-                if (errno != ENOENT)
-                        return -errno;
-
-                *ret = NULL;
-                return 0;
-        }
+        dir = xopendirat(dirfd, ".", O_NOFOLLOW);
+        if (!dir)
+                return -errno;
 
         r = device_get_device_id(dev, &id);
         if (r < 0)
                 return r;
 
-        FOREACH_DIRENT_ALL(de, dir, break) {
-                _cleanup_free_ char *path = NULL, *buf = NULL;
-                int tmp_prio;
-
-                if (de->d_name[0] == '.')
-                        continue;
+        FOREACH_DIRENT(de, dir, break) {
 
                 /* skip ourself */
                 if (streq(de->d_name, id))
                         continue;
 
-                path = path_join(stackdir, de->d_name);
-                if (!path)
-                        return -ENOMEM;
-
-                if (readlink_malloc(path, &buf) >= 0) {
-                        char *devnode;
-
-                        /* New format. The devnode and priority can be obtained from symlink. */
-
-                        devnode = strchr(buf, ':');
-                        if (!devnode || devnode == buf)
-                                continue;
-
-                        *(devnode++) = '\0';
-                        if (!path_startswith(devnode, "/dev"))
-                                continue;
-
-                        if (safe_atoi(buf, &tmp_prio) < 0)
-                                continue;
-
-                        if (target && tmp_prio <= priority)
-                                continue;
-
-                        r = free_and_strdup(&target, devnode);
-                        if (r < 0)
-                                return r;
-                } else {
-                        _cleanup_(sd_device_unrefp) sd_device *tmp_dev = NULL;
-                        const char *devnode;
-
-                        /* Old format. The devnode and priority must be obtained from uevent and
-                         * udev database files. */
-
-                        if (sd_device_new_from_device_id(&tmp_dev, de->d_name) < 0)
-                                continue;
-
-                        if (device_get_devlink_priority(tmp_dev, &tmp_prio) < 0)
-                                continue;
-
-                        if (target && tmp_prio <= priority)
-                                continue;
-
-                        if (sd_device_get_devname(tmp_dev, &devnode) < 0)
-                                continue;
-
-                        r = free_and_strdup(&target, devnode);
-                        if (r < 0)
-                                return r;
-                }
-
-                priority = tmp_prio;
+                r = stack_directory_read_one(dirfd, de->d_name, &devnode, &priority);
+                if (r < 0 && r != -ENODEV)
+                        log_debug_errno(r, "Failed to read '%s', ignoring: %m", de->d_name);
         }
 
-        *ret = TAKE_PTR(target);
+        *ret = TAKE_PTR(devnode);
         return !!*ret;
+}
+
+static int stack_directory_update(sd_device *dev, int fd, bool add) {
+        const char *id;
+        int r;
+
+        assert(dev);
+        assert(fd >= 0);
+
+        r = device_get_device_id(dev, &id);
+        if (r < 0)
+                return r;
+
+        if (add) {
+                _cleanup_free_ char *data = NULL, *buf = NULL;
+                const char *devname;
+                int priority;
+
+                r = sd_device_get_devname(dev, &devname);
+                if (r < 0)
+                        return r;
+
+                r = device_get_devlink_priority(dev, &priority);
+                if (r < 0)
+                        return r;
+
+                if (asprintf(&data, "%i:%s", priority, devname) < 0)
+                        return -ENOMEM;
+
+                if (readlinkat_malloc(fd, id, &buf) >= 0 && streq(buf, data))
+                        return 0; /* Unchanged. */
+
+                (void) unlinkat(fd, id, 0);
+
+                if (symlinkat(data, fd, id) < 0)
+                        return -errno;
+
+        } else {
+                if (unlinkat(fd, id, 0) < 0) {
+                        if (errno == ENOENT)
+                                return 0; /* Unchanged. */
+                        return -errno;
+                }
+        }
+
+        return 1; /* Updated. */
 }
 
 size_t udev_node_escape_path(const char *src, char *dest, size_t size) {
@@ -262,229 +327,187 @@ toolong:
         return size - 1;
 }
 
-static int update_timestamp(sd_device *dev, const char *path, struct stat *prev) {
-        assert(path);
-        assert(prev);
-
-        /* Even if a symlink in the stack directory is created/removed, the mtime of the directory may
-         * not be changed. Why? Let's consider the following situation. For simplicity, let's assume
-         * there exist two udev workers (A and B) and all of them calls link_update() for the same
-         * devlink simultaneously.
-         *
-         * 1. A creates/removes a symlink in the stack directory.
-         * 2. A calls the first stat() in the loop of link_update().
-         * 3. A calls link_find_prioritized().
-         * 4. B creates/removes another symlink in the stack directory, so the result of the step 3 is outdated.
-         * 5. B finishes link_update().
-         * 6. A creates/removes devlink according to the outdated result in the step 3.
-         * 7. A calls the second stat() in the loop of link_update().
-         *
-         * If these 7 steps are processed in this order within a short time period that kernel's timer
-         * does not increase, then even if the contents in the stack directory is changed, the results
-         * of two stat() called by A shows the same timestamp, and A cannot detect the change.
-         *
-         * By calling this function after creating/removing symlinks in the stack directory, the
-         * timestamp of the stack directory is always increased at least in the above step 5, so A can
-         * detect the update. */
-
-        if ((prev->st_mode & S_IFMT) == 0)
-                return 0; /* Does not exist, or previous stat() failed. */
-
-        for (unsigned i = 0; i < UPDATE_TIMESTAMP_MAX_RETRIES; i++) {
-                struct stat st;
-
-                if (stat(path, &st) < 0)
-                        return -errno;
-
-                if (!stat_inode_unmodified(prev, &st))
-                        return 0;
-
-                log_device_debug(dev,
-                                 "%s is modified, but its timestamp is not changed, "
-                                 "updating timestamp after 10ms.",
-                                 path);
-
-                (void) usleep(10 * USEC_PER_MSEC);
-                if (utimensat(AT_FDCWD, path, NULL, 0) < 0)
-                        return -errno;
-        }
-
-        return -ELOOP;
-}
-
-static int update_stack_directory(sd_device *dev, const char *dirname, bool add) {
-        _cleanup_free_ char *filename = NULL, *data = NULL, *buf = NULL;
-        const char *devname, *id;
-        struct stat st = {};
-        int priority, r;
-
-        assert(dev);
-        assert(dirname);
-
-        r = device_get_device_id(dev, &id);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get device id: %m");
-
-        filename = path_join(dirname, id);
-        if (!filename)
-                return log_oom_debug();
-
-        if (!add) {
-                int unlink_error = 0, stat_error = 0;
-
-                if (stat(dirname, &st) < 0) {
-                        if (errno == ENOENT)
-                                return 0; /* The stack directory is already removed. That's OK. */
-                        stat_error = -errno;
-                }
-
-                if (unlink(filename) < 0)
-                        unlink_error = -errno;
-
-                if (rmdir(dirname) >= 0 || errno == ENOENT)
-                        return 0;
-
-                if (unlink_error < 0) {
-                        if (unlink_error == -ENOENT)
-                                return 0;
-
-                        /* If we failed to remove the symlink, then there is almost nothing we can do. */
-                        return log_device_debug_errno(dev, unlink_error, "Failed to remove %s: %m", filename);
-                }
-
-                if (stat_error < 0)
-                        return log_device_debug_errno(dev, stat_error, "Failed to stat %s: %m", dirname);
-
-                /* The symlink was removed. Check if the timestamp of directory is changed. */
-                r = update_timestamp(dev, dirname, &st);
-                if (r < 0 && r != -ENOENT)
-                        return log_device_debug_errno(dev, r, "Failed to update timestamp of %s: %m", dirname);
-
-                return 0;
-        }
-
-        r = sd_device_get_devname(dev, &devname);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get device node: %m");
-
-        r = device_get_devlink_priority(dev, &priority);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get priority of device node symlink: %m");
-
-        if (asprintf(&data, "%i:%s", priority, devname) < 0)
-                return log_oom_debug();
-
-        if (readlink_malloc(filename, &buf) >= 0 && streq(buf, data))
-                return 0;
-
-        if (unlink(filename) < 0 && errno != ENOENT)
-                log_device_debug_errno(dev, errno, "Failed to remove %s, ignoring: %m", filename);
-
-        for (unsigned j = 0; j < CREATE_STACK_LINK_MAX_RETRIES; j++) {
-                /* This may fail with -ENOENT when the parent directory is removed during
-                 * creating the file by another udevd worker. */
-                r = mkdir_p(dirname, 0755);
-                if (r == -ENOENT)
-                        continue;
-                if (r < 0)
-                        return log_device_debug_errno(dev, r, "Failed to create directory %s: %m", dirname);
-
-                if (stat(dirname, &st) < 0) {
-                        if (errno == ENOENT)
-                                continue;
-                        return log_device_debug_errno(dev, errno, "Failed to stat %s: %m", dirname);
-                }
-
-                if (symlink(data, filename) < 0) {
-                        if (errno == ENOENT)
-                                continue;
-                        return log_device_debug_errno(dev, errno, "Failed to create symbolic link %s: %m", filename);
-                }
-
-                /* The symlink was created. Check if the timestamp of directory is changed. */
-                r = update_timestamp(dev, dirname, &st);
-                if (r < 0)
-                        return log_device_debug_errno(dev, r, "Failed to update timestamp of %s: %m", dirname);
-
-                return 0;
-        }
-
-        return log_device_debug_errno(dev, SYNTHETIC_ERRNO(ELOOP), "Failed to create symbolic link %s: %m", filename);
-}
-
-/* manage "stack of names" with possibly specified device priorities */
-static int link_update(sd_device *dev, const char *slink_in, bool add) {
-        _cleanup_free_ char *slink = NULL, *dirname = NULL;
-        const char *slink_name;
+static int stack_directory_get_name(const char *slink, char **ret) {
+        _cleanup_free_ char *s = NULL, *dirname = NULL;
         char name_enc[NAME_MAX+1];
+        const char *name;
+
+        assert(slink);
+        assert(ret);
+
+        s = strdup(slink);
+        if (!s)
+                return -ENOMEM;
+
+        path_simplify(s);
+
+        if (!path_is_normalized(s))
+                return -EINVAL;
+
+        name = path_startswith(s, "/dev");
+        if (empty_or_root(name))
+                return -EINVAL;
+
+        udev_node_escape_path(name, name_enc, sizeof(name_enc));
+
+        dirname = path_join("/run/udev/links", name_enc);
+        if (!dirname)
+                return -ENOMEM;
+
+        *ret = TAKE_PTR(dirname);
+        return 0;
+}
+
+static int stack_directory_open(sd_device *dev, const char *slink, int *ret_dirfd, int *ret_lockfd) {
+        _cleanup_close_ int dirfd = -EBADF, lockfd = -EBADF;
+        _cleanup_free_ char *dirname = NULL;
         int r;
 
         assert(dev);
-        assert(slink_in);
+        assert(slink);
+        assert(ret_dirfd);
+        assert(ret_lockfd);
 
-        slink = strdup(slink_in);
-        if (!slink)
-                return log_oom_debug();
+        r = stack_directory_get_name(slink, &dirname);
+        if (r < 0)
+                return log_device_debug_errno(dev, r, "Failed to build stack directory name for '%s': %m", slink);
 
-        path_simplify(slink);
+        r = mkdir_parents(dirname, 0755);
+        if (r < 0)
+                return log_device_debug_errno(dev, r, "Failed to create stack directory '%s': %m", dirname);
 
-        slink_name = path_startswith(slink, "/dev");
-        if (!slink_name ||
-            empty_or_root(slink_name) ||
-            !path_is_normalized(slink_name))
-                return log_device_debug_errno(dev, SYNTHETIC_ERRNO(EINVAL),
-                                              "Invalid symbolic link of device node: %s", slink);
+        dirfd = open_mkdir_at(AT_FDCWD, dirname, O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_RDONLY, 0755);
+        if (dirfd < 0)
+                return log_device_debug_errno(dev, dirfd, "Failed to open stack directory '%s': %m", dirname);
 
-        (void) udev_node_escape_path(slink_name, name_enc, sizeof(name_enc));
-        dirname = path_join("/run/udev/links", name_enc);
-        if (!dirname)
-                return log_oom_debug();
+        lockfd = openat(dirfd, ".lock", O_CLOEXEC | O_NOFOLLOW | O_RDONLY | O_CREAT, 0600);
+        if (lockfd < 0)
+                return log_device_debug_errno(dev, errno, "Failed to create lock file for stack directory '%s': %m", dirname);
 
-        r = update_stack_directory(dev, dirname, add);
+        if (flock(lockfd, LOCK_EX) < 0)
+                return log_device_debug_errno(dev, errno, "Failed to place a lock on lock file for %s: %m", dirname);
+
+        *ret_dirfd = TAKE_FD(dirfd);
+        *ret_lockfd = TAKE_FD(lockfd);
+        return 0;
+}
+
+static int node_get_current(const char *slink, int dirfd, char **ret_id, int *ret_prio) {
+        _cleanup_(sd_device_unrefp) sd_device *dev = NULL;
+        _cleanup_free_ char *id_dup = NULL;
+        const char *id;
+        int r;
+
+        assert(slink);
+        assert(dirfd >= 0);
+        assert(ret_id);
+
+        r = sd_device_new_from_devname(&dev, slink);
         if (r < 0)
                 return r;
 
-        for (unsigned i = 0; i < LINK_UPDATE_MAX_RETRIES; i++) {
-                _cleanup_free_ char *target = NULL;
-                struct stat st1 = {}, st2 = {};
+        r = device_get_device_id(dev, &id);
+        if (r < 0)
+                return r;
 
-                if (i > 0) {
-                        usec_t delay = MIN_RANDOM_DELAY + random_u64_range(MAX_RANDOM_DELAY - MIN_RANDOM_DELAY);
+        id_dup = strdup(id);
+        if (!id_dup)
+                return -ENOMEM;
 
-                        log_device_debug(dev, "Directory %s was updated, retrying to update devlink %s after %s.",
-                                         dirname, slink, FORMAT_TIMESPAN(delay, USEC_PER_MSEC));
-                        (void) usleep(delay);
-                }
-
-                if (stat(dirname, &st1) < 0 && errno != ENOENT)
-                        return log_device_debug_errno(dev, errno, "Failed to stat %s: %m", dirname);
-
-                r = link_find_prioritized(dev, add, dirname, &target);
-                if (r < 0)
-                        return log_device_debug_errno(dev, r, "Failed to determine device node with the highest priority for '%s': %m", slink);
-                if (r == 0) {
-                        log_device_debug(dev, "No reference left for '%s', removing", slink);
-
-                        if (unlink(slink) < 0 && errno != ENOENT)
-                                log_device_debug_errno(dev, errno, "Failed to remove '%s', ignoring: %m", slink);
-
-                        (void) rmdir_parents(slink, "/dev");
-                        return 0;
-                }
-
-                r = node_symlink(dev, target, slink);
+        if (ret_prio) {
+                r = stack_directory_read_one(dirfd, id, NULL, ret_prio);
                 if (r < 0)
                         return r;
-
-                if (stat(dirname, &st2) < 0 && errno != ENOENT)
-                        return log_device_debug_errno(dev, errno, "Failed to stat %s: %m", dirname);
-
-                if (((st1.st_mode & S_IFMT) == 0 && (st2.st_mode & S_IFMT) == 0) ||
-                    stat_inode_unmodified(&st1, &st2))
-                        return 0;
         }
 
-        return -ELOOP;
+        *ret_id = TAKE_PTR(id_dup);
+        return 0;
+}
+
+static int link_update(sd_device *dev, const char *slink, bool add) {
+        _cleanup_free_ char *current_id = NULL, *devnode = NULL;
+        _cleanup_close_ int dirfd = -EBADF, lockfd = -EBADF;
+        int r, current_prio;
+
+        assert(dev);
+        assert(slink);
+
+        r = stack_directory_open(dev, slink, &dirfd, &lockfd);
+        if (r < 0)
+                return r;
+
+        r = node_get_current(slink, dirfd, &current_id, add ? &current_prio : NULL);
+        if (r < 0 && !ERRNO_IS_DEVICE_ABSENT(r))
+                return log_device_debug_errno(dev, r, "Failed to get the current device node priority for '%s': %m", slink);
+
+        r = stack_directory_update(dev, dirfd, add);
+        if (r < 0)
+                return log_device_debug_errno(dev, r, "Failed to update stack directory for '%s': %m", slink);
+
+        if (current_id) {
+                const char *id;
+
+                r = device_get_device_id(dev, &id);
+                if (r < 0)
+                        return log_device_debug_errno(dev, r, "Failed to get device id: %m");
+
+                if (add) {
+                        int prio;
+
+                        r = device_get_devlink_priority(dev, &prio);
+                        if (r < 0)
+                                return log_device_debug_errno(dev, r, "Failed to get devlink priority: %m");
+
+                        if (streq(current_id, id)) {
+                                if (current_prio <= prio)
+                                        /* The devlink is ours and already exists, and the new priority is
+                                         * equal or higher than the previous. Hence, it is not necessary to
+                                         * recreate it. */
+                                        return 0;
+
+                                /* The devlink priority is downgraded. Another device may have a higher
+                                 * priority now. Let's find the device node with the highest priority. */
+                        } else {
+                                if (current_prio >= prio)
+                                        /* The devlink with equal or higher priority already exists and is
+                                         * owned by another device. Hence, it is not necessary to recreate it. */
+                                        return 0;
+
+                                /* This device has a higher priority than the current. Let's create the
+                                 * devlink to our device node. */
+                                return node_symlink(dev, NULL, slink);
+                        }
+
+                } else {
+                        if (!streq(current_id, id))
+                                /* The devlink already exists and is owned by another device. Hence, it is
+                                 * not necessary to recreate it. */
+                                return 0;
+
+                        /* The current devlink is ours, and the target device will be removed. Hence, we need
+                         * to search the device that has the highest priority. and update the devlink. */
+                }
+        } else {
+                /* The requested devlink does not exist, or the target device does not exist and the devlink
+                 * points to a non-existing device. Let's search the device that has the highest priority,
+                 * and update the devlink. */
+                ;
+        }
+
+        r = stack_directory_find_prioritized_devnode(dev, dirfd, add, &devnode);
+        if (r < 0)
+                return log_device_debug_errno(dev, r, "Failed to determine device node with the highest priority for '%s': %m", slink);
+        if (r > 0)
+                return node_symlink(dev, devnode, slink);
+
+        log_device_debug(dev, "No reference left for '%s', removing", slink);
+
+        if (unlink(slink) < 0 && errno != ENOENT)
+                log_device_debug_errno(dev, errno, "Failed to remove '%s', ignoring: %m", slink);
+
+        (void) rmdir_parents(slink, "/dev");
+
+        return 0;
 }
 
 static int device_get_devpath_by_devnum(sd_device *dev, char **ret) {
@@ -508,22 +531,10 @@ static int device_get_devpath_by_devnum(sd_device *dev, char **ret) {
 
 int udev_node_update(sd_device *dev, sd_device *dev_old) {
         _cleanup_free_ char *filename = NULL;
-        const char *devnode, *devlink;
         int r;
 
         assert(dev);
         assert(dev_old);
-
-        r = sd_device_get_devname(dev, &devnode);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get devnode: %m");
-
-        if (DEBUG_LOGGING) {
-                const char *id = NULL;
-
-                (void) device_get_device_id(dev, &id);
-                log_device_debug(dev, "Handling device node '%s', devnum=%s", devnode, strna(id));
-        }
 
         /* update possible left-over symlinks */
         FOREACH_DEVICE_DEVLINK(dev_old, devlink) {
@@ -556,7 +567,7 @@ int udev_node_update(sd_device *dev, sd_device *dev_old) {
                 return log_device_debug_errno(dev, r, "Failed to get device path: %m");
 
         /* always add /dev/{block,char}/$major:$minor */
-        r = node_symlink(dev, devnode, filename);
+        r = node_symlink(dev, NULL, filename);
         if (r < 0)
                 return log_device_warning_errno(dev, r, "Failed to create device symlink '%s': %m", filename);
 
@@ -565,7 +576,6 @@ int udev_node_update(sd_device *dev, sd_device *dev_old) {
 
 int udev_node_remove(sd_device *dev) {
         _cleanup_free_ char *filename = NULL;
-        const char *devlink;
         int r;
 
         assert(dev);
@@ -590,58 +600,29 @@ int udev_node_remove(sd_device *dev) {
         return 0;
 }
 
-int udev_node_apply_permissions(
-                sd_device *dev,
+static int udev_node_apply_permissions_impl(
+                sd_device *dev, /* can be NULL, only used for logging. */
+                int node_fd,
+                const char *devnode,
                 bool apply_mac,
                 mode_t mode,
                 uid_t uid,
                 gid_t gid,
                 OrderedHashmap *seclabel_list) {
 
-        const char *devnode, *subsystem, *id = NULL;
         bool apply_mode, apply_uid, apply_gid;
-        _cleanup_close_ int node_fd = -1;
         struct stat stats;
-        dev_t devnum;
         int r;
 
-        assert(dev);
-
-        r = sd_device_get_devname(dev, &devnode);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get devname: %m");
-        r = sd_device_get_subsystem(dev, &subsystem);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get subsystem: %m");
-        r = sd_device_get_devnum(dev, &devnum);
-        if (r < 0)
-                return log_device_debug_errno(dev, r, "Failed to get devnum: %m");
-        (void) device_get_device_id(dev, &id);
-
-        if (streq(subsystem, "block"))
-                mode |= S_IFBLK;
-        else
-                mode |= S_IFCHR;
-
-        node_fd = open(devnode, O_PATH|O_NOFOLLOW|O_CLOEXEC);
-        if (node_fd < 0) {
-                if (errno == ENOENT) {
-                        log_device_debug_errno(dev, errno, "Device node %s is missing, skipping handling.", devnode);
-                        return 0; /* This is necessarily racey, so ignore missing the device */
-                }
-
-                return log_device_debug_errno(dev, errno, "Cannot open node %s: %m", devnode);
-        }
+        assert(node_fd >= 0);
+        assert(devnode);
 
         if (fstat(node_fd, &stats) < 0)
                 return log_device_debug_errno(dev, errno, "cannot stat() node %s: %m", devnode);
 
-        if ((mode != MODE_INVALID && (stats.st_mode & S_IFMT) != (mode & S_IFMT)) || stats.st_rdev != devnum) {
-                log_device_debug(dev, "Found node '%s' with non-matching devnum %s, skipping handling.",
-                                 devnode, strna(id));
-                return 0; /* We might process a device that already got replaced by the time we have a look
-                           * at it, handle this gracefully and step away. */
-        }
+        /* If group is set, but mode is not set, "upgrade" mode for the group. */
+        if (mode == MODE_INVALID && gid_is_valid(gid) && gid > 0)
+                mode = 0660;
 
         apply_mode = mode != MODE_INVALID && (stats.st_mode & 0777) != (mode & 0777);
         apply_uid = uid_is_valid(uid) && stats.st_uid != uid;
@@ -704,7 +685,7 @@ int udev_node_apply_permissions(
 
                 /* set the defaults */
                 if (!selinux)
-                        (void) mac_selinux_fix_fd(node_fd, devnode, LABEL_IGNORE_ENOENT);
+                        (void) mac_selinux_fix_full(node_fd, NULL, devnode, LABEL_IGNORE_ENOENT);
                 if (!smack)
                         (void) mac_smack_apply_fd(node_fd, SMACK_ATTR_ACCESS, NULL);
         }
@@ -715,4 +696,96 @@ int udev_node_apply_permissions(
                 log_device_debug_errno(dev, r, "Failed to adjust timestamp of node %s: %m", devnode);
 
         return 0;
+}
+
+int udev_node_apply_permissions(
+                sd_device *dev,
+                bool apply_mac,
+                mode_t mode,
+                uid_t uid,
+                gid_t gid,
+                OrderedHashmap *seclabel_list) {
+
+        const char *devnode;
+        _cleanup_close_ int node_fd = -EBADF;
+        int r;
+
+        assert(dev);
+
+        r = sd_device_get_devname(dev, &devnode);
+        if (r < 0)
+                return log_device_debug_errno(dev, r, "Failed to get devname: %m");
+
+        node_fd = sd_device_open(dev, O_PATH|O_CLOEXEC);
+        if (node_fd < 0) {
+                if (ERRNO_IS_DEVICE_ABSENT(node_fd)) {
+                        log_device_debug_errno(dev, node_fd, "Device node %s is missing, skipping handling.", devnode);
+                        return 0; /* This is necessarily racey, so ignore missing the device */
+                }
+
+                return log_device_debug_errno(dev, node_fd, "Cannot open node %s: %m", devnode);
+        }
+
+        return udev_node_apply_permissions_impl(dev, node_fd, devnode, apply_mac, mode, uid, gid, seclabel_list);
+}
+
+int static_node_apply_permissions(
+                const char *name,
+                mode_t mode,
+                uid_t uid,
+                gid_t gid,
+                char **tags) {
+
+        _cleanup_free_ char *unescaped_filename = NULL;
+        _cleanup_close_ int node_fd = -EBADF;
+        const char *devnode;
+        struct stat stats;
+        int r;
+
+        assert(name);
+
+        if (uid == UID_INVALID && gid == GID_INVALID && mode == MODE_INVALID && !tags)
+                return 0;
+
+        devnode = strjoina("/dev/", name);
+
+        node_fd = open(devnode, O_PATH|O_CLOEXEC);
+        if (node_fd < 0) {
+                if (errno != ENOENT)
+                        return log_error_errno(errno, "Failed to open %s: %m", devnode);
+                return 0;
+        }
+
+        if (fstat(node_fd, &stats) < 0)
+                return log_error_errno(errno, "Failed to stat %s: %m", devnode);
+
+        if (!S_ISBLK(stats.st_mode) && !S_ISCHR(stats.st_mode)) {
+                log_warning("%s is neither block nor character device, ignoring.", devnode);
+                return 0;
+        }
+
+        if (!strv_isempty(tags)) {
+                unescaped_filename = xescape(name, "/.");
+                if (!unescaped_filename)
+                        return log_oom();
+        }
+
+        /* export the tags to a directory as symlinks, allowing otherwise dead nodes to be tagged */
+        STRV_FOREACH(t, tags) {
+                _cleanup_free_ char *p = NULL;
+
+                p = path_join("/run/udev/static_node-tags/", *t, unescaped_filename);
+                if (!p)
+                        return log_oom();
+
+                r = mkdir_parents(p, 0755);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to create parent directory for %s: %m", p);
+
+                r = symlink(devnode, p);
+                if (r < 0 && errno != EEXIST)
+                        return log_error_errno(errno, "Failed to create symlink %s -> %s: %m", p, devnode);
+        }
+
+        return udev_node_apply_permissions_impl(NULL, node_fd, devnode, false, mode, uid, gid, NULL);
 }

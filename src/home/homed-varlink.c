@@ -83,13 +83,12 @@ int vl_method_get_user_record(Varlink *link, JsonVariant *parameters, VarlinkMet
         LookupParameters p = {
                 .uid = UID_INVALID,
         };
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         bool trusted;
         Home *h;
         int r;
 
         assert(parameters);
-        assert(m);
 
         r = json_dispatch(parameters, dispatch_table, NULL, 0, &p);
         if (r < 0)
@@ -199,12 +198,11 @@ int vl_method_get_group_record(Varlink *link, JsonVariant *parameters, VarlinkMe
         LookupParameters p = {
                 .gid = GID_INVALID,
         };
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         Home *h;
         int r;
 
         assert(parameters);
-        assert(m);
 
         r = json_dispatch(parameters, dispatch_table, NULL, 0, &p);
         if (r < 0)
@@ -265,13 +263,12 @@ int vl_method_get_memberships(Varlink *link, JsonVariant *parameters, VarlinkMet
                 {}
         };
 
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         LookupParameters p = {};
         Home *h;
         int r;
 
         assert(parameters);
-        assert(m);
 
         r = json_dispatch(parameters, dispatch_table, NULL, 0, &p);
         if (r < 0)
@@ -282,7 +279,6 @@ int vl_method_get_memberships(Varlink *link, JsonVariant *parameters, VarlinkMet
 
         if (p.user_name) {
                 const char *last = NULL;
-                char **i;
 
                 h = hashmap_get(m->homes_by_name, p.user_name);
                 if (!h)
@@ -335,9 +331,7 @@ int vl_method_get_memberships(Varlink *link, JsonVariant *parameters, VarlinkMet
         } else {
                 const char *last_user_name = NULL, *last_group_name = NULL;
 
-                HASHMAP_FOREACH(h, m->homes_by_name) {
-                        char **j;
-
+                HASHMAP_FOREACH(h, m->homes_by_name)
                         STRV_FOREACH(j, h->record->member_of) {
 
                                 if (last_user_name) {
@@ -353,7 +347,6 @@ int vl_method_get_memberships(Varlink *link, JsonVariant *parameters, VarlinkMet
                                 last_user_name = h->user_name;
                                 last_group_name = *j;
                         }
-                }
 
                 if (last_user_name) {
                         assert(last_group_name);

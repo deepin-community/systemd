@@ -97,9 +97,7 @@ int user_record_authenticate(
                 log_info("None of the supplied plaintext passwords unlock the user record's hashed recovery keys.");
 
         /* Second, test cached PKCS#11 passwords */
-        for (size_t n = 0; n < h->n_pkcs11_encrypted_key; n++) {
-                char **pp;
-
+        for (size_t n = 0; n < h->n_pkcs11_encrypted_key; n++)
                 STRV_FOREACH(pp, cache->pkcs11_passwords) {
                         r = test_password_one(h->pkcs11_encrypted_key[n].hashed_password, *pp);
                         if (r < 0)
@@ -109,12 +107,9 @@ int user_record_authenticate(
                                 return 1;
                         }
                 }
-        }
 
         /* Third, test cached FIDO2 passwords */
-        for (size_t n = 0; n < h->n_fido2_hmac_salt; n++) {
-                char **pp;
-
+        for (size_t n = 0; n < h->n_fido2_hmac_salt; n++)
                 /* See if any of the previously calculated passwords work */
                 STRV_FOREACH(pp, cache->fido2_passwords) {
                         r = test_password_one(h->fido2_hmac_salt[n].hashed_password, *pp);
@@ -125,7 +120,6 @@ int user_record_authenticate(
                                 return 1;
                         }
                 }
-        }
 
         /* Fourth, let's see if any of the PKCS#11 security tokens are plugged in and help us */
         for (size_t n = 0; n < h->n_pkcs11_encrypted_key; n++) {
@@ -280,9 +274,9 @@ int user_record_authenticate(
 static void drop_caches_now(void) {
         int r;
 
-        /* Drop file system caches now. See https://www.kernel.org/doc/Documentation/sysctl/vm.txt for
-         * details. We write "2" into /proc/sys/vm/drop_caches to ensure dentries/inodes are flushed, but not
-         * more. */
+        /* Drop file system caches now. See https://docs.kernel.org/admin-guide/sysctl/vm.html
+         * for details. We write "2" into /proc/sys/vm/drop_caches to ensure dentries/inodes are flushed, but
+         * not more. */
 
         r = write_string_file("/proc/sys/vm/drop_caches", "2\n", WRITE_STRING_FILE_DISABLE_BUFFER);
         if (r < 0)
@@ -517,8 +511,8 @@ int home_sync_and_statfs(int root_fd, struct statfs *ret) {
 }
 
 static int read_identity_file(int root_fd, JsonVariant **ret) {
-        _cleanup_(fclosep) FILE *identity_file = NULL;
-        _cleanup_close_ int identity_fd = -1;
+        _cleanup_fclose_ FILE *identity_file = NULL;
+        _cleanup_close_ int identity_fd = -EBADF;
         unsigned line, column;
         int r;
 
@@ -548,8 +542,8 @@ static int read_identity_file(int root_fd, JsonVariant **ret) {
 
 static int write_identity_file(int root_fd, JsonVariant *v, uid_t uid) {
         _cleanup_(json_variant_unrefp) JsonVariant *normalized = NULL;
-        _cleanup_(fclosep) FILE *identity_file = NULL;
-        _cleanup_close_ int identity_fd = -1;
+        _cleanup_fclose_ FILE *identity_file = NULL;
+        _cleanup_close_ int identity_fd = -EBADF;
         _cleanup_free_ char *fn = NULL;
         int r;
 
@@ -791,7 +785,7 @@ int home_maybe_shift_uid(
                 HomeSetupFlags flags,
                 HomeSetup *setup) {
 
-        _cleanup_close_ int mount_fd = -1;
+        _cleanup_close_ int mount_fd = -EBADF;
         struct stat st;
 
         assert(h);
@@ -1042,7 +1036,7 @@ static int copy_skel(int root_fd, const char *skel) {
 
         assert(root_fd >= 0);
 
-        r = copy_tree_at(AT_FDCWD, skel, root_fd, ".", UID_INVALID, GID_INVALID, COPY_MERGE|COPY_REPLACE);
+        r = copy_tree_at(AT_FDCWD, skel, root_fd, ".", UID_INVALID, GID_INVALID, COPY_MERGE|COPY_REPLACE, NULL);
         if (r == -ENOENT) {
                 log_info("Skeleton directory %s missing, ignoring.", skel);
                 return 0;
@@ -1094,9 +1088,8 @@ static int user_record_compile_effective_passwords(
                 PasswordCache *cache,
                 char ***ret_effective_passwords) {
 
-        _cleanup_(strv_free_erasep) char **effective = NULL;
+        _cleanup_strv_free_erase_ char **effective = NULL;
         size_t n;
-        char **i;
         int r;
 
         assert(h);
@@ -1116,7 +1109,6 @@ static int user_record_compile_effective_passwords(
 
         STRV_FOREACH(i, h->hashed_password) {
                 bool found = false;
-                char **j;
 
                 log_debug("Looking for plaintext password for: %s", *i);
 
@@ -1144,7 +1136,6 @@ static int user_record_compile_effective_passwords(
 
         for (n = 0; n < h->n_recovery_key; n++) {
                 bool found = false;
-                char **j;
 
                 log_debug("Looking for plaintext recovery key for: %s", h->recovery_key[n].hashed_password);
 
@@ -1316,7 +1307,7 @@ static int determine_default_storage(UserStorage *ret) {
 }
 
 static int home_create(UserRecord *h, UserRecord **ret_home) {
-        _cleanup_(strv_free_erasep) char **effective_passwords = NULL;
+        _cleanup_strv_free_erase_ char **effective_passwords = NULL;
         _cleanup_(home_setup_done) HomeSetup setup = HOME_SETUP_INIT;
         _cleanup_(user_record_unrefp) UserRecord *new_home = NULL;
         _cleanup_(password_cache_free) PasswordCache cache = {};
@@ -1688,7 +1679,7 @@ static int home_resize(UserRecord *h, bool automatic, UserRecord **ret) {
 
 static int home_passwd(UserRecord *h, UserRecord **ret_home) {
         _cleanup_(user_record_unrefp) UserRecord *header_home = NULL, *embedded_home = NULL, *new_home = NULL;
-        _cleanup_(strv_free_erasep) char **effective_passwords = NULL;
+        _cleanup_strv_free_erase_ char **effective_passwords = NULL;
         _cleanup_(home_setup_done) HomeSetup setup = HOME_SETUP_INIT;
         _cleanup_(password_cache_free) PasswordCache cache = {};
         HomeSetupFlags flags = 0;
@@ -1859,7 +1850,7 @@ static int home_unlock(UserRecord *h) {
 static int run(int argc, char *argv[]) {
         _cleanup_(user_record_unrefp) UserRecord *home = NULL, *new_home = NULL;
         _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
-        _cleanup_(fclosep) FILE *opened_file = NULL;
+        _cleanup_fclose_ FILE *opened_file = NULL;
         unsigned line = 0, column = 0;
         const char *json_path = NULL;
         FILE *json_file;
@@ -1971,7 +1962,7 @@ static int run(int argc, char *argv[]) {
                         end = start + BAD_PASSWORD_DELAY_USEC;
 
                 if (n < end)
-                        (void) usleep(usec_sub_unsigned(end, n));
+                        (void) usleep_safe(usec_sub_unsigned(end, n));
         }
         if (r < 0)
                 return r;

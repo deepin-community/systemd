@@ -4,6 +4,7 @@
 #include <locale.h>
 
 #include "alloc-util.h"
+#include "build.h"
 #include "btrfs-util.h"
 #include "discover-image.h"
 #include "fd-util.h"
@@ -70,10 +71,8 @@ static void progress_show(ProgressInfo *p) {
 }
 
 static int progress_path(const char *path, const struct stat *st, void *userdata) {
-        ProgressInfo *p = userdata;
+        ProgressInfo *p = ASSERT_PTR(userdata);
         int r;
-
-        assert(p);
 
         r = free_and_strdup(&p->path, path);
         if (r < 0)
@@ -86,9 +85,8 @@ static int progress_path(const char *path, const struct stat *st, void *userdata
 }
 
 static int progress_bytes(uint64_t nbytes, void *userdata) {
-        ProgressInfo *p = userdata;
+        ProgressInfo *p = ASSERT_PTR(userdata);
 
-        assert(p);
         assert(p->size != UINT64_MAX);
 
         p->size += nbytes;
@@ -102,7 +100,7 @@ static int import_fs(int argc, char *argv[], void *userdata) {
         _cleanup_(progress_info_free) ProgressInfo progress = {};
         _cleanup_free_ char *l = NULL, *final_path = NULL;
         const char *path = NULL, *local = NULL, *dest = NULL;
-        _cleanup_close_ int open_fd = -1;
+        _cleanup_close_ int open_fd = -EBADF;
         int r, fd;
 
         if (argc >= 2)
@@ -190,15 +188,15 @@ static int import_fs(int argc, char *argv[], void *userdata) {
 
         (void) mkdir_parents_label(dest, 0700);
 
-        progress.limit = (RateLimit) { 200*USEC_PER_MSEC, 1 };
+        progress.limit = (const RateLimit) { 200*USEC_PER_MSEC, 1 };
 
         {
                 BLOCK_SIGNALS(SIGINT, SIGTERM);
 
                 if (arg_btrfs_subvol)
-                        r = btrfs_subvol_snapshot_fd_full(
-                                        fd,
-                                        dest,
+                        r = btrfs_subvol_snapshot_at_full(
+                                        fd, NULL,
+                                        AT_FDCWD, dest,
                                         BTRFS_SNAPSHOT_FALLBACK_COPY|
                                         BTRFS_SNAPSHOT_FALLBACK_DIRECTORY|
                                         BTRFS_SNAPSHOT_RECURSIVE|
@@ -208,9 +206,9 @@ static int import_fs(int argc, char *argv[], void *userdata) {
                                         progress_bytes,
                                         &progress);
                 else
-                        r = copy_directory_fd_full(
-                                        fd,
-                                        dest,
+                        r = copy_directory_at_full(
+                                        fd, NULL,
+                                        AT_FDCWD, dest,
                                         COPY_REFLINK|
                                         COPY_SAME_MOUNT|
                                         COPY_HARDLINKS|

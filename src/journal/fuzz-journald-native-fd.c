@@ -11,7 +11,7 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         Server s;
-        _cleanup_close_ int sealed_fd = -1, unsealed_fd = -1;
+        _cleanup_close_ int sealed_fd = -EBADF, unsealed_fd = -EBADF;
         _cleanup_(unlink_tempfilep) char name[] = "/tmp/fuzz-journald-native-fd.XXXXXX";
         char *label = NULL;
         size_t label_len = 0;
@@ -23,11 +23,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
         dummy_server_init(&s, NULL, 0);
 
-        sealed_fd = memfd_new(NULL);
+        sealed_fd = memfd_new_and_seal(NULL, data, size);
         assert_se(sealed_fd >= 0);
-        assert_se(write(sealed_fd, data, size) == (ssize_t) size);
-        assert_se(memfd_set_sealed(sealed_fd) >= 0);
-        assert_se(lseek(sealed_fd, 0, SEEK_SET) == 0);
         ucred = (struct ucred) {
                 .pid = getpid_cached(),
                 .uid = geteuid(),

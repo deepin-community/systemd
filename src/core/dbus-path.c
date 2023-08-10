@@ -21,13 +21,11 @@ static int property_get_paths(
                 void *userdata,
                 sd_bus_error *error) {
 
-        Path *p = userdata;
-        PathSpec *k;
+        Path *p = ASSERT_PTR(userdata);
         int r;
 
         assert(bus);
         assert(reply);
-        assert(p);
 
         r = sd_bus_message_open_container(reply, 'a', "(ss)");
         if (r < 0)
@@ -114,7 +112,7 @@ static int bus_path_set_transient_property(
                                 s->unit = u;
                                 s->path = TAKE_PTR(k);
                                 s->type = t;
-                                s->inotify_fd = -1;
+                                s->inotify_fd = -EBADF;
 
                                 LIST_PREPEND(spec, p->specs, s);
 

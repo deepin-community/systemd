@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?> <!--*-nxml-*-->
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
-        "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+        "https://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 
 <!--
   SPDX-License-Identifier: LGPL-2.1-or-later
@@ -63,6 +63,16 @@
         <action id="org.freedesktop.systemd1.reload-daemon">
                 <description gettext-domain="systemd">Reload the systemd state</description>
                 <message gettext-domain="systemd">Authentication is required to reload the systemd state.</message>
+                <defaults>
+                        <allow_any>auth_admin</allow_any>
+                        <allow_inactive>auth_admin</allow_inactive>
+                        <allow_active>auth_admin_keep</allow_active>
+                </defaults>
+        </action>
+
+        <action id="org.freedesktop.systemd1.bypass-dump-ratelimit">
+                <description gettext-domain="systemd">Dump the systemd state without rate limits</description>
+                <message gettext-domain="systemd">Authentication is required to dump the systemd state without rate limits.</message>
                 <defaults>
                         <allow_any>auth_admin</allow_any>
                         <allow_inactive>auth_admin</allow_inactive>

@@ -16,6 +16,7 @@
 #include "format-util.h"
 #include "fs-util.h"
 #include "io-util.h"
+#include "journal-internal.h"
 #include "journald-kmsg.h"
 #include "journald-server.h"
 #include "journald-syslog.h"
@@ -36,7 +37,7 @@ void server_forward_kmsg(
         struct iovec iovec[5];
         char header_priority[DECIMAL_STR_MAX(priority) + 3],
              header_pid[STRLEN("[]: ") + DECIMAL_STR_MAX(pid_t) + 1];
-        int n = 0;
+        size_t n = 0;
 
         assert(s);
         assert(priority >= 0);
@@ -64,11 +65,10 @@ void server_forward_kmsg(
                         identifier = ident_buf;
                 }
 
-                xsprintf(header_pid, "["PID_FMT"]: ", ucred->pid);
-
                 if (identifier)
                         iovec[n++] = IOVEC_MAKE_STRING(identifier);
 
+                xsprintf(header_pid, "["PID_FMT"]: ", ucred->pid);
                 iovec[n++] = IOVEC_MAKE_STRING(header_pid);
         } else if (identifier) {
                 iovec[n++] = IOVEC_MAKE_STRING(identifier);
@@ -80,7 +80,7 @@ void server_forward_kmsg(
         iovec[n++] = IOVEC_MAKE_STRING("\n");
 
         if (writev(s->dev_kmsg_fd, iovec, n) < 0)
-                log_debug_errno(errno, "Failed to write to /dev/kmsg for logging: %m");
+                log_debug_errno(errno, "Failed to write to /dev/kmsg for logging, ignoring: %m");
 }
 
 static bool is_us(const char *identifier, const char *pid) {
@@ -237,12 +237,12 @@ void dev_kmsg_record(Server *s, char *p, size_t l) {
                         }
 
                         j = 0;
-                        FOREACH_DEVICE_DEVLINK(d, g) {
+                        FOREACH_DEVICE_DEVLINK(d, link) {
 
                                 if (j >= N_IOVEC_UDEV_FIELDS)
                                         break;
 
-                                b = strjoin("_UDEV_DEVLINK=", g);
+                                b = strjoin("_UDEV_DEVLINK=", link);
                                 if (b) {
                                         iovec[n++] = IOVEC_MAKE_STRING(b);
                                         z++;
@@ -296,7 +296,6 @@ void dev_kmsg_record(Server *s, char *p, size_t l) {
         if (cunescape_length_with_prefix(p, pl, "MESSAGE=", UNESCAPE_RELAX, &message) >= 0)
                 iovec[n++] = IOVEC_MAKE_STRING(message);
 
-
         server_dispatch_message(s, iovec, n, ELEMENTSOF(iovec), c, NULL, priority, 0);
 
         if (saved_log_max_level != INT_MAX)
@@ -318,18 +317,18 @@ static int server_read_dev_kmsg(Server *s) {
         if (l == 0)
                 return 0;
         if (l < 0) {
-                /* Old kernels who don't allow reading from /dev/kmsg
-                 * return EINVAL when we try. So handle this cleanly,
-                 * but don' try to ever read from it again. */
+                /* Old kernels which don't allow reading from /dev/kmsg return EINVAL when we try. So handle
+                 * this cleanly, but don't try to ever read from it again. */
                 if (errno == EINVAL) {
                         s->dev_kmsg_event_source = sd_event_source_unref(s->dev_kmsg_event_source);
+                        s->dev_kmsg_readable = false;
                         return 0;
                 }
 
                 if (ERRNO_IS_TRANSIENT(errno) || errno == EPIPE)
                         return 0;
 
-                return log_error_errno(errno, "Failed to read from /dev/kmsg: %m");
+                return log_ratelimit_error_errno(errno, JOURNAL_LOG_RATELIMIT, "Failed to read from /dev/kmsg: %m");
         }
 
         dev_kmsg_record(s, buffer, l);
@@ -362,14 +361,14 @@ int server_flush_dev_kmsg(Server *s) {
 }
 
 static int dispatch_dev_kmsg(sd_event_source *es, int fd, uint32_t revents, void *userdata) {
-        Server *s = userdata;
+        Server *s = ASSERT_PTR(userdata);
 
         assert(es);
         assert(fd == s->dev_kmsg_fd);
-        assert(s);
 
         if (revents & EPOLLERR)
-                log_warning("/dev/kmsg buffer overrun, some messages lost.");
+                log_ratelimit_warning(JOURNAL_LOG_RATELIMIT,
+                                      "/dev/kmsg buffer overrun, some messages lost.");
 
         if (!(revents & EPOLLIN))
                 log_error("Got invalid event from epoll for /dev/kmsg: %"PRIx32, revents);
@@ -399,40 +398,31 @@ int server_open_dev_kmsg(Server *s) {
                 return 0;
 
         r = sd_event_add_io(s->event, &s->dev_kmsg_event_source, s->dev_kmsg_fd, EPOLLIN, dispatch_dev_kmsg, s);
+        if (r == -EPERM) { /* This will fail with EPERM on older kernels where /dev/kmsg is not readable. */
+                r = 0;
+                goto finish;
+        }
         if (r < 0) {
-
-                /* This will fail with EPERM on older kernels where
-                 * /dev/kmsg is not readable. */
-                if (r == -EPERM) {
-                        r = 0;
-                        goto fail;
-                }
-
                 log_error_errno(r, "Failed to add /dev/kmsg fd to event loop: %m");
-                goto fail;
+                goto finish;
         }
 
         r = sd_event_source_set_priority(s->dev_kmsg_event_source, SD_EVENT_PRIORITY_IMPORTANT+10);
         if (r < 0) {
                 log_error_errno(r, "Failed to adjust priority of kmsg event source: %m");
-                goto fail;
+                goto finish;
         }
 
         s->dev_kmsg_readable = true;
-
         return 0;
 
-fail:
+finish:
         s->dev_kmsg_event_source = sd_event_source_unref(s->dev_kmsg_event_source);
         s->dev_kmsg_fd = safe_close(s->dev_kmsg_fd);
-
         return r;
 }
 
 int server_open_kernel_seqnum(Server *s) {
-        _cleanup_close_ int fd = -1;
-        const char *fn;
-        uint64_t *p;
         int r;
 
         assert(s);
@@ -440,29 +430,12 @@ int server_open_kernel_seqnum(Server *s) {
         /* We store the seqnum we last read in an mmapped file. That way we can just use it like a variable,
          * but it is persistent and automatically flushed at reboot. */
 
-        if (!s->read_kmsg)
+        if (!s->dev_kmsg_readable)
                 return 0;
 
-        fn = strjoina(s->runtime_directory, "/kernel-seqnum");
-        fd = open(fn, O_RDWR|O_CREAT|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW, 0644);
-        if (fd < 0) {
-                log_error_errno(errno, "Failed to open %s, ignoring: %m", fn);
-                return 0;
-        }
-
-        r = posix_fallocate_loop(fd, 0, sizeof(uint64_t));
-        if (r < 0) {
-                log_error_errno(r, "Failed to allocate sequential number file, ignoring: %m");
-                return 0;
-        }
-
-        p = mmap(NULL, sizeof(uint64_t), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-        if (p == MAP_FAILED) {
-                log_error_errno(errno, "Failed to map sequential number file, ignoring: %m");
-                return 0;
-        }
-
-        s->kernel_seqnum = p;
+        r = server_map_seqnum_file(s, "kernel-seqnum", sizeof(uint64_t), (void**) &s->kernel_seqnum);
+        if (r < 0)
+                return log_error_errno(r, "Failed to map kernel seqnum file: %m");
 
         return 0;
 }

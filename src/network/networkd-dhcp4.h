@@ -5,7 +5,6 @@
 
 typedef struct Link Link;
 typedef struct Network Network;
-typedef struct Request Request;
 
 typedef enum DHCPClientIdentifier {
         DHCP_CLIENT_ID_MAC,
@@ -25,12 +24,12 @@ int dhcp4_start(Link *link);
 int dhcp4_lease_lost(Link *link);
 int dhcp4_check_ready(Link *link);
 
-int request_process_dhcp4_client(Request *req);
 int link_request_dhcp4_client(Link *link);
 
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_client_identifier);
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_max_attempts);
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_ip_service_type);
+CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_socket_priority);
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_mud_url);
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_fallback_lease_lifetime);
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_label);

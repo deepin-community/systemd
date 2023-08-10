@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "alloc-util.h"
+#include "build.h"
 #include "gpt.h"
 #include "id128-print.h"
 #include "main-func.h"
@@ -11,7 +12,6 @@
 #include "strv.h"
 #include "format-table.h"
 #include "terminal-util.h"
-#include "util.h"
 #include "verbs.h"
 
 static Id128PrettyPrintMode arg_mode = ID128_PRINT_ID128;
@@ -102,7 +102,6 @@ static int show_one(Table **table, const char *name, sd_id128_t uuid, bool first
 
 static int verb_show(int argc, char **argv, void *userdata) {
         _cleanup_(table_unrefp) Table *table = NULL;
-        char **p;
         int r;
 
         argv = strv_skip(argv, 1);
@@ -124,10 +123,13 @@ static int verb_show(int argc, char **argv, void *userdata) {
                         if (have_uuid)
                                 id = gpt_partition_type_uuid_to_string(uuid) ?: "XYZ";
                         else {
-                                r = gpt_partition_type_uuid_from_string(*p, &uuid);
+                                GptPartitionType type;
+
+                                r = gpt_partition_type_from_string(*p, &type);
                                 if (r < 0)
                                         return log_error_errno(r, "Unknown identifier \"%s\".", *p);
 
+                                uuid = type.uuid;
                                 id = *p;
                         }
 
@@ -154,7 +156,7 @@ static int help(void) {
                 return log_oom();
 
         printf("%s [OPTIONS...] COMMAND\n\n"
-               "%sGenerate and print 128bit identifiers.%s\n"
+               "%sGenerate and print 128-bit identifiers.%s\n"
                "\nCommands:\n"
                "  new                     Generate a new ID\n"
                "  machine-id              Print the ID of current machine\n"

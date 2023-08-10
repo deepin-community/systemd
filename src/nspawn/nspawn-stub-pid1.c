@@ -6,7 +6,8 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 
-#include "def.h"
+#include "argv-util.h"
+#include "constants.h"
 #include "exit-status.h"
 #include "fd-util.h"
 #include "log.h"
@@ -142,10 +143,8 @@ int stub_pid1(sd_id128_t uuid) {
 
                 if (quit_usec == USEC_INFINITY)
                         r = sigwaitinfo(&waitmask, &si);
-                else {
-                        struct timespec ts;
-                        r = sigtimedwait(&waitmask, &si, timespec_store(&ts, quit_usec - current_usec));
-                }
+                else
+                        r = sigtimedwait(&waitmask, &si, TIMESPEC_STORE(quit_usec - current_usec));
                 if (r < 0) {
                         if (errno == EINTR) /* strace -p attach can result in EINTR, let's handle this nicely. */
                                 continue;

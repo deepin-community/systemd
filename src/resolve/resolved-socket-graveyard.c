@@ -53,7 +53,7 @@ void manager_socket_graveyard_process(Manager *m) {
                 SocketGraveyard *g = m->socket_graveyard_oldest;
 
                 if (n == USEC_INFINITY)
-                        assert_se(sd_event_now(m->event, clock_boottime_or_monotonic(), &n) >= 0);
+                        assert_se(sd_event_now(m->event, CLOCK_BOOTTIME, &n) >= 0);
 
                 if (g->deadline > n)
                         break;
@@ -70,9 +70,7 @@ void manager_socket_graveyard_clear(Manager *m) {
 }
 
 static int on_io_event(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
-        SocketGraveyard *g = userdata;
-
-        assert(g);
+        SocketGraveyard *g = ASSERT_PTR(userdata);
 
         /* An IO event happened on the graveyard fd. We don't actually care which event that is, and we don't
          * read any incoming packet off the socket. We just close the fd, that's enough to not trigger the
@@ -113,7 +111,7 @@ int manager_add_socket_to_graveyard(Manager *m, int fd) {
 
         m->n_socket_graveyard++;
 
-        assert_se(sd_event_now(m->event, clock_boottime_or_monotonic(), &g->deadline) >= 0);
+        assert_se(sd_event_now(m->event, CLOCK_BOOTTIME, &g->deadline) >= 0);
         g->deadline += SOCKET_GRAVEYARD_USEC;
 
         r = sd_event_add_io(m->event, &g->io_event_source, fd, EPOLLIN, on_io_event, g);

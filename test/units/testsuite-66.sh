@@ -6,7 +6,6 @@ set -o pipefail
 RESULTS_FILE=/tmp/testsuite66serviceresults
 
 systemd-analyze log-level debug
-systemd-analyze log-target console
 
 systemctl start testsuite-66-deviceisolation.service
 
@@ -22,6 +21,4 @@ grep -q "thisshouldnotbehere" "$RESULTS_FILE" && exit 42
 
 systemd-analyze log-level info
 
-echo OK >/testok
-
-exit 0
+touch /testok

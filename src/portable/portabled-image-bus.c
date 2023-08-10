@@ -60,7 +60,7 @@ int bus_image_common_get_os_release(
                 return 1;
 
         if (!image->metadata_valid) {
-                r = image_read_metadata(image);
+                r = image_read_metadata(image, &image_policy_service);
                 if (r < 0)
                         return sd_bus_error_set_errnof(error, r, "Failed to read image metadata: %m");
         }
@@ -83,9 +83,9 @@ static int append_fd(sd_bus_message *m, PortableMetadata *d) {
         if (d) {
                 assert(d->fd >= 0);
 
-                f = take_fdopen(&d->fd, "r");
-                if (!f)
-                        return -errno;
+                r = fdopen_independent(d->fd, "r", &f);
+                if (r < 0)
+                        return r;
 
                 r = read_full_stream(f, &buf, &n);
                 if (r < 0)
@@ -108,6 +108,7 @@ int bus_image_common_get_metadata(
         _cleanup_hashmap_free_ Hashmap *unit_files = NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_free_ PortableMetadata **sorted = NULL;
+        PortableFlags flags = 0;
         int r;
 
         assert(name_or_path || image);
@@ -142,6 +143,7 @@ int bus_image_common_get_metadata(
                         return sd_bus_reply_method_errorf(message, SD_BUS_ERROR_INVALID_ARGS,
                                                           "Invalid 'flags' parameter '%" PRIu64 "'",
                                                           input_flags);
+                flags |= input_flags;
         }
 
         r = bus_image_acquire(m,
@@ -161,6 +163,8 @@ int bus_image_common_get_metadata(
                         image->path,
                         matches,
                         extension_images,
+                        /* image_policy= */ NULL,
+                        flags,
                         &os_release,
                         &extension_releases,
                         &unit_files,
@@ -258,16 +262,35 @@ static int bus_image_method_get_state(
                 void *userdata,
                 sd_bus_error *error) {
 
-        Image *image = userdata;
+        _cleanup_strv_free_ char **extension_images = NULL;
+        Image *image = ASSERT_PTR(userdata);
         PortableState state;
         int r;
 
         assert(message);
-        assert(image);
+
+        if (sd_bus_message_is_method_call(message, NULL, "GetStateWithExtensions")) {
+                uint64_t input_flags = 0;
+
+                r = sd_bus_message_read_strv(message, &extension_images);
+                if (r < 0)
+                        return r;
+
+                r = sd_bus_message_read(message, "t", &input_flags);
+                if (r < 0)
+                        return r;
+
+                /* No flags are supported by this method for now. */
+                if (input_flags != 0)
+                        return sd_bus_reply_method_errorf(message, SD_BUS_ERROR_INVALID_ARGS,
+                                                          "Invalid 'flags' parameter '%" PRIu64 "'",
+                                                          input_flags);
+        }
 
         r = portable_get_state(
                         sd_bus_message_get_bus(message),
                         image->path,
+                        extension_images,
                         0,
                         &state,
                         error);
@@ -293,6 +316,8 @@ int bus_image_common_attach(
 
         assert(message);
         assert(name_or_path || image);
+
+        CLEANUP_ARRAY(changes, n_changes, portable_changes_free);
 
         if (!m) {
                 assert(image);
@@ -363,18 +388,15 @@ int bus_image_common_attach(
                         matches,
                         profile,
                         extension_images,
+                        /* image_policy= */ NULL,
                         flags,
                         &changes,
                         &n_changes,
                         error);
         if (r < 0)
-                goto finish;
+                return r;
 
-        r = reply_portable_changes(message, changes, n_changes);
-
-finish:
-        portable_changes_free(changes, n_changes);
-        return r;
+        return reply_portable_changes(message, changes, n_changes);
 }
 
 static int bus_image_method_attach(sd_bus_message *message, void *userdata, sd_bus_error *error) {
@@ -388,15 +410,15 @@ static int bus_image_method_detach(
 
         _cleanup_strv_free_ char **extension_images = NULL;
         PortableChange *changes = NULL;
-        Image *image = userdata;
-        Manager *m = image->userdata;
+        Image *image = ASSERT_PTR(userdata);
+        Manager *m = ASSERT_PTR(image->userdata);
         PortableFlags flags = 0;
         size_t n_changes = 0;
         int r;
 
         assert(message);
-        assert(image);
-        assert(m);
+
+        CLEANUP_ARRAY(changes, n_changes, portable_changes_free);
 
         if (sd_bus_message_is_method_call(message, NULL, "DetachWithExtensions")) {
                 r = sd_bus_message_read_strv(message, &extension_images);
@@ -450,13 +472,9 @@ static int bus_image_method_detach(
                         &n_changes,
                         error);
         if (r < 0)
-                goto finish;
+                return r;
 
-        r = reply_portable_changes(message, changes, n_changes);
-
-finish:
-        portable_changes_free(changes, n_changes);
-        return r;
+        return reply_portable_changes(message, changes, n_changes);
 }
 
 int bus_image_common_remove(
@@ -466,7 +484,7 @@ int bus_image_common_remove(
                 Image *image,
                 sd_bus_error *error) {
 
-        _cleanup_close_pair_ int errno_pipe_fd[2] = { -1, -1 };
+        _cleanup_close_pair_ int errno_pipe_fd[2] = PIPE_EBADF;
         _cleanup_(sigkill_waitp) pid_t child = 0;
         PortableState state;
         int r;
@@ -498,6 +516,7 @@ int bus_image_common_remove(
         r = portable_get_state(
                         sd_bus_message_get_bus(message),
                         image->path,
+                        NULL,
                         0,
                         &state,
                         error);
@@ -532,7 +551,7 @@ int bus_image_common_remove(
                 return r;
 
         child = 0;
-        errno_pipe_fd[0] = -1;
+        errno_pipe_fd[0] = -EBADF;
 
         return 1;
 }
@@ -553,7 +572,6 @@ static int normalize_portable_changes(
 
         PortableChange *changes = NULL;
         size_t n_changes = 0;
-        int r = 0;
 
         assert(ret_n_changes);
         assert(ret_changes);
@@ -565,12 +583,13 @@ static int normalize_portable_changes(
         if (!changes)
                 return -ENOMEM;
 
+        CLEANUP_ARRAY(changes, n_changes, portable_changes_free);
+
         /* Corner case: only detached, nothing attached */
         if (n_changes_attached == 0) {
                 memcpy(changes, changes_detached, sizeof(PortableChange) * n_changes_detached);
                 *ret_changes = TAKE_PTR(changes);
                 *ret_n_changes = n_changes_detached;
-
                 return 0;
         }
 
@@ -587,17 +606,13 @@ static int normalize_portable_changes(
                         _cleanup_free_ char *path = NULL, *source = NULL;
 
                         path = strdup(changes_detached[i].path);
-                        if (!path) {
-                                r = -ENOMEM;
-                                goto fail;
-                        }
+                        if (!path)
+                                return -ENOMEM;
 
                         if (changes_detached[i].source) {
                                 source = strdup(changes_detached[i].source);
-                                if (!source) {
-                                        r = -ENOMEM;
-                                        goto fail;
-                                }
+                                if (!source)
+                                        return -ENOMEM;
                         }
 
                         changes[n_changes++] = (PortableChange) {
@@ -612,10 +627,6 @@ static int normalize_portable_changes(
         *ret_changes = TAKE_PTR(changes);
 
         return 0;
-
-fail:
-        portable_changes_free(changes, n_changes);
-        return r;
 }
 
 int bus_image_common_reattach(
@@ -634,6 +645,10 @@ int bus_image_common_reattach(
 
         assert(message);
         assert(name_or_path || image);
+
+        CLEANUP_ARRAY(changes_detached, n_changes_detached, portable_changes_free);
+        CLEANUP_ARRAY(changes_attached, n_changes_attached, portable_changes_free);
+        CLEANUP_ARRAY(changes_gone, n_changes_gone, portable_changes_free);
 
         if (!m) {
                 assert(image);
@@ -708,7 +723,7 @@ int bus_image_common_reattach(
                         &n_changes_detached,
                         error);
         if (r < 0)
-                goto finish;
+                return r;
 
         r = portable_attach(
                         sd_bus_message_get_bus(message),
@@ -716,12 +731,13 @@ int bus_image_common_reattach(
                         matches,
                         profile,
                         extension_images,
+                        /* image_policy= */ NULL,
                         flags,
                         &changes_attached,
                         &n_changes_attached,
                         error);
         if (r < 0)
-                goto finish;
+                return r;
 
         /* We want to return the list of units really removed by the detach,
          * and not added again by the attach */
@@ -729,22 +745,14 @@ int bus_image_common_reattach(
                                        changes_detached, n_changes_detached,
                                        &changes_gone, &n_changes_gone);
         if (r < 0)
-                goto finish;
+                return r;
 
         /* First, return the units that are gone (so that the caller can stop them)
          * Then, return the units that are changed/added (so that the caller can
          * start/restart/enable them) */
-        r = reply_portable_changes_pair(message,
-                                        changes_gone, n_changes_gone,
-                                        changes_attached, n_changes_attached);
-        if (r < 0)
-                goto finish;
-
-finish:
-        portable_changes_free(changes_detached, n_changes_detached);
-        portable_changes_free(changes_attached, n_changes_attached);
-        portable_changes_free(changes_gone, n_changes_gone);
-        return r;
+        return reply_portable_changes_pair(message,
+                                           changes_gone, n_changes_gone,
+                                           changes_attached, n_changes_attached);
 }
 
 static int bus_image_method_reattach(sd_bus_message *message, void *userdata, sd_bus_error *error) {
@@ -883,6 +891,12 @@ const sd_bus_vtable image_vtable[] = {
                                 SD_BUS_RESULT("s", state),
                                 bus_image_method_get_state,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_ARGS("GetStateWithExtensions",
+                                SD_BUS_ARGS("as", extensions,
+                                            "t", flags),
+                                SD_BUS_RESULT("s", state),
+                                bus_image_method_get_state,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("Attach",
                                 SD_BUS_ARGS("as", matches,
                                             "s", profile,
@@ -920,7 +934,7 @@ const sd_bus_vtable image_vtable[] = {
                                               "a(sss)", changes_updated),
                                 bus_image_method_reattach,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
-        SD_BUS_METHOD_WITH_ARGS("ReattacheWithExtensions",
+        SD_BUS_METHOD_WITH_ARGS("ReattachWithExtensions",
                                 SD_BUS_ARGS("as", extensions,
                                             "as", matches,
                                             "s", profile,
@@ -945,6 +959,17 @@ const sd_bus_vtable image_vtable[] = {
                                 SD_BUS_NO_RESULT,
                                 bus_image_method_set_limit,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
+        /* Deprecated silly typo */
+        SD_BUS_METHOD_WITH_ARGS("ReattacheWithExtensions",
+                                SD_BUS_ARGS("as", extensions,
+                                            "as", matches,
+                                            "s", profile,
+                                            "s", copy_mode,
+                                            "t", flags),
+                                SD_BUS_RESULT("a(sss)", changes_removed,
+                                              "a(sss)", changes_updated),
+                                bus_image_method_reattach,
+                                SD_BUS_VTABLE_UNPRIVILEGED|SD_BUS_VTABLE_HIDDEN),
         SD_BUS_VTABLE_END
 };
 
@@ -1018,19 +1043,23 @@ int bus_image_acquire(
                 /* If it's a short name, let's search for it */
                 r = image_find(IMAGE_PORTABLE, name_or_path, NULL, &loaded);
                 if (r == -ENOENT)
-                        return sd_bus_error_setf(error, BUS_ERROR_NO_SUCH_PORTABLE_IMAGE, "No image '%s' found.", name_or_path);
+                        return sd_bus_error_setf(error, BUS_ERROR_NO_SUCH_PORTABLE_IMAGE,
+                                                 "No image '%s' found.", name_or_path);
 
                 /* other errors are handled below… */
         } else {
                 /* Don't accept path if this is always forbidden */
                 if (mode == BUS_IMAGE_REFUSE_BY_PATH)
-                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Expected image name, not path in place of '%s'.", name_or_path);
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Expected image name, not path in place of '%s'.", name_or_path);
 
                 if (!path_is_absolute(name_or_path))
-                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Image name '%s' is not valid or not a valid path.", name_or_path);
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Image name '%s' is not valid or not a valid path.", name_or_path);
 
                 if (!path_is_normalized(name_or_path))
-                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Image path '%s' is not normalized.", name_or_path);
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Image path '%s' is not normalized.", name_or_path);
 
                 if (mode == BUS_IMAGE_AUTHENTICATE_BY_PATH) {
                         r = bus_verify_polkit_async(
@@ -1053,7 +1082,9 @@ int bus_image_acquire(
                 r = image_from_path(name_or_path, &loaded);
         }
         if (r == -EMEDIUMTYPE) {
-                sd_bus_error_setf(error, BUS_ERROR_BAD_PORTABLE_IMAGE_TYPE, "Typ of image '%s' not recognized; supported image types are directories/btrfs subvolumes, block devices, and raw disk image files with suffix '.raw'.", name_or_path);
+                sd_bus_error_setf(error, BUS_ERROR_BAD_PORTABLE_IMAGE_TYPE,
+                                  "Type of image '%s' not recognized; supported image types are directories/btrfs subvolumes, block devices, and raw disk image files with suffix '.raw'.",
+                                  name_or_path);
                 return r;
         }
         if (r < 0)
@@ -1092,6 +1123,9 @@ int bus_image_object_find(
         if (r < 0)
                 return 0;
         if (r == 0)
+                goto not_found;
+        if (isempty(e))
+                /* The path is "/org/freedesktop/portable1/image" itself */
                 goto not_found;
 
         r = bus_image_acquire(m, sd_bus_get_current_message(bus), e, NULL, BUS_IMAGE_REFUSE_BY_PATH, NULL, &image, error);

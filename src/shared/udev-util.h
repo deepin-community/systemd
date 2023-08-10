@@ -36,8 +36,8 @@ static inline int udev_parse_config(void) {
         return udev_parse_config_full(NULL, NULL, NULL, NULL, NULL);
 }
 
-int device_wait_for_initialization(sd_device *device, const char *subsystem, usec_t deadline, sd_device **ret);
-int device_wait_for_devlink(const char *path, const char *subsystem, usec_t deadline, sd_device **ret);
+int device_wait_for_initialization(sd_device *device, const char *subsystem, usec_t timeout_usec, sd_device **ret);
+int device_wait_for_devlink(const char *path, const char *subsystem, usec_t timeout_usec, sd_device **ret);
 int device_is_renaming(sd_device *dev);
 
 bool device_for_action(sd_device *dev, sd_device_action_t action);
@@ -50,10 +50,10 @@ size_t udev_replace_ifname(char *str);
 size_t udev_replace_chars(char *str, const char *allow);
 int udev_resolve_subsys_kernel(const char *string, char *result, size_t maxsize, bool read_value);
 
+bool devpath_conflict(const char *a, const char *b);
+
 int udev_queue_is_empty(void);
 int udev_queue_init(void);
-
-int on_ac_power(void);
 
 bool udev_available(void);
 
@@ -79,7 +79,7 @@ bool udev_available(void);
                 (void) sd_device_get_syspath(_d, &_p);                                                     \
                 (void) sd_device_get_subsystem(_d, &_s);                                                   \
                 STAP_PROBEV(udev, name, device_action_to_string(_a), _n, _p, _s __VA_OPT__(,) __VA_ARGS__);\
-        } while(false);
+        } while (false);
 #else
 #define DEVICE_TRACE_POINT(name, dev, ...) ((void) 0)
 #endif

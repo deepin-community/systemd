@@ -43,7 +43,7 @@ static void slice_set_state(Slice *t, SliceState state) {
                           slice_state_to_string(old_state),
                           slice_state_to_string(state));
 
-        unit_notify(UNIT(t), state_translation_table[old_state], state_translation_table[state], 0);
+        unit_notify(UNIT(t), state_translation_table[old_state], state_translation_table[state], /* reload_success = */ true);
 }
 
 static int slice_add_parent_slice(Slice *s) {
@@ -247,8 +247,8 @@ static int slice_stop(Unit *u) {
         return 1;
 }
 
-static int slice_kill(Unit *u, KillWho who, int signo, sd_bus_error *error) {
-        return unit_kill_common(u, who, signo, -1, -1, error);
+static int slice_kill(Unit *u, KillWho who, int signo, int code, int value, sd_bus_error *error) {
+        return unit_kill_common(u, who, signo, code, value, -1, -1, error);
 }
 
 static int slice_serialize(Unit *u, FILE *f, FDSet *fds) {
@@ -349,17 +349,14 @@ static void slice_enumerate_perpetual(Manager *m) {
 
 static bool slice_freezer_action_supported_by_children(Unit *s) {
         Unit *member;
-        int r;
 
         assert(s);
 
         UNIT_FOREACH_DEPENDENCY(member, s, UNIT_ATOM_SLICE_OF) {
 
-                if (member->type == UNIT_SLICE) {
-                        r = slice_freezer_action_supported_by_children(member);
-                        if (!r)
-                                return r;
-                }
+                if (member->type == UNIT_SLICE &&
+                    !slice_freezer_action_supported_by_children(member))
+                        return false;
 
                 if (!UNIT_VTABLE(member)->freeze)
                         return false;
@@ -375,25 +372,27 @@ static int slice_freezer_action(Unit *s, FreezerAction action) {
         assert(s);
         assert(IN_SET(action, FREEZER_FREEZE, FREEZER_THAW));
 
-        if (!slice_freezer_action_supported_by_children(s)) {
+        if (action == FREEZER_FREEZE && !slice_freezer_action_supported_by_children(s)) {
                 log_unit_warning(s, "Requested freezer operation is not supported by all children of the slice");
                 return 0;
         }
 
         UNIT_FOREACH_DEPENDENCY(member, s, UNIT_ATOM_SLICE_OF) {
+                if (!member->cgroup_realized)
+                        continue;
+
                 if (action == FREEZER_FREEZE)
                         r = UNIT_VTABLE(member)->freeze(member);
-                else
+                else if (UNIT_VTABLE(member)->thaw)
                         r = UNIT_VTABLE(member)->thaw(member);
+                else
+                        /* Thawing is requested but no corresponding method is available, ignore. */
+                        r = 0;
                 if (r < 0)
                         return r;
         }
 
-        r = unit_cgroup_freezer_action(s, action);
-        if (r < 0)
-                return r;
-
-        return 1;
+        return unit_cgroup_freezer_action(s, action);
 }
 
 static int slice_freeze(Unit *s) {

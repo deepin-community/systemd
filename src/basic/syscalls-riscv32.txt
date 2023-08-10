@@ -21,6 +21,7 @@ bpf	280
 brk	214
 cachectl
 cacheflush
+cachestat	451
 capget	90
 capset	91
 chdir	49
@@ -204,7 +205,7 @@ madvise	233
 mbind	235
 membarrier	283
 memfd_create	279
-memfd_secret
+memfd_secret	447
 memory_ordering
 migrate_pages	238
 mincore	232
@@ -427,6 +428,7 @@ renameat2	276
 request_key	218
 restart_syscall	128
 riscv_flush_icache	259
+riscv_hwprobe	258
 rmdir
 rseq	293
 rt_sigaction	134
@@ -473,6 +475,7 @@ sendmmsg	269
 sendmsg	211
 sendto	206
 set_mempolicy	237
+set_mempolicy_home_node	450
 set_robust_list	99
 set_thread_area
 set_tid_address	96

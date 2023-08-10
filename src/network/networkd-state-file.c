@@ -5,10 +5,12 @@
 
 #include "alloc-util.h"
 #include "dns-domain.h"
+#include "escape.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
 #include "network-internal.h"
+#include "networkd-dhcp-common.h"
 #include "networkd-link.h"
 #include "networkd-manager-bus.h"
 #include "networkd-manager.h"
@@ -204,7 +206,7 @@ int manager_save(Manager *m) {
                         const char *domainname;
                         char **domains = NULL;
 
-                        target_domains = (link->network->dhcp_use_domains == DHCP_USE_DOMAINS_YES) ? &search_domains : &route_domains;
+                        target_domains = link->network->dhcp_use_domains == DHCP_USE_DOMAINS_YES ? &search_domains : &route_domains;
                         r = sd_dhcp_lease_get_domainname(link->dhcp_lease, &domainname);
                         if (r >= 0) {
                                 r = ordered_set_put_strdup(target_domains, domainname);
@@ -463,7 +465,8 @@ static void link_save_domains(Link *link, FILE *f, OrderedSet *static_domains, D
 }
 
 int link_save(Link *link) {
-        const char *admin_state, *oper_state, *carrier_state, *address_state, *ipv4_address_state, *ipv6_address_state;
+        const char *admin_state, *oper_state, *carrier_state, *address_state, *ipv4_address_state, *ipv6_address_state,
+                *captive_portal;
         _cleanup_(unlink_and_freep) char *temp_path = NULL;
         _cleanup_fclose_ FILE *f = NULL;
         int r;
@@ -515,7 +518,7 @@ int link_save(Link *link) {
 
         if (link->network) {
                 const char *online_state;
-                bool space;
+                bool space = false;
 
                 online_state = link_online_state_to_string(link->online_state);
                 if (online_state)
@@ -538,10 +541,19 @@ int link_save(Link *link) {
 
                 fprintf(f, "NETWORK_FILE=%s\n", link->network->filename);
 
-                /************************************************************/
+                fputs("NETWORK_FILE_DROPINS=\"", f);
+                STRV_FOREACH(d, link->network->dropins) {
+                        _cleanup_free_ char *escaped = NULL;
 
-                /* Make sure to flush out old entries before we use the NDisc data */
-                ndisc_vacuum(link);
+                        escaped = xescape(*d, ":");
+                        if (!escaped)
+                                return -ENOMEM;
+
+                        fputs_with_space(f, escaped, ":", &space);
+                }
+                fputs("\"\n", f);
+
+                /************************************************************/
 
                 fputs("DNS=", f);
                 if (link->n_dns != UINT_MAX)
@@ -593,6 +605,15 @@ int link_save(Link *link) {
                                     link->network->dhcp_use_sip,
                                     SD_DHCP_LEASE_SIP,
                                     NULL, false, NULL, NULL);
+
+                /************************************************************/
+
+                r = link_get_captive_portal(link, &captive_portal);
+                if (r < 0)
+                        return r;
+
+                if (captive_portal)
+                        fprintf(f, "CAPTIVE_PORTAL=%s\n", captive_portal);
 
                 /************************************************************/
 

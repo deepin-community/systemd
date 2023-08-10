@@ -61,6 +61,62 @@ This is based on crypttab(5).
     <variablelist class='fstab-options'>
 
       <varlistentry>
+        <term><option>superblock=<replaceable>BOOL</replaceable></option></term>
+
+        <listitem><para>Use dm-verity with or without permanent on-disk superblock.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>format=<replaceable>NUMBER</replaceable></option></term>
+
+        <listitem><para>Specifies the hash version type. Format type 0 is original Chrome OS version. Format type 1 is
+        modern version.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>data-block-size=<replaceable>BYTES</replaceable></option></term>
+
+        <listitem><para>Used block size for the data device. (Note kernel supports only page-size as maximum
+        here; Multiples of 512 bytes.) </para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>hash-block-size=<replaceable>BYTES</replaceable></option></term>
+
+        <listitem><para>Used block size for the hash device. (Note kernel supports only page-size as maximum
+        here; Multiples of 512 bytes.)</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>data-blocks=<replaceable>BLOCKS</replaceable></option></term>
+
+        <listitem><para>Number of blocks of data device used in verification. If not specified, the whole device is
+        used.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>hash-offset=<replaceable>BYTES</replaceable></option></term>
+
+        <listitem><para>Offset of hash area/superblock on <literal>hash-device</literal>. (Multiples of 512 bytes.)
+        </para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>salt=<replaceable>HEX</replaceable></option></term>
+
+        <listitem><para>Salt used for format or verification. Format is a hexadecimal string; 256 bytes long maximum;
+        <literal>-</literal>is the special value for empty.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>uuid=<replaceable>UUID</replaceable></option></term>
+
+        <listitem><para>Use the provided UUID for format command instead of generating new one. The UUID must be
+        provided in standard UUID format, e.g. 12345678-1234-1234-1234-123456789abc.</para></listitem>
+        <listitem><para></para></listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><option>ignore-corruption</option></term>
         <term><option>restart-on-corruption</option></term>
         <term><option>panic-on-corruption</option></term>
@@ -95,7 +151,38 @@ This is based on crypttab(5).
       </varlistentry>
 
       <varlistentry>
-        <term><option>root-hash-signature=</option></term>
+        <term><option>hash=<replaceable>HASH</replaceable></option></term>
+
+        <listitem><para>Hash algorithm for dm-verity. This should be the name of the algorithm, like "sha1". For default
+        see <command>veritysetup --help</command>.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>fec-device=<replaceable>PATH</replaceable></option></term>
+
+        <listitem><para>Use forward error correction (FEC) to recover from corruption if hash verification fails. Use
+        encoding data from the specified device. The fec device argument can be block device or file image. For format,
+        if fec device path doesn't exist, it will be created as file. Note: block sizes for data and hash devices must
+        match. Also, if the verity data_device is encrypted the fec_device should be too.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>fec-offset=<replaceable>BYTES</replaceable></option></term>
+
+        <listitem><para>This is the offset, in bytes, from the start of the FEC device to the beginning of the encoding
+        data. (Aligned on 512 bytes.)</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>fec-roots=<replaceable>NUM</replaceable></option></term>
+
+        <listitem><para>Number of generator roots. This equals to the number of parity bytes in the encoding data. In
+        RS(M, N) encoding, the number of roots is M-N. M is 255 and M-N is between 2 and 24 (including).</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>root-hash-signature=<replaceable>PATH</replaceable>|base64:<replaceable>HEX</replaceable></option></term>
 
         <listitem><para>A base64 string encoding the root hash signature prefixed by <literal>base64:</literal> or a
         path to roothash signature file used to verify the root hash (in kernel). This feature requires Linux kernel
@@ -149,7 +236,7 @@ This is based on crypttab(5).
       <varlistentry>
         <term><option>x-initrd.attach</option></term>
 
-        <listitem><para>Setup this verity protected block device in the initramfs, similarly to
+        <listitem><para>Setup this verity protected block device in the initrd, similarly to
         <citerefentry><refentrytitle>systemd.mount</refentrytitle><manvolnum>5</manvolnum></citerefentry>
         units marked with <option>x-initrd.mount</option>.</para>
 
@@ -160,8 +247,8 @@ This is based on crypttab(5).
         use. With this option the device will still be detached but later after the root file
         system is unmounted.</para>
 
-        <para>All other verity protected block devices that contain file systems mounted in the
-        initramfs should use this option.</para>
+        <para>All other verity protected block devices that contain file systems mounted in the initrd should
+        use this option.</para>
         </listitem>
       </varlistentry>
 

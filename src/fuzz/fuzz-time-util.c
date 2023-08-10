@@ -4,7 +4,6 @@
 #include "fd-util.h"
 #include "fuzz.h"
 #include "time-util.h"
-#include "util.h"
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         _cleanup_free_ char *str = NULL;
@@ -13,7 +12,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         if (!getenv("SYSTEMD_LOG_LEVEL"))
                 log_set_max_level(LOG_CRIT);
 
-        str = memdup_suffix0(data, size);
+        assert_se(str = memdup_suffix0(data, size));
 
         (void) parse_timestamp(str, &usec);
         (void) parse_sec(str, &usec);

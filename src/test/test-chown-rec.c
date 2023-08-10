@@ -32,10 +32,8 @@ static const uint8_t default_acl[] = {
 static bool has_xattr(const char *p) {
         char buffer[sizeof(acl) * 4];
 
-        if (lgetxattr(p, "system.posix_acl_access", buffer, sizeof(buffer)) < 0) {
-                if (IN_SET(errno, EOPNOTSUPP, ENOTTY, ENODATA, ENOSYS))
-                        return false;
-        }
+        if (lgetxattr(p, "system.posix_acl_access", buffer, sizeof(buffer)) < 0)
+                return !ERRNO_IS_XATTR_ABSENT(errno);
 
         return true;
 }
@@ -106,7 +104,7 @@ TEST(chown_recursive) {
         assert_se(st.st_gid == gid);
         assert_se(has_xattr(p));
 
-        assert_se(path_chown_recursive(t, 1, 2, 07777) >= 0);
+        assert_se(path_chown_recursive(t, 1, 2, 07777, 0) >= 0);
 
         p = strjoina(t, "/dir");
         assert_se(lstat(p, &st) >= 0);
@@ -149,10 +147,11 @@ TEST(chown_recursive) {
         assert_se(!has_xattr(p));
 }
 
-DEFINE_CUSTOM_TEST_MAIN(
-        LOG_DEBUG,
-        ({
-                if (geteuid() != 0)
-                        return log_tests_skipped("not running as root");
-        }),
-        /* no outro */);
+static int intro(void) {
+        if (geteuid() != 0)
+                return log_tests_skipped("not running as root");
+
+        return EXIT_SUCCESS;
+}
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_DEBUG, intro);

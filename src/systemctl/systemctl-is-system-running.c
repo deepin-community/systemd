@@ -12,10 +12,8 @@
 #include "bus-error.h"
 
 static int match_startup_finished(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-        char **state = userdata;
+        char **state = ASSERT_PTR(userdata);
         int r;
-
-        assert(state);
 
         r = bus_get_property_string(sd_bus_message_get_bus(m), bus_systemd_mgr, "SystemState", NULL, state);
 
@@ -23,7 +21,7 @@ static int match_startup_finished(sd_bus_message *m, void *userdata, sd_bus_erro
         return 0;
 }
 
-int is_system_running(int argc, char *argv[], void *userdata) {
+int verb_is_system_running(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_slot_unrefp) sd_bus_slot *slot_startup_finished = NULL;
         _cleanup_(sd_event_unrefp) sd_event* event = NULL;

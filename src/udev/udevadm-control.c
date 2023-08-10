@@ -25,7 +25,6 @@
 #include "time-util.h"
 #include "udevadm.h"
 #include "udev-ctrl.h"
-#include "util.h"
 #include "virt.h"
 
 static int help(void) {
@@ -143,7 +142,7 @@ int control_main(int argc, char *argv[], void *userdata) {
 
                         r = safe_atou(optarg, &i);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse maximum number of events '%s': %m", optarg);
+                                return log_error_errno(r, "Failed to parse maximum number of children '%s': %m", optarg);
 
                         r = udev_ctrl_send_set_children_max(uctrl, i);
                         if (r == -ENOANO)

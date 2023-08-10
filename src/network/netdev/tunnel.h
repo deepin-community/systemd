@@ -5,6 +5,7 @@
 
 #include "conf-parser.h"
 #include "fou-tunnel.h"
+#include "netdev-util.h"
 #include "netdev.h"
 #include "networkd-link.h"
 
@@ -40,19 +41,26 @@ typedef struct Tunnel {
         uint32_t key;
         uint32_t ikey;
         uint32_t okey;
-        uint32_t erspan_index;
 
+        uint8_t erspan_version;
+        uint32_t erspan_index;    /* version 1 */
+        uint8_t erspan_direction; /* version 2 */
+        uint16_t erspan_hwid;     /* version 2 */
+
+        NetDevLocalAddressType local_type;
         union in_addr_union local;
         union in_addr_union remote;
 
         Ip6TnlMode ip6tnl_mode;
         FooOverUDPEncapType fou_encap_type;
 
-        bool pmtudisc;
+        int pmtudisc;
+        bool ignore_df;
         bool copy_dscp;
         bool independent;
         bool fou_tunnel;
         bool assign_to_loopback;
+        bool external; /* a.k.a collect metadata mode */
 
         uint16_t encap_src_port;
         uint16_t fou_destination_port;
@@ -119,8 +127,13 @@ const char *ip6tnl_mode_to_string(Ip6TnlMode d) _const_;
 Ip6TnlMode ip6tnl_mode_from_string(const char *d) _pure_;
 
 CONFIG_PARSER_PROTOTYPE(config_parse_ip6tnl_mode);
-CONFIG_PARSER_PROTOTYPE(config_parse_tunnel_address);
+CONFIG_PARSER_PROTOTYPE(config_parse_tunnel_local_address);
+CONFIG_PARSER_PROTOTYPE(config_parse_tunnel_remote_address);
 CONFIG_PARSER_PROTOTYPE(config_parse_ipv6_flowlabel);
 CONFIG_PARSER_PROTOTYPE(config_parse_encap_limit);
 CONFIG_PARSER_PROTOTYPE(config_parse_tunnel_key);
 CONFIG_PARSER_PROTOTYPE(config_parse_6rd_prefix);
+CONFIG_PARSER_PROTOTYPE(config_parse_erspan_version);
+CONFIG_PARSER_PROTOTYPE(config_parse_erspan_index);
+CONFIG_PARSER_PROTOTYPE(config_parse_erspan_direction);
+CONFIG_PARSER_PROTOTYPE(config_parse_erspan_hwid);

@@ -27,11 +27,10 @@ static void curl_glue_check_finished(CurlGlue *g) {
 }
 
 static int curl_glue_on_io(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
-        CurlGlue *g = userdata;
+        CurlGlue *g = ASSERT_PTR(userdata);
         int action, k = 0;
 
         assert(s);
-        assert(g);
 
         if (FLAGS_SET(revents, EPOLLIN | EPOLLOUT))
                 action = CURL_POLL_INOUT;
@@ -52,12 +51,11 @@ static int curl_glue_on_io(sd_event_source *s, int fd, uint32_t revents, void *u
 
 static int curl_glue_socket_callback(CURL *curl, curl_socket_t s, int action, void *userdata, void *socketp) {
         sd_event_source *io = socketp;
-        CurlGlue *g = userdata;
+        CurlGlue *g = ASSERT_PTR(userdata);
         uint32_t events = 0;
         int r;
 
         assert(curl);
-        assert(g);
 
         if (action == CURL_POLL_REMOVE) {
                 if (io) {
@@ -109,11 +107,10 @@ static int curl_glue_socket_callback(CURL *curl, curl_socket_t s, int action, vo
 }
 
 static int curl_glue_on_timer(sd_event_source *s, uint64_t usec, void *userdata) {
-        CurlGlue *g = userdata;
+        CurlGlue *g = ASSERT_PTR(userdata);
         int k = 0;
 
         assert(s);
-        assert(g);
 
         if (curl_multi_socket_action(g->curl, CURL_SOCKET_TIMEOUT, 0, &k) != CURLM_OK)
                 return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
@@ -124,11 +121,10 @@ static int curl_glue_on_timer(sd_event_source *s, uint64_t usec, void *userdata)
 }
 
 static int curl_glue_timer_callback(CURLM *curl, long timeout_ms, void *userdata) {
-        CurlGlue *g = userdata;
+        CurlGlue *g = ASSERT_PTR(userdata);
         usec_t usec;
 
         assert(curl);
-        assert(g);
 
         if (timeout_ms < 0) {
                 if (g->timer) {
@@ -148,7 +144,7 @@ static int curl_glue_timer_callback(CURLM *curl, long timeout_ms, void *userdata
                 if (sd_event_source_set_enabled(g->timer, SD_EVENT_ONESHOT) < 0)
                         return -1;
         } else {
-                if (sd_event_add_time_relative(g->event, &g->timer, clock_boottime_or_monotonic(), usec, 0, curl_glue_on_timer, g) < 0)
+                if (sd_event_add_time_relative(g->event, &g->timer, CLOCK_BOOTTIME, usec, 0, curl_glue_on_timer, g) < 0)
                         return -1;
 
                 (void) sd_event_source_set_description(g->timer, "curl-timer");
@@ -256,7 +252,11 @@ int curl_glue_make(CURL **ret, const char *url, void *userdata) {
         if (curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 30L) != CURLE_OK)
                 return -EIO;
 
+#if LIBCURL_VERSION_NUM >= 0x075500 /* libcurl 7.85.0 */
+        if (curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "HTTP,HTTPS,FILE") != CURLE_OK)
+#else
         if (curl_easy_setopt(c, CURLOPT_PROTOCOLS, CURLPROTO_HTTP|CURLPROTO_HTTPS|CURLPROTO_FILE) != CURLE_OK)
+#endif
                 return -EIO;
 
         *ret = TAKE_PTR(c);

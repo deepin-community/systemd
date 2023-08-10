@@ -96,12 +96,11 @@ static void brightness_writer_reply(BrightnessWriter *w, int error) {
 static int brightness_writer_fork(BrightnessWriter *w);
 
 static int on_brightness_writer_exit(sd_event_source *s, const siginfo_t *si, void *userdata) {
-        BrightnessWriter *w = userdata;
+        BrightnessWriter *w = ASSERT_PTR(userdata);
         int r;
 
         assert(s);
         assert(si);
-        assert(w);
 
         assert(si->si_pid == w->child);
         w->child = 0;
@@ -137,7 +136,7 @@ static int brightness_writer_fork(BrightnessWriter *w) {
         assert(w->child == 0);
         assert(!w->child_event_source);
 
-        r = safe_fork("(sd-bright)", FORK_DEATHSIG|FORK_NULL_STDIO|FORK_CLOSE_ALL_FDS|FORK_LOG|FORK_REOPEN_LOG, &w->child);
+        r = safe_fork("(sd-bright)", FORK_DEATHSIG|FORK_REARRANGE_STDIO|FORK_CLOSE_ALL_FDS|FORK_LOG|FORK_REOPEN_LOG, &w->child);
         if (r < 0)
                 return r;
         if (r == 0) {

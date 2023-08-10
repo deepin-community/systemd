@@ -70,6 +70,7 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   ```
 
 - Do not write `foo ()`, write `foo()`.
+
 - `else` blocks should generally start on the same line as the closing `}`:
   ```c
   if (foobar) {
@@ -79,7 +80,76 @@ SPDX-License-Identifier: LGPL-2.1-or-later
           dont_find_waldo();
   ```
 
+- Please define flags types like this:
+
+  ```c
+  typedef enum FoobarFlags {
+          FOOBAR_QUUX  = 1 << 0,
+          FOOBAR_WALDO = 1 << 1,
+          FOOBAR_XOXO  = 1 << 2,
+          …
+  } FoobarFlags;
+  ```
+
+  i.e. use an enum for it, if possible. Indicate bit values via `1 <<`
+  expressions, and align them vertically. Define both an enum and a type for
+  it.
+
+- If you define (non-flags) enums, follow this template:
+
+  ```c
+  typedef enum FoobarMode {
+          FOOBAR_AAA,
+          FOOBAR_BBB,
+          FOOBAR_CCC,
+          …
+          _FOOBAR_MAX,
+          _FOOBAR_INVALID = -EINVAL,
+  } FoobarMode;
+  ```
+
+  i.e. define a `_MAX` enum for the largest defined enum value, plus one. Since
+  this is not a regular enum value, prefix it with `_`. Also, define a special
+  "invalid" enum value, and set it to `-EINVAL`. That way the enum type can
+  safely be used to propagate conversion errors.
+
+- If you define an enum in a public API, be extra careful, as the size of the
+  enum might change when new values are added, which would break ABI
+  compatibility. Since we typically want to allow adding new enum values to an
+  existing enum type with later API versions, please use the
+  `_SD_ENUM_FORCE_S64()` macro in the enum definition, which forces the size of
+  the enum to be signed 64-bit wide.
+
+- Empty lines to separate code blocks are a good thing, please add them
+  abundantly. However, please stick to one at a time, i.e. multiple empty lines
+  immediately following each other are not OK. Also, we try to keep function
+  calls and their immediate error handling together. Hence:
+
+  ```c
+  /* → empty line here is good */
+  r = some_function(…);
+  /* → empty line here would be bad */
+  if (r < 0)
+          return log_error_errno(r, "Some function failed: %m");
+  /* → empty line here is good */
+
+- In shell scripts, do not use whitespace after the redirection operator
+  (`>some/file` instead of `> some/file`, `<<EOF` instead of `<< EOF`).
+
 ## Code Organization and Semantics
+
+- For our codebase we intend to use ISO C11 *with* GNU extensions (aka
+  "gnu11"). Public APIs (i.e. those we expose via `libsystemd.so`
+  i.e. `systemd/sd-*.h`) should only use ISO C89 however (with a very limited
+  set of conservative and common extensions, such as fixed size integer types
+  from `<inttypes.h>`), so that we don't force consuming programs into C11
+  mode. (This discrepancy in particular means one thing: internally we use C99
+  `bool` booleans, externally C89-compatible `int` booleans which generally
+  have different size in memory and slightly different semantics, also see
+  below.)  Both for internal and external code it's OK to use even newer
+  features and GCC extension than "gnu11", as long as there's reasonable
+  fallback #ifdeffery in place to ensure compatibility is retained with older
+  compilers.
 
 - Please name structures in `PascalCase` (with exceptions, such as public API
   structs), variables and functions in `snake_case`.
@@ -141,7 +211,7 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   variables if you are sure that thread-safety doesn't matter in your
   case. Alternatively, consider using TLS, which is pretty easy to use with
   gcc's `thread_local` concept. It's also OK to store data that is inherently
-  global in global variables, for example data parsed from command lines, see
+  global in global variables, for example, data parsed from command lines, see
   below.
 
 - Our focus is on the GNU libc (glibc), not any other libcs. If other libcs are
@@ -156,8 +226,9 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   the point where they can be initialized. Avoid huge variable declaration
   lists at the top of the function.
 
-  As an exception, `r` is typically used for a local state variable, but should
-  almost always be declared as the last variable at the top of the function.
+  As an exception, `int r` is typically used for a local state variable, but
+  should almost always be declared as the last variable at the top of the
+  function.
 
   ```c
   {
@@ -275,6 +346,21 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   which will always work regardless if `p` is initialized or not, and
   guarantees that `p` is `NULL` afterwards, all in just one line.
 
+## Common Function Naming
+
+- Name destructor functions that destroy an object in full freeing all its
+  memory and associated resources (and thus invalidating the pointer to it)
+  `xyz_free()`. Example: `strv_free()`.
+
+- Name destructor functions that destroy only the referenced content of an
+  object but leave the object itself allocated `xyz_done()`. If it resets all
+  fields so that the object can be reused later call it `xyz_clear()`.
+
+- Functions that decrease the reference counter of an object by one should be
+  called `xyz_unref()`. Example: `json_variant_unref()`. Functions that
+  increase the reference counter by one should be called `xyz_ref()`. Example:
+  `json_variant_ref()`
+
 ## Error Handling
 
 - Error codes are returned as negative `Exxx`. e.g. `return -EINVAL`. There are
@@ -358,7 +444,7 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 
 - For every function you add, think about whether it is a "logging" function or
   a "non-logging" function. "Logging" functions do (non-debug) logging on their
-  own, "non-logging" function never log on their own (except at debug level)
+  own, "non-logging" functions never log on their own (except at debug level)
   and expect their callers to log. All functions in "library" code, i.e. in
   `src/shared/` and suchlike must be "non-logging". Every time a "logging"
   function calls a "non-logging" function, it should log about the resulting
@@ -461,7 +547,7 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 ## Types
 
 - Think about the types you use. If a value cannot sensibly be negative, do not
-  use `int`, but use `unsigned`.
+  use `int`, but use `unsigned`.  We prefer `unsigned` form to `unsigned int`.
 
 - Use `char` only for actual characters. Use `uint8_t` or `int8_t` when you
   actually mean a byte-sized signed or unsigned integers. When referring to a
@@ -491,7 +577,8 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 
 - Use the bool type for booleans, not integers. One exception: in public
   headers (i.e those in `src/systemd/sd-*.h`) use integers after all, as `bool`
-  is C99 and in our public APIs we try to stick to C89 (with a few extensions).
+  is C99 and in our public APIs we try to stick to C89 (with a few extensions;
+  also see above).
 
 ## Deadlocks
 
@@ -518,13 +605,22 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 
 - It's a good idea to use `O_NONBLOCK` when opening 'foreign' regular files,
   i.e.  file system objects that are supposed to be regular files whose paths
-  where specified by the user and hence might actually refer to other types of
+  were specified by the user and hence might actually refer to other types of
   file system objects. This is a good idea so that we don't end up blocking on
-  'strange' file nodes, for example if the user pointed us to a FIFO or device
+  'strange' file nodes, for example, if the user pointed us to a FIFO or device
   node which may block when opening. Moreover even for actual regular files
   `O_NONBLOCK` has a benefit: it bypasses any mandatory lock that might be in
   effect on the regular file. If in doubt consider turning off `O_NONBLOCK`
   again after opening.
+
+- These days we generally prefer `openat()`-style file APIs, i.e. APIs that
+  accept a combination of file descriptor and path string, and where the path
+  (if not absolute) is considered relative to the specified file
+  descriptor. When implementing library calls in similar style, please make
+  sure to imply `AT_EMPTY_PATH` if an empty or `NULL` path argument is
+  specified (and convert that latter to an empty string). This differs from the
+  underlying kernel semantics, where `AT_EMPTY_PATH` must always be specified
+  explicitly, and `NULL` is not acepted as path.
 
 ## Command Line
 
@@ -591,6 +687,11 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   `uint16_t`. Also, "network byte order" is just a weird name for "big endian",
   hence we might want to call it "big endian" right-away.
 
+- Use `typesafe_inet_ntop()`, `typesafe_inet_ntop4()`, and
+  `typesafe_inet_ntop6()` instead of `inet_ntop()`. But better yet, use the
+  `IN_ADDR_TO_STRING()`, `IN4_ADDR_TO_STRING()`, and `IN6_ADDR_TO_STRING()`
+  macros which allocate an anonymous buffer internally.
+
 - Please never use `dup()`. Use `fcntl(fd, F_DUPFD_CLOEXEC, 3)` instead. For
   two reasons: first, you want `O_CLOEXEC` set on the new `fd` (see
   above). Second, `dup()` will happily duplicate your `fd` as 0, 1, 2,
@@ -608,11 +709,11 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   process, please use `_exit()` instead of `exit()`, so that the exit handlers
   are not run.
 
-- We never use the POSIX version of `basename()` (which glibc defines in
-  `libgen.h`), only the GNU version (which glibc defines in `string.h`).  The
-  only reason to include `libgen.h` is because `dirname()` is needed. Every
-  time you need that please immediately undefine `basename()`, and add a
-  comment about it, so that no code ever ends up using the POSIX version!
+- Do not use `basename()` or `dirname()`. The semantics in corner cases are
+  full of pitfalls, and the fact that there are two quite different versions of
+  `basename()` (one POSIX and one GNU, of which the latter is much more useful)
+  doesn't make it better either. Use path_extract_filename() and
+  path_extract_directory() instead.
 
 - Never use `FILENAME_MAX`. Use `PATH_MAX` instead (for checking maximum size
   of paths) and `NAME_MAX` (for checking maximum size of filenames).
@@ -623,7 +724,58 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 ## Committing to git
 
 - Commit message subject lines should be prefixed with an appropriate component
-  name of some kind. For example "journal: ", "nspawn: " and so on.
+  name of some kind. For example, "journal: ", "nspawn: " and so on.
 
 - Do not use "Signed-Off-By:" in your commit messages. That's a kernel thing we
   don't do in the systemd project.
+
+## Commenting
+
+- The best place for code comments and explanations is in the code itself. Only
+  the second best is in git commit messages. The worst place is in the GitHub
+  PR cover letter. Hence, whenever you type a commit message consider for a
+  moment if what you are typing there wouldn't be a better fit for an in-code
+  comment. And if you type the cover letter of a PR, think hard if this
+  wouldn't be better as a commit message or even code comment. Comments are
+  supposed to be useful for somebody who reviews the code, and hence hiding
+  comments in git commits or PR cover letters makes reviews unnecessarily
+  hard. Moreover, while we rely heavily on GitHub's project management
+  infrastructure we'd like to keep everything that can reasonably be kept in
+  the git repository itself in the git repository, so that we can theoretically
+  move things elsewhere with the least effort possible.
+
+- It's OK to reference GitHub PRs, GitHub issues and git commits from code
+  comments. Cross-referencing code, issues, and documentation is a good thing.
+
+- Reasonable use of non-ASCII Unicode UTF-8 characters in code comments is
+  welcome. If your code comment contains an emoji or two this will certainly
+  brighten the day of the occasional reviewer of your code. Really! 😊
+
+## Threading
+
+- We generally avoid using threads, to the level this is possible. In
+  particular in the service manager/PID 1 threads are not OK to use. This is
+  because you cannot mix memory allocation in threads with use of glibc's
+  `clone()` call, or manual `clone()`/`clone3()` system call wrappers. Only
+  glibc's own `fork()` call will properly synchronize the memory allocation
+  locks around the process clone operation. This means that if a process is
+  cloned via `clone()`/`clone3()` and another thread currently has the
+  `malloc()` lock taken, it will be cloned in locked state to the child, and
+  thus can never be acquired in the child, leading to deadlocks. Hence, when
+  using `clone()`/`clone3()` there are only two ways out: never use threads in the
+  parent, or never do memory allocation in the child. For our uses we need
+  `clone()`/`clone3()` and hence decided to avoid threads. Of course, sometimes the
+  concurrency threads allow is beneficial, however we suggest forking off
+  worker *processes* rather than worker *threads* for this purpose, ideally
+  even with an `execve()` to remove the CoW trap situation `fork()` easily
+  triggers.
+
+- A corollary of the above is: never use `clone()` where a `fork()` would do
+  too. Also consider using `posix_spawn()` which combines `clone()` +
+  `execve()` into one and has nice properties since it avoids becoming a CoW
+  trap by using `CLONE_VORK` and `CLONE_VM` together.
+
+- While we avoid forking off threads on our own, writing thread-safe code is a
+  good idea where it might end up running inside of libsystemd.so or
+  similar. Hence, use TLS (i.e. `thread_local`) where appropriate, and maybe
+  the occasional `pthread_once()`.

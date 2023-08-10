@@ -16,24 +16,28 @@ typedef enum IPv6AcceptRAStartDHCP6Client {
 } IPv6AcceptRAStartDHCP6Client;
 
 typedef struct NDiscRDNSS {
-        /* Used when GC'ing old DNS servers when configuration changes. */
-        bool marked;
         struct in6_addr router;
         /* This is an absolute point in time, and NOT a timespan/duration.
-         * Must be specified with clock_boottime_or_monotonic(). */
+         * Must be specified with CLOCK_BOOTTIME. */
         usec_t lifetime_usec;
         struct in6_addr address;
 } NDiscRDNSS;
 
 typedef struct NDiscDNSSL {
-        /* Used when GC'ing old domains when configuration changes. */
-        bool marked;
         struct in6_addr router;
         /* This is an absolute point in time, and NOT a timespan/duration.
-         * Must be specified with clock_boottime_or_monotonic(). */
+         * Must be specified with CLOCK_BOOTTIME. */
         usec_t lifetime_usec;
         /* The domain name follows immediately. */
 } NDiscDNSSL;
+
+typedef struct NDiscCaptivePortal {
+        struct in6_addr router;
+        /* This is an absolute point in time, and NOT a timespan/duration.
+         * Must be specified with CLOCK_BOOTTIME. */
+        usec_t lifetime_usec;
+        char *captive_portal;
+} NDiscCaptivePortal;
 
 static inline char* NDISC_DNSSL_DOMAIN(const NDiscDNSSL *n) {
         return ((char*) n) + ALIGN(sizeof(NDiscDNSSL));
@@ -43,10 +47,11 @@ bool link_ipv6_accept_ra_enabled(Link *link);
 
 void network_adjust_ipv6_accept_ra(Network *network);
 
-int ndisc_configure(Link *link);
 int ndisc_start(Link *link);
-void ndisc_vacuum(Link *link);
+int ndisc_stop(Link *link);
 void ndisc_flush(Link *link);
+
+int link_request_ndisc(Link *link);
 
 CONFIG_PARSER_PROTOTYPE(config_parse_ipv6_accept_ra_start_dhcp6_client);
 CONFIG_PARSER_PROTOTYPE(config_parse_ipv6_accept_ra_use_domains);

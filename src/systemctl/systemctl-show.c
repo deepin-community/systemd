@@ -13,6 +13,7 @@
 #include "errno-util.h"
 #include "exec-util.h"
 #include "exit-status.h"
+#include "fd-util.h"
 #include "format-util.h"
 #include "hexdecoct.h"
 #include "hostname-util.h"
@@ -23,6 +24,7 @@
 #include "locale-util.h"
 #include "memory-util.h"
 #include "numa-util.h"
+#include "open-file.h"
 #include "parse-util.h"
 #include "path-util.h"
 #include "pretty-print.h"
@@ -64,7 +66,7 @@ typedef struct ExecStatusInfo {
 
         ExecCommandFlags flags;
 
-        LIST_FIELDS(struct ExecStatusInfo, exec);
+        LIST_FIELDS(struct ExecStatusInfo, exec_status_info_list);
 } ExecStatusInfo;
 
 static void exec_status_info_free(ExecStatusInfo *i) {
@@ -205,6 +207,9 @@ typedef struct UnitStatusInfo {
         bool running:1;
         int status_errno;
 
+        uint32_t fd_store_max;
+        uint32_t n_fd_store;
+
         usec_t start_timestamp;
         usec_t exit_timestamp;
 
@@ -247,9 +252,15 @@ typedef struct UnitStatusInfo {
         uint64_t memory_current;
         uint64_t memory_min;
         uint64_t memory_low;
+        uint64_t startup_memory_low;
         uint64_t memory_high;
+        uint64_t startup_memory_high;
         uint64_t memory_max;
+        uint64_t startup_memory_max;
         uint64_t memory_swap_max;
+        uint64_t startup_memory_swap_max;
+        uint64_t memory_zswap_max;
+        uint64_t startup_memory_zswap_max;
         uint64_t memory_limit;
         uint64_t memory_available;
         uint64_t cpu_usage_nsec;
@@ -262,8 +273,9 @@ typedef struct UnitStatusInfo {
 
         uint64_t default_memory_min;
         uint64_t default_memory_low;
+        uint64_t default_startup_memory_low;
 
-        LIST_HEAD(ExecStatusInfo, exec);
+        LIST_HEAD(ExecStatusInfo, exec_status_info_list);
 } UnitStatusInfo;
 
 static void unit_status_info_free(UnitStatusInfo *info) {
@@ -281,8 +293,8 @@ static void unit_status_info_free(UnitStatusInfo *info) {
                 unit_condition_free(c);
         }
 
-        while ((p = info->exec)) {
-                LIST_REMOVE(exec, info->exec, p);
+        while ((p = info->exec_status_info_list)) {
+                LIST_REMOVE(exec_status_info_list, info->exec_status_info_list, p);
                 exec_status_info_free(p);
         }
 }
@@ -298,17 +310,30 @@ static void format_active_state(const char *active_state, const char **active_on
                 *active_on = *active_off = "";
 }
 
+static void format_enable_state(const char *enable_state, const char **enable_on, const char **enable_off) {
+        assert(enable_on);
+        assert(enable_off);
+
+        if (streq_ptr(enable_state, "disabled")) {
+                *enable_on = ansi_highlight_yellow();
+                *enable_off = ansi_normal();
+        } else if (streq_ptr(enable_state, "enabled")) {
+                *enable_on = ansi_highlight_green();
+                *enable_off = ansi_normal();
+        } else
+                *enable_on = *enable_off = "";
+}
+
 static void print_status_info(
                 sd_bus *bus,
                 UnitStatusInfo *i,
                 bool *ellipsized) {
 
         const char *active_on, *active_off, *on, *off, *ss, *fs;
+        const char *enable_on, *enable_off, *preset_on, *preset_off;
         _cleanup_free_ char *formatted_path = NULL;
-        ExecStatusInfo *p;
         usec_t timestamp;
         const char *path;
-        char **t, **t2;
         int r;
 
         assert(i);
@@ -317,6 +342,8 @@ static void print_status_info(
          * printer */
 
         format_active_state(i->active_state, &active_on, &active_off);
+        format_enable_state(i->unit_file_state, &enable_on, &enable_off);
+        format_enable_state(i->unit_file_preset, &preset_on, &preset_off);
 
         const SpecialGlyph glyph = unit_active_state_to_glyph(unit_active_state_from_string(i->active_state));
 
@@ -347,12 +374,12 @@ static void print_status_info(
                 bool show_preset = !isempty(i->unit_file_preset) &&
                         show_preset_for_state(unit_file_state_from_string(i->unit_file_state));
 
-                printf("     Loaded: %s%s%s (%s; %s%s%s)\n",
+                printf("     Loaded: %s%s%s (%s; %s%s%s%s%s%s%s)\n",
                        on, strna(i->load_state), off,
                        path,
-                       i->unit_file_state,
-                       show_preset ? "; vendor preset: " : "",
-                       show_preset ? i->unit_file_preset : "");
+                       enable_on, i->unit_file_state, enable_off,
+                       show_preset ? "; preset: " : "",
+                       preset_on, show_preset ? i->unit_file_preset : "", preset_off);
 
         } else if (path)
                 printf("     Loaded: %s%s%s (%s)\n",
@@ -367,7 +394,6 @@ static void print_status_info(
         if (!strv_isempty(i->dropin_paths)) {
                 _cleanup_free_ char *dir = NULL;
                 bool last = false;
-                char ** dropin;
 
                 STRV_FOREACH(dropin, i->dropin_paths) {
                         _cleanup_free_ char *dropin_formatted = NULL;
@@ -379,10 +405,10 @@ static void print_status_info(
 
                                 dir = mfree(dir);
 
-                                dir = dirname_malloc(*dropin);
-                                if (!dir) {
-                                        log_oom();
-                                        return;
+                                r = path_extract_directory(*dropin, &dir);
+                                if (r < 0) {
+                                        log_error_errno(r, "Failed to extract directory of '%s': %m", *dropin);
+                                        break;
                                 }
 
                                 printf("%s\n"
@@ -421,7 +447,7 @@ static void print_status_info(
                     STRPTR_IN_SET(i->active_state, "activating")          ? i->inactive_exit_timestamp :
                                                                             i->active_exit_timestamp;
 
-        if (timestamp > 0 && timestamp < USEC_INFINITY) {
+        if (timestamp_is_set(timestamp)) {
                 printf(" since %s; %s\n",
                        FORMAT_TIMESTAMP_STYLE(timestamp, arg_timestamp_style),
                        FORMAT_TIMESTAMP_RELATIVE(timestamp));
@@ -432,6 +458,18 @@ static void print_status_info(
                         printf("      Until: %s; %s\n",
                                FORMAT_TIMESTAMP_STYLE(until_timestamp, arg_timestamp_style),
                                FORMAT_TIMESTAMP_RELATIVE(until_timestamp));
+                }
+
+                if (!endswith(i->id, ".target") &&
+                        STRPTR_IN_SET(i->active_state, "inactive", "failed") &&
+                        timestamp_is_set(i->active_enter_timestamp) &&
+                        timestamp_is_set(i->active_exit_timestamp) &&
+                        i->active_exit_timestamp >= i->active_enter_timestamp) {
+
+                        usec_t duration;
+
+                        duration = i->active_exit_timestamp - i->active_enter_timestamp;
+                        printf("   Duration: %s\n", FORMAT_TIMESPAN(duration, MSEC_PER_SEC));
                 }
         } else
                 printf("\n");
@@ -455,7 +493,7 @@ static void print_status_info(
                 dual_timestamp_get(&nw);
                 next_elapse = calc_next_elapse(&nw, &next);
 
-                if (next_elapse > 0 && next_elapse < USEC_INFINITY)
+                if (timestamp_is_set(next_elapse))
                         printf("    Trigger: %s; %s\n",
                                FORMAT_TIMESTAMP_STYLE(next_elapse, arg_timestamp_style),
                                FORMAT_TIMESTAMP_RELATIVE(next_elapse));
@@ -476,10 +514,9 @@ static void print_status_info(
         }
 
         if (!i->condition_result && i->condition_timestamp > 0) {
-                UnitCondition *c;
                 int n = 0;
 
-                printf("  Condition: start %scondition failed%s at %s; %s\n",
+                printf("  Condition: start %scondition unmet%s at %s; %s\n",
                        ansi_highlight_yellow(), ansi_normal(),
                        FORMAT_TIMESTAMP_STYLE(i->condition_timestamp, arg_timestamp_style),
                        FORMAT_TIMESTAMP_RELATIVE(i->condition_timestamp));
@@ -541,7 +578,7 @@ static void print_status_info(
                 printf("\n");
         }
 
-        LIST_FOREACH(exec, p, i->exec) {
+        LIST_FOREACH(exec_status_info_list, p, i->exec_status_info_list) {
                 _cleanup_free_ char *argv = NULL;
                 bool good;
 
@@ -559,7 +596,7 @@ static void print_status_info(
 
                 good = is_clean_exit(p->code, p->status, EXIT_CLEAN_DAEMON, NULL);
                 if (!good) {
-                        on = ansi_highlight_red();
+                        on = p->ignore ? ansi_highlight_yellow() : ansi_highlight_red();
                         off = ansi_normal();
                 } else
                         on = off = "";
@@ -644,9 +681,11 @@ static void print_status_info(
         }
 
         if (i->status_text)
-                printf("     Status: \"%s\"\n", i->status_text);
-        if (i->status_errno > 0)
-                printf("      Error: %i (%s)\n", i->status_errno, strerror_safe(i->status_errno));
+                printf("     Status: \"%s%s%s\"\n", ansi_highlight_cyan(), i->status_text, ansi_normal());
+        if (i->status_errno > 0) {
+                errno = i->status_errno;
+                printf("      Error: %i (%m)\n", i->status_errno);
+        }
 
         if (i->ip_ingress_bytes != UINT64_MAX && i->ip_egress_bytes != UINT64_MAX)
                 printf("         IP: %s in, %s out\n",
@@ -667,12 +706,18 @@ static void print_status_info(
                         printf("\n");
         }
 
+        if (i->n_fd_store > 0 || i->fd_store_max > 0)
+                printf("   FD Store: %u%s (limit: %u)%s\n", i->n_fd_store, ansi_grey(), i->fd_store_max, ansi_normal());
+
         if (i->memory_current != UINT64_MAX) {
                 printf("     Memory: %s", FORMAT_BYTES(i->memory_current));
 
-                if (i->memory_min > 0 || i->memory_low > 0 ||
-                    i->memory_high != CGROUP_LIMIT_MAX || i->memory_max != CGROUP_LIMIT_MAX ||
-                    i->memory_swap_max != CGROUP_LIMIT_MAX ||
+                if (i->memory_min > 0 ||
+                    i->memory_low > 0 || i->startup_memory_low > 0 ||
+                    i->memory_high != CGROUP_LIMIT_MAX || i->startup_memory_high != CGROUP_LIMIT_MAX ||
+                    i->memory_max != CGROUP_LIMIT_MAX || i->startup_memory_max != CGROUP_LIMIT_MAX ||
+                    i->memory_swap_max != CGROUP_LIMIT_MAX || i->startup_memory_swap_max != CGROUP_LIMIT_MAX ||
+                    i->memory_zswap_max != CGROUP_LIMIT_MAX || i->startup_memory_zswap_max != CGROUP_LIMIT_MAX ||
                     i->memory_available != CGROUP_LIMIT_MAX ||
                     i->memory_limit != CGROUP_LIMIT_MAX) {
                         const char *prefix = "";
@@ -686,16 +731,40 @@ static void print_status_info(
                                 printf("%slow: %s", prefix, FORMAT_BYTES_CGROUP_PROTECTION(i->memory_low));
                                 prefix = " ";
                         }
+                        if (i->startup_memory_low > 0) {
+                                printf("%slow (startup): %s", prefix, FORMAT_BYTES_CGROUP_PROTECTION(i->startup_memory_low));
+                                prefix = " ";
+                        }
                         if (i->memory_high != CGROUP_LIMIT_MAX) {
                                 printf("%shigh: %s", prefix, FORMAT_BYTES(i->memory_high));
+                                prefix = " ";
+                        }
+                        if (i->startup_memory_high != CGROUP_LIMIT_MAX) {
+                                printf("%shigh (startup): %s", prefix, FORMAT_BYTES(i->startup_memory_high));
                                 prefix = " ";
                         }
                         if (i->memory_max != CGROUP_LIMIT_MAX) {
                                 printf("%smax: %s", prefix, FORMAT_BYTES(i->memory_max));
                                 prefix = " ";
                         }
+                        if (i->startup_memory_max != CGROUP_LIMIT_MAX) {
+                                printf("%smax (startup): %s", prefix, FORMAT_BYTES(i->startup_memory_max));
+                                prefix = " ";
+                        }
                         if (i->memory_swap_max != CGROUP_LIMIT_MAX) {
                                 printf("%sswap max: %s", prefix, FORMAT_BYTES(i->memory_swap_max));
+                                prefix = " ";
+                        }
+                        if (i->startup_memory_swap_max != CGROUP_LIMIT_MAX) {
+                                printf("%sswap max (startup): %s", prefix, FORMAT_BYTES(i->startup_memory_swap_max));
+                                prefix = " ";
+                        }
+                        if (i->memory_zswap_max != CGROUP_LIMIT_MAX) {
+                                printf("%szswap max: %s", prefix, FORMAT_BYTES(i->memory_zswap_max));
+                                prefix = " ";
+                        }
+                        if (i->startup_memory_zswap_max != CGROUP_LIMIT_MAX) {
+                                printf("%szswap max (startup): %s", prefix, FORMAT_BYTES(i->startup_memory_zswap_max));
                                 prefix = " ";
                         }
                         if (i->memory_limit != CGROUP_LIMIT_MAX) {
@@ -754,7 +823,7 @@ static void print_status_info(
                                 getuid(),
                                 get_output_flags() | OUTPUT_BEGIN_NEWLINE,
                                 SD_JOURNAL_LOCAL_ONLY,
-                                arg_scope == UNIT_FILE_SYSTEM,
+                                arg_runtime_scope == RUNTIME_SCOPE_SYSTEM,
                                 ellipsized);
 
         if (i->need_daemon_reload)
@@ -762,8 +831,6 @@ static void print_status_info(
 }
 
 static void show_unit_help(UnitStatusInfo *i) {
-        char **p;
-
         assert(i);
 
         if (!i->documentation) {
@@ -921,7 +988,7 @@ static int map_exec(sd_bus *bus, const char *member, sd_bus_message *m, sd_bus_e
         if (!info)
                 return -ENOMEM;
 
-        LIST_FIND_TAIL(exec, i->exec, last);
+        last = LIST_FIND_TAIL(exec_status_info_list, i->exec_status_info_list);
 
         while ((r = exec_status_info_deserialize(m, info, is_ex_prop)) > 0) {
 
@@ -929,7 +996,7 @@ static int map_exec(sd_bus *bus, const char *member, sd_bus_message *m, sd_bus_e
                 if (!info->name)
                         return -ENOMEM;
 
-                LIST_INSERT_AFTER(exec, i->exec, last, info);
+                LIST_INSERT_AFTER(exec_status_info_list, i->exec_status_info_list, last, info);
                 last = info;
 
                 info = new0(ExecStatusInfo, 1);
@@ -1066,7 +1133,6 @@ static int print_property(const char *name, const char *expected_value, sd_bus_m
 
                         if (FLAGS_SET(flags, BUS_PRINT_PROPERTY_SHOW_EMPTY) || allow_list || !strv_isempty(l)) {
                                 bool first = true;
-                                char **i;
 
                                 if (!FLAGS_SET(flags, BUS_PRINT_PROPERTY_ONLY_VALUE)) {
                                         fputs(name, stdout);
@@ -1432,7 +1498,6 @@ static int print_property(const char *name, const char *expected_value, sd_bus_m
                                 return bus_log_parse_error(r);
 
                         for (;;) {
-                                _cleanup_free_ char *str = NULL;
                                 uint32_t prefixlen;
                                 int32_t family;
                                 const void *ap;
@@ -1469,10 +1534,8 @@ static int print_property(const char *name, const char *expected_value, sd_bus_m
                                 if (prefixlen > FAMILY_ADDRESS_SIZE(family) * 8)
                                         continue;
 
-                                if (in_addr_prefix_to_string(family, (const union in_addr_union*) ap, prefixlen, &str) < 0)
-                                        continue;
-
-                                if (!strextend_with_separator(&addresses, " ", str))
+                                if (!strextend_with_separator(&addresses, " ",
+                                                              IN_ADDR_PREFIX_TO_STRING(family, ap, prefixlen)))
                                         return log_oom();
                         }
 
@@ -1622,6 +1685,24 @@ static int print_property(const char *name, const char *expected_value, sd_bus_m
                                 return log_oom();
 
                         bus_print_property_value(name, expected_value, flags, affinity);
+
+                        return 1;
+                } else if (streq(name, "LogFilterPatterns")) {
+                        int is_allowlist;
+                        const char *pattern;
+
+                        r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "(bs)");
+                        if (r < 0)
+                                return bus_log_parse_error(r);
+
+                        while ((r = sd_bus_message_read(m, "(bs)", &is_allowlist, &pattern)) > 0)
+                                bus_print_property_valuef(name, expected_value, flags, "%s%s", is_allowlist ? "" : "~", pattern);
+                        if (r < 0)
+                                return bus_log_parse_error(r);
+
+                        r = sd_bus_message_exit_container(m);
+                        if (r < 0)
+                                return bus_log_parse_error(r);
 
                         return 1;
                 } else if (streq(name, "MountImages")) {
@@ -1813,6 +1894,38 @@ static int print_property(const char *name, const char *expected_value, sd_bus_m
                                 return bus_log_parse_error(r);
 
                         return 1;
+                } else if (contents[0] == SD_BUS_TYPE_STRUCT_BEGIN && streq(name, "OpenFile")) {
+                        char *path, *fdname;
+                        uint64_t offlags;
+
+                        r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "(sst)");
+                        if (r < 0)
+                                return bus_log_parse_error(r);
+
+                        while ((r = sd_bus_message_read(m, "(sst)", &path, &fdname, &offlags)) > 0) {
+                                _cleanup_free_ char *ofs = NULL;
+
+                                r = open_file_to_string(
+                                        &(OpenFile){
+                                                .path = path,
+                                                .fdname = fdname,
+                                                .flags = offlags,
+                                        },
+                                        &ofs);
+                                if (r < 0)
+                                        return log_error_errno(
+                                                        r, "Failed to convert OpenFile= value to string: %m");
+
+                                bus_print_property_value(name, expected_value, flags, ofs);
+                        }
+                        if (r < 0)
+                                return bus_log_parse_error(r);
+
+                        r = sd_bus_message_exit_container(m);
+                        if (r < 0)
+                                return bus_log_parse_error(r);
+
+                        return 1;
                 }
 
                 break;
@@ -1884,6 +1997,8 @@ static int show_one(
                 { "StatusText",                     "s",               NULL,           offsetof(UnitStatusInfo, status_text)                       },
                 { "PIDFile",                        "s",               NULL,           offsetof(UnitStatusInfo, pid_file)                          },
                 { "StatusErrno",                    "i",               NULL,           offsetof(UnitStatusInfo, status_errno)                      },
+                { "FileDescriptorStoreMax",         "u",               NULL,           offsetof(UnitStatusInfo, fd_store_max)                      },
+                { "NFileDescriptorStore",           "u",               NULL,           offsetof(UnitStatusInfo, n_fd_store)                        },
                 { "ExecMainStartTimestamp",         "t",               NULL,           offsetof(UnitStatusInfo, start_timestamp)                   },
                 { "ExecMainExitTimestamp",          "t",               NULL,           offsetof(UnitStatusInfo, exit_timestamp)                    },
                 { "ExecMainCode",                   "i",               NULL,           offsetof(UnitStatusInfo, exit_code)                         },
@@ -1909,11 +2024,18 @@ static int show_one(
                 { "MemoryAvailable",                "t",               NULL,           offsetof(UnitStatusInfo, memory_available)                  },
                 { "DefaultMemoryMin",               "t",               NULL,           offsetof(UnitStatusInfo, default_memory_min)                },
                 { "DefaultMemoryLow",               "t",               NULL,           offsetof(UnitStatusInfo, default_memory_low)                },
+                { "DefaultStartupMemoryLow",        "t",               NULL,           offsetof(UnitStatusInfo, default_startup_memory_low)        },
                 { "MemoryMin",                      "t",               NULL,           offsetof(UnitStatusInfo, memory_min)                        },
                 { "MemoryLow",                      "t",               NULL,           offsetof(UnitStatusInfo, memory_low)                        },
+                { "StartupMemoryLow",               "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_low)                },
                 { "MemoryHigh",                     "t",               NULL,           offsetof(UnitStatusInfo, memory_high)                       },
+                { "StartupMemoryHigh",              "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_high)               },
                 { "MemoryMax",                      "t",               NULL,           offsetof(UnitStatusInfo, memory_max)                        },
+                { "StartupMemoryMax",               "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_max)                },
                 { "MemorySwapMax",                  "t",               NULL,           offsetof(UnitStatusInfo, memory_swap_max)                   },
+                { "StartupMemorySwapMax",           "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_swap_max)           },
+                { "MemoryZSwapMax",                 "t",               NULL,           offsetof(UnitStatusInfo, memory_zswap_max)                  },
+                { "StartupMemoryZSwapMax",          "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_zswap_max)          },
                 { "MemoryLimit",                    "t",               NULL,           offsetof(UnitStatusInfo, memory_limit)                      },
                 { "CPUUsageNSec",                   "t",               NULL,           offsetof(UnitStatusInfo, cpu_usage_nsec)                    },
                 { "TasksCurrent",                   "t",               NULL,           offsetof(UnitStatusInfo, tasks_current)                     },
@@ -1944,11 +2066,17 @@ static int show_one(
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_set_free_ Set *found_properties = NULL;
         _cleanup_(unit_status_info_free) UnitStatusInfo info = {
+                .runtime_max_sec = USEC_INFINITY,
                 .memory_current = UINT64_MAX,
                 .memory_high = CGROUP_LIMIT_MAX,
+                .startup_memory_high = CGROUP_LIMIT_MAX,
                 .memory_max = CGROUP_LIMIT_MAX,
+                .startup_memory_max = CGROUP_LIMIT_MAX,
                 .memory_swap_max = CGROUP_LIMIT_MAX,
-                .memory_limit = UINT64_MAX,
+                .startup_memory_swap_max = CGROUP_LIMIT_MAX,
+                .memory_zswap_max = CGROUP_LIMIT_MAX,
+                .startup_memory_zswap_max = CGROUP_LIMIT_MAX,
+                .memory_limit = CGROUP_LIMIT_MAX,
                 .memory_available = CGROUP_LIMIT_MAX,
                 .cpu_usage_nsec = UINT64_MAX,
                 .tasks_current = UINT64_MAX,
@@ -1958,7 +2086,6 @@ static int show_one(
                 .io_read_bytes = UINT64_MAX,
                 .io_write_bytes = UINT64_MAX,
         };
-        char **pp;
         int r;
 
         assert(path);
@@ -2021,34 +2148,99 @@ static int show_one(
         return 0;
 }
 
-static int get_unit_dbus_path_by_pid(
+static int get_unit_dbus_path_by_pid_fallback(
                 sd_bus *bus,
                 uint32_t pid,
-                char **unit) {
+                char **ret_path,
+                char **ret_unit) {
 
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
-        char *u;
+        _cleanup_free_ char *path = NULL, *unit = NULL;
+        char *p;
         int r;
+
+        assert(bus);
+        assert(ret_path);
+        assert(ret_unit);
 
         r = bus_call_method(bus, bus_systemd_mgr, "GetUnitByPID", &error, &reply, "u", pid);
         if (r < 0)
                 return log_error_errno(r, "Failed to get unit for PID %"PRIu32": %s", pid, bus_error_message(&error, r));
 
-        r = sd_bus_message_read(reply, "o", &u);
+        r = sd_bus_message_read(reply, "o", &p);
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        u = strdup(u);
-        if (!u)
+        path = strdup(p);
+        if (!path)
                 return log_oom();
 
-        *unit = u;
+        r = unit_name_from_dbus_path(path, &unit);
+        if (r < 0)
+                return log_oom();
+
+        *ret_unit = TAKE_PTR(unit);
+        *ret_path = TAKE_PTR(path);
+
+        return 0;
+}
+
+static int get_unit_dbus_path_by_pid(
+                sd_bus *bus,
+                uint32_t pid,
+                char **ret_path,
+                char **ret_unit) {
+
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_free_ char *path = NULL, *unit = NULL;
+        _cleanup_close_ int pidfd = -EBADF;
+        char *p, *u;
+        int r;
+
+        assert(bus);
+        assert(ret_path);
+        assert(ret_unit);
+
+        /* First, try to send a PIDFD across the wire, so that we can pin the process and there's no race
+         * condition possible while we wait for the D-Bus reply. If we either don't have PIDFD support in
+         * the kernel or the new D-Bus method is not available, then fallback to the older method that
+         * sends the numeric PID. */
+
+        pidfd = pidfd_open(pid, 0);
+        if (pidfd < 0 && ERRNO_IS_NOT_SUPPORTED(errno))
+                return get_unit_dbus_path_by_pid_fallback(bus, pid, ret_path, ret_unit);
+        if (pidfd < 0)
+                return log_error_errno(errno, "Failed to open PID %"PRIu32": %m", pid);
+
+        r = bus_call_method(bus, bus_systemd_mgr, "GetUnitByPIDFD", &error, &reply, "h", pidfd);
+        if (r < 0 && sd_bus_error_has_name(&error, SD_BUS_ERROR_UNKNOWN_METHOD))
+                return get_unit_dbus_path_by_pid_fallback(bus, pid, ret_path, ret_unit);
+        if (r < 0)
+                return log_error_errno(r, "Failed to get unit for PID %"PRIu32": %s", pid, bus_error_message(&error, r));
+
+        r = sd_bus_message_read(reply, "os", &p, &u);
+        if (r < 0)
+                return bus_log_parse_error(r);
+
+        path = strdup(p);
+        if (!path)
+                return log_oom();
+
+        unit = strdup(u);
+        if (!unit)
+                return log_oom();
+
+        *ret_unit = TAKE_PTR(unit);
+        *ret_path = TAKE_PTR(path);
+
         return 0;
 }
 
 static int show_all(
                 sd_bus *bus,
+                SystemctlShowMode show_mode,
                 bool *new_line,
                 bool *ellipsized) {
 
@@ -2074,7 +2266,7 @@ static int show_all(
                 if (!p)
                         return log_oom();
 
-                r = show_one(bus, p, u->id, SYSTEMCTL_SHOW_STATUS, new_line, ellipsized);
+                r = show_one(bus, p, u->id, show_mode, new_line, ellipsized);
                 if (r < 0)
                         return r;
                 if (r > 0 && ret == 0)
@@ -2125,12 +2317,18 @@ static int show_system_status(sd_bus *bus) {
         printf("    State: %s%s%s\n",
                on, strna(mi.state), off);
 
+        printf("    Units: %" PRIu32 " loaded (incl. loaded aliases)\n", mi.n_names);
         printf("     Jobs: %" PRIu32 " queued\n", mi.n_jobs);
         printf("   Failed: %" PRIu32 " units\n", mi.n_failed_units);
 
         printf("    Since: %s; %s\n",
                FORMAT_TIMESTAMP_STYLE(mi.timestamp, arg_timestamp_style),
                FORMAT_TIMESTAMP_RELATIVE(mi.timestamp));
+
+        printf("  systemd: %s\n", mi.version);
+
+        if (!isempty(mi.tainted))
+                printf("  Tainted: %s%s%s\n", ansi_highlight_yellow(), mi.tainted, ansi_normal());
 
         printf("   CGroup: %s\n", empty_to_root(mi.control_group));
 
@@ -2146,7 +2344,7 @@ static int show_system_status(sd_bus *bus) {
         return 0;
 }
 
-int show(int argc, char *argv[], void *userdata) {
+int verb_show(int argc, char *argv[], void *userdata) {
         bool new_line = false, ellipsized = false;
         SystemctlShowMode show_mode;
         int r, ret = 0;
@@ -2156,7 +2354,7 @@ int show(int argc, char *argv[], void *userdata) {
 
         show_mode = systemctl_show_mode_from_string(argv[0]);
         if (show_mode < 0)
-                return log_error_errno(show_mode, "Invalid argument.");
+                return log_error_errno(show_mode, "Invalid argument '%s'.", argv[0]);
 
         if (show_mode == SYSTEMCTL_SHOW_HELP && argc <= 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
@@ -2169,20 +2367,31 @@ int show(int argc, char *argv[], void *userdata) {
 
         pager_open(arg_pager_flags);
 
-        /* If no argument is specified inspect the manager itself */
-        if (show_mode == SYSTEMCTL_SHOW_PROPERTIES && argc <= 1)
-                return show_one(bus, "/org/freedesktop/systemd1", NULL, show_mode, &new_line, &ellipsized);
+        if (argc <= 1) {
+                /* If no argument or filter is specified inspect the manager itself:
+                 * systemctl status → we show status of the manager
+                 * systemctl status --all → status of the manager + status of all units
+                 * systemctl status --state=… → status of units in listed states
+                 * systemctl status --type=… → status of units of listed types
+                 * systemctl status --failed → status of failed units, mirroring systemctl list-units --failed
+                 */
 
-        if (show_mode == SYSTEMCTL_SHOW_STATUS && argc <= 1) {
+                if (!arg_states && !arg_types) {
+                        if (show_mode == SYSTEMCTL_SHOW_PROPERTIES)
+                                /* systemctl show --all → show properties of the manager */
+                                return show_one(bus, "/org/freedesktop/systemd1", NULL, show_mode, &new_line, &ellipsized);
 
-                show_system_status(bus);
-                new_line = true;
+                        r = show_system_status(bus);
+                        if (r < 0)
+                                return r;
 
-                if (arg_all)
-                        ret = show_all(bus, &new_line, &ellipsized);
+                        new_line = true;
+                }
+
+                if (arg_all || arg_states || arg_types)
+                        ret = show_all(bus, show_mode, &new_line, &ellipsized);
         } else {
                 _cleanup_free_ char **patterns = NULL;
-                char **name;
 
                 STRV_FOREACH(name, strv_skip(argv, 1)) {
                         _cleanup_free_ char *path = NULL, *unit = NULL;
@@ -2200,15 +2409,11 @@ int show(int argc, char *argv[], void *userdata) {
 
                         } else {
                                 /* Interpret as PID */
-                                r = get_unit_dbus_path_by_pid(bus, id, &path);
+                                r = get_unit_dbus_path_by_pid(bus, id, &path, &unit);
                                 if (r < 0) {
                                         ret = r;
                                         continue;
                                 }
-
-                                r = unit_name_from_dbus_path(path, &unit);
-                                if (r < 0)
-                                        return log_oom();
                         }
 
                         r = show_one(bus, path, unit, show_mode, &new_line, &ellipsized);

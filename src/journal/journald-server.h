@@ -8,13 +8,14 @@
 
 typedef struct Server Server;
 
+#include "common-signal.h"
 #include "conf-parser.h"
 #include "hashmap.h"
-#include "journald-file.h"
 #include "journald-context.h"
 #include "journald-rate-limit.h"
 #include "journald-stream.h"
 #include "list.h"
+#include "managed-journal-file.h"
 #include "prioq.h"
 #include "ratelimit.h"
 #include "time-util.h"
@@ -60,6 +61,13 @@ typedef struct JournalStorage {
         JournalStorageSpace space;
 } JournalStorage;
 
+/* This structure will be kept in $RUNTIME_DIRECTORY/seqnum and is mapped by journald, and is used to
+ * maintain the sequence number counter with its seqnum ID */
+typedef struct SeqnumData {
+        sd_id128_t id;
+        uint64_t seqnum;
+} SeqnumData;
+
 struct Server {
         char *namespace;
 
@@ -88,12 +96,13 @@ struct Server {
         sd_event_source *notify_event_source;
         sd_event_source *watchdog_event_source;
         sd_event_source *idle_event_source;
+        struct sigrtmin18_info sigrtmin18_info;
 
-        JournaldFile *runtime_journal;
-        JournaldFile *system_journal;
+        ManagedJournalFile *runtime_journal;
+        ManagedJournalFile *system_journal;
         OrderedHashmap *user_journals;
 
-        uint64_t seqnum;
+        SeqnumData *seqnum;
 
         char *buffer;
 
@@ -179,7 +188,7 @@ struct Server {
 #define SERVER_MACHINE_ID(s) ((s)->machine_id_field + STRLEN("_MACHINE_ID="))
 
 /* Extra fields for any log messages */
-#define N_IOVEC_META_FIELDS 23
+#define N_IOVEC_META_FIELDS 24
 
 /* Extra fields for log messages that contain OBJECT_PID= (i.e. log about another process) */
 #define N_IOVEC_OBJECT_FIELDS 18
@@ -217,7 +226,7 @@ SplitMode split_mode_from_string(const char *s) _pure_;
 int server_init(Server *s, const char *namespace);
 void server_done(Server *s);
 void server_sync(Server *s);
-int server_vacuum(Server *s, bool verbose);
+void server_vacuum(Server *s, bool verbose);
 void server_rotate(Server *s);
 int server_schedule_sync(Server *s, int priority);
 int server_flush_to_var(Server *s, bool require_flag_file);
@@ -227,3 +236,6 @@ void server_space_usage_message(Server *s, JournalStorage *storage);
 
 int server_start_or_stop_idle_timer(Server *s);
 int server_refresh_idle_timer(Server *s);
+
+int server_map_seqnum_file(Server *s, const char *fname, size_t size, void **ret);
+void server_unmap_seqnum_file(void *p, size_t size);

@@ -9,13 +9,12 @@
 
 static int operation_done(sd_event_source *s, const siginfo_t *si, void *userdata) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        Operation *o = userdata;
+        Operation *o = ASSERT_PTR(userdata);
         int r;
 
-        assert(o);
         assert(si);
 
-        log_debug("Operating " PID_FMT " is now complete with code=%s status=%i",
+        log_debug("Operation " PID_FMT " is now complete with code=%s status=%i",
                   o->pid,
                   sigchld_code_to_string(si->si_code), si->si_status);
 
@@ -81,7 +80,7 @@ int operation_new(Manager *manager, pid_t child, sd_bus_message *message, int er
         if (!o)
                 return -ENOMEM;
 
-        o->extra_fd = -1;
+        o->extra_fd = -EBADF;
 
         r = sd_event_add_child(manager->event, &o->event_source, child, WEXITED, operation_done, o);
         if (r < 0) {

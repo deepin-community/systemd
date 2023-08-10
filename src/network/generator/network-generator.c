@@ -5,6 +5,7 @@
 #include "hostname-util.h"
 #include "log.h"
 #include "macro.h"
+#include "memstream-util.h"
 #include "netif-naming-scheme.h"
 #include "network-generator.h"
 #include "parse-util.h"
@@ -47,7 +48,7 @@ static const char * const dracut_dhcp_type_table[_DHCP_TYPE_MAX] = {
         [DHCP_TYPE_OFF]     = "off",
         [DHCP_TYPE_ON]      = "on",
         [DHCP_TYPE_ANY]     = "any",
-        [DHCP_TYPE_DHCP]    = "dhcp",
+        [DHCP_TYPE_DHCP4]   = "dhcp",
         [DHCP_TYPE_DHCP6]   = "dhcp6",
         [DHCP_TYPE_AUTO6]   = "auto6",
         [DHCP_TYPE_EITHER6] = "either6",
@@ -62,7 +63,7 @@ static const char * const networkd_dhcp_type_table[_DHCP_TYPE_MAX] = {
         [DHCP_TYPE_OFF]     = "no",
         [DHCP_TYPE_ON]      = "yes",
         [DHCP_TYPE_ANY]     = "yes",
-        [DHCP_TYPE_DHCP]    = "ipv4",
+        [DHCP_TYPE_DHCP4]   = "ipv4",
         [DHCP_TYPE_DHCP6]   = "ipv6",
         [DHCP_TYPE_AUTO6]   = "no",   /* TODO: enable other setting? */
         [DHCP_TYPE_EITHER6] = "ipv6", /* TODO: enable other setting? */
@@ -1004,10 +1005,9 @@ static int parse_cmdline_ifname_policy(Context *context, const char *key, const 
 }
 
 int parse_cmdline_item(const char *key, const char *value, void *data) {
-        Context *context = data;
+        Context *context = ASSERT_PTR(data);
 
         assert(key);
-        assert(data);
 
         if (streq(key, "ip"))
                 return parse_cmdline_ip(context, key, value);
@@ -1033,7 +1033,6 @@ int parse_cmdline_item(const char *key, const char *value, void *data) {
 
 int context_merge_networks(Context *context) {
         Network *all, *network;
-        Route *route;
         int r;
 
         assert(context);
@@ -1082,57 +1081,29 @@ void context_clear(Context *context) {
 }
 
 static int address_dump(Address *address, FILE *f) {
-        _cleanup_free_ char *addr = NULL, *peer = NULL;
-        int r;
-
-        r = in_addr_prefix_to_string(address->family, &address->address, address->prefixlen, &addr);
-        if (r < 0)
-                return r;
-
-        if (in_addr_is_set(address->family, &address->peer)) {
-                r = in_addr_to_string(address->family, &address->peer, &peer);
-                if (r < 0)
-                        return r;
-        }
-
         fprintf(f,
                 "\n[Address]\n"
                 "Address=%s\n",
-                addr);
-
-        if (peer)
-                fprintf(f, "Peer=%s\n", peer);
-
+                IN_ADDR_PREFIX_TO_STRING(address->family, &address->address, address->prefixlen));
+        if (in_addr_is_set(address->family, &address->peer))
+                fprintf(f, "Peer=%s\n",
+                        IN_ADDR_TO_STRING(address->family, &address->peer));
         return 0;
 }
 
 static int route_dump(Route *route, FILE *f) {
-        _cleanup_free_ char *dest = NULL, *gateway = NULL;
-        int r;
-
-        if (in_addr_is_set(route->family, &route->dest)) {
-                r = in_addr_prefix_to_string(route->family, &route->dest, route->prefixlen, &dest);
-                if (r < 0)
-                        return r;
-        }
-
-        r = in_addr_to_string(route->family, &route->gateway, &gateway);
-        if (r < 0)
-                return r;
-
         fputs("\n[Route]\n", f);
-        if (dest)
-                fprintf(f, "Destination=%s\n", dest);
-        fprintf(f, "Gateway=%s\n", gateway);
+        if (in_addr_is_set(route->family, &route->dest))
+                fprintf(f, "Destination=%s\n",
+                        IN_ADDR_PREFIX_TO_STRING(route->family, &route->dest, route->prefixlen));
+        fprintf(f, "Gateway=%s\n",
+                IN_ADDR_TO_STRING(route->family, &route->gateway));
 
         return 0;
 }
 
 void network_dump(Network *network, FILE *f) {
-        Address *address;
-        Route *route;
         const char *dhcp;
-        char **dns;
 
         assert(network);
         assert(f);
@@ -1228,94 +1199,49 @@ void link_dump(Link *link, FILE *f) {
 }
 
 int network_format(Network *network, char **ret) {
-        _cleanup_free_ char *s = NULL;
-        size_t sz = 0;
-        int r;
+        _cleanup_(memstream_done) MemStream m = {};
+        FILE *f;
 
         assert(network);
         assert(ret);
 
-        {
-                _cleanup_fclose_ FILE *f = NULL;
+        f = memstream_init(&m);
+        if (!f)
+                return -ENOMEM;
 
-                f = open_memstream_unlocked(&s, &sz);
-                if (!f)
-                        return -ENOMEM;
+        network_dump(network, f);
 
-                network_dump(network, f);
-
-                /* Add terminating 0, so that the output buffer is a valid string. */
-                fputc('\0', f);
-
-                r = fflush_and_check(f);
-        }
-        if (r < 0)
-                return r;
-
-        assert(s);
-        *ret = TAKE_PTR(s);
-        assert(sz > 0);
-        return (int) sz - 1;
+        return memstream_finalize(&m, ret, NULL);
 }
 
 int netdev_format(NetDev *netdev, char **ret) {
-        _cleanup_free_ char *s = NULL;
-        size_t sz = 0;
-        int r;
+        _cleanup_(memstream_done) MemStream m = {};
+        FILE *f;
 
         assert(netdev);
         assert(ret);
 
-        {
-                _cleanup_fclose_ FILE *f = NULL;
+        f = memstream_init(&m);
+        if (!f)
+                return -ENOMEM;
 
-                f = open_memstream_unlocked(&s, &sz);
-                if (!f)
-                        return -ENOMEM;
+        netdev_dump(netdev, f);
 
-                netdev_dump(netdev, f);
-
-                /* Add terminating 0, so that the output buffer is a valid string. */
-                fputc('\0', f);
-
-                r = fflush_and_check(f);
-        }
-        if (r < 0)
-                return r;
-
-        assert(s);
-        *ret = TAKE_PTR(s);
-        assert(sz > 0);
-        return (int) sz - 1;
+        return memstream_finalize(&m, ret, NULL);
 }
 
 int link_format(Link *link, char **ret) {
-        _cleanup_free_ char *s = NULL;
-        size_t sz = 0;
-        int r;
+        _cleanup_(memstream_done) MemStream m = {};
+        FILE *f;
 
         assert(link);
         assert(ret);
 
-        {
-                _cleanup_fclose_ FILE *f = NULL;
+        f = memstream_init(&m);
+        if (!f)
+                return -ENOMEM;
 
-                f = open_memstream_unlocked(&s, &sz);
-                if (!f)
-                        return -ENOMEM;
+        link_dump(link, f);
 
-                link_dump(link, f);
-
-                /* Add terminating 0, so that the output buffer is a valid string. */
-                fputc('\0', f);
-
-                r = fflush_and_check(f);
-        }
-        if (r < 0)
-                return r;
-
-        assert(s);
-        *ret = TAKE_PTR(s);
-        assert(sz > 0);
-        return (int) sz - 1;
+        return memstream_finalize(&m, ret, NULL);
 }

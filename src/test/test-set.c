@@ -5,8 +5,6 @@
 #include "strv.h"
 #include "tests.h"
 
-const bool mempool_use_allowed = VALGRIND;
-
 TEST(set_steal_first) {
         _cleanup_set_free_ Set *m = NULL;
         int seen[3] = {};
@@ -37,10 +35,9 @@ static void item_seen(Item *item) {
 TEST(set_free_with_destructor) {
         Set *m;
         struct Item items[4] = {};
-        unsigned i;
 
         assert_se(m = set_new(NULL));
-        for (i = 0; i < ELEMENTSOF(items) - 1; i++)
+        for (size_t i = 0; i < ELEMENTSOF(items) - 1; i++)
                 assert_se(set_put(m, items + i) == 1);
 
         m = set_free_with_destructor(m, item_seen);
@@ -55,10 +52,9 @@ DEFINE_PRIVATE_HASH_OPS_WITH_VALUE_DESTRUCTOR(item_hash_ops, void, trivial_hash_
 TEST(set_free_with_hash_ops) {
         Set *m;
         struct Item items[4] = {};
-        unsigned i;
 
         assert_se(m = set_new(&item_hash_ops));
-        for (i = 0; i < ELEMENTSOF(items) - 1; i++)
+        for (size_t i = 0; i < ELEMENTSOF(items) - 1; i++)
                 assert_se(set_put(m, items + i) == 1);
 
         m = set_free(m);
@@ -90,6 +86,27 @@ TEST(set_put) {
         assert_se(strv_length(t) == 3);
 }
 
+TEST(set_put_strndup) {
+        _cleanup_set_free_ Set *m = NULL;
+
+        assert_se(set_put_strndup(&m, "12345", 0) == 1);
+        assert_se(set_put_strndup(&m, "12345", 1) == 1);
+        assert_se(set_put_strndup(&m, "12345", 2) == 1);
+        assert_se(set_put_strndup(&m, "12345", 3) == 1);
+        assert_se(set_put_strndup(&m, "12345", 4) == 1);
+        assert_se(set_put_strndup(&m, "12345", 5) == 1);
+        assert_se(set_put_strndup(&m, "12345", 6) == 0);
+
+        assert_se(set_contains(m, ""));
+        assert_se(set_contains(m, "1"));
+        assert_se(set_contains(m, "12"));
+        assert_se(set_contains(m, "123"));
+        assert_se(set_contains(m, "1234"));
+        assert_se(set_contains(m, "12345"));
+
+        assert_se(set_size(m) == 6);
+}
+
 TEST(set_put_strdup) {
         _cleanup_set_free_ Set *m = NULL;
 
@@ -98,6 +115,10 @@ TEST(set_put_strdup) {
         assert_se(set_put_strdup(&m, "bbb") == 1);
         assert_se(set_put_strdup(&m, "bbb") == 0);
         assert_se(set_put_strdup(&m, "aaa") == 0);
+
+        assert_se(set_contains(m, "aaa"));
+        assert_se(set_contains(m, "bbb"));
+
         assert_se(set_size(m) == 2);
 }
 
@@ -106,6 +127,11 @@ TEST(set_put_strdupv) {
 
         assert_se(set_put_strdupv(&m, STRV_MAKE("aaa", "aaa", "bbb", "bbb", "aaa")) == 2);
         assert_se(set_put_strdupv(&m, STRV_MAKE("aaa", "aaa", "bbb", "bbb", "ccc")) == 1);
+
+        assert_se(set_contains(m, "aaa"));
+        assert_se(set_contains(m, "bbb"));
+        assert_se(set_contains(m, "ccc"));
+
         assert_se(set_size(m) == 3);
 }
 
@@ -119,7 +145,8 @@ TEST(set_ensure_allocated) {
 }
 
 TEST(set_copy) {
-        Set *s, *copy;
+        _cleanup_set_free_ Set *s = NULL;
+        _cleanup_set_free_free_ Set *copy = NULL;
         char *key1, *key2, *key3, *key4;
 
         key1 = strdup("key1");
@@ -143,9 +170,6 @@ TEST(set_copy) {
         assert_se(copy);
 
         assert_se(set_equal(s, copy));
-
-        set_free(s);
-        set_free_free(copy);
 }
 
 TEST(set_ensure_put) {
@@ -328,6 +352,52 @@ TEST(set_equal) {
 
         assert_se(set_equal(a, b));
         assert_se(set_equal(b, a));
+}
+
+TEST(set_fnmatch) {
+        _cleanup_set_free_ Set *match = NULL, *nomatch = NULL;
+
+        assert_se(set_put_strdup(&match, "aaa") >= 0);
+        assert_se(set_put_strdup(&match, "bbb*") >= 0);
+        assert_se(set_put_strdup(&match, "*ccc") >= 0);
+
+        assert_se(set_put_strdup(&nomatch, "a*") >= 0);
+        assert_se(set_put_strdup(&nomatch, "bbb") >= 0);
+        assert_se(set_put_strdup(&nomatch, "ccc*") >= 0);
+
+        assert_se(set_fnmatch(NULL, NULL, ""));
+        assert_se(set_fnmatch(NULL, NULL, "hoge"));
+
+        assert_se(set_fnmatch(match, NULL, "aaa"));
+        assert_se(set_fnmatch(match, NULL, "bbb"));
+        assert_se(set_fnmatch(match, NULL, "bbbXXX"));
+        assert_se(set_fnmatch(match, NULL, "ccc"));
+        assert_se(set_fnmatch(match, NULL, "XXXccc"));
+        assert_se(!set_fnmatch(match, NULL, ""));
+        assert_se(!set_fnmatch(match, NULL, "aaaa"));
+        assert_se(!set_fnmatch(match, NULL, "XXbbb"));
+        assert_se(!set_fnmatch(match, NULL, "cccXX"));
+
+        assert_se(set_fnmatch(NULL, nomatch, ""));
+        assert_se(set_fnmatch(NULL, nomatch, "Xa"));
+        assert_se(set_fnmatch(NULL, nomatch, "bbbb"));
+        assert_se(set_fnmatch(NULL, nomatch, "XXXccc"));
+        assert_se(!set_fnmatch(NULL, nomatch, "a"));
+        assert_se(!set_fnmatch(NULL, nomatch, "aXXXX"));
+        assert_se(!set_fnmatch(NULL, nomatch, "bbb"));
+        assert_se(!set_fnmatch(NULL, nomatch, "ccc"));
+        assert_se(!set_fnmatch(NULL, nomatch, "cccXXX"));
+
+        assert_se(set_fnmatch(match, nomatch, "bbbbb"));
+        assert_se(set_fnmatch(match, nomatch, "XXccc"));
+        assert_se(!set_fnmatch(match, nomatch, ""));
+        assert_se(!set_fnmatch(match, nomatch, "a"));
+        assert_se(!set_fnmatch(match, nomatch, "aaa"));
+        assert_se(!set_fnmatch(match, nomatch, "b"));
+        assert_se(!set_fnmatch(match, nomatch, "bbb"));
+        assert_se(!set_fnmatch(match, nomatch, "ccc"));
+        assert_se(!set_fnmatch(match, nomatch, "ccccc"));
+        assert_se(!set_fnmatch(match, nomatch, "cccXX"));
 }
 
 DEFINE_TEST_MAIN(LOG_INFO);

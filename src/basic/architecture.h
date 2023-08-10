@@ -4,7 +4,6 @@
 #include <endian.h>
 
 #include "macro.h"
-#include "util.h"
 
 /* A cleaned up architecture definition. We don't want to get lost in
  * processor features, models, generations or even ABIs. Hence we
@@ -48,7 +47,7 @@ typedef enum {
         _ARCHITECTURE_INVALID = -EINVAL,
 } Architecture;
 
-int uname_architecture(void);
+Architecture uname_architecture(void);
 
 /*
  * LIB_ARCH_TUPLE should resolve to the local library path
@@ -198,10 +197,17 @@ int uname_architecture(void);
 #  elif defined(__SH4A__)
 #    define LIB_ARCH_TUPLE "sh4a-linux-gnu"
 #  endif
-#elif defined(__loongarch64)
-#    pragma message "Please update the Arch tuple of loongarch64 after psABI is stable"
-#    define native_architecture() ARCHITECTURE_LOONGARCH64
+#elif defined(__loongarch_lp64)
+#  define native_architecture() ARCHITECTURE_LOONGARCH64
+#  if defined(__loongarch_double_float)
 #    define LIB_ARCH_TUPLE "loongarch64-linux-gnu"
+#  elif defined(__loongarch_single_float)
+#    define LIB_ARCH_TUPLE "loongarch64-linux-gnuf32"
+#  elif defined(__loongarch_soft_float)
+#    define LIB_ARCH_TUPLE "loongarch64-linux-gnusf"
+#  else
+#    error "Unrecognized loongarch architecture variant"
+#  endif
 #elif defined(__m68k__)
 #  define native_architecture() ARCHITECTURE_M68K
 #  define LIB_ARCH_TUPLE "m68k-linux-gnu"
@@ -236,5 +242,5 @@ int uname_architecture(void);
 #  error "Please register your architecture here!"
 #endif
 
-const char *architecture_to_string(int a) _const_;
-int architecture_from_string(const char *s) _pure_;
+const char *architecture_to_string(Architecture a) _const_;
+Architecture architecture_from_string(const char *s) _pure_;

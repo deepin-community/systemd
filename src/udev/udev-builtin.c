@@ -32,12 +32,10 @@ static const UdevBuiltin *const builtins[_UDEV_BUILTIN_MAX] = {
 };
 
 void udev_builtin_init(void) {
-        unsigned i;
-
         if (initialized)
                 return;
 
-        for (i = 0; i < _UDEV_BUILTIN_MAX; i++)
+        for (UdevBuiltinCommand i = 0; i < _UDEV_BUILTIN_MAX; i++)
                 if (builtins[i] && builtins[i]->init)
                         builtins[i]->init();
 
@@ -45,31 +43,25 @@ void udev_builtin_init(void) {
 }
 
 void udev_builtin_exit(void) {
-        unsigned i;
-
         if (!initialized)
                 return;
 
-        for (i = 0; i < _UDEV_BUILTIN_MAX; i++)
+        for (UdevBuiltinCommand i = 0; i < _UDEV_BUILTIN_MAX; i++)
                 if (builtins[i] && builtins[i]->exit)
                         builtins[i]->exit();
 
         initialized = false;
 }
 
-bool udev_builtin_validate(void) {
-        unsigned i;
-
-        for (i = 0; i < _UDEV_BUILTIN_MAX; i++)
-                if (builtins[i] && builtins[i]->validate && builtins[i]->validate())
+bool udev_builtin_should_reload(void) {
+        for (UdevBuiltinCommand i = 0; i < _UDEV_BUILTIN_MAX; i++)
+                if (builtins[i] && builtins[i]->should_reload && builtins[i]->should_reload())
                         return true;
         return false;
 }
 
 void udev_builtin_list(void) {
-        unsigned i;
-
-        for (i = 0; i < _UDEV_BUILTIN_MAX; i++)
+        for (UdevBuiltinCommand i = 0; i < _UDEV_BUILTIN_MAX; i++)
                 if (builtins[i])
                         fprintf(stderr, "  %-14s  %s\n", builtins[i]->name, builtins[i]->help);
 }
@@ -93,25 +85,25 @@ bool udev_builtin_run_once(UdevBuiltinCommand cmd) {
 }
 
 UdevBuiltinCommand udev_builtin_lookup(const char *command) {
-        UdevBuiltinCommand i;
         size_t n;
 
         assert(command);
 
         command += strspn(command, WHITESPACE);
         n = strcspn(command, WHITESPACE);
-        for (i = 0; i < _UDEV_BUILTIN_MAX; i++)
+        for (UdevBuiltinCommand i = 0; i < _UDEV_BUILTIN_MAX; i++)
                 if (builtins[i] && strneq(builtins[i]->name, command, n))
                         return i;
 
         return _UDEV_BUILTIN_INVALID;
 }
 
-int udev_builtin_run(sd_device *dev, sd_netlink **rtnl, UdevBuiltinCommand cmd, const char *command, bool test) {
+int udev_builtin_run(UdevEvent *event, UdevBuiltinCommand cmd, const char *command, bool test) {
         _cleanup_strv_free_ char **argv = NULL;
         int r;
 
-        assert(dev);
+        assert(event);
+        assert(event->dev);
         assert(cmd >= 0 && cmd < _UDEV_BUILTIN_MAX);
         assert(command);
 
@@ -124,7 +116,7 @@ int udev_builtin_run(sd_device *dev, sd_netlink **rtnl, UdevBuiltinCommand cmd, 
 
         /* we need '0' here to reset the internal state */
         optind = 0;
-        return builtins[cmd]->cmd(dev, rtnl, strv_length(argv), argv, test);
+        return builtins[cmd]->cmd(event, strv_length(argv), argv, test);
 }
 
 int udev_builtin_add_property(sd_device *dev, bool test, const char *key, const char *val) {
@@ -142,4 +134,22 @@ int udev_builtin_add_property(sd_device *dev, bool test, const char *key, const 
                 printf("%s=%s\n", key, strempty(val));
 
         return 0;
+}
+
+int udev_builtin_add_propertyf(sd_device *dev, bool test, const char *key, const char *valf, ...) {
+        _cleanup_free_ char *val = NULL;
+        va_list ap;
+        int r;
+
+        assert(dev);
+        assert(key);
+        assert(valf);
+
+        va_start(ap, valf);
+        r = vasprintf(&val, valf, ap);
+        va_end(ap);
+        if (r < 0)
+                return log_oom_debug();
+
+        return udev_builtin_add_property(dev, test, key, val);
 }

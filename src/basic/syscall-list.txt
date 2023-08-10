@@ -21,6 +21,7 @@ bpf
 brk
 cachectl
 cacheflush
+cachestat
 capget
 capset
 chdir
@@ -427,6 +428,7 @@ renameat2
 request_key
 restart_syscall
 riscv_flush_icache
+riscv_hwprobe
 rmdir
 rseq
 rt_sigaction
@@ -473,6 +475,7 @@ sendmmsg
 sendmsg
 sendto
 set_mempolicy
+set_mempolicy_home_node
 set_robust_list
 set_thread_area
 set_tid_address

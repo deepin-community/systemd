@@ -17,7 +17,7 @@ static void test_resolve_one(const char *name) {
 
         log_info("/* %s(\"%s\") */", __func__, name);
 
-        _cleanup_(hashmap_freep) Hashmap *uid_cache = NULL, *gid_cache = NULL;
+        _cleanup_hashmap_free_ Hashmap *uid_cache = NULL, *gid_cache = NULL;
         uid_t uid = UID_INVALID;
         gid_t gid = GID_INVALID;
         int r;
@@ -51,7 +51,7 @@ static int parse_argv(int argc, char *argv[]) {
         assert_se(argv);
 
         while ((c = getopt_long(argc, argv, "r:", options, NULL)) >= 0)
-                switch(c) {
+                switch (c) {
                 case 'r':
                         arg_root = optarg;
                         break;

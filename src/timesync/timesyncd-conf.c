@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include "alloc-util.h"
-#include "def.h"
+#include "constants.h"
 #include "dns-domain.h"
 #include "extract-word.h"
 #include "string-util.h"
@@ -24,7 +24,6 @@ int manager_parse_server_string(Manager *m, ServerType type, const char *string)
         for (;;) {
                 _cleanup_free_ char *word = NULL;
                 bool found = false;
-                ServerName *n;
 
                 r = extract_first_word(&string, &word, NULL, 0);
                 if (r < 0)
@@ -103,14 +102,9 @@ int manager_parse_config_file(Manager *m) {
 
         assert(m);
 
-        r = config_parse_many_nulstr(
-                        PKGSYSCONFDIR "/timesyncd.conf",
-                        CONF_PATHS_NULSTR("systemd/timesyncd.conf.d"),
-                        "Time\0",
-                        config_item_perf_lookup, timesyncd_gperf_lookup,
-                        CONFIG_PARSE_WARN,
-                        m,
-                        NULL);
+        r = config_parse_config_file("timesyncd.conf", "Time\0",
+                                     config_item_perf_lookup, timesyncd_gperf_lookup,
+                                     CONFIG_PARSE_WARN, m);
         if (r < 0)
                 return r;
 

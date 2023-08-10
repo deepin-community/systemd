@@ -561,7 +561,7 @@
         <varlistentry>
           <term><constant>SD_BUS_VTABLE_CAPABILITY(<replaceable>capability</replaceable>)</constant></term>
 
-          <listitem><para>Access to this vtable entry will be allowed if the calling proccess has the
+          <listitem><para>Access to this vtable entry will be allowed if the calling process has the
           capability <replaceable>capability</replaceable>, as described in
           <citerefentry><refentrytitle>sd_bus_query_sender_privilege</refentrytitle><manvolnum>3</manvolnum></citerefentry>.
           If used for <constant>SD_BUS_VTABLE_START()</constant>, provides a default for all entries in the
@@ -649,7 +649,7 @@
         <varlistentry>
           <term><constant>-ECHILD</constant></term>
 
-          <listitem><para>The bus was created in a different process.</para></listitem>
+          <listitem><para>The bus was created in a different process, library or module instance.</para></listitem>
         </varlistentry>
 
         <varlistentry>

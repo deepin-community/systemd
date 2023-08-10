@@ -10,14 +10,21 @@
 [Unit]
 Description=Create Volatile Files and Directories
 Documentation=man:tmpfiles.d(5) man:systemd-tmpfiles(8)
+
 DefaultDependencies=no
-Conflicts=shutdown.target initrd-switch-root.service
 After=local-fs.target systemd-sysusers.service systemd-journald.service
-Before=sysinit.target shutdown.target
+Before=sysinit.target
+Conflicts=shutdown.target initrd-switch-root.target
+Before=shutdown.target initrd-switch-root.target
 RefuseManualStop=yes
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=systemd-tmpfiles --create --remove --boot --exclude-prefix=/dev
+ExecStart=systemd-tmpfiles --create --remove --boot
 SuccessExitStatus=DATAERR CANTCREAT
+ImportCredential=tmpfiles.*
+ImportCredential=login.motd
+ImportCredential=login.issue
+ImportCredential=network.hosts
+ImportCredential=ssh.authorized_keys.root

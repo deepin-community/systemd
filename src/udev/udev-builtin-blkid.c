@@ -5,11 +5,17 @@
  * Copyright © 2011 Karel Zak <kzak@redhat.com>
  */
 
+#if HAVE_VALGRIND_MEMCHECK_H
+#include <valgrind/memcheck.h>
+#endif
+
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <linux/loop.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 
 #include "sd-id128.h"
@@ -17,12 +23,14 @@
 #include "alloc-util.h"
 #include "blkid-util.h"
 #include "device-util.h"
+#include "devnum-util.h"
 #include "efi-loader.h"
 #include "errno-util.h"
 #include "fd-util.h"
 #include "gpt.h"
 #include "parse-util.h"
 #include "string-util.h"
+#include "strv.h"
 #include "strxcpyx.h"
 #include "udev-builtin.h"
 
@@ -57,6 +65,10 @@ static void print_property(sd_device *dev, bool test, const char *name, const ch
                 udev_builtin_add_property(dev, test, "ID_FS_LABEL", s);
                 blkid_encode_string(value, s, sizeof(s));
                 udev_builtin_add_property(dev, test, "ID_FS_LABEL_ENC", s);
+
+        } else if (STR_IN_SET(name, "FSSIZE", "FSLASTBLOCK", "FSBLOCKSIZE")) {
+                strscpyl(s, sizeof(s), "ID_FS_", name + 2, NULL);
+                udev_builtin_add_property(dev, test, s, value);
 
         } else if (streq(name, "PTTYPE")) {
                 udev_builtin_add_property(dev, test, "ID_PART_TABLE_TYPE", value);
@@ -112,17 +124,18 @@ static void print_property(sd_device *dev, bool test, const char *name, const ch
 
 static int find_gpt_root(sd_device *dev, blkid_probe pr, bool test) {
 
-#if defined(GPT_ROOT_NATIVE) && ENABLE_EFI
+#if defined(SD_GPT_ROOT_NATIVE) && ENABLE_EFI
 
-        _cleanup_free_ char *root_id = NULL, *root_label = NULL;
-        bool found_esp = false;
+        _cleanup_free_ char *root_label = NULL;
+        bool found_esp_or_xbootldr = false;
+        sd_id128_t root_id = SD_ID128_NULL;
         int r;
 
         assert(pr);
 
-        /* Iterate through the partitions on this disk, and see if the
-         * EFI ESP we booted from is on it. If so, find the first root
-         * disk, and add a property indicating its partition UUID. */
+        /* Iterate through the partitions on this disk, and see if the UEFI ESP or XBOOTLDR partition we
+         * booted from is on it. If so, find the first root disk, and add a property indicating its partition
+         * UUID. */
 
         errno = 0;
         blkid_partlist pl = blkid_probe_get_partitions(pr);
@@ -132,56 +145,51 @@ static int find_gpt_root(sd_device *dev, blkid_probe pr, bool test) {
         int nvals = blkid_partlist_numof_partitions(pl);
         for (int i = 0; i < nvals; i++) {
                 blkid_partition pp;
-                const char *stype, *sid, *label;
-                sd_id128_t type;
+                const char *label;
+                sd_id128_t type, id;
 
                 pp = blkid_partlist_get_partition(pl, i);
                 if (!pp)
                         continue;
 
-                sid = blkid_partition_get_uuid(pp);
-                if (!sid)
+                r = blkid_partition_get_uuid_id128(pp, &id);
+                if (r < 0) {
+                        log_debug_errno(r, "Failed to get partition UUID, ignoring: %m");
                         continue;
+                }
+
+                r = blkid_partition_get_type_id128(pp, &type);
+                if (r < 0) {
+                        log_debug_errno(r, "Failed to get partition type UUID, ignoring: %m");
+                        continue;
+                }
 
                 label = blkid_partition_get_name(pp); /* returns NULL if empty */
 
-                stype = blkid_partition_get_type_string(pp);
-                if (!stype)
-                        continue;
+                if (sd_id128_in_set(type, SD_GPT_ESP, SD_GPT_XBOOTLDR)) {
+                        sd_id128_t esp_or_xbootldr;
 
-                if (sd_id128_from_string(stype, &type) < 0)
-                        continue;
+                        /* We found an ESP or XBOOTLDR, let's see if it matches the ESP/XBOOTLDR we booted from. */
 
-                if (sd_id128_equal(type, GPT_ESP)) {
-                        sd_id128_t id, esp;
-
-                        /* We found an ESP, let's see if it matches
-                         * the ESP we booted from. */
-
-                        if (sd_id128_from_string(sid, &id) < 0)
-                                continue;
-
-                        r = efi_loader_get_device_part_uuid(&esp);
+                        r = efi_loader_get_device_part_uuid(&esp_or_xbootldr);
                         if (r < 0)
                                 return r;
 
-                        if (sd_id128_equal(id, esp))
-                                found_esp = true;
+                        if (sd_id128_equal(id, esp_or_xbootldr))
+                                found_esp_or_xbootldr = true;
 
-                } else if (sd_id128_equal(type, GPT_ROOT_NATIVE)) {
+                } else if (sd_id128_equal(type, SD_GPT_ROOT_NATIVE)) {
                         unsigned long long flags;
 
                         flags = blkid_partition_get_flags(pp);
-                        if (flags & GPT_FLAG_NO_AUTO)
+                        if (flags & SD_GPT_FLAG_NO_AUTO)
                                 continue;
 
                         /* We found a suitable root partition, let's remember the first one, or the one with
                          * the newest version, as determined by comparing the partition labels. */
 
-                        if (!root_id || strverscmp_improved(label, root_label) > 0) {
-                                r = free_and_strdup(&root_id, sid);
-                                if (r < 0)
-                                        return r;
+                        if (sd_id128_is_null(root_id) || strverscmp_improved(label, root_label) > 0) {
+                                root_id = id;
 
                                 r = free_and_strdup(&root_label, label);
                                 if (r < 0)
@@ -190,10 +198,10 @@ static int find_gpt_root(sd_device *dev, blkid_probe pr, bool test) {
                 }
         }
 
-        /* We found the ESP on this disk, and also found a root
-         * partition, nice! Let's export its UUID */
-        if (found_esp && root_id)
-                udev_builtin_add_property(dev, test, "ID_PART_GPT_AUTO_ROOT_UUID", root_id);
+        /* We found the ESP/XBOOTLDR on this disk, and also found a root partition, nice! Let's export its
+         * UUID */
+        if (found_esp_or_xbootldr && !sd_id128_is_null(root_id))
+                udev_builtin_add_property(dev, test, "ID_PART_GPT_AUTO_ROOT_UUID", SD_ID128_TO_UUID_STRING(root_id));
 #endif
 
         return 0;
@@ -233,11 +241,89 @@ static int probe_superblocks(blkid_probe pr) {
         return blkid_do_safeprobe(pr);
 }
 
-static int builtin_blkid(sd_device *dev, sd_netlink **rtnl, int argc, char *argv[], bool test) {
+static int read_loopback_backing_inode(
+                sd_device *dev,
+                int fd,
+                dev_t *ret_devno,
+                ino_t *ret_inode,
+                char **ret_fname) {
+
+        _cleanup_free_ char *fn = NULL;
+        struct loop_info64 info;
+        const char *name;
+        int r;
+
+        assert(dev);
+        assert(fd >= 0);
+        assert(ret_devno);
+        assert(ret_inode);
+        assert(ret_fname);
+
+        /* Retrieves various fields of the current loopback device backing file, so that we can ultimately
+         * use it to create stable symlinks to loopback block devices, based on what they are backed by. We
+         * pick up inode/device as well as file name field. Note that we pick up the "lo_file_name" field
+         * here, which is an arbitrary free-form string provided by userspace. We do not return the sysfs
+         * attribute loop/backing_file here, because that is directly accessible from udev rules anyway. And
+         * sometimes, depending on context, it's a good thing to return the string userspace can freely pick
+         * over the string automatically generated by the kernel. */
+
+        r = sd_device_get_sysname(dev, &name);
+        if (r < 0)
+                return r;
+
+        if (!startswith(name, "loop"))
+                goto notloop;
+
+        if (ioctl(fd, LOOP_GET_STATUS64, &info) < 0) {
+                if (ERRNO_IS_NOT_SUPPORTED(errno))
+                        goto notloop;
+
+                return -errno;
+        }
+
+#if HAVE_VALGRIND_MEMCHECK_H
+        VALGRIND_MAKE_MEM_DEFINED(&info, sizeof(info));
+#endif
+
+        if (isempty((char*) info.lo_file_name) ||
+            strnlen((char*) info.lo_file_name, sizeof(info.lo_file_name)-1) == sizeof(info.lo_file_name)-1)
+                /* Don't pick up file name if it is unset or possibly truncated. (Note: the kernel silently
+                 * truncates the string passed from userspace by LOOP_SET_STATUS64 ioctl. See
+                 * loop_set_status_from_info() in drivers/block/loop.c. Hence, we can't really know the file
+                 * name is truncated if it uses sizeof(info.lo_file_name)-1 as length; it could also mean the
+                 * string is just that long and wasn't truncated — but the fact is simply that we cannot know
+                 * in that case if it was truncated or not. Thus, we assume the worst and suppress — at least
+                 * for now. For shorter strings we know for sure it wasn't truncated, hence that's always
+                 * safe.) */
+                fn = NULL;
+        else {
+                fn = memdup_suffix0(info.lo_file_name, sizeof(info.lo_file_name));
+                if (!fn)
+                        return -ENOMEM;
+        }
+
+        *ret_inode = info.lo_inode;
+        *ret_devno = info.lo_device;
+        *ret_fname = TAKE_PTR(fn);
+        return 1;
+
+
+notloop:
+        *ret_devno = 0;
+        *ret_inode = 0;
+        *ret_fname = NULL;
+        return 0;
+}
+
+static int builtin_blkid(UdevEvent *event, int argc, char *argv[], bool test) {
+        sd_device *dev = ASSERT_PTR(ASSERT_PTR(event)->dev);
         const char *devnode, *root_partition = NULL, *data, *name;
         _cleanup_(blkid_free_probep) blkid_probe pr = NULL;
+        _cleanup_free_ char *backing_fname = NULL;
         bool noraid = false, is_gpt = false;
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
+        ino_t backing_inode = 0;
+        dev_t backing_devno = 0;
         int64_t offset = 0;
         int r;
 
@@ -293,6 +379,9 @@ static int builtin_blkid(sd_device *dev, sd_netlink **rtnl, int argc, char *argv
         blkid_probe_set_superblocks_flags(pr,
                 BLKID_SUBLKS_LABEL | BLKID_SUBLKS_UUID |
                 BLKID_SUBLKS_TYPE | BLKID_SUBLKS_SECTYPE |
+#ifdef BLKID_SUBLKS_FSINFO
+                BLKID_SUBLKS_FSINFO |
+#endif
                 BLKID_SUBLKS_USAGE | BLKID_SUBLKS_VERSION);
 
         if (noraid)
@@ -302,11 +391,12 @@ static int builtin_blkid(sd_device *dev, sd_netlink **rtnl, int argc, char *argv
         if (r < 0)
                 return log_device_debug_errno(dev, r, "Failed to get device name: %m");
 
-        fd = open(devnode, O_RDONLY|O_CLOEXEC|O_NONBLOCK);
+        fd = sd_device_open(dev, O_RDONLY|O_CLOEXEC|O_NONBLOCK|O_NOCTTY);
         if (fd < 0) {
-                log_device_debug_errno(dev, errno, "Failed to open block device %s%s: %m",
-                                       devnode, errno == ENOENT ? ", ignoring" : "");
-                return errno == ENOENT ? 0 : -errno;
+                bool ignore = ERRNO_IS_DEVICE_ABSENT(fd);
+                log_device_debug_errno(dev, fd, "Failed to open block device %s%s: %m",
+                                       devnode, ignore ? ", ignoring" : "");
+                return ignore ? 0 : fd;
         }
 
         errno = 0;
@@ -346,6 +436,32 @@ static int builtin_blkid(sd_device *dev, sd_netlink **rtnl, int argc, char *argv
 
         if (is_gpt)
                 find_gpt_root(dev, pr, test);
+
+        r = read_loopback_backing_inode(
+                        dev,
+                        fd,
+                        &backing_devno,
+                        &backing_inode,
+                        &backing_fname);
+        if (r < 0)
+                log_device_debug_errno(dev, r, "Failed to read loopback backing inode, ignoring: %m");
+        else if (r > 0) {
+                udev_builtin_add_propertyf(dev, test, "ID_LOOP_BACKING_DEVICE", DEVNUM_FORMAT_STR, DEVNUM_FORMAT_VAL(backing_devno));
+                udev_builtin_add_propertyf(dev, test, "ID_LOOP_BACKING_INODE", "%" PRIu64, (uint64_t) backing_inode);
+
+                if (backing_fname) {
+                        /* In the worst case blkid_encode_string() will blow up to 4x the string
+                         * length. Hence size the buffer to 4x of the longest string
+                         * read_loopback_backing_inode() might return */
+                        char encoded[sizeof_field(struct loop_info64, lo_file_name) * 4 + 1];
+
+                        assert(strlen(backing_fname) < ELEMENTSOF(encoded) / 4);
+                        blkid_encode_string(backing_fname, encoded, ELEMENTSOF(encoded));
+
+                        udev_builtin_add_property(dev, test, "ID_LOOP_BACKING_FILENAME", backing_fname);
+                        udev_builtin_add_property(dev, test, "ID_LOOP_BACKING_FILENAME_ENC", encoded);
+                }
+        }
 
         return 0;
 }

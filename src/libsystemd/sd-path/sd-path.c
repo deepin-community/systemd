@@ -7,12 +7,12 @@
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
+#include "nulstr-util.h"
 #include "path-lookup.h"
 #include "path-util.h"
 #include "string-util.h"
 #include "strv.h"
 #include "user-util.h"
-#include "util.h"
 
 static int from_environment(const char *envname, const char *fallback, const char **ret) {
         assert(ret);
@@ -281,6 +281,9 @@ static int get_path(uint64_t type, char **buffer, const char **ret) {
         case SD_PATH_USER_STATE_CACHE:
                 return from_home_dir("XDG_CACHE_HOME", ".cache", buffer, ret);
 
+        case SD_PATH_USER_STATE_PRIVATE:
+                return from_home_dir("XDG_STATE_HOME", ".local/state", buffer, ret);
+
         case SD_PATH_USER:
                 r = get_home_dir(buffer);
                 if (r < 0)
@@ -379,6 +382,14 @@ static int get_path(uint64_t type, char **buffer, const char **ret) {
 
         case SD_PATH_CATALOG:
                 *ret = "/usr/lib/systemd/catalog";
+                return 0;
+
+        case SD_PATH_SYSTEMD_SYSTEM_ENVIRONMENT_GENERATOR:
+                *ret = SYSTEM_ENV_GENERATOR_DIR;
+                return 0;
+
+        case SD_PATH_SYSTEMD_USER_ENVIRONMENT_GENERATOR:
+                *ret = USER_ENV_GENERATOR_DIR;
                 return 0;
         }
 
@@ -516,7 +527,7 @@ static int get_search(uint64_t type, char ***list) {
 
         assert(list);
 
-        switch(type) {
+        switch (type) {
 
         case SD_PATH_SEARCH_BINARIES:
                 return search_from_environment(list,
@@ -601,8 +612,8 @@ static int get_search(uint64_t type, char ***list) {
         case SD_PATH_SYSTEMD_SEARCH_SYSTEM_UNIT:
         case SD_PATH_SYSTEMD_SEARCH_USER_UNIT: {
                 _cleanup_(lookup_paths_free) LookupPaths lp = {};
-                const UnitFileScope scope = type == SD_PATH_SYSTEMD_SEARCH_SYSTEM_UNIT ?
-                                                    UNIT_FILE_SYSTEM : UNIT_FILE_USER;
+                RuntimeScope scope = type == SD_PATH_SYSTEMD_SEARCH_SYSTEM_UNIT ?
+                        RUNTIME_SCOPE_SYSTEM : RUNTIME_SCOPE_USER;
 
                 r = lookup_paths_init(&lp, scope, 0, NULL);
                 if (r < 0)
@@ -614,11 +625,24 @@ static int get_search(uint64_t type, char ***list) {
 
         case SD_PATH_SYSTEMD_SEARCH_SYSTEM_GENERATOR:
         case SD_PATH_SYSTEMD_SEARCH_USER_GENERATOR: {
+                RuntimeScope scope = type == SD_PATH_SYSTEMD_SEARCH_SYSTEM_GENERATOR ?
+                        RUNTIME_SCOPE_SYSTEM : RUNTIME_SCOPE_USER;
                 char **t;
-                const UnitFileScope scope = type == SD_PATH_SYSTEMD_SEARCH_SYSTEM_GENERATOR ?
-                                                    UNIT_FILE_SYSTEM : UNIT_FILE_USER;
 
                 t = generator_binary_paths(scope);
+                if (!t)
+                        return -ENOMEM;
+
+                *list = t;
+                return 0;
+        }
+
+        case SD_PATH_SYSTEMD_SEARCH_SYSTEM_ENVIRONMENT_GENERATOR:
+        case SD_PATH_SYSTEMD_SEARCH_USER_ENVIRONMENT_GENERATOR: {
+                char **t;
+
+                t = env_generator_binary_paths(type == SD_PATH_SYSTEMD_SEARCH_SYSTEM_ENVIRONMENT_GENERATOR ?
+                                               RUNTIME_SCOPE_SYSTEM : RUNTIME_SCOPE_USER);
                 if (!t)
                         return -ENOMEM;
 
@@ -669,7 +693,7 @@ _public_ int sd_path_lookup_strv(uint64_t type, const char *suffix, char ***path
         if (!n)
                 return -ENOMEM;
 
-        char **i, **j = n;
+        char **j = n;
         STRV_FOREACH(i, l) {
                 *j = path_join(*i, suffix);
                 if (!*j)

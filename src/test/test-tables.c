@@ -6,6 +6,7 @@
 #include "cgroup-util.h"
 #include "compress.h"
 #include "condition.h"
+#include "confidential-virt.h"
 #include "device-private.h"
 #include "device.h"
 #include "discover-image.h"
@@ -36,7 +37,6 @@
 #include "timer.h"
 #include "unit-name.h"
 #include "unit.h"
-#include "util.h"
 #include "virt.h"
 
 int main(int argc, char **argv) {
@@ -50,6 +50,7 @@ int main(int argc, char **argv) {
         test_table(collect_mode, COLLECT_MODE);
         test_table(condition_result, CONDITION_RESULT);
         test_table(condition_type, CONDITION_TYPE);
+        test_table(confidential_virtualization, CONFIDENTIAL_VIRTUALIZATION);
         test_table(device_action, SD_DEVICE_ACTION);
         test_table(device_state, DEVICE_STATE);
         test_table(dns_over_tls_mode, DNS_OVER_TLS_MODE);
@@ -96,6 +97,7 @@ int main(int argc, char **argv) {
         test_table(scope_state, SCOPE_STATE);
         test_table(service_exec_command, SERVICE_EXEC_COMMAND);
         test_table(service_restart, SERVICE_RESTART);
+        test_table(service_restart_mode, SERVICE_RESTART_MODE);
         test_table(service_result, SERVICE_RESULT);
         test_table(service_state, SERVICE_STATE);
         test_table(service_type, SERVICE_TYPE);
@@ -116,14 +118,13 @@ int main(int argc, char **argv) {
         test_table(timer_state, TIMER_STATE);
         test_table(unit_active_state, UNIT_ACTIVE_STATE);
         test_table(unit_dependency, UNIT_DEPENDENCY);
-        test_table(unit_file_change_type, UNIT_FILE_CHANGE_TYPE);
-        test_table(unit_file_preset_mode, UNIT_FILE_PRESET);
+        test_table(install_change_type, INSTALL_CHANGE_TYPE);
+        test_table(unit_file_preset_mode, UNIT_FILE_PRESET_MODE);
         test_table(unit_file_state, UNIT_FILE_STATE);
         test_table(unit_load_state, UNIT_LOAD_STATE);
         test_table(unit_type, UNIT_TYPE);
         test_table(virtualization, VIRTUALIZATION);
-
-        test_table_sparse(object_compressed, OBJECT_COMPRESSED);
+        test_table(compression, COMPRESSION);
 
         assert_cc(sizeof(sd_device_action_t) == sizeof(int64_t));
 

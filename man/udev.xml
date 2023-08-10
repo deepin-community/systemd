@@ -186,10 +186,10 @@
           <varlistentry>
             <term><varname>SYMLINK</varname></term>
             <listitem>
-              <para>Match the name of a symlink targeting the node. It can
-              be used once a SYMLINK key has been set in one of the preceding
-              rules. There may be multiple symlinks; only one needs to match.
-              </para>
+              <para>Match the name of a symlink targeting the node. It can be used once a SYMLINK key has
+              been set in one of the preceding rules. There may be multiple symlinks; only one needs to
+              match. If the operator is <literal>!=</literal>, the token returns true only if there is no
+              symlink matched.</para>
             </listitem>
           </varlistentry>
 
@@ -279,6 +279,14 @@
                     for possible values.</para>
                   </listitem>
                 </varlistentry>
+                <varlistentry>
+                  <term><literal>cvm</literal></term>
+                  <listitem>
+                    <para>System's confidential virtualization technology. See
+                    <citerefentry><refentrytitle>systemd-detect-virt</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+                    for possible values.</para>
+                  </listitem>
+                </varlistentry>
               </variablelist>
               <para>Unknown keys will never match.</para>
             </listitem>
@@ -287,14 +295,17 @@
           <varlistentry>
             <term><varname>TAG</varname></term>
             <listitem>
-              <para>Match against a device tag.</para>
+              <para>Match against one of device tags. It can be used once a TAG key has been set in one of
+              the preceding rules. There may be multiple tags; only one needs to match. If the operator is
+              <literal>!=</literal>, the token returns true only if there is no tag matched.</para>
             </listitem>
           </varlistentry>
 
           <varlistentry>
             <term><varname>TAGS</varname></term>
             <listitem>
-              <para>Search the devpath upwards for a device with matching tag.</para>
+              <para>Search the devpath upwards for a device with matching tag. If the operator is
+              <literal>!=</literal>, the token returns true only if there is no tag matched.</para>
             </listitem>
           </varlistentry>
 
@@ -647,13 +658,11 @@
                 <varlistentry>
                   <term><option>db_persist</option></term>
                   <listitem>
-                    <para>Set the flag (sticky bit) on the udev database entry
-                    of the event device. Device properties are then kept in the
-                    database even when
-                    <command>udevadm info --cleanup-db</command> is called.
-                    This option can be useful in certain cases
-                    (e.g. Device Mapper devices) for persisting device state
-                    on the transition from initramfs.</para>
+                    <para>Set the flag (sticky bit) on the udev database entry of the event device. Device
+                    properties are then kept in the database even when <command>udevadm info
+                    --cleanup-db</command> is called.  This option can be useful in certain cases
+                    (e.g. Device Mapper devices) for persisting device state on the transition from
+                    initrd.</para>
                   </listitem>
                 </varlistentry>
                 <varlistentry>
@@ -669,7 +678,7 @@
                     log level is applied when the line including this rule is processed. So, for
                     debugging, it is recommended that this is specified at earlier place, e.g., the
                     first line of <filename>00-debug.rules</filename>.</para>
-                    <para>Example for debugging uevent processing for network interfaces.
+                    <para>Example for debugging uevent processing for network interfaces:
                     <programlisting># /etc/udev/rules.d/00-debug-net.rules
 SUBSYSTEM=="net", OPTIONS="log_level=debug"</programlisting></para>
                   </listitem>

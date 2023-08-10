@@ -241,6 +241,7 @@ int bus_set_transient_user_relaxed(Unit *u, const char *name, char **p, sd_bus_m
 int bus_set_transient_path(Unit *u, const char *name, char **p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
 int bus_set_transient_string(Unit *u, const char *name, char **p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
 int bus_set_transient_bool(Unit *u, const char *name, bool *p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
+int bus_set_transient_tristate(Unit *u, const char *name, int *p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
 int bus_set_transient_usec_internal(Unit *u, const char *name, usec_t *p, bool fix_0, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
 static inline int bus_set_transient_usec(Unit *u, const char *name, usec_t *p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error) {
         return bus_set_transient_usec_internal(u, name, p, false, message, flags, error);
@@ -251,3 +252,5 @@ static inline int bus_set_transient_usec_fix_0(Unit *u, const char *name, usec_t
 int bus_verify_manage_units_async_full(Unit *u, const char *verb, int capability, const char *polkit_message, bool interactive, sd_bus_message *call, sd_bus_error *error);
 
 int bus_read_mount_options(sd_bus_message *message, sd_bus_error *error, MountOptions **ret_options, char **ret_format_str, const char *separator);
+
+int bus_property_get_activation_details(sd_bus *bus, const char *path, const char *interface, const char *property, sd_bus_message *reply, void *userdata, sd_bus_error *error);

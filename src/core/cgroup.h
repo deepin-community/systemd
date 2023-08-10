@@ -110,6 +110,15 @@ struct CGroupSocketBindItem {
         uint16_t port_min;
 };
 
+typedef enum CGroupPressureWatch {
+        CGROUP_PRESSURE_WATCH_OFF,      /* → tells the service payload explicitly not to watch for memory pressure */
+        CGROUP_PRESSURE_WATCH_AUTO,     /* → on if memory account is on anyway for the unit, otherwise off */
+        CGROUP_PRESSURE_WATCH_ON,
+        CGROUP_PRESSURE_WATCH_SKIP,     /* → doesn't set up memory pressure watch, but also doesn't explicitly tell payload to avoid it */
+        _CGROUP_PRESSURE_WATCH_MAX,
+        _CGROUP_PRESSURE_WATCH_INVALID = -EINVAL,
+} CGroupPressureWatch;
+
 struct CGroupContext {
         bool cpu_accounting;
         bool io_accounting;
@@ -124,6 +133,7 @@ struct CGroupContext {
         bool delegate;
         CGroupMask delegate_controllers;
         CGroupMask disable_controllers;
+        char *delegate_subgroup;
 
         /* For unified hierarchy */
         uint64_t cpu_weight;
@@ -144,16 +154,29 @@ struct CGroupContext {
 
         uint64_t default_memory_min;
         uint64_t default_memory_low;
+        uint64_t default_startup_memory_low;
         uint64_t memory_min;
         uint64_t memory_low;
+        uint64_t startup_memory_low;
         uint64_t memory_high;
+        uint64_t startup_memory_high;
         uint64_t memory_max;
+        uint64_t startup_memory_max;
         uint64_t memory_swap_max;
+        uint64_t startup_memory_swap_max;
+        uint64_t memory_zswap_max;
+        uint64_t startup_memory_zswap_max;
 
         bool default_memory_min_set:1;
         bool default_memory_low_set:1;
+        bool default_startup_memory_low_set:1;
         bool memory_min_set:1;
         bool memory_low_set:1;
+        bool startup_memory_low_set:1;
+        bool startup_memory_high_set:1;
+        bool startup_memory_max_set:1;
+        bool startup_memory_swap_max_set:1;
+        bool startup_memory_zswap_max_set:1;
 
         Set *ip_address_allow;
         Set *ip_address_deny;
@@ -194,6 +217,12 @@ struct CGroupContext {
         ManagedOOMMode moom_mem_pressure;
         uint32_t moom_mem_pressure_limit; /* Normalized to 2^32-1 == 100% */
         ManagedOOMPreference moom_preference;
+
+        /* Memory pressure logic */
+        CGroupPressureWatch memory_pressure_watch;
+        usec_t memory_pressure_threshold_usec;
+        /* NB: For now we don't make the period configurable, not the type, nor do we allow multiple
+         * triggers, nor triggers for non-memory pressure. We might add that later. */
 };
 
 /* Used when querying IP accounting data */
@@ -235,10 +264,18 @@ void cgroup_context_free_blockio_device_bandwidth(CGroupContext *c, CGroupBlockI
 void cgroup_context_remove_bpf_foreign_program(CGroupContext *c, CGroupBPFForeignProgram *p);
 void cgroup_context_remove_socket_bind(CGroupSocketBindItem **head);
 
+static inline bool cgroup_context_want_memory_pressure(const CGroupContext *c) {
+        assert(c);
+
+        return c->memory_pressure_watch == CGROUP_PRESSURE_WATCH_ON ||
+                (c->memory_pressure_watch == CGROUP_PRESSURE_WATCH_AUTO && c->memory_accounting);
+}
+
 int cgroup_add_device_allow(CGroupContext *c, const char *dev, const char *mode);
 int cgroup_add_bpf_foreign_program(CGroupContext *c, uint32_t attach_type, const char *path);
 
 void cgroup_oomd_xattr_apply(Unit *u, const char *cgroup_path);
+int cgroup_log_xattr_apply(Unit *u, const char *cgroup_path);
 
 CGroupMask unit_get_own_mask(Unit *u);
 CGroupMask unit_get_delegate_mask(Unit *u);
@@ -254,7 +291,7 @@ void unit_invalidate_cgroup_members_masks(Unit *u);
 void unit_add_family_to_cgroup_realize_queue(Unit *u);
 
 const char *unit_get_realized_cgroup_path(Unit *u, CGroupMask mask);
-char *unit_default_cgroup_path(const Unit *u);
+int unit_default_cgroup_path(const Unit *u, char **ret);
 int unit_set_cgroup_path(Unit *u, const char *path);
 int unit_pick_cgroup_path(Unit *u);
 
@@ -262,6 +299,7 @@ int unit_realize_cgroup(Unit *u);
 void unit_prune_cgroup(Unit *u);
 int unit_watch_cgroup(Unit *u);
 int unit_watch_cgroup_memory(Unit *u);
+void unit_add_to_cgroup_realize_queue(Unit *u);
 
 void unit_release_cgroup(Unit *u);
 /* Releases the cgroup only if it is recursively empty.
@@ -285,6 +323,7 @@ Unit* manager_get_unit_by_pid(Manager *m, pid_t pid);
 
 uint64_t unit_get_ancestor_memory_min(Unit *u);
 uint64_t unit_get_ancestor_memory_low(Unit *u);
+uint64_t unit_get_ancestor_startup_memory_low(Unit *u);
 
 int unit_search_main_pid(Unit *u, pid_t *ret);
 int unit_watch_all_pids(Unit *u);
@@ -335,3 +374,6 @@ int unit_cgroup_freezer_action(Unit *u, FreezerAction action);
 
 const char* freezer_action_to_string(FreezerAction a) _const_;
 FreezerAction freezer_action_from_string(const char *s) _pure_;
+
+const char* cgroup_pressure_watch_to_string(CGroupPressureWatch a) _const_;
+CGroupPressureWatch cgroup_pressure_watch_from_string(const char *s) _pure_;

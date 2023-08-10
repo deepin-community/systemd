@@ -2,29 +2,24 @@
 
 systemd_machined_sources = files(
         'machined.c',
-        'machined.h',
 )
 
 libmachine_core_sources = files(
         'image-dbus.c',
-        'image-dbus.h',
         'machine-dbus.c',
-        'machine-dbus.h',
         'machine.c',
-        'machine.h',
         'machined-core.c',
         'machined-dbus.c',
         'machined-varlink.c',
-        'machined-varlink.h',
         'operation.c',
-        'operation.h',
 )
 
 libmachine_core = static_library(
         'machine-core',
         libmachine_core_sources,
         include_directories : includes,
-        dependencies : threads,
+        dependencies : [threads,
+                        userspace],
         build_by_default : false)
 
 if conf.get('ENABLE_MACHINED') == 1
@@ -37,8 +32,12 @@ if conf.get('ENABLE_MACHINED') == 1
 endif
 
 tests += [
-        [['src/machine/test-machine-tables.c'],
-         [libmachine_core,
-          libshared],
-         [threads]],
+        {
+                'sources' : files('test-machine-tables.c'),
+                'link_with': [
+                        libmachine_core,
+                        libshared
+                ],
+                'dependencies': threads,
+        },
 ]

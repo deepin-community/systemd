@@ -4,10 +4,10 @@
 #include <stdio.h>
 
 #include "alloc-util.h"
+#include "build.h"
 #include "pretty-print.h"
 #include "service-util.h"
 #include "terminal-util.h"
-#include "util.h"
 
 static int help(const char *program_path, const char *service, const char *description, bool bus_introspect) {
         _cleanup_free_ char *link = NULL;
@@ -58,7 +58,7 @@ int service_parse_argv(
         assert(argv);
 
         while ((c = getopt_long(argc, argv, "h", options, NULL)) >= 0)
-                switch(c) {
+                switch (c) {
 
                 case 'h':
                         return help(argv[0], service, description, bus_objects);

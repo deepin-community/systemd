@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include "cap-list.h"
 #include "format-util.h"
 #include "fs-util.h"
 #include "process-util.h"
@@ -143,7 +144,6 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
                         break;
                 }
                 bool has_valid_passwords = false;
-                char **p;
                 STRV_FOREACH(p, hr->hashed_password)
                         if (!hashed_password_is_locked_or_invalid(*p)) {
                                 has_valid_passwords = true;
@@ -240,15 +240,12 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
         if (hr->preferred_language)
                 printf("    Language: %s\n", hr->preferred_language);
 
-        if (!strv_isempty(hr->environment)) {
-                char **i;
-
+        if (!strv_isempty(hr->environment))
                 STRV_FOREACH(i, hr->environment) {
                         printf(i == hr->environment ?
                                " Environment: %s\n" :
                                "              %s\n", *i);
                 }
-        }
 
         if (hr->locked >= 0)
                 printf("      Locked: %s\n", yes_no(hr->locked));
@@ -280,7 +277,9 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
         if (hr->memory_max != UINT64_MAX)
                 printf("  Memory Max: %s\n", FORMAT_BYTES(hr->memory_max));
 
-        if (hr->cpu_weight != UINT64_MAX)
+        if (hr->cpu_weight == CGROUP_WEIGHT_IDLE)
+                printf("  CPU Weight: %s\n", "idle");
+        else if (hr->cpu_weight != UINT64_MAX)
                 printf("  CPU Weight: %" PRIu64 "\n", hr->cpu_weight);
 
         if (hr->io_weight != UINT64_MAX)
@@ -288,6 +287,22 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
 
         if (hr->access_mode != MODE_INVALID)
                 printf(" Access Mode: 0%03o\n", user_record_access_mode(hr));
+
+        uint64_t caps = user_record_capability_bounding_set(hr);
+        if (caps != UINT64_MAX) {
+                _cleanup_free_ char *scaps = NULL;
+
+                (void) capability_set_to_string_negative(caps, &scaps);
+                printf(" Bound. Caps: %s\n", strna(scaps));
+        }
+
+        caps = user_record_capability_ambient_set(hr);
+        if (caps != UINT64_MAX) {
+                _cleanup_free_ char *scaps = NULL;
+
+                (void) capability_set_to_string(caps, &scaps);
+                printf("Ambient Caps: %s\n", strna(scaps));
+        }
 
         if (storage == USER_LUKS) {
                 printf("LUKS Discard: online=%s offline=%s\n", yes_no(user_record_luks_discard(hr)), yes_no(user_record_luks_offline_discard(hr)));
@@ -316,6 +331,8 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
                         printf("  PBKDF Type: %s\n", hr->luks_pbkdf_type);
                 if (hr->luks_pbkdf_hash_algorithm)
                         printf("  PBKDF Hash: %s\n", hr->luks_pbkdf_hash_algorithm);
+                if (hr->luks_pbkdf_force_iterations != UINT64_MAX)
+                        printf(" PBKDF Iters: %" PRIu64 "\n", hr->luks_pbkdf_force_iterations);
                 if (hr->luks_pbkdf_time_cost_usec != UINT64_MAX)
                         printf("  PBKDF Time: %s\n", FORMAT_TIMESPAN(hr->luks_pbkdf_time_cost_usec, 0));
                 if (hr->luks_pbkdf_memory_cost != UINT64_MAX)
@@ -323,6 +340,8 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
 
                 if (hr->luks_pbkdf_parallel_threads != UINT64_MAX)
                         printf("PBKDF Thread: %" PRIu64 "\n", hr->luks_pbkdf_parallel_threads);
+                if (hr->luks_sector_size != UINT64_MAX)
+                        printf(" Sector Size: %" PRIu64 "\n", hr->luks_sector_size);
 
         } else if (storage == USER_CIFS) {
 
@@ -478,14 +497,11 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
         if (!strv_isempty(hr->ssh_authorized_keys))
                 printf("SSH Pub. Key: %zu\n", strv_length(hr->ssh_authorized_keys));
 
-        if (!strv_isempty(hr->pkcs11_token_uri)) {
-                char **i;
-
+        if (!strv_isempty(hr->pkcs11_token_uri))
                 STRV_FOREACH(i, hr->pkcs11_token_uri)
                         printf(i == hr->pkcs11_token_uri ?
                                "PKCS11 Token: %s\n" :
                                "              %s\n", *i);
-        }
 
         if (hr->n_fido2_hmac_credential > 0)
                 printf(" FIDO2 Token: %zu\n", hr->n_fido2_hmac_credential);
@@ -558,7 +574,6 @@ void group_record_show(GroupRecord *gr, bool show_full_user_info) {
                 }
         } else {
                 const char *prefix = "     Members:";
-                char **i;
 
                 STRV_FOREACH(i, gr->members) {
                         printf("%s %s\n", prefix, *i);
@@ -568,7 +583,6 @@ void group_record_show(GroupRecord *gr, bool show_full_user_info) {
 
         if (!strv_isempty(gr->administrators)) {
                 const char *prefix = "      Admins:";
-                char **i;
 
                 STRV_FOREACH(i, gr->administrators) {
                         printf("%s %s\n", prefix, *i);

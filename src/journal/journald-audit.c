@@ -8,6 +8,7 @@
 #include "fd-util.h"
 #include "hexdecoct.h"
 #include "io-util.h"
+#include "journal-internal.h"
 #include "journald-audit.h"
 #include "missing_audit.h"
 #include "string-util.h"
@@ -161,9 +162,8 @@ static int map_generic_field(
                 if (*e == '=')
                         break;
 
-                if (!((*e >= 'a' && *e <= 'z') ||
-                      (*e >= 'A' && *e <= 'Z') ||
-                      (*e >= '0' && *e <= '9') ||
+                if (!(ascii_isalpha(*e) ||
+                      ascii_isdigit(*e) ||
                       IN_SET(*e, '_', '-')))
                         return 0;
         }
@@ -442,7 +442,7 @@ void server_process_audit_message(
         }
 
         if (!NLMSG_OK(nl, buffer_size)) {
-                log_error("Audit netlink message truncated.");
+                log_ratelimit_error(JOURNAL_LOG_RATELIMIT, "Audit netlink message truncated.");
                 return;
         }
 

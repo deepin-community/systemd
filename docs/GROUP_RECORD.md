@@ -7,8 +7,8 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 
 # JSON Group Records
 
-Long story short: JSON Group Records are to `struct group` what [JSON User
-Records](https://systemd.io/USER_RECORD) are to `struct passwd`.
+Long story short: JSON Group Records are to `struct group` what
+[JSON User Records](USER_RECORD.md) are to `struct passwd`.
 
 Conceptually, much of what applies to JSON user records also applies to JSON
 group records. They also consist of seven sections, with similar properties and
@@ -33,7 +33,7 @@ same field of user records. A string.
 `service` → A string, an identifier for the service managing this group record
 (this field is typically in reverse domain name syntax.)
 
-`lastChangeUSec` → An unsigned 64bit integer, a timestamp (in µs since the UNIX
+`lastChangeUSec` → An unsigned 64-bit integer, a timestamp (in µs since the UNIX
 epoch 1970) of the last time the group record has been modified. (Covers only
 the `regular`, `perMachine` and `privileged` sections).
 

@@ -44,6 +44,7 @@ typedef enum ManagerObjective {
         MANAGER_RELOAD,
         MANAGER_REEXECUTE,
         MANAGER_REBOOT,
+        MANAGER_SOFT_REBOOT,
         MANAGER_POWEROFF,
         MANAGER_HALT,
         MANAGER_KEXEC,
@@ -60,9 +61,9 @@ typedef enum StatusType {
 } StatusType;
 
 typedef enum OOMPolicy {
-        OOM_CONTINUE,          /* The kernel kills the process it wants to kill, and that's it */
-        OOM_STOP,              /* The kernel kills the process it wants to kill, and we stop the unit */
-        OOM_KILL,              /* The kernel kills the process it wants to kill, and all others in the unit, and we stop the unit */
+        OOM_CONTINUE,          /* The kernel or systemd-oomd kills the process it wants to kill, and that's it */
+        OOM_STOP,              /* The kernel or systemd-oomd kills the process it wants to kill, and we stop the unit */
+        OOM_KILL,              /* The kernel or systemd-oomd kills the process it wants to kill, and all others in the unit, and we stop the unit */
         _OOM_POLICY_MAX,
         _OOM_POLICY_INVALID = -EINVAL,
 } OOMPolicy;
@@ -118,6 +119,7 @@ typedef enum WatchdogType {
         WATCHDOG_RUNTIME,
         WATCHDOG_REBOOT,
         WATCHDOG_KEXEC,
+        WATCHDOG_PRETIMEOUT,
         _WATCHDOG_TYPE_MAX,
 } WatchdogType;
 
@@ -194,6 +196,9 @@ struct Manager {
         /* Units that have BindsTo= another unit, and might need to be shutdown because the bound unit is not active. */
         LIST_HEAD(Unit, stop_when_bound_queue);
 
+        /* Units that have resources open, and where it might be good to check if they can be released now */
+        LIST_HEAD(Unit, release_resources_queue);
+
         sd_event *event;
 
         /* This maps PIDs we care about to units that are interested in. We allow multiple units to be interested in
@@ -225,7 +230,6 @@ struct Manager {
 
         sd_event_source *sigchld_event_source;
 
-        int time_change_fd;
         sd_event_source *time_change_event_source;
 
         sd_event_source *timezone_change_event_source;
@@ -235,7 +239,8 @@ struct Manager {
         int user_lookup_fds[2];
         sd_event_source *user_lookup_event_source;
 
-        UnitFileScope unit_file_scope;
+        RuntimeScope runtime_scope;
+
         LookupPaths lookup_paths;
         Hashmap *unit_id_map;
         Hashmap *unit_name_map;
@@ -247,6 +252,8 @@ struct Manager {
 
         usec_t watchdog[_WATCHDOG_TYPE_MAX];
         usec_t watchdog_overridden[_WATCHDOG_TYPE_MAX];
+        char *watchdog_pretimeout_governor;
+        char *watchdog_pretimeout_governor_overridden;
 
         dual_timestamp timestamps[_MANAGER_TIMESTAMP_MAX];
 
@@ -354,6 +361,7 @@ struct Manager {
         ExecOutput default_std_output, default_std_error;
 
         usec_t default_restart_usec, default_timeout_start_usec, default_timeout_stop_usec;
+        usec_t default_device_timeout_usec;
         usec_t default_timeout_abort_usec;
         bool default_timeout_abort_set;
 
@@ -373,6 +381,9 @@ struct Manager {
         OOMPolicy default_oom_policy;
         int default_oom_score_adjust;
         bool default_oom_score_adjust_set;
+
+        CGroupPressureWatch default_memory_pressure_watch;
+        usec_t default_memory_pressure_threshold_usec;
 
         int original_log_level;
         LogTarget original_log_target;
@@ -404,6 +415,9 @@ struct Manager {
         char *switch_root;
         char *switch_root_init;
 
+        /* This is true before and after switching root. */
+        bool switching_root;
+
         /* This maps all possible path prefixes to the units needing
          * them. It's a hashmap with a path string as key and a Set as
          * value where Unit objects are contained. */
@@ -419,8 +433,8 @@ struct Manager {
         Hashmap *uid_refs;
         Hashmap *gid_refs;
 
-        /* ExecRuntime, indexed by their owner unit id */
-        Hashmap *exec_runtime_by_id;
+        /* ExecSharedRuntime, indexed by their owner unit id */
+        Hashmap *exec_shared_runtime_by_id;
 
         /* When the user hits C-A-D more than 7 times per 2s, do something immediately... */
         RateLimit ctrl_alt_del_ratelimit;
@@ -436,14 +450,13 @@ struct Manager {
 
         /* Prefixes of e.g. RuntimeDirectory= */
         char *prefix[_EXEC_DIRECTORY_TYPE_MAX];
-        char *received_credentials;
+        char *received_credentials_directory;
+        char *received_encrypted_credentials_directory;
 
         /* Used in the SIGCHLD and sd_notify() message invocation logic to avoid that we dispatch the same event
          * multiple times on the same unit. */
         unsigned sigchldgen;
         unsigned notifygen;
-
-        bool honor_device_enumeration;
 
         VarlinkServer *varlink_server;
         /* When we're a system manager, this object manages the subscription from systemd-oomd to PID1 that's
@@ -454,6 +467,15 @@ struct Manager {
 
         /* Reference to RestrictFileSystems= BPF program */
         struct restrict_fs_bpf *restrict_fs;
+
+        char *default_smack_process_label;
+
+        /* Allow users to configure a rate limit for Reload() operations */
+        RateLimit reload_ratelimit;
+        /* Dump*() are slow, so always rate limit them to 10 per 10 minutes */
+        RateLimit dump_ratelimit;
+
+        sd_event_source *memory_pressure_event_source;
 };
 
 static inline usec_t manager_default_timeout_abort_usec(Manager *m) {
@@ -461,8 +483,8 @@ static inline usec_t manager_default_timeout_abort_usec(Manager *m) {
         return m->default_timeout_abort_set ? m->default_timeout_abort_usec : m->default_timeout_stop_usec;
 }
 
-#define MANAGER_IS_SYSTEM(m) ((m)->unit_file_scope == UNIT_FILE_SYSTEM)
-#define MANAGER_IS_USER(m) ((m)->unit_file_scope != UNIT_FILE_SYSTEM)
+#define MANAGER_IS_SYSTEM(m) ((m)->runtime_scope == RUNTIME_SCOPE_SYSTEM)
+#define MANAGER_IS_USER(m) ((m)->runtime_scope == RUNTIME_SCOPE_USER)
 
 #define MANAGER_IS_RELOADING(m) ((m)->n_reloading > 0)
 
@@ -471,9 +493,15 @@ static inline usec_t manager_default_timeout_abort_usec(Manager *m) {
 /* The objective is set to OK as soon as we enter the main loop, and set otherwise as soon as we are done with it */
 #define MANAGER_IS_RUNNING(m) ((m)->objective == MANAGER_OK)
 
+#define MANAGER_IS_SWITCHING_ROOT(m) ((m)->switching_root)
+
 #define MANAGER_IS_TEST_RUN(m) ((m)->test_run_flags != 0)
 
-int manager_new(UnitFileScope scope, ManagerTestRunFlags test_run_flags, Manager **m);
+static inline usec_t manager_default_timeout(RuntimeScope scope) {
+        return scope == RUNTIME_SCOPE_SYSTEM ? DEFAULT_TIMEOUT_USEC : DEFAULT_USER_TIMEOUT_USEC;
+}
+
+int manager_new(RuntimeScope scope, ManagerTestRunFlags test_run_flags, Manager **m);
 Manager* manager_free(Manager *m);
 DEFINE_TRIVIAL_CLEANUP_FUNC(Manager*, manager_free);
 
@@ -485,8 +513,8 @@ Unit *manager_get_unit(Manager *m, const char *name);
 int manager_get_job_from_dbus_path(Manager *m, const char *s, Job **_j);
 
 bool manager_unit_cache_should_retry_load(Unit *u);
-int manager_load_unit_prepare(Manager *m, const char *name, const char *path, sd_bus_error *e, Unit **_ret);
-int manager_load_unit(Manager *m, const char *name, const char *path, sd_bus_error *e, Unit **_ret);
+int manager_load_unit_prepare(Manager *m, const char *name, const char *path, sd_bus_error *e, Unit **ret);
+int manager_load_unit(Manager *m, const char *name, const char *path, sd_bus_error *e, Unit **ret);
 int manager_load_startable_unit_or_warn(Manager *m, const char *name, const char *path, Unit **ret);
 int manager_load_unit_from_dbus_path(Manager *m, const char *s, sd_bus_error *e, Unit **_u);
 
@@ -501,10 +529,14 @@ void manager_unwatch_pid(Manager *m, pid_t pid);
 
 unsigned manager_dispatch_load_queue(Manager *m);
 
+int manager_setup_memory_pressure_event_source(Manager *m);
+
 int manager_default_environment(Manager *m);
 int manager_transient_environment_add(Manager *m, char **plus);
 int manager_client_environment_modify(Manager *m, char **minus, char **plus);
 int manager_get_effective_environment(Manager *m, char ***ret);
+
+int manager_set_default_smack_process_label(Manager *m, const char *label);
 
 int manager_set_default_rlimits(Manager *m, struct rlimit **default_rlimit);
 
@@ -524,6 +556,7 @@ void manager_send_unit_plymouth(Manager *m, Unit *u);
 bool manager_unit_inactive_or_pending(Manager *m, const char *name);
 
 void manager_check_finished(Manager *m);
+void manager_send_reloading(Manager *m);
 
 void disable_printk_ratelimit(void);
 void manager_recheck_dbus(Manager *m);
@@ -534,6 +567,7 @@ void manager_set_show_status(Manager *m, ShowStatus mode, const char *reason);
 void manager_override_show_status(Manager *m, ShowStatus mode, const char *reason);
 
 void manager_set_first_boot(Manager *m, bool b);
+void manager_set_switching_root(Manager *m, bool switching_root);
 
 void manager_status_printf(Manager *m, StatusType type, const char *status, const char *format, ...) _printf_(4,5);
 
@@ -549,7 +583,7 @@ int manager_ref_uid(Manager *m, uid_t uid, bool clean_ipc);
 void manager_unref_gid(Manager *m, gid_t gid, bool destroy_now);
 int manager_ref_gid(Manager *m, gid_t gid, bool clean_ipc);
 
-char *manager_taint_string(Manager *m);
+char* manager_taint_string(const Manager *m);
 
 void manager_ref_console(Manager *m);
 void manager_unref_console(Manager *m);
@@ -573,7 +607,9 @@ ManagerTimestamp manager_timestamp_initrd_mangle(ManagerTimestamp s);
 
 usec_t manager_get_watchdog(Manager *m, WatchdogType t);
 void manager_set_watchdog(Manager *m, WatchdogType t, usec_t timeout);
-int manager_override_watchdog(Manager *m, WatchdogType t, usec_t timeout);
+void manager_override_watchdog(Manager *m, WatchdogType t, usec_t timeout);
+int manager_set_watchdog_pretimeout_governor(Manager *m, const char *governor);
+int manager_override_watchdog_pretimeout_governor(Manager *m, const char *governor);
 
 const char* oom_policy_to_string(OOMPolicy i) _const_;
 OOMPolicy oom_policy_from_string(const char *s) _pure_;

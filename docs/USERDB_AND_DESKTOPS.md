@@ -21,10 +21,10 @@ are recommended. A few areas where that applies are discussed below.
 
 Before reading on, please read up on the basic concepts, specifically:
 
-* [Home Directories](https://systemd.io/HOME_DIRECTORY)
-* [JSON User Records](https://systemd.io/USER_RECORD)
-* [JSON Group Records](https://systemd.io/GROUP_RECORD)
-* [User/Group Record Lookup API via Varlink](https://systemd.io/USER_GROUP_API)
+* [Home Directories](HOME_DIRECTORY.md)
+* [JSON User Records](USER_RECORD.md)
+* [JSON Group Records](GROUP_RECORD.md)
+* [User/Group Record Lookup API via Varlink](USER_GROUP_API.md)
 
 ## Support for Suspending Home Directory Access during System Suspend
 
@@ -147,13 +147,12 @@ solution only.
 In case you wonder, there's no automatic mechanism for converting existing
 users registered in `/etc/passwd` or LDAP to users managed by
 `systemd-homed`. There's documentation for doing this manually though, see
-[Converting Existing Users to systemd-homed managed
-Users](https://systemd.io/CONVERTING_TO_HOMED).
+[Converting Existing Users to systemd-homed managed Users](CONVERTING_TO_HOMED.md).
 
 ## Future Additions
 
 JSON user/group records are extensible, hence we can easily add any additional
-fields desktop environments require. For example pattern-based authentication
+fields desktop environments require. For example, pattern-based authentication
 is likely very useful on touch-based devices, and the user records should hence
 learn them natively. Fields for other authentication mechanisms, such as
 fingerprint authentication should be provided as well, eventually.

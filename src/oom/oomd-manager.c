@@ -10,6 +10,7 @@
 #include "fileio.h"
 #include "format-util.h"
 #include "memory-util.h"
+#include "memstream-util.h"
 #include "oomd-manager-bus.h"
 #include "oomd-manager.h"
 #include "path-util.h"
@@ -83,7 +84,7 @@ static int process_managed_oom_message(Manager *m, uid_t uid, JsonVariant *param
 
                         r = cg_path_get_owner_uid(message.path, &cg_uid);
                         if (r < 0) {
-                                log_debug("Failed to get cgroup %s owner uid: %m", message.path);
+                                log_debug_errno(r, "Failed to get cgroup %s owner uid: %m", message.path);
                                 continue;
                         }
 
@@ -134,11 +135,9 @@ static int process_managed_oom_request(
                 JsonVariant *parameters,
                 VarlinkMethodFlags flags,
                 void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         uid_t uid;
         int r;
-
-        assert(m);
 
         r = varlink_get_peer_uid(link, &uid);
         if (r < 0)
@@ -153,11 +152,9 @@ static int process_managed_oom_reply(
                 const char *error_id,
                 VarlinkReplyFlags flags,
                 void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         uid_t uid;
         int r;
-
-        assert(m);
 
         if (error_id) {
                 r = -EIO;
@@ -180,13 +177,13 @@ finish:
         return r;
 }
 
-/* Fill `new_h` with `path`'s descendent OomdCGroupContexts. Only include descendent cgroups that are possible
+/* Fill 'new_h' with 'path's descendant OomdCGroupContexts. Only include descendant cgroups that are possible
  * candidates for action. That is, only leaf cgroups or cgroups with memory.oom.group set to "1".
  *
- * This function ignores most errors in order to handle cgroups that may have been cleaned up while populating
- * the hashmap.
+ * This function ignores most errors in order to handle cgroups that may have been cleaned up while
+ * populating the hashmap.
  *
- * `new_h` is of the form { key: cgroup paths -> value: OomdCGroupContext } */
+ * 'new_h' is of the form { key: cgroup paths -> value: OomdCGroupContext } */
 static int recursively_get_cgroup_context(Hashmap *new_h, const char *path) {
         _cleanup_free_ char *subpath = NULL;
         _cleanup_closedir_ DIR *d = NULL;
@@ -346,12 +343,11 @@ static int acquire_managed_oom_connect(Manager *m) {
 }
 
 static int monitor_swap_contexts_handler(sd_event_source *s, uint64_t usec, void *userdata) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         usec_t usec_now;
         int r;
 
         assert(s);
-        assert(userdata);
 
         /* Reset timer */
         r = sd_event_now(sd_event_source_get_event(s), CLOCK_MONOTONIC, &usec_now);
@@ -384,8 +380,8 @@ static int monitor_swap_contexts_handler(sd_event_source *s, uint64_t usec, void
          * is only used to decide which cgroups to kill (and even then only the resource usages of its descendent
          * nodes are the ones that matter). */
 
-        /* Check amount of memory free and swap free so we don't free up swap when memory is still available. */
-        if (oomd_mem_free_below(&m->system_context, 10000 - m->swap_used_limit_permyriad) &&
+        /* Check amount of memory available and swap free so we don't free up swap when memory is still available. */
+        if (oomd_mem_available_below(&m->system_context, 10000 - m->swap_used_limit_permyriad) &&
                         oomd_swap_free_below(&m->system_context, 10000 - m->swap_used_limit_permyriad)) {
                 _cleanup_hashmap_free_ Hashmap *candidates = NULL;
                 _cleanup_free_ char *selected = NULL;
@@ -408,9 +404,9 @@ static int monitor_swap_contexts_handler(sd_event_source *s, uint64_t usec, void
                 if (r == -ENOMEM)
                         return log_oom();
                 if (r < 0)
-                        log_notice_errno(r, "Failed to kill any cgroup(s) based on swap: %m");
+                        log_notice_errno(r, "Failed to kill any cgroups based on swap: %m");
                 else {
-                        if (selected && r > 0)
+                        if (selected && r > 0) {
                                 log_notice("Killed %s due to memory used (%"PRIu64") / total (%"PRIu64") and "
                                            "swap used (%"PRIu64") / total (%"PRIu64") being more than "
                                            PERMYRIAD_AS_PERCENT_FORMAT_STR,
@@ -418,6 +414,16 @@ static int monitor_swap_contexts_handler(sd_event_source *s, uint64_t usec, void
                                            m->system_context.mem_used, m->system_context.mem_total,
                                            m->system_context.swap_used, m->system_context.swap_total,
                                            PERMYRIAD_AS_PERCENT_FORMAT_VAL(m->swap_used_limit_permyriad));
+
+                                /* send dbus signal */
+                                (void) sd_bus_emit_signal(m->bus,
+                                                          "/org/freedesktop/oom1",
+                                                          "org.freedesktop.oom1.Manager",
+                                                          "Killed",
+                                                          "ss",
+                                                          selected,
+                                                          "memory-used");
+                        }
                         return 0;
                 }
         }
@@ -436,12 +442,11 @@ static int monitor_memory_pressure_contexts_handler(sd_event_source *s, uint64_t
         _unused_ _cleanup_(clear_candidate_hashmapp) Manager *clear_candidates = userdata;
         _cleanup_set_free_ Set *targets = NULL;
         bool in_post_action_delay = false;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         usec_t usec_now;
         int r;
 
         assert(s);
-        assert(userdata);
 
         /* Reset timer */
         r = sd_event_now(sd_event_source_get_event(s), CLOCK_MONOTONIC, &usec_now);
@@ -512,11 +517,14 @@ static int monitor_memory_pressure_contexts_handler(sd_event_source *s, uint64_t
                         else
                                 clear_candidates = NULL;
 
-                        r = oomd_kill_by_pgscan_rate(m->monitored_mem_pressure_cgroup_contexts_candidates, t->path, m->dry_run, &selected);
+                        r = oomd_kill_by_pgscan_rate(m->monitored_mem_pressure_cgroup_contexts_candidates,
+                                                     /* prefix= */ t->path,
+                                                     /* dry_run= */ m->dry_run,
+                                                     &selected);
                         if (r == -ENOMEM)
                                 return log_oom();
                         if (r < 0)
-                                log_notice_errno(r, "Failed to kill any cgroup(s) under %s based on pressure: %m", t->path);
+                                log_notice_errno(r, "Failed to kill any cgroups under %s based on pressure: %m", t->path);
                         else {
                                 /* Don't act on all the high pressure cgroups at once; return as soon as we kill one.
                                  * If r == 0 then it means there were not eligible candidates, the candidate cgroup
@@ -524,13 +532,23 @@ static int monitor_memory_pressure_contexts_handler(sd_event_source *s, uint64_t
                                  * it. In either case, go through the event loop again and select a new candidate if
                                  * pressure is still high. */
                                 m->mem_pressure_post_action_delay_start = usec_now;
-                                if (selected && r > 0)
+                                if (selected && r > 0) {
                                         log_notice("Killed %s due to memory pressure for %s being %lu.%02lu%% > %lu.%02lu%%"
                                                    " for > %s with reclaim activity",
                                                    selected, t->path,
                                                    LOADAVG_INT_SIDE(t->memory_pressure.avg10), LOADAVG_DECIMAL_SIDE(t->memory_pressure.avg10),
                                                    LOADAVG_INT_SIDE(t->mem_pressure_limit), LOADAVG_DECIMAL_SIDE(t->mem_pressure_limit),
                                                    FORMAT_TIMESPAN(m->default_mem_pressure_duration_usec, USEC_PER_SEC));
+
+                                        /* send dbus signal */
+                                        (void) sd_bus_emit_signal(m->bus,
+                                                                  "/org/freedesktop/oom1",
+                                                                  "org.freedesktop.oom1.Manager",
+                                                                  "Killed",
+                                                                  "ss",
+                                                                  selected,
+                                                                  "memory-pressure");
+                                }
                                 return 0;
                         }
                 }
@@ -790,19 +808,16 @@ int manager_start(
 }
 
 int manager_get_dump_string(Manager *m, char **ret) {
-        _cleanup_free_ char *dump = NULL;
-        _cleanup_fclose_ FILE *f = NULL;
+        _cleanup_(memstream_done) MemStream ms = {};
         OomdCGroupContext *c;
-        size_t size;
-        char *key;
-        int r;
+        FILE *f;
 
         assert(m);
         assert(ret);
 
-        f = open_memstream_unlocked(&dump, &size);
+        f = memstream_init(&ms);
         if (!f)
-                return -errno;
+                return -ENOMEM;
 
         fprintf(f,
                 "Dry Run: %s\n"
@@ -817,19 +832,12 @@ int manager_get_dump_string(Manager *m, char **ret) {
         oomd_dump_system_context(&m->system_context, f, "\t");
 
         fprintf(f, "Swap Monitored CGroups:\n");
-        HASHMAP_FOREACH_KEY(c, key, m->monitored_swap_cgroup_contexts)
+        HASHMAP_FOREACH(c, m->monitored_swap_cgroup_contexts)
                 oomd_dump_swap_cgroup_context(c, f, "\t");
 
         fprintf(f, "Memory Pressure Monitored CGroups:\n");
-        HASHMAP_FOREACH_KEY(c, key, m->monitored_mem_pressure_cgroup_contexts)
+        HASHMAP_FOREACH(c, m->monitored_mem_pressure_cgroup_contexts)
                 oomd_dump_memory_pressure_cgroup_context(c, f, "\t");
 
-        r = fflush_and_check(f);
-        if (r < 0)
-                return r;
-
-        f = safe_fclose(f);
-
-        *ret = TAKE_PTR(dump);
-        return 0;
+        return memstream_finalize(&ms, ret, NULL);
 }

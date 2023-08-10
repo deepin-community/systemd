@@ -19,12 +19,14 @@
 #include <unistd.h>
 
 #include "alloc-util.h"
+#include "creds-util.h"
 #include "env-file.h"
 #include "errno-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "io-util.h"
 #include "locale-util.h"
+#include "lock-util.h"
 #include "log.h"
 #include "proc-cmdline.h"
 #include "process-util.h"
@@ -33,8 +35,157 @@
 #include "string-util.h"
 #include "strv.h"
 #include "terminal-util.h"
-#include "util.h"
 #include "virt.h"
+
+typedef enum VCMeta {
+        VC_KEYMAP,
+        VC_KEYMAP_TOGGLE,
+        VC_FONT,
+        VC_FONT_MAP,
+        VC_FONT_UNIMAP,
+        _VC_META_MAX,
+        _VC_META_INVALID = -EINVAL,
+} VCMeta;
+
+typedef struct Context {
+        char *config[_VC_META_MAX];
+} Context;
+
+static const char * const vc_meta_names[_VC_META_MAX] = {
+        [VC_KEYMAP]        = "vconsole.keymap",
+        [VC_KEYMAP_TOGGLE] = "vconsole.keymap_toggle",
+        [VC_FONT]          = "vconsole.font",
+        [VC_FONT_MAP]      = "vconsole.font_map",
+        [VC_FONT_UNIMAP]   = "vconsole.font_unimap",
+};
+
+/* compatibility with obsolete multiple-dot scheme */
+static const char * const vc_meta_compat_names[_VC_META_MAX] = {
+        [VC_KEYMAP_TOGGLE] = "vconsole.keymap.toggle",
+        [VC_FONT_MAP]      = "vconsole.font.map",
+        [VC_FONT_UNIMAP]   = "vconsole.font.unimap",
+};
+
+static const char * const vc_env_names[_VC_META_MAX] = {
+        [VC_KEYMAP]        = "KEYMAP",
+        [VC_KEYMAP_TOGGLE] = "KEYMAP_TOGGLE",
+        [VC_FONT]          = "FONT",
+        [VC_FONT_MAP]      = "FONT_MAP",
+        [VC_FONT_UNIMAP]   = "FONT_UNIMAP",
+};
+
+static void context_done(Context *c) {
+        assert(c);
+
+        for (VCMeta i = 0; i < _VC_META_MAX; i++)
+                free(c->config[i]);
+}
+
+static void context_merge_config(
+                Context *dst,
+                Context *src,
+                Context *src_compat) {
+
+        assert(dst);
+        assert(src);
+
+        for (VCMeta i = 0; i < _VC_META_MAX; i++)
+                if (src->config[i])
+                        free_and_replace(dst->config[i], src->config[i]);
+                else if (src_compat && src_compat->config[i])
+                        free_and_replace(dst->config[i], src_compat->config[i]);
+}
+
+static const char* context_get_config(Context *c, VCMeta meta) {
+        assert(c);
+        assert(meta >= 0 && meta < _VC_META_MAX);
+
+        if (meta == VC_KEYMAP)
+                return isempty(c->config[VC_KEYMAP]) ? SYSTEMD_DEFAULT_KEYMAP : c->config[VC_KEYMAP];
+
+        return empty_to_null(c->config[meta]);
+}
+
+static int context_read_creds(Context *c) {
+        _cleanup_(context_done) Context v = {};
+        int r;
+
+        assert(c);
+
+        r = read_credential_strings_many(
+                        vc_meta_names[VC_KEYMAP],        &v.config[VC_KEYMAP],
+                        vc_meta_names[VC_KEYMAP_TOGGLE], &v.config[VC_KEYMAP_TOGGLE],
+                        vc_meta_names[VC_FONT],          &v.config[VC_FONT],
+                        vc_meta_names[VC_FONT_MAP],      &v.config[VC_FONT_MAP],
+                        vc_meta_names[VC_FONT_UNIMAP],   &v.config[VC_FONT_UNIMAP]);
+        if (r < 0)
+                log_warning_errno(r, "Failed to import credentials, ignoring: %m");
+
+        context_merge_config(c, &v, NULL);
+        return 0;
+}
+
+static int context_read_env(Context *c) {
+        _cleanup_(context_done) Context v = {};
+        int r;
+
+        assert(c);
+
+        r = parse_env_file(
+                        NULL, "/etc/vconsole.conf",
+                        vc_env_names[VC_KEYMAP],        &v.config[VC_KEYMAP],
+                        vc_env_names[VC_KEYMAP_TOGGLE], &v.config[VC_KEYMAP_TOGGLE],
+                        vc_env_names[VC_FONT],          &v.config[VC_FONT],
+                        vc_env_names[VC_FONT_MAP],      &v.config[VC_FONT_MAP],
+                        vc_env_names[VC_FONT_UNIMAP],   &v.config[VC_FONT_UNIMAP]);
+        if (r < 0) {
+                if (r != -ENOENT)
+                        log_warning_errno(r, "Failed to read /etc/vconsole.conf, ignoring: %m");
+                return r;
+        }
+
+        context_merge_config(c, &v, NULL);
+        return 0;
+}
+
+static int context_read_proc_cmdline(Context *c) {
+        _cleanup_(context_done) Context v = {}, w = {};
+        int r;
+
+        assert(c);
+
+        r = proc_cmdline_get_key_many(
+                        PROC_CMDLINE_STRIP_RD_PREFIX,
+                        vc_meta_names[VC_KEYMAP],               &v.config[VC_KEYMAP],
+                        vc_meta_names[VC_KEYMAP_TOGGLE],        &v.config[VC_KEYMAP_TOGGLE],
+                        vc_meta_names[VC_FONT],                 &v.config[VC_FONT],
+                        vc_meta_names[VC_FONT_MAP],             &v.config[VC_FONT_MAP],
+                        vc_meta_names[VC_FONT_UNIMAP],          &v.config[VC_FONT_UNIMAP],
+                        vc_meta_compat_names[VC_KEYMAP_TOGGLE], &w.config[VC_KEYMAP_TOGGLE],
+                        vc_meta_compat_names[VC_FONT_MAP],      &w.config[VC_FONT_MAP],
+                        vc_meta_compat_names[VC_FONT_UNIMAP],   &w.config[VC_FONT_UNIMAP]);
+        if (r < 0) {
+                if (r != -ENOENT)
+                        log_warning_errno(r, "Failed to read /proc/cmdline, ignoring: %m");
+                return r;
+        }
+
+        context_merge_config(c, &v, &w);
+        return 0;
+}
+
+static void context_load_config(Context *c) {
+        assert(c);
+
+        /* Load data from credentials (lowest priority) */
+        (void) context_read_creds(c);
+
+        /* Load data from configuration file (middle priority) */
+        (void) context_read_env(c);
+
+        /* Let the kernel command line override /etc/vconsole.conf (highest priority) */
+        (void) context_read_proc_cmdline(c);
+}
 
 static int verify_vc_device(int fd) {
         unsigned char data[] = {
@@ -69,7 +220,7 @@ static int verify_vc_kbmode(int fd) {
          * Otherwise we would (likely) interfere with X11's processing of the
          * key events.
          *
-         * http://lists.freedesktop.org/archives/systemd-devel/2013-February/008573.html
+         * https://lists.freedesktop.org/archives/systemd-devel/2013-February/008573.html
          */
 
         if (ioctl(fd, KDGKBMODE, &curr_mode) < 0)
@@ -89,7 +240,7 @@ static int toggle_utf8_vc(const char *name, int fd, bool utf8) {
         if (r < 0)
                 return log_warning_errno(errno, "Failed to %s UTF-8 kbdmode on %s: %m", enable_disable(utf8), name);
 
-        r = loop_write(fd, utf8 ? "\033%G" : "\033%@", 3, false);
+        r = loop_write(fd, utf8 ? "\033%G" : "\033%@", SIZE_MAX, false);
         if (r < 0)
                 return log_warning_errno(r, "Failed to %s UTF-8 term processing on %s: %m", enable_disable(utf8), name);
 
@@ -116,11 +267,17 @@ static int toggle_utf8_sysfs(bool utf8) {
         return 0;
 }
 
-static int keyboard_load_and_wait(const char *vc, const char *map, const char *map_toggle, bool utf8) {
-        const char *args[8];
+static int keyboard_load_and_wait(const char *vc, Context *c, bool utf8) {
+        const char *map, *map_toggle, *args[8];
         unsigned i = 0;
         pid_t pid;
         int r;
+
+        assert(vc);
+        assert(c);
+
+        map = context_get_config(c, VC_KEYMAP);
+        map_toggle = context_get_config(c, VC_KEYMAP_TOGGLE);
 
         /* An empty map means kernel map */
         if (isempty(map))
@@ -155,28 +312,35 @@ static int keyboard_load_and_wait(const char *vc, const char *map, const char *m
         return wait_for_terminate_and_check(KBD_LOADKEYS, pid, WAIT_LOG);
 }
 
-static int font_load_and_wait(const char *vc, const char *font, const char *map, const char *unimap) {
-        const char *args[9];
+static int font_load_and_wait(const char *vc, Context *c) {
+        const char *font, *map, *unimap, *args[9];
         unsigned i = 0;
         pid_t pid;
         int r;
 
+        assert(vc);
+        assert(c);
+
+        font = context_get_config(c, VC_FONT);
+        map = context_get_config(c, VC_FONT_MAP);
+        unimap = context_get_config(c, VC_FONT_UNIMAP);
+
         /* Any part can be set independently */
-        if (isempty(font) && isempty(map) && isempty(unimap))
+        if (!font && !map && !unimap)
                 return 0;
 
         args[i++] = KBD_SETFONT;
         args[i++] = "-C";
         args[i++] = vc;
-        if (!isempty(map)) {
+        if (map) {
                 args[i++] = "-m";
                 args[i++] = map;
         }
-        if (!isempty(unimap)) {
+        if (unimap) {
                 args[i++] = "-u";
                 args[i++] = unimap;
         }
-        if (!isempty(font))
+        if (font)
                 args[i++] = font;
         args[i++] = NULL;
 
@@ -217,17 +381,12 @@ static void setup_remaining_vcs(int src_fd, unsigned src_idx, bool utf8) {
         struct unimapdesc unimapd;
         _cleanup_free_ struct unipair* unipairs = NULL;
         _cleanup_free_ void *fontbuf = NULL;
-        unsigned i;
-        int log_level;
+        int log_level = LOG_WARNING;
         int r;
 
         unipairs = new(struct unipair, USHRT_MAX);
-        if (!unipairs) {
-                log_oom();
-                return;
-        }
-
-        log_level = LOG_WARNING;
+        if (!unipairs)
+                return (void) log_oom();
 
         /* get metadata of the current font (width, height, count) */
         r = ioctl(src_fd, KDFONTOP, &cfo);
@@ -277,9 +436,9 @@ static void setup_remaining_vcs(int src_fd, unsigned src_idx, bool utf8) {
         if (cfo.op != KD_FONT_OP_SET)
                 log_full(log_level, "Fonts will not be copied to remaining consoles");
 
-        for (i = 1; i <= 63; i++) {
+        for (unsigned i = 1; i <= 63; i++) {
                 char ttyname[sizeof("/dev/tty63")];
-                _cleanup_close_ int fd_d = -1;
+                _cleanup_close_ int fd_d = -EBADF;
 
                 if (i == src_idx || verify_vc_allocation(i) < 0)
                         continue;
@@ -321,10 +480,8 @@ static void setup_remaining_vcs(int src_fd, unsigned src_idx, bool utf8) {
                         continue;
                 }
 
-                /*
-                 * copy unicode translation table unimapd is a ushort count and a pointer
-                 * to an array of struct unipair { ushort, ushort }
-                 */
+                /* Copy unicode translation table unimapd is a ushort count and a pointer
+                 * to an array of struct unipair { ushort, ushort }. */
                 r = ioctl(fd_d, PIO_UNIMAPCLR, &adv);
                 if (r < 0) {
                         log_warning_errno(errno, "PIO_UNIMAPCLR failed, unimaps might be incorrect for tty%u: %m", i);
@@ -342,16 +499,14 @@ static void setup_remaining_vcs(int src_fd, unsigned src_idx, bool utf8) {
 }
 
 static int find_source_vc(char **ret_path, unsigned *ret_idx) {
-        _cleanup_free_ char *path = NULL;
         int r, err = 0;
-        unsigned i;
 
-        path = new(char, sizeof("/dev/tty63"));
+        _cleanup_free_ char *path = new(char, sizeof("/dev/tty63"));
         if (!path)
                 return log_oom();
 
-        for (i = 1; i <= 63; i++) {
-                _cleanup_close_ int fd = -1;
+        for (unsigned i = 1; i <= 63; i++) {
+                _cleanup_close_ int fd = -EBADF;
 
                 r = verify_vc_allocation(i);
                 if (r < 0) {
@@ -384,7 +539,7 @@ static int find_source_vc(char **ret_path, unsigned *ret_idx) {
 }
 
 static int verify_source_vc(char **ret_path, const char *src_vc) {
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         char *path;
         int r;
 
@@ -413,11 +568,9 @@ static int verify_source_vc(char **ret_path, const char *src_vc) {
 }
 
 int main(int argc, char **argv) {
-        _cleanup_free_ char
-                *vc = NULL,
-                *vc_keymap = NULL, *vc_keymap_toggle = NULL,
-                *vc_font = NULL, *vc_font_map = NULL, *vc_font_unimap = NULL;
-        _cleanup_close_ int fd = -1;
+        _cleanup_(context_done) Context c = {};
+        _cleanup_free_ char *vc = NULL;
+        _cleanup_close_ int fd = -EBADF;
         bool utf8, keyboard_ok;
         unsigned idx = 0;
         int r;
@@ -435,35 +588,21 @@ int main(int argc, char **argv) {
 
         utf8 = is_locale_utf8();
 
-        r = parse_env_file(NULL, "/etc/vconsole.conf",
-                           "KEYMAP", &vc_keymap,
-                           "KEYMAP_TOGGLE", &vc_keymap_toggle,
-                           "FONT", &vc_font,
-                           "FONT_MAP", &vc_font_map,
-                           "FONT_UNIMAP", &vc_font_unimap);
-        if (r < 0 && r != -ENOENT)
-                log_warning_errno(r, "Failed to read /etc/vconsole.conf: %m");
+        context_load_config(&c);
 
-        /* Let the kernel command line override /etc/vconsole.conf */
-        r = proc_cmdline_get_key_many(
-                        PROC_CMDLINE_STRIP_RD_PREFIX,
-                        "vconsole.keymap", &vc_keymap,
-                        "vconsole.keymap_toggle", &vc_keymap_toggle,
-                        "vconsole.font", &vc_font,
-                        "vconsole.font_map", &vc_font_map,
-                        "vconsole.font_unimap", &vc_font_unimap,
-                        /* compatibility with obsolete multiple-dot scheme */
-                        "vconsole.keymap.toggle", &vc_keymap_toggle,
-                        "vconsole.font.map", &vc_font_map,
-                        "vconsole.font.unimap", &vc_font_unimap);
-        if (r < 0 && r != -ENOENT)
-                log_warning_errno(r, "Failed to read /proc/cmdline: %m");
+        /* Take lock around the remaining operation to avoid being interrupted by a tty reset operation
+         * performed for services with TTYVHangup=yes. */
+        r = lock_generic(fd, LOCK_BSD, LOCK_EX);
+        if (r < 0) {
+                log_error_errno(r, "Failed to lock console: %m");
+                return EXIT_FAILURE;
+        }
 
         (void) toggle_utf8_sysfs(utf8);
         (void) toggle_utf8_vc(vc, fd, utf8);
 
-        r = font_load_and_wait(vc, vc_font, vc_font_map, vc_font_unimap);
-        keyboard_ok = keyboard_load_and_wait(vc, vc_keymap, vc_keymap_toggle, utf8) == 0;
+        r = font_load_and_wait(vc, &c);
+        keyboard_ok = keyboard_load_and_wait(vc, &c, utf8) == 0;
 
         if (idx > 0) {
                 if (r == 0)

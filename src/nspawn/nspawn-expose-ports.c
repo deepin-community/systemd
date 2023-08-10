@@ -13,14 +13,12 @@
 #include "parse-util.h"
 #include "socket-util.h"
 #include "string-util.h"
-#include "util.h"
 
 int expose_port_parse(ExposePort **l, const char *s) {
-
         const char *split, *e;
         uint16_t container_port, host_port;
+        ExposePort *port;
         int protocol;
-        ExposePort *p;
         int r;
 
         assert(l);
@@ -59,17 +57,17 @@ int expose_port_parse(ExposePort **l, const char *s) {
                 if (p->protocol == protocol && p->host_port == host_port)
                         return -EEXIST;
 
-        p = new(ExposePort, 1);
-        if (!p)
+        port = new(ExposePort, 1);
+        if (!port)
                 return -ENOMEM;
 
-        *p = (ExposePort) {
+        *port = (ExposePort) {
                 .protocol = protocol,
                 .host_port = host_port,
                 .container_port = container_port,
         };
 
-        LIST_PREPEND(ports, *l, p);
+        LIST_PREPEND(ports, *l, port);
 
         return 0;
 }
@@ -84,7 +82,6 @@ void expose_port_free_all(ExposePort *p) {
 }
 
 int expose_port_flush(FirewallContext **fw_ctx, ExposePort* l, int af, union in_addr_union *exposed) {
-        ExposePort *p;
         int r;
 
         assert(exposed);
@@ -117,7 +114,6 @@ int expose_port_flush(FirewallContext **fw_ctx, ExposePort* l, int af, union in_
 int expose_port_execute(sd_netlink *rtnl, FirewallContext **fw_ctx, ExposePort *l, int af, union in_addr_union *exposed) {
         _cleanup_free_ struct local_address *addresses = NULL;
         union in_addr_union new_exposed;
-        ExposePort *p;
         bool add;
         int r;
 
@@ -144,14 +140,9 @@ int expose_port_execute(sd_netlink *rtnl, FirewallContext **fw_ctx, ExposePort *
         if (in_addr_equal(af, exposed, &new_exposed))
                 return 0;
 
-        if (DEBUG_LOGGING) {
-                _cleanup_free_ char *pretty = NULL;
-                in_addr_to_string(af, &new_exposed, &pretty);
-                log_debug("New container IP is %s.", strna(pretty));
-        }
+        log_debug("New container IP is %s.", IN_ADDR_TO_STRING(af, &new_exposed));
 
         LIST_FOREACH(ports, p, l) {
-
                 r = fw_add_local_dnat(fw_ctx,
                                       true,
                                       af,
@@ -169,7 +160,7 @@ int expose_port_execute(sd_netlink *rtnl, FirewallContext **fw_ctx, ExposePort *
 }
 
 int expose_port_send_rtnl(int send_fd) {
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         int r;
 
         assert(send_fd >= 0);

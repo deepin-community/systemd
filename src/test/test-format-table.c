@@ -396,28 +396,30 @@ TEST(table) {
         _cleanup_(table_unrefp) Table *t = NULL;
         _cleanup_free_ char *formatted = NULL;
 
-        assert_se(t = table_new("one", "two", "three"));
+        assert_se(t = table_new("one", "two", "three", "four"));
 
-        assert_se(table_set_align_percent(t, TABLE_HEADER_CELL(2), 100) >= 0);
+        assert_se(table_set_align_percent(t, TABLE_HEADER_CELL(3), 100) >= 0);
 
         assert_se(table_add_many(t,
                                  TABLE_STRING, "xxx",
                                  TABLE_STRING, "yyy",
-                                 TABLE_BOOLEAN, true) >= 0);
+                                 TABLE_BOOLEAN, true,
+                                 TABLE_INT, -1) >= 0);
 
         assert_se(table_add_many(t,
                                  TABLE_STRING, "a long field",
                                  TABLE_STRING, "yyy",
                                  TABLE_SET_UPPERCASE, 1,
-                                 TABLE_BOOLEAN, false) >= 0);
+                                 TABLE_BOOLEAN, false,
+                                 TABLE_INT, -999999) >= 0);
 
         assert_se(table_format(t, &formatted) >= 0);
         printf("%s\n", formatted);
 
         assert_se(streq(formatted,
-                        "ONE          TWO THREE\n"
-                        "xxx          yyy   yes\n"
-                        "a long field YYY    no\n"));
+                        "ONE          TWO THREE    FOUR\n"
+                        "xxx          yyy yes        -1\n"
+                        "a long field YYY no    -999999\n"));
 
         formatted = mfree(formatted);
 
@@ -427,20 +429,20 @@ TEST(table) {
         printf("%s\n", formatted);
 
         assert_se(streq(formatted,
-                        "ONE                TWO             THREE\n"
-                        "xxx                yyy               yes\n"
-                        "a long field       YYY                no\n"));
+                        "ONE            TWO   THREE          FOUR\n"
+                        "xxx            yyy   yes              -1\n"
+                        "a long field   YYY   no          -999999\n"));
 
         formatted = mfree(formatted);
 
-        table_set_width(t, 12);
+        table_set_width(t, 15);
         assert_se(table_format(t, &formatted) >= 0);
         printf("%s\n", formatted);
 
         assert_se(streq(formatted,
-                        "ONE TWO THR…\n"
-                        "xxx yyy  yes\n"
-                        "a … YYY   no\n"));
+                        "ONE TWO TH… FO…\n"
+                        "xxx yyy yes  -1\n"
+                        "a … YYY no  -9…\n"));
 
         formatted = mfree(formatted);
 
@@ -449,9 +451,9 @@ TEST(table) {
         printf("%s\n", formatted);
 
         assert_se(streq(formatted,
-                        "… … …\n"
-                        "… … …\n"
-                        "… … …\n"));
+                        "… … … …\n"
+                        "… … … …\n"
+                        "… … … …\n"));
 
         formatted = mfree(formatted);
 
@@ -460,9 +462,9 @@ TEST(table) {
         printf("%s\n", formatted);
 
         assert_se(streq(formatted,
-                        "… … …\n"
-                        "… … …\n"
-                        "… … …\n"));
+                        "… … … …\n"
+                        "… … … …\n"
+                        "… … … …\n"));
 
         formatted = mfree(formatted);
 
@@ -473,9 +475,9 @@ TEST(table) {
         printf("%s\n", formatted);
 
         assert_se(streq(formatted,
-                        "ONE          TWO THREE\n"
-                        "a long field YYY    no\n"
-                        "xxx          yyy   yes\n"));
+                        "ONE          TWO THREE    FOUR\n"
+                        "a long field YYY no    -999999\n"
+                        "xxx          yyy yes        -1\n"));
 
         formatted = mfree(formatted);
 
@@ -484,27 +486,30 @@ TEST(table) {
         assert_se(table_add_many(t,
                                  TABLE_STRING, "fäää",
                                  TABLE_STRING, "uuu",
-                                 TABLE_BOOLEAN, true) >= 0);
+                                 TABLE_BOOLEAN, true,
+                                 TABLE_INT, 42) >= 0);
 
         assert_se(table_add_many(t,
                                  TABLE_STRING, "fäää",
                                  TABLE_STRING, "zzz",
-                                 TABLE_BOOLEAN, false) >= 0);
+                                 TABLE_BOOLEAN, false,
+                                 TABLE_INT, 0) >= 0);
 
         assert_se(table_add_many(t,
                                  TABLE_EMPTY,
                                  TABLE_SIZE, (uint64_t) 4711,
-                                 TABLE_TIMESPAN, (usec_t) 5*USEC_PER_MINUTE) >= 0);
+                                 TABLE_TIMESPAN, (usec_t) 5*USEC_PER_MINUTE,
+                                 TABLE_INT64, (uint64_t) -123456789) >= 0);
 
         assert_se(table_format(t, &formatted) >= 0);
         printf("%s\n", formatted);
 
         assert_se(streq(formatted,
-                        "a long field YYY    no\n"
-                        "fäää         zzz    no\n"
-                        "fäää         uuu   yes\n"
-                        "xxx          yyy   yes\n"
-                        "             4.6K 5min\n"));
+                        "a long field YYY  no      -999999\n"
+                        "fäää         zzz  no            0\n"
+                        "fäää         uuu  yes          42\n"
+                        "xxx          yyy  yes          -1\n"
+                        "             4.6K 5min -123456789\n"));
 
         formatted = mfree(formatted);
 
@@ -515,24 +520,116 @@ TEST(table) {
 
         if (isatty(STDOUT_FILENO))
                 assert_se(streq(formatted,
-                                "  no a long f…   no a long f… a long fi…\n"
-                                "  no fäää        no fäää      fäää\n"
-                                " yes fäää       yes fäää      fäää\n"
-                                " yes xxx        yes xxx       xxx\n"
+                                "no   a long f… no   a long f… a long fi…\n"
+                                "no   fäää      no   fäää      fäää\n"
+                                "yes  fäää      yes  fäää      fäää\n"
+                                "yes  xxx       yes  xxx       xxx\n"
                                 "5min           5min           \n"));
         else
                 assert_se(streq(formatted,
-                                "  no a long field   no a long field a long field\n"
-                                "  no fäää           no fäää         fäää\n"
-                                " yes fäää          yes fäää         fäää\n"
-                                " yes xxx           yes xxx          xxx\n"
+                                "no   a long field no   a long field a long field\n"
+                                "no   fäää         no   fäää         fäää\n"
+                                "yes  fäää         yes  fäää         fäää\n"
+                                "yes  xxx          yes  xxx          xxx\n"
                                 "5min              5min              \n"));
 }
 
-DEFINE_CUSTOM_TEST_MAIN(
-        LOG_INFO,
-        ({
-                assert_se(setenv("SYSTEMD_COLORS", "0", 1) >= 0);
-                assert_se(setenv("COLUMNS", "40", 1) >= 0);
-        }),
-        /* no outro */);
+TEST(vertical) {
+        _cleanup_(table_unrefp) Table *t = NULL;
+        _cleanup_free_ char *formatted = NULL;
+
+        assert_se(t = table_new_vertical());
+
+        assert_se(table_add_many(t,
+                                 TABLE_FIELD, "pfft aa", TABLE_STRING, "foo",
+                                 TABLE_FIELD, "uuu o", TABLE_SIZE, UINT64_C(1024),
+                                 TABLE_FIELD, "lllllllllllo", TABLE_STRING, "jjjjjjjjjjjjjjjjj") >= 0);
+
+        assert_se(table_set_json_field_name(t, 1, "dimpfelmoser") >= 0);
+
+        assert_se(table_format(t, &formatted) >= 0);
+
+        assert_se(streq(formatted,
+                        "     pfft aa: foo\n"
+                        "       uuu o: 1.0K\n"
+                        "lllllllllllo: jjjjjjjjjjjjjjjjj\n"));
+
+        _cleanup_(json_variant_unrefp) JsonVariant *a = NULL, *b = NULL;
+        assert_se(table_to_json(t, &a) >= 0);
+
+        assert_se(json_build(&b, JSON_BUILD_OBJECT(
+                                             JSON_BUILD_PAIR("pfft_aa", JSON_BUILD_STRING("foo")),
+                                             JSON_BUILD_PAIR("dimpfelmoser", JSON_BUILD_UNSIGNED(1024)),
+                                             JSON_BUILD_PAIR("lllllllllllo", JSON_BUILD_STRING("jjjjjjjjjjjjjjjjj")))) >= 0);
+
+        assert_se(json_variant_equal(a, b));
+}
+
+TEST(path_basename) {
+        _cleanup_(table_unrefp) Table *t = NULL;
+        _cleanup_free_ char *formatted = NULL;
+
+        assert_se(t = table_new("x"));
+
+        table_set_header(t, false);
+
+        assert_se(table_add_many(t,
+                                 TABLE_PATH_BASENAME, "/foo/bar",
+                                 TABLE_PATH_BASENAME, "/quux/bar",
+                                 TABLE_PATH_BASENAME, "/foo/baz") >= 0);
+
+        assert_se(table_format(t, &formatted) >= 0);
+
+        assert_se(streq(formatted, "bar\nbar\nbaz\n"));
+}
+
+TEST(dup_cell) {
+        _cleanup_(table_unrefp) Table *t = NULL;
+        _cleanup_free_ char *formatted = NULL;
+
+        assert_se(t = table_new("foo", "bar", "x", "baz", ".", "%", "!", "~", "+"));
+        table_set_width(t, 75);
+
+        assert_se(table_add_many(t,
+                                 TABLE_STRING, "hello",
+                                 TABLE_UINT8, UINT8_C(42),
+                                 TABLE_UINT16, UINT16_C(666),
+                                 TABLE_UINT32, UINT32_C(253),
+                                 TABLE_PERCENT, 0,
+                                 TABLE_PATH_BASENAME, "/foo/bar",
+                                 TABLE_STRING, "aaa",
+                                 TABLE_STRING, "bbb",
+                                 TABLE_STRING, "ccc") >= 0);
+
+        /* Add the second row by duping cells */
+        for (size_t i = 0; i < table_get_columns(t); i++)
+                assert_se(table_dup_cell(t, table_get_cell(t, 1, i)) >= 0);
+
+        /* Another row, but dupe the last three strings from the same cell */
+        assert_se(table_add_many(t,
+                                 TABLE_STRING, "aaa",
+                                 TABLE_UINT8, UINT8_C(0),
+                                 TABLE_UINT16, UINT16_C(65535),
+                                 TABLE_UINT32, UINT32_C(4294967295),
+                                 TABLE_PERCENT, 100,
+                                 TABLE_PATH_BASENAME, "../") >= 0);
+
+        for (size_t i = 6; i < table_get_columns(t); i++)
+                assert_se(table_dup_cell(t, table_get_cell(t, 2, 0)) >= 0);
+
+        assert_se(table_format(t, &formatted) >= 0);
+        printf("%s\n", formatted);
+        assert_se(streq(formatted,
+                        "FOO     BAR   X       BAZ          .      %      !        ~        +\n"
+                        "hello   42    666     253          0%     bar    aaa      bbb      ccc\n"
+                        "hello   42    666     253          0%     bar    aaa      bbb      ccc\n"
+                        "aaa     0     65535   4294967295   100%   ../    hello    hello    hello\n"));
+}
+
+static int intro(void) {
+        assert_se(setenv("SYSTEMD_COLORS", "0", 1) >= 0);
+        assert_se(setenv("COLUMNS", "40", 1) >= 0);
+        return EXIT_SUCCESS;
+}
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_INFO, intro);

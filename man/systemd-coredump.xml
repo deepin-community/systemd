@@ -60,6 +60,9 @@
     files. Some metadata is attached to core files in the form of extended attributes, so the core files are
     useful for some purposes even without the full metadata available in the journal entry.</para>
 
+    <para>For further details see <ulink url="https://systemd.io/COREDUMP">systemd Coredump
+    Handling</ulink>.</para>
+
     <refsect2>
       <title>Invocation of <command>systemd-coredump</command></title>
 
@@ -134,7 +137,8 @@
       <title>Disabling coredump processing</title>
 
       <para>To disable potentially resource-intensive processing by <command>systemd-coredump</command>, set
-      <programlisting>Storage=none ProcessSizeMax=0</programlisting> in
+      <programlisting>Storage=none
+ProcessSizeMax=0</programlisting> in
       <citerefentry><refentrytitle>coredump.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
       </para>
     </refsect2>
@@ -188,7 +192,7 @@ COREDUMP_FILENAME=/var/lib/systemd/coredump/core.Web….552351.….zst
 
       <varlistentry>
         <term><varname>COREDUMP_TIMESTAMP=</varname></term>
-        <listitem><para>The time of the crash as reported by the kernel (in µs since the epoch).</para>
+        <listitem><para>The time of the crash as reported by the kernel (in μs since the epoch).</para>
         </listitem>
       </varlistentry>
 
@@ -430,7 +434,8 @@ user.coredump.exe="/usr/lib64/firefox/firefox"
       <citerefentry><refentrytitle>systemd-tmpfiles</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
       <citerefentry project='man-pages'><refentrytitle>core</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
       <citerefentry><refentrytitle>sysctl.d</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-sysctl.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>.
+      <citerefentry><refentrytitle>systemd-sysctl.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
+      <ulink url="https://systemd.io/COREDUMP">systemd Coredump Handling</ulink>
     </para>
   </refsect1>
 </refentry>

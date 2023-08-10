@@ -8,6 +8,7 @@
 #include "dns-type.h"
 #include "hashmap.h"
 #include "in-addr-util.h"
+#include "json.h"
 #include "list.h"
 #include "string-util.h"
 #include "time-util.h"
@@ -292,6 +293,15 @@ int dns_resource_key_new_append_suffix(DnsResourceKey **ret, DnsResourceKey *key
 DnsResourceKey* dns_resource_key_new_consume(uint16_t class, uint16_t type, char *name);
 DnsResourceKey* dns_resource_key_ref(DnsResourceKey *key);
 DnsResourceKey* dns_resource_key_unref(DnsResourceKey *key);
+
+#define DNS_RESOURCE_KEY_REPLACE(a, b)          \
+        do {                                    \
+                typeof(a)* _a = &(a);           \
+                typeof(b) _b = (b);             \
+                dns_resource_key_unref(*_a);    \
+                *_a = _b;                       \
+        } while(0)
+
 const char* dns_resource_key_name(const DnsResourceKey *key);
 bool dns_resource_key_is_address(const DnsResourceKey *key);
 bool dns_resource_key_is_dnssd_ptr(const DnsResourceKey *key);
@@ -307,10 +317,13 @@ int dns_resource_key_match_soa(const DnsResourceKey *key, const DnsResourceKey *
 char* dns_resource_key_to_string(const DnsResourceKey *key, char *buf, size_t buf_size);
 ssize_t dns_resource_record_payload(DnsResourceRecord *rr, void **out);
 
+#define DNS_RESOURCE_KEY_TO_STRING(key) \
+        dns_resource_key_to_string(key, (char[DNS_RESOURCE_KEY_STRING_MAX]) {}, DNS_RESOURCE_KEY_STRING_MAX)
+
 DEFINE_TRIVIAL_CLEANUP_FUNC(DnsResourceKey*, dns_resource_key_unref);
 
 static inline bool dns_key_is_shared(const DnsResourceKey *key) {
-        return IN_SET(key->type, DNS_TYPE_PTR);
+        return key->type == DNS_TYPE_PTR;
 }
 
 bool dns_resource_key_reduce(DnsResourceKey **a, DnsResourceKey **b);
@@ -319,6 +332,15 @@ DnsResourceRecord* dns_resource_record_new(DnsResourceKey *key);
 DnsResourceRecord* dns_resource_record_new_full(uint16_t class, uint16_t type, const char *name);
 DnsResourceRecord* dns_resource_record_ref(DnsResourceRecord *rr);
 DnsResourceRecord* dns_resource_record_unref(DnsResourceRecord *rr);
+
+#define DNS_RR_REPLACE(a, b)                    \
+        do {                                    \
+                typeof(a)* _a = &(a);           \
+                typeof(b) _b = (b);             \
+                dns_resource_record_unref(*_a); \
+                *_a = _b;                       \
+        } while(0)
+
 int dns_resource_record_new_reverse(DnsResourceRecord **ret, int family, const union in_addr_union *address, const char *name);
 int dns_resource_record_new_address(DnsResourceRecord **ret, int family, const union in_addr_union *address, const char *name);
 int dns_resource_record_equal(const DnsResourceRecord *a, const DnsResourceRecord *b);
@@ -345,6 +367,12 @@ DnsTxtItem *dns_txt_item_free_all(DnsTxtItem *i);
 bool dns_txt_item_equal(DnsTxtItem *a, DnsTxtItem *b);
 DnsTxtItem *dns_txt_item_copy(DnsTxtItem *i);
 int dns_txt_item_new_empty(DnsTxtItem **ret);
+
+int dns_resource_record_new_from_raw(DnsResourceRecord **ret, const void *data, size_t size);
+
+int dns_resource_key_to_json(DnsResourceKey *key, JsonVariant **ret);
+int dns_resource_key_from_json(JsonVariant *v, DnsResourceKey **ret);
+int dns_resource_record_to_json(DnsResourceRecord *rr, JsonVariant **ret);
 
 void dns_resource_record_hash_func(const DnsResourceRecord *i, struct siphash *state);
 int dns_resource_record_compare_func(const DnsResourceRecord *x, const DnsResourceRecord *y);

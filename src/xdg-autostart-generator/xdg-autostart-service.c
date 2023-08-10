@@ -8,15 +8,17 @@
 
 #include "conf-parser.h"
 #include "escape.h"
-#include "unit-name.h"
-#include "path-util.h"
 #include "fd-util.h"
 #include "generator.h"
 #include "log.h"
+#include "nulstr-util.h"
+#include "parse-util.h"
+#include "path-util.h"
 #include "specifier.h"
 #include "string-util.h"
-#include "nulstr-util.h"
 #include "strv.h"
+#include "unit-name.h"
+#include "user-util.h"
 
 XdgAutostartService* xdg_autostart_service_free(XdgAutostartService *s) {
         if (!s)
@@ -73,20 +75,17 @@ static int xdg_config_parse_bool(
                 void *data,
                 void *userdata) {
 
-        bool *b = data;
+        bool *b = ASSERT_PTR(data);
+        int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
-        if (streq(rvalue, "true"))
-                *b = true;
-        else if (streq(rvalue, "false"))
-                *b = false;
-        else
+        r = parse_boolean(rvalue);
+        if (r < 0)
                 return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL), "Invalid value for boolean: %s", rvalue);
-
+        *b = r;
         return 0;
 }
 
@@ -157,13 +156,12 @@ static int xdg_config_parse_string(
                 void *userdata) {
 
         _cleanup_free_ char *res = NULL;
-        char **out = data;
+        char **out = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         /* XDG does not allow duplicate definitions. */
         if (*out) {
@@ -228,13 +226,12 @@ static int xdg_config_parse_strv(
                 void *data,
                 void *userdata) {
 
-        char ***ret_sv = data;
+        char ***ret_sv = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         /* XDG does not allow duplicate definitions. */
         if (*ret_sv) {
@@ -288,22 +285,22 @@ static int xdg_config_item_table_lookup(
                 const void *table,
                 const char *section,
                 const char *lvalue,
-                ConfigParserCallback *func,
-                int *ltype,
-                void **data,
+                ConfigParserCallback *ret_func,
+                int *ret_ltype,
+                void **ret_data,
                 void *userdata) {
 
         assert(lvalue);
 
         /* Ignore any keys with [] as those are translations. */
         if (strchr(lvalue, '[')) {
-                *func = NULL;
-                *ltype = 0;
-                *data = NULL;
+                *ret_func = NULL;
+                *ret_ltype = 0;
+                *ret_data = NULL;
                 return 1;
         }
 
-        return config_item_table_lookup(table, section, lvalue, func, ltype, data, userdata);
+        return config_item_table_lookup(table, section, lvalue, ret_func, ret_ltype, ret_data, userdata);
 }
 
 XdgAutostartService *xdg_autostart_service_parse_desktop(const char *path) {
@@ -353,7 +350,8 @@ XdgAutostartService *xdg_autostart_service_parse_desktop(const char *path) {
         r = config_parse(NULL, service->path, NULL,
                          "Desktop Entry\0",
                          xdg_config_item_table_lookup, items,
-                         CONFIG_PARSE_WARN, service,
+                         CONFIG_PARSE_RELAXED | CONFIG_PARSE_WARN,
+                         service,
                          NULL);
         /* If parsing failed, only hide the file so it will still mask others. */
         if (r < 0) {
@@ -396,7 +394,7 @@ int xdg_autostart_format_exec_start(
 
         first_arg = true;
         for (i = n = 0; exec_split[i]; i++) {
-                _cleanup_free_ char *c = NULL, *raw = NULL, *p = NULL, *escaped = NULL, *quoted = NULL;
+                _cleanup_free_ char *c = NULL, *raw = NULL, *percent = NULL, *tilde_expanded = NULL;
                 ssize_t l;
 
                 l = cunescape(exec_split[i], 0, &c);
@@ -412,11 +410,7 @@ int xdg_autostart_format_exec_start(
                         if (r < 0)
                                 return log_info_errno(r, "Exec binary '%s' does not exist: %m", c);
 
-                        escaped = cescape(executable);
-                        if (!escaped)
-                                return log_oom();
-
-                        free_and_replace(exec_split[n++], escaped);
+                        free_and_replace(exec_split[n++], executable);
                         continue;
                 }
 
@@ -445,23 +439,34 @@ int xdg_autostart_format_exec_start(
                 raw = strreplace(c, "%%", "%");
                 if (!raw)
                         return log_oom();
-                p = strreplace(raw, "%", "%%");
-                if (!p)
-                        return log_oom();
-                escaped = cescape(p);
-                if (!escaped)
+                percent = strreplace(raw, "%", "%%");
+                if (!percent)
                         return log_oom();
 
-                quoted = strjoin("\"", escaped, "\"");
-                if (!quoted)
-                        return log_oom();
+                /*
+                 * Expand ~ if it comes at the beginning of an argument to form a path.
+                 *
+                 * The specification does not mandate this, but we do it anyway for compatibility with
+                 * older KDE code, which supported a more shell-like syntax for users making custom entries.
+                 */
+                if (percent[0] == '~' && (isempty(percent + 1) || path_is_absolute(percent + 1))) {
+                        _cleanup_free_ char *home = NULL;
 
-                free_and_replace(exec_split[n++], quoted);
+                        r = get_home_dir(&home);
+                        if (r < 0)
+                                return r;
+
+                        tilde_expanded = path_join(home, &percent[1]);
+                        if (!tilde_expanded)
+                                return log_oom();
+                        free_and_replace(exec_split[n++], tilde_expanded);
+                } else
+                        free_and_replace(exec_split[n++], percent);
         }
         for (; exec_split[n]; n++)
                 exec_split[n] = mfree(exec_split[n]);
 
-        res = strv_join(exec_split, " ");
+        res = quote_command_line(exec_split, SHELL_ESCAPE_EMPTY);
         if (!res)
                 return log_oom();
 
@@ -470,6 +475,7 @@ int xdg_autostart_format_exec_start(
 }
 
 static int xdg_autostart_generate_desktop_condition(
+                const XdgAutostartService *service,
                 FILE *f,
                 const char *test_binary,
                 const char *condition) {
@@ -483,7 +489,8 @@ static int xdg_autostart_generate_desktop_condition(
                 r = find_executable(test_binary, &gnome_autostart_condition_path);
                 if (r < 0) {
                         log_full_errno(r == -ENOENT ? LOG_DEBUG : LOG_WARNING, r,
-                                       "%s not found: %m", test_binary);
+                                       "%s: ExecCondition executable %s not found, unit will not be started automatically: %m",
+                                       service->path, test_binary);
                         fprintf(f, "# ExecCondition using %s skipped due to missing binary.\n", test_binary);
                         return 0;
                 }
@@ -491,6 +498,10 @@ static int xdg_autostart_generate_desktop_condition(
                 e_autostart_condition = cescape(condition);
                 if (!e_autostart_condition)
                         return log_oom();
+
+                log_debug("%s: ExecCondition converted to %s --condition \"%s\"%s",
+                          service->path, gnome_autostart_condition_path, e_autostart_condition,
+                          special_glyph(SPECIAL_GLYPH_ELLIPSIS));
 
                 fprintf(f,
                          "ExecCondition=%s --condition \"%s\"\n",
@@ -502,35 +513,48 @@ static int xdg_autostart_generate_desktop_condition(
 }
 
 int xdg_autostart_service_generate_unit(
-                XdgAutostartService *service,
+                const XdgAutostartService *service,
                 const char *dest) {
 
         _cleanup_free_ char *path_escaped = NULL, *exec_start = NULL, *unit = NULL;
         _cleanup_fclose_ FILE *f = NULL;
+        _cleanup_strv_free_ char **only_show_in = NULL, **not_show_in = NULL;
         int r;
 
         assert(service);
 
         /* Nothing to do for hidden services. */
         if (service->hidden) {
-                log_debug("Not generating service for XDG autostart %s, it is hidden.", service->name);
+                log_debug("%s: not generating unit, entry is hidden.", service->path);
                 return 0;
         }
 
         if (service->systemd_skip) {
-                log_debug("Not generating service for XDG autostart %s, should be skipped by generator.", service->name);
+                log_debug("%s: not generating unit, marked as skipped by generator.", service->path);
                 return 0;
         }
 
         /* Nothing to do if type is not Application. */
         if (!streq_ptr(service->type, "Application")) {
-                log_debug("Not generating service for XDG autostart %s, only Type=Application is supported.", service->name);
+                log_debug("%s: not generating unit, Type=%s is not supported.", service->path, service->type);
                 return 0;
         }
 
         if (!service->exec_string) {
-                log_warning("Not generating service for XDG autostart %s, it is has no Exec= line.", service->name);
+                log_warning("%s: not generating unit, no Exec= line.", service->path);
                 return 0;
+        }
+
+        if (service->only_show_in) {
+                only_show_in = strv_copy(service->only_show_in);
+                if (!only_show_in)
+                        return log_oom();
+        }
+
+        if (service->not_show_in) {
+                not_show_in = strv_copy(service->not_show_in);
+                if (!not_show_in)
+                        return log_oom();
         }
 
         /* The TryExec key cannot be checked properly from the systemd unit, it is trivial to check using
@@ -539,25 +563,40 @@ int xdg_autostart_service_generate_unit(
                 r = find_executable(service->try_exec, NULL);
                 if (r < 0) {
                         log_full_errno(r == -ENOENT ? LOG_DEBUG : LOG_WARNING, r,
-                                       "Not generating service for XDG autostart %s, could not find TryExec= binary %s: %m",
-                                       service->name, service->try_exec);
+                                       "%s: not generating unit, could not find TryExec= binary %s: %m",
+                                       service->path, service->try_exec);
                         return 0;
                 }
         }
 
         r = xdg_autostart_format_exec_start(service->exec_string, &exec_start);
         if (r < 0) {
-                log_warning_errno(r,
-                                  "Not generating service for XDG autostart %s, error parsing Exec= line: %m",
-                                  service->name);
+                log_warning_errno(r, "%s: not generating unit, error parsing Exec= line: %m", service->path);
                 return 0;
         }
 
         if (service->gnome_autostart_phase) {
-                /* There is no explicit value for the "Application" phase. */
-                log_debug("Not generating service for XDG autostart %s, startup phases are not supported.",
-                          service->name);
-                return 0;
+                /* There is no explicit value for the "Application" phase.
+                 *
+                 * On GNOME secondary startup mechanism handles desktop files with startup phases set.
+                 * We want to mark these as "NotShowIn=GNOME"
+                 *
+                 * If that means no-one will load them, we can get skip it entirely.
+                 */
+                if (strv_contains(only_show_in, "GNOME")) {
+                        strv_remove(only_show_in, "GNOME");
+
+                        if (strv_isempty(only_show_in)) {
+                                log_debug("%s: GNOME startup phases are handled separately. Skipping.",
+                                          service->path);
+                                return 0;
+                        }
+                }
+                log_debug("%s: GNOME startup phases are handled separately, marking as NotShowIn=GNOME.",
+                          service->path);
+
+                if (strv_extend(&not_show_in, "GNOME") < 0)
+                        return log_oom();
         }
 
         path_escaped = specifier_escape(service->path);
@@ -570,7 +609,7 @@ int xdg_autostart_service_generate_unit(
 
         f = fopen(unit, "wxe");
         if (!f)
-                return log_error_errno(errno, "Failed to create unit file %s: %m", unit);
+                return log_error_errno(errno, "%s: failed to create unit file %s: %m", service->path, unit);
 
         fprintf(f,
                 "# Automatically generated by systemd-xdg-autostart-generator\n\n"
@@ -600,7 +639,7 @@ int xdg_autostart_service_generate_unit(
                 "ExitType=cgroup\n"
                 "ExecStart=:%s\n"
                 "Restart=no\n"
-                "TimeoutSec=5s\n"
+                "TimeoutStopSec=5s\n"
                 "Slice=app.slice\n",
                 exec_start);
 
@@ -615,16 +654,16 @@ int xdg_autostart_service_generate_unit(
         }
 
         /* Generate an ExecCondition to check $XDG_CURRENT_DESKTOP */
-        if (!strv_isempty(service->only_show_in) || !strv_isempty(service->not_show_in)) {
-                _cleanup_free_ char *only_show_in = NULL, *not_show_in = NULL, *e_only_show_in = NULL, *e_not_show_in = NULL;
+        if (!strv_isempty(only_show_in) || !strv_isempty(not_show_in)) {
+                _cleanup_free_ char *only_show_in_string = NULL, *not_show_in_string = NULL, *e_only_show_in = NULL, *e_not_show_in = NULL;
 
-                only_show_in = strv_join(service->only_show_in, ":");
-                not_show_in = strv_join(service->not_show_in, ":");
-                if (!only_show_in || !not_show_in)
+                only_show_in_string = strv_join(only_show_in, ":");
+                not_show_in_string = strv_join(not_show_in, ":");
+                if (!only_show_in_string || !not_show_in_string)
                         return log_oom();
 
-                e_only_show_in = cescape(only_show_in);
-                e_not_show_in = cescape(not_show_in);
+                e_only_show_in = cescape(only_show_in_string);
+                e_not_show_in = cescape(not_show_in_string);
                 if (!e_only_show_in || !e_not_show_in)
                         return log_oom();
 
@@ -635,19 +674,19 @@ int xdg_autostart_service_generate_unit(
                         e_not_show_in);
         }
 
-        r = xdg_autostart_generate_desktop_condition(f,
+        r = xdg_autostart_generate_desktop_condition(service, f,
                                                      "gnome-systemd-autostart-condition",
                                                      service->autostart_condition);
         if (r < 0)
                 return r;
 
-        r = xdg_autostart_generate_desktop_condition(f,
+        r = xdg_autostart_generate_desktop_condition(service, f,
                                                      "kde-systemd-start-condition",
                                                      service->kde_autostart_condition);
         if (r < 0)
                 return r;
 
-        (void) generator_add_symlink(dest, "xdg-desktop-autostart.target", "wants", service->name);
-
-        return 0;
+        log_debug("%s: symlinking %s in xdg-desktop-autostart.target/.wants%s",
+                  service->path, service->name, special_glyph(SPECIAL_GLYPH_ELLIPSIS));
+        return generator_add_symlink(dest, "xdg-desktop-autostart.target", "wants", service->name);
 }

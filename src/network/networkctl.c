@@ -22,10 +22,14 @@
 #include "alloc-util.h"
 #include "bond-util.h"
 #include "bridge-util.h"
+#include "build.h"
 #include "bus-common-errors.h"
 #include "bus-error.h"
 #include "bus-locator.h"
+#include "bus-wait-for-jobs.h"
+#include "conf-files.h"
 #include "device-util.h"
+#include "edit-util.h"
 #include "escape.h"
 #include "ether-addr-util.h"
 #include "ethtool-util.h"
@@ -49,6 +53,8 @@
 #include "pager.h"
 #include "parse-argument.h"
 #include "parse-util.h"
+#include "path-lookup.h"
+#include "path-util.h"
 #include "pretty-print.h"
 #include "set.h"
 #include "socket-netlink.h"
@@ -63,6 +69,7 @@
 #include "terminal-util.h"
 #include "unit-def.h"
 #include "verbs.h"
+#include "virt.h"
 #include "wifi-util.h"
 
 /* Kernel defines MODULE_NAME_LEN as 64 - sizeof(unsigned long). So, 64 is enough. */
@@ -73,22 +80,92 @@
 
 static PagerFlags arg_pager_flags = 0;
 static bool arg_legend = true;
+static bool arg_no_reload = false;
 static bool arg_all = false;
 static bool arg_stats = false;
 static bool arg_full = false;
 static unsigned arg_lines = 10;
+static char *arg_drop_in = NULL;
 static JsonFormatFlags arg_json_format_flags = JSON_FORMAT_OFF;
 
-static int get_description(JsonVariant **ret) {
+STATIC_DESTRUCTOR_REGISTER(arg_drop_in, freep);
+
+static int check_netns_match(sd_bus *bus) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
-        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
-        const char *text = NULL;
+        struct stat st;
+        uint64_t id;
         int r;
+
+        assert(bus);
+
+        r = bus_get_property_trivial(bus, bus_network_mgr, "NamespaceId", &error, 't', &id);
+        if (r < 0) {
+                log_debug_errno(r, "Failed to query network namespace of networkd, ignoring: %s", bus_error_message(&error, r));
+                return 0;
+        }
+        if (id == 0) {
+                log_debug("systemd-networkd.service not running in a network namespace (?), skipping netns check.");
+                return 0;
+        }
+
+        if (stat("/proc/self/ns/net", &st) < 0)
+                return log_error_errno(errno, "Failed to determine our own network namespace ID: %m");
+
+        if (id != st.st_ino)
+                return log_error_errno(SYNTHETIC_ERRNO(EREMOTE),
+                                       "networkctl must be invoked in same network namespace as systemd-networkd.service.");
+
+        return 0;
+}
+
+static bool networkd_is_running(void) {
+        static int cached = -1;
+        int r;
+
+        if (cached < 0) {
+                r = access("/run/systemd/netif/state", F_OK);
+                if (r < 0) {
+                        if (errno != ENOENT)
+                                log_debug_errno(errno,
+                                                "Failed to determine whether networkd is running, assuming it's not: %m");
+
+                        cached = false;
+                } else
+                        cached = true;
+        }
+
+        return cached;
+}
+
+static int acquire_bus(sd_bus **ret) {
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
+        int r;
+
+        assert(ret);
 
         r = sd_bus_open_system(&bus);
         if (r < 0)
-                return log_error_errno(r, "Failed to connect system bus: %m");
+                return log_error_errno(r, "Failed to connect to system bus: %m");
+
+        if (networkd_is_running()) {
+                r = check_netns_match(bus);
+                if (r < 0)
+                        return r;
+        } else
+                log_warning("systemd-networkd is not running, output might be incomplete.");
+
+        *ret = TAKE_PTR(bus);
+        return 0;
+}
+
+static int get_description(sd_bus *bus, JsonVariant **ret) {
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        const char *text;
+        int r;
+
+        assert(bus);
+        assert(ret);
 
         r = bus_call_method(bus, bus_network_mgr, "Describe", &error, &reply, NULL);
         if (r < 0)
@@ -105,11 +182,13 @@ static int get_description(JsonVariant **ret) {
         return 0;
 }
 
-static int dump_manager_description(void) {
+static int dump_manager_description(sd_bus *bus) {
         _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
         int r;
 
-        r = get_description(&v);
+        assert(bus);
+
+        r = get_description(bus, &v);
         if (r < 0)
                 return r;
 
@@ -117,14 +196,17 @@ static int dump_manager_description(void) {
         return 0;
 }
 
-static int dump_link_description(char **patterns) {
+static int dump_link_description(sd_bus *bus, char * const *patterns) {
         _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
         _cleanup_free_ bool *matched_patterns = NULL;
         JsonVariant *i;
         size_t c = 0;
         int r;
 
-        r = get_description(&v);
+        assert(bus);
+        assert(patterns);
+
+        r = get_description(bus, &v);
         if (r < 0)
                 return r;
 
@@ -140,7 +222,7 @@ static int dump_link_description(char **patterns) {
 
                 name = json_variant_string(json_variant_by_key(i, "Name"));
                 index = json_variant_integer(json_variant_by_key(i, "Index"));
-                xsprintf(ifindex_str, "%ji", index);
+                xsprintf(ifindex_str, "%" PRIi64, index);
 
                 if (!strv_fnmatch_full(patterns, ifindex_str, 0, &pos) &&
                     !strv_fnmatch_full(patterns, name, 0, &pos)) {
@@ -182,7 +264,12 @@ static int dump_link_description(char **patterns) {
         return 0;
 }
 
-static void operational_state_to_color(const char *name, const char *state, const char **on, const char **off) {
+static void operational_state_to_color(
+                const char *name,
+                const char *state,
+                const char **on,
+                const char **off) {
+
         if (STRPTR_IN_SET(state, "routable", "enslaved") ||
             (streq_ptr(name, "lo") && streq_ptr(state, "carrier"))) {
                 if (on)
@@ -268,7 +355,7 @@ typedef struct VxLanInfo {
 
 typedef struct LinkInfo {
         char name[IFNAMSIZ+1];
-        char netdev_kind[NETDEV_KIND_MAX];
+        char *netdev_kind;
         sd_device *sd_device;
         int ifindex;
         unsigned short iftype;
@@ -369,6 +456,7 @@ static int link_info_compare(const LinkInfo *a, const LinkInfo *b) {
 static LinkInfo* link_info_array_free(LinkInfo *array) {
         for (unsigned i = 0; array && array[i].needs_freeing; i++) {
                 sd_device_unref(array[i].sd_device);
+                free(array[i].netdev_kind);
                 free(array[i].ssid);
                 free(array[i].qdisc);
                 strv_free(array[i].alternative_names);
@@ -379,7 +467,6 @@ static LinkInfo* link_info_array_free(LinkInfo *array) {
 DEFINE_TRIVIAL_CLEANUP_FUNC(LinkInfo*, link_info_array_free);
 
 static int decode_netdev(sd_netlink_message *m, LinkInfo *info) {
-        const char *received_kind;
         int r;
 
         assert(m);
@@ -389,15 +476,17 @@ static int decode_netdev(sd_netlink_message *m, LinkInfo *info) {
         if (r < 0)
                 return r;
 
-        r = sd_netlink_message_read_string(m, IFLA_INFO_KIND, &received_kind);
-        if (r < 0)
+        r = sd_netlink_message_read_string_strdup(m, IFLA_INFO_KIND, &info->netdev_kind);
+        if (r < 0) {
+                (void) sd_netlink_message_exit_container(m);
                 return r;
+        }
 
         r = sd_netlink_message_enter_container(m, IFLA_INFO_DATA);
         if (r < 0)
                 return r;
 
-        if (streq(received_kind, "bridge")) {
+        if (streq(info->netdev_kind, "bridge")) {
                 (void) sd_netlink_message_read_u32(m, IFLA_BR_FORWARD_DELAY, &info->forward_delay);
                 (void) sd_netlink_message_read_u32(m, IFLA_BR_HELLO_TIME, &info->hello_time);
                 (void) sd_netlink_message_read_u32(m, IFLA_BR_MAX_AGE, &info->max_age);
@@ -407,12 +496,12 @@ static int decode_netdev(sd_netlink_message *m, LinkInfo *info) {
                 (void) sd_netlink_message_read_u16(m, IFLA_BR_PRIORITY, &info->priority);
                 (void) sd_netlink_message_read_u8(m, IFLA_BR_MCAST_IGMP_VERSION, &info->mcast_igmp_version);
                 (void) sd_netlink_message_read_u8(m, IFLA_BRPORT_STATE, &info->port_state);
-        } if (streq(received_kind, "bond")) {
+        } if (streq(info->netdev_kind, "bond")) {
                 (void) sd_netlink_message_read_u8(m, IFLA_BOND_MODE, &info->mode);
                 (void) sd_netlink_message_read_u32(m, IFLA_BOND_MIIMON, &info->miimon);
                 (void) sd_netlink_message_read_u32(m, IFLA_BOND_DOWNDELAY, &info->downdelay);
                 (void) sd_netlink_message_read_u32(m, IFLA_BOND_UPDELAY, &info->updelay);
-        } else if (streq(received_kind, "vxlan")) {
+        } else if (streq(info->netdev_kind, "vxlan")) {
                 (void) sd_netlink_message_read_u32(m, IFLA_VXLAN_ID, &info->vxlan_info.vni);
 
                 r = sd_netlink_message_read_in_addr(m, IFLA_VXLAN_GROUP, &info->vxlan_info.group.in);
@@ -442,12 +531,12 @@ static int decode_netdev(sd_netlink_message *m, LinkInfo *info) {
                 (void) sd_netlink_message_read_u8(m, IFLA_VXLAN_L2MISS, &info->vxlan_info.l2miss);
                 (void) sd_netlink_message_read_u8(m, IFLA_VXLAN_TOS, &info->vxlan_info.tos);
                 (void) sd_netlink_message_read_u8(m, IFLA_VXLAN_TTL, &info->vxlan_info.ttl);
-        } else if (streq(received_kind, "vlan"))
+        } else if (streq(info->netdev_kind, "vlan"))
                 (void) sd_netlink_message_read_u16(m, IFLA_VLAN_ID, &info->vlan_id);
-        else if (STR_IN_SET(received_kind, "ipip", "sit")) {
+        else if (STR_IN_SET(info->netdev_kind, "ipip", "sit")) {
                 (void) sd_netlink_message_read_in_addr(m, IFLA_IPTUN_LOCAL, &info->local.in);
                 (void) sd_netlink_message_read_in_addr(m, IFLA_IPTUN_REMOTE, &info->remote.in);
-        } else if (streq(received_kind, "geneve")) {
+        } else if (streq(info->netdev_kind, "geneve")) {
                 (void) sd_netlink_message_read_u32(m, IFLA_GENEVE_ID, &info->vni);
 
                 r = sd_netlink_message_read_in_addr(m, IFLA_GENEVE_REMOTE, &info->remote.in);
@@ -465,26 +554,24 @@ static int decode_netdev(sd_netlink_message *m, LinkInfo *info) {
                 (void) sd_netlink_message_read_u8(m, IFLA_GENEVE_UDP_ZERO_CSUM6_RX, &info->csum6_rx);
                 (void) sd_netlink_message_read_u16(m, IFLA_GENEVE_PORT, &info->tunnel_port);
                 (void) sd_netlink_message_read_u32(m, IFLA_GENEVE_LABEL, &info->label);
-        } else if (STR_IN_SET(received_kind, "gre", "gretap", "erspan")) {
+        } else if (STR_IN_SET(info->netdev_kind, "gre", "gretap", "erspan")) {
                 (void) sd_netlink_message_read_in_addr(m, IFLA_GRE_LOCAL, &info->local.in);
                 (void) sd_netlink_message_read_in_addr(m, IFLA_GRE_REMOTE, &info->remote.in);
-        } else if (STR_IN_SET(received_kind, "ip6gre", "ip6gretap", "ip6erspan")) {
+        } else if (STR_IN_SET(info->netdev_kind, "ip6gre", "ip6gretap", "ip6erspan")) {
                 (void) sd_netlink_message_read_in6_addr(m, IFLA_GRE_LOCAL, &info->local.in6);
                 (void) sd_netlink_message_read_in6_addr(m, IFLA_GRE_REMOTE, &info->remote.in6);
-        } else if (streq(received_kind, "vti")) {
+        } else if (streq(info->netdev_kind, "vti")) {
                 (void) sd_netlink_message_read_in_addr(m, IFLA_VTI_LOCAL, &info->local.in);
                 (void) sd_netlink_message_read_in_addr(m, IFLA_VTI_REMOTE, &info->remote.in);
-        } else if (streq(received_kind, "vti6")) {
+        } else if (streq(info->netdev_kind, "vti6")) {
                 (void) sd_netlink_message_read_in6_addr(m, IFLA_VTI_LOCAL, &info->local.in6);
                 (void) sd_netlink_message_read_in6_addr(m, IFLA_VTI_REMOTE, &info->remote.in6);
-        } else if (STR_IN_SET(received_kind, "macvlan", "macvtap"))
+        } else if (STR_IN_SET(info->netdev_kind, "macvlan", "macvtap"))
                 (void) sd_netlink_message_read_u32(m, IFLA_MACVLAN_MODE, &info->macvlan_mode);
-        else if (streq(received_kind, "ipvlan")) {
+        else if (streq(info->netdev_kind, "ipvlan")) {
                 (void) sd_netlink_message_read_u16(m, IFLA_IPVLAN_MODE, &info->ipvlan_mode);
                 (void) sd_netlink_message_read_u16(m, IFLA_IPVLAN_FLAGS, &info->ipvlan_flags);
         }
-
-        strncpy(info->netdev_kind, received_kind, IFNAMSIZ);
 
         (void) sd_netlink_message_exit_container(m);
         (void) sd_netlink_message_exit_container(m);
@@ -492,7 +579,12 @@ static int decode_netdev(sd_netlink_message *m, LinkInfo *info) {
         return 0;
 }
 
-static int decode_link(sd_netlink_message *m, LinkInfo *info, char **patterns, bool matched_patterns[]) {
+static int decode_link(
+                sd_netlink_message *m,
+                LinkInfo *info,
+                char * const *patterns,
+                bool matched_patterns[]) {
+
         _cleanup_strv_free_ char **altnames = NULL;
         const char *name, *qdisc;
         int ifindex, r;
@@ -530,7 +622,6 @@ static int decode_link(sd_netlink_message *m, LinkInfo *info, char **patterns, b
                 if (!strv_fnmatch_full(patterns, str, 0, &pos) &&
                     !strv_fnmatch_full(patterns, name, 0, &pos)) {
                         bool match = false;
-                        char **p;
 
                         STRV_FOREACH(p, altnames)
                                 if (strv_fnmatch_full(patterns, *p, 0, &pos)) {
@@ -617,28 +708,29 @@ static int link_get_property(
                 sd_bus_error *error,
                 sd_bus_message **reply,
                 const char *iface,
-                const char *propname) {
-        _cleanup_free_ char *path = NULL, *ifindex_str = NULL;
+                const char *propname,
+                const char *type) {
+
+        _cleanup_free_ char *path = NULL;
+        char ifindex_str[DECIMAL_STR_MAX(int)];
         int r;
 
-        if (asprintf(&ifindex_str, "%i", link->ifindex) < 0)
-                return -ENOMEM;
+        assert(bus);
+        assert(link);
+        assert(link->ifindex >= 0);
+        assert(error);
+        assert(reply);
+        assert(iface);
+        assert(propname);
+        assert(type);
+
+        xsprintf(ifindex_str, "%i", link->ifindex);
 
         r = sd_bus_path_encode("/org/freedesktop/network1/link", ifindex_str, &path);
         if (r < 0)
                 return r;
 
-        return sd_bus_call_method(
-                        bus,
-                        "org.freedesktop.network1",
-                        path,
-                        "org.freedesktop.DBus.Properties",
-                        "Get",
-                        error,
-                        reply,
-                        "ss",
-                        iface,
-                        propname);
+        return sd_bus_get_property(bus, "org.freedesktop.network1", path, iface, propname, error, reply, type);
 }
 
 static int acquire_link_bitrates(sd_bus *bus, LinkInfo *link) {
@@ -646,7 +738,10 @@ static int acquire_link_bitrates(sd_bus *bus, LinkInfo *link) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
-        r = link_get_property(bus, link, &error, &reply, "org.freedesktop.network1.Link", "BitRates");
+        assert(bus);
+        assert(link);
+
+        r = link_get_property(bus, link, &error, &reply, "org.freedesktop.network1.Link", "BitRates", "(tt)");
         if (r < 0) {
                 bool quiet = sd_bus_error_has_names(&error, SD_BUS_ERROR_UNKNOWN_PROPERTY,
                                                             BUS_ERROR_SPEED_METER_INACTIVE);
@@ -654,10 +749,6 @@ static int acquire_link_bitrates(sd_bus *bus, LinkInfo *link) {
                 return log_full_errno(quiet ? LOG_DEBUG : LOG_WARNING,
                                       r, "Failed to query link bit rates: %s", bus_error_message(&error, r));
         }
-
-        r = sd_bus_message_enter_container(reply, 'v', "(tt)");
-        if (r < 0)
-                return bus_log_parse_error(r);
 
         r = sd_bus_message_read(reply, "(tt)", &link->tx_bitrate, &link->rx_bitrate);
         if (r < 0)
@@ -673,7 +764,11 @@ static int acquire_link_bitrates(sd_bus *bus, LinkInfo *link) {
 }
 
 static void acquire_ether_link_info(int *fd, LinkInfo *link) {
-        if (ethtool_get_link_info(fd, link->name,
+        assert(fd);
+        assert(link);
+
+        if (ethtool_get_link_info(fd,
+                                  link->name,
                                   &link->autonegotiation,
                                   &link->speed,
                                   &link->duplex,
@@ -686,6 +781,8 @@ static void acquire_wlan_link_info(LinkInfo *link) {
         const char *type = NULL;
         int r, k = 0;
 
+        assert(link);
+
         if (link->sd_device)
                 (void) sd_device_get_devtype(link->sd_device, &type);
         if (!streq_ptr(type, "wlan"))
@@ -697,7 +794,7 @@ static void acquire_wlan_link_info(LinkInfo *link) {
                 return;
         }
 
-        (void) sd_netlink_inc_rcvbuf(genl, RCVBUF_SIZE);
+        (void) sd_netlink_increase_rxbuf(genl, RCVBUF_SIZE);
 
         r = wifi_get_interface(genl, link->ifindex, &link->wlan_iftype, &link->ssid);
         if (r < 0)
@@ -712,10 +809,11 @@ static void acquire_wlan_link_info(LinkInfo *link) {
         link->has_wlan_link_info = r > 0 || k > 0;
 }
 
-static int acquire_link_info(sd_bus *bus, sd_netlink *rtnl, char **patterns, LinkInfo **ret) {
+static int acquire_link_info(sd_bus *bus, sd_netlink *rtnl, char * const *patterns, LinkInfo **ret) {
         _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL, *reply = NULL;
         _cleanup_(link_info_array_freep) LinkInfo *links = NULL;
-        _cleanup_close_ int fd = -1;
+        _cleanup_free_ bool *matched_patterns = NULL;
+        _cleanup_close_ int fd = -EBADF;
         size_t c = 0;
         int r;
 
@@ -726,7 +824,7 @@ static int acquire_link_info(sd_bus *bus, sd_netlink *rtnl, char **patterns, Lin
         if (r < 0)
                 return rtnl_log_create_error(r);
 
-        r = sd_netlink_message_request_dump(req, true);
+        r = sd_netlink_message_set_request_dump(req, true);
         if (r < 0)
                 return rtnl_log_create_error(r);
 
@@ -734,7 +832,6 @@ static int acquire_link_info(sd_bus *bus, sd_netlink *rtnl, char **patterns, Lin
         if (r < 0)
                 return log_error_errno(r, "Failed to enumerate links: %m");
 
-        _cleanup_free_ bool *matched_patterns = NULL;
         if (patterns) {
                 matched_patterns = new0(bool, strv_length(patterns));
                 if (!matched_patterns)
@@ -778,8 +875,8 @@ static int acquire_link_info(sd_bus *bus, sd_netlink *rtnl, char **patterns, Lin
         typesafe_qsort(links, c, link_info_compare);
 
         if (bus)
-                for (size_t j = 0; j < c; j++)
-                        (void) acquire_link_bitrates(bus, links + j);
+                FOREACH_ARRAY(link, links, c)
+                        (void) acquire_link_bitrates(bus, link);
 
         *ret = TAKE_PTR(links);
 
@@ -790,17 +887,22 @@ static int acquire_link_info(sd_bus *bus, sd_netlink *rtnl, char **patterns, Lin
 }
 
 static int list_links(int argc, char *argv[], void *userdata) {
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
         _cleanup_(link_info_array_freep) LinkInfo *links = NULL;
         _cleanup_(table_unrefp) Table *table = NULL;
         TableCell *cell;
         int c, r;
 
+        r = acquire_bus(&bus);
+        if (r < 0)
+                return r;
+
         if (arg_json_format_flags != JSON_FORMAT_OFF) {
                 if (arg_all || argc <= 1)
-                        return dump_manager_description();
+                        return dump_manager_description(bus);
                 else
-                        return dump_link_description(strv_skip(argv, 1));
+                        return dump_link_description(bus, strv_skip(argv, 1));
         }
 
         r = sd_netlink_open(&rtnl);
@@ -821,8 +923,7 @@ static int list_links(int argc, char *argv[], void *userdata) {
                 table_set_width(table, 0);
 
         table_set_header(table, arg_legend);
-        if (table_set_empty_string(table, "n/a") < 0)
-                return log_oom();
+        table_set_ersatz_string(table, TABLE_ERSATZ_DASH);
 
         assert_se(cell = table_get_cell(table, 0, 0));
         (void) table_set_minimum_width(table, cell, 3);
@@ -833,30 +934,28 @@ static int list_links(int argc, char *argv[], void *userdata) {
         assert_se(cell = table_get_cell(table, 0, 1));
         (void) table_set_ellipsize_percent(table, cell, 100);
 
-        for (int i = 0; i < c; i++) {
+        FOREACH_ARRAY(link, links, c) {
                 _cleanup_free_ char *setup_state = NULL, *operational_state = NULL;
-                const char *on_color_operational, *on_color_setup;
                 _cleanup_free_ char *t = NULL;
+                const char *on_color_operational, *on_color_setup;
 
-                (void) sd_network_link_get_operational_state(links[i].ifindex, &operational_state);
-                operational_state_to_color(links[i].name, operational_state, &on_color_operational, NULL);
+                (void) sd_network_link_get_operational_state(link->ifindex, &operational_state);
+                operational_state_to_color(link->name, operational_state, &on_color_operational, NULL);
 
-                r = sd_network_link_get_setup_state(links[i].ifindex, &setup_state);
-                if (r == -ENODATA) /* If there's no info available about this iface, it's unmanaged by networkd */
-                        setup_state = strdup("unmanaged");
+                (void) sd_network_link_get_setup_state(link->ifindex, &setup_state);
                 setup_state_to_color(setup_state, &on_color_setup, NULL);
 
-                r = net_get_type_string(links[i].sd_device, links[i].iftype, &t);
+                r = net_get_type_string(link->sd_device, link->iftype, &t);
                 if (r == -ENOMEM)
                         return log_oom();
 
                 r = table_add_many(table,
-                                   TABLE_INT, links[i].ifindex,
-                                   TABLE_STRING, links[i].name,
+                                   TABLE_INT, link->ifindex,
+                                   TABLE_STRING, link->name,
                                    TABLE_STRING, t,
                                    TABLE_STRING, operational_state,
                                    TABLE_SET_COLOR, on_color_operational,
-                                   TABLE_STRING, setup_state,
+                                   TABLE_STRING, setup_state ?: "unmanaged",
                                    TABLE_SET_COLOR, on_color_setup);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -874,24 +973,21 @@ static int list_links(int argc, char *argv[], void *userdata) {
 
 /* IEEE Organizationally Unique Identifier vendor string */
 static int ieee_oui(sd_hwdb *hwdb, const struct ether_addr *mac, char **ret) {
+        _cleanup_free_ char *desc = NULL;
         const char *description;
-        char modalias[STRLEN("OUI:XXYYXXYYXXYY") + 1], *desc;
+        char modalias[STRLEN("OUI:XXYYXXYYXXYY") + 1];
         int r;
 
         assert(ret);
 
-        if (!hwdb)
-                return -EINVAL;
-
-        if (!mac)
+        if (!hwdb || !mac)
                 return -EINVAL;
 
         /* skip commonly misused 00:00:00 (Xerox) prefix */
         if (memcmp(mac, "\0\0\0", 3) == 0)
                 return -EINVAL;
 
-        xsprintf(modalias, "OUI:" ETHER_ADDR_FORMAT_STR,
-                 ETHER_ADDR_FORMAT_VAL(*mac));
+        xsprintf(modalias, "OUI:" ETHER_ADDR_FORMAT_STR, ETHER_ADDR_FORMAT_VAL(*mac));
 
         r = sd_hwdb_get(hwdb, modalias, "ID_OUI_FROM_DATABASE", &description);
         if (r < 0)
@@ -901,7 +997,7 @@ static int ieee_oui(sd_hwdb *hwdb, const struct ether_addr *mac, char **ret) {
         if (!desc)
                 return -ENOMEM;
 
-        *ret = desc;
+        *ret = TAKE_PTR(desc);
 
         return 0;
 }
@@ -912,7 +1008,8 @@ static int get_gateway_description(
                 int ifindex,
                 int family,
                 union in_addr_union *gateway,
-                char **gateway_description) {
+                char **ret) {
+
         _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL, *reply = NULL;
         int r;
 
@@ -920,13 +1017,13 @@ static int get_gateway_description(
         assert(ifindex >= 0);
         assert(IN_SET(family, AF_INET, AF_INET6));
         assert(gateway);
-        assert(gateway_description);
+        assert(ret);
 
         r = sd_rtnl_message_new_neigh(rtnl, &req, RTM_GETNEIGH, ifindex, family);
         if (r < 0)
                 return r;
 
-        r = sd_netlink_message_request_dump(req, true);
+        r = sd_netlink_message_set_request_dump(req, true);
         if (r < 0)
                 return r;
 
@@ -942,35 +1039,37 @@ static int get_gateway_description(
 
                 r = sd_netlink_message_get_errno(m);
                 if (r < 0) {
-                        log_error_errno(r, "got error: %m");
+                        log_error_errno(r, "Failed to get netlink message, ignoring: %m");
                         continue;
                 }
 
                 r = sd_netlink_message_get_type(m, &type);
                 if (r < 0) {
-                        log_error_errno(r, "could not get type: %m");
+                        log_error_errno(r, "Failed to get netlink message type, ignoring: %m");
                         continue;
                 }
 
                 if (type != RTM_NEWNEIGH) {
-                        log_error("type is not RTM_NEWNEIGH");
+                        log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                        "Got unexpected netlink message type %u, ignoring",
+                                        type);
                         continue;
                 }
 
                 r = sd_rtnl_message_neigh_get_family(m, &fam);
                 if (r < 0) {
-                        log_error_errno(r, "could not get family: %m");
+                        log_error_errno(r, "Failed to get rtnl family, ignoring: %m");
                         continue;
                 }
 
                 if (fam != family) {
-                        log_error("family is not correct");
+                        log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Got invalid rtnl family %d, ignoring", fam);
                         continue;
                 }
 
                 r = sd_rtnl_message_neigh_get_ifindex(m, &ifi);
                 if (r < 0) {
-                        log_error_errno(r, "could not get ifindex: %m");
+                        log_error_errno(r, "Failed to get rtnl ifindex, ignoring: %m");
                         continue;
                 }
 
@@ -978,18 +1077,21 @@ static int get_gateway_description(
                         continue;
 
                 switch (fam) {
+
                 case AF_INET:
                         r = sd_netlink_message_read_in_addr(m, NDA_DST, &gw.in);
                         if (r < 0)
                                 continue;
 
                         break;
+
                 case AF_INET6:
                         r = sd_netlink_message_read_in6_addr(m, NDA_DST, &gw.in6);
                         if (r < 0)
                                 continue;
 
                         break;
+
                 default:
                         continue;
                 }
@@ -1001,7 +1103,7 @@ static int get_gateway_description(
                 if (r < 0)
                         continue;
 
-                r = ieee_oui(hwdb, &mac, gateway_description);
+                r = ieee_oui(hwdb, &mac, ret);
                 if (r < 0)
                         continue;
 
@@ -1013,6 +1115,8 @@ static int get_gateway_description(
 
 static int dump_list(Table *table, const char *prefix, char * const *l) {
         int r;
+
+        assert(table);
 
         if (strv_isempty(l))
                 return 0;
@@ -1027,43 +1131,33 @@ static int dump_list(Table *table, const char *prefix, char * const *l) {
         return 0;
 }
 
-static int dump_gateways(
-                sd_netlink *rtnl,
-                sd_hwdb *hwdb,
-                Table *table,
-                int ifindex) {
-        _cleanup_free_ struct local_address *local = NULL;
+static int dump_gateways(sd_netlink *rtnl, sd_hwdb *hwdb, Table *table, int ifindex) {
+        _cleanup_free_ struct local_address *local_addrs = NULL;
         _cleanup_strv_free_ char **buf = NULL;
         int r, n;
 
         assert(rtnl);
         assert(table);
 
-        n = local_gateways(rtnl, ifindex, AF_UNSPEC, &local);
+        n = local_gateways(rtnl, ifindex, AF_UNSPEC, &local_addrs);
         if (n <= 0)
                 return n;
 
-        for (int i = 0; i < n; i++) {
-                _cleanup_free_ char *gateway = NULL, *description = NULL;
+        FOREACH_ARRAY(local, local_addrs, n) {
+                _cleanup_free_ char *description = NULL;
 
-                r = in_addr_to_string(local[i].family, &local[i].address, &gateway);
-                if (r < 0)
-                        return log_oom();
-
-                r = get_gateway_description(rtnl, hwdb, local[i].ifindex, local[i].family, &local[i].address, &description);
+                r = get_gateway_description(rtnl, hwdb, local->ifindex, local->family, &local->address, &description);
                 if (r < 0)
                         log_debug_errno(r, "Could not get description of gateway, ignoring: %m");
 
-                if (description) {
-                        if (!strextend(&gateway, " (", description, ")"))
-                                return log_oom();
-                }
-
                 /* Show interface name for the entry if we show entries for all interfaces */
-                r = strv_extendf(&buf, "%s%s%s",
-                                 gateway,
+                r = strv_extendf(&buf, "%s%s%s%s%s%s",
+                                 IN_ADDR_TO_STRING(local->family, &local->address),
+                                 description ? " (" : "",
+                                 strempty(description),
+                                 description ? ")" : "",
                                  ifindex <= 0 ? " on " : "",
-                                 ifindex <= 0 ? FORMAT_IFNAME_FULL(local[i].ifindex, FORMAT_IFNAME_IFINDEX_WITH_PERCENT) : "");
+                                 ifindex <= 0 ? FORMAT_IFNAME_FULL(local->ifindex, FORMAT_IFNAME_IFINDEX_WITH_PERCENT) : "");
                 if (r < 0)
                         return log_oom();
         }
@@ -1077,7 +1171,7 @@ static int dump_addresses(
                 Table *table,
                 int ifindex) {
 
-        _cleanup_free_ struct local_address *local = NULL;
+        _cleanup_free_ struct local_address *local_addrs = NULL;
         _cleanup_strv_free_ char **buf = NULL;
         struct in_addr dhcp4_address = {};
         int r, n;
@@ -1085,39 +1179,27 @@ static int dump_addresses(
         assert(rtnl);
         assert(table);
 
-        n = local_addresses(rtnl, ifindex, AF_UNSPEC, &local);
+        n = local_addresses(rtnl, ifindex, AF_UNSPEC, &local_addrs);
         if (n <= 0)
                 return n;
 
         if (lease)
                 (void) sd_dhcp_lease_get_address(lease, &dhcp4_address);
 
-        for (int i = 0; i < n; i++) {
-                _cleanup_free_ char *pretty = NULL;
+        FOREACH_ARRAY(local, local_addrs, n) {
+                struct in_addr server_address;
+                bool dhcp4 = false;
 
-                r = in_addr_to_string(local[i].family, &local[i].address, &pretty);
-                if (r < 0)
-                        return r;
+                if (local->family == AF_INET && in4_addr_equal(&local->address.in, &dhcp4_address))
+                        dhcp4 = sd_dhcp_lease_get_server_identifier(lease, &server_address) >= 0;
 
-                if (local[i].family == AF_INET && in4_addr_equal(&local[i].address.in, &dhcp4_address)) {
-                        struct in_addr server_address;
-                        char *p, s[INET_ADDRSTRLEN];
-
-                        r = sd_dhcp_lease_get_server_identifier(lease, &server_address);
-                        if (r >= 0 && inet_ntop(AF_INET, &server_address, s, sizeof(s)))
-                                p = strjoin(pretty, " (DHCP4 via ", s, ")");
-                        else
-                                p = strjoin(pretty, " (DHCP4)");
-                        if (!p)
-                                return log_oom();
-
-                        free_and_replace(pretty, p);
-                }
-
-                r = strv_extendf(&buf, "%s%s%s",
-                                 pretty,
+                r = strv_extendf(&buf, "%s%s%s%s%s%s",
+                                 IN_ADDR_TO_STRING(local->family, &local->address),
+                                 dhcp4 ? " (DHCP4 via " : "",
+                                 dhcp4 ? IN4_ADDR_TO_STRING(&server_address) : "",
+                                 dhcp4 ? ")" : "",
                                  ifindex <= 0 ? " on " : "",
-                                 ifindex <= 0 ? FORMAT_IFNAME_FULL(local[i].ifindex, FORMAT_IFNAME_IFINDEX_WITH_PERCENT) : "");
+                                 ifindex <= 0 ? FORMAT_IFNAME_FULL(local->ifindex, FORMAT_IFNAME_IFINDEX_WITH_PERCENT) : "");
                 if (r < 0)
                         return log_oom();
         }
@@ -1137,7 +1219,7 @@ static int dump_address_labels(sd_netlink *rtnl) {
         if (r < 0)
                 return log_error_errno(r, "Could not allocate RTM_GETADDRLABEL message: %m");
 
-        r = sd_netlink_message_request_dump(req, true);
+        r = sd_netlink_message_set_request_dump(req, true);
         if (r < 0)
                 return r;
 
@@ -1164,14 +1246,13 @@ static int dump_address_labels(sd_netlink *rtnl) {
         (void) table_set_align_percent(table, cell, 100);
 
         for (sd_netlink_message *m = reply; m; m = sd_netlink_message_next(m)) {
-                _cleanup_free_ char *pretty = NULL;
-                union in_addr_union prefix = IN_ADDR_NULL;
+                struct in6_addr prefix;
                 uint8_t prefixlen;
                 uint32_t label;
 
                 r = sd_netlink_message_get_errno(m);
                 if (r < 0) {
-                        log_error_errno(r, "got error: %m");
+                        log_error_errno(r, "Failed to get netlink message, ignoring: %m");
                         continue;
                 }
 
@@ -1181,11 +1262,7 @@ static int dump_address_labels(sd_netlink *rtnl) {
                         continue;
                 }
 
-                r = sd_netlink_message_read_in6_addr(m, IFAL_ADDRESS, &prefix.in6);
-                if (r < 0)
-                        continue;
-
-                r = in_addr_to_string(AF_INET6, &prefix, &pretty);
+                r = sd_netlink_message_read_in6_addr(m, IFAL_ADDRESS, &prefix);
                 if (r < 0)
                         continue;
 
@@ -1197,7 +1274,7 @@ static int dump_address_labels(sd_netlink *rtnl) {
                 if (r < 0)
                         return table_log_add_error(r);
 
-                r = table_add_cell_stringf(table, NULL, "%s/%u", pretty, prefixlen);
+                r = table_add_cell_stringf(table, NULL, "%s/%u", IN6_ADDR_TO_STRING(&prefix), prefixlen);
                 if (r < 0)
                         return table_log_add_error(r);
         }
@@ -1217,23 +1294,23 @@ static int list_address_labels(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return log_error_errno(r, "Failed to connect to netlink: %m");
 
-        dump_address_labels(rtnl);
-
-        return 0;
+        return dump_address_labels(rtnl);
 }
 
 static int open_lldp_neighbors(int ifindex, FILE **ret) {
-        _cleanup_free_ char *p = NULL;
-        FILE *f;
+        _cleanup_fclose_ FILE *f = NULL;
+        char p[STRLEN("/run/systemd/netif/lldp/") + DECIMAL_STR_MAX(int)];
 
-        if (asprintf(&p, "/run/systemd/netif/lldp/%i", ifindex) < 0)
-                return -ENOMEM;
+        assert(ifindex >= 0);
+        assert(ret);
+
+        xsprintf(p, "/run/systemd/netif/lldp/%i", ifindex);
 
         f = fopen(p, "re");
         if (!f)
                 return -errno;
 
-        *ret = f;
+        *ret = TAKE_PTR(f);
         return 0;
 }
 
@@ -1318,7 +1395,12 @@ static int dump_dhcp_leases(Table *table, const char *prefix, sd_bus *bus, const
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
-        r = link_get_property(bus, link, &error, &reply, "org.freedesktop.network1.DHCPServer", "Leases");
+        assert(table);
+        assert(prefix);
+        assert(bus);
+        assert(link);
+
+        r = link_get_property(bus, link, &error, &reply, "org.freedesktop.network1.DHCPServer", "Leases", "a(uayayayayt)");
         if (r < 0) {
                 bool quiet = sd_bus_error_has_name(&error, SD_BUS_ERROR_UNKNOWN_PROPERTY);
 
@@ -1326,10 +1408,6 @@ static int dump_dhcp_leases(Table *table, const char *prefix, sd_bus *bus, const
                                r, "Failed to query link DHCP leases: %s", bus_error_message(&error, r));
                 return 0;
         }
-
-        r = sd_bus_message_enter_container(reply, 'v', "a(uayayayayt)");
-        if (r < 0)
-                return bus_log_parse_error(r);
 
         r = sd_bus_message_enter_container(reply, 'a', "(uayayayayt)");
         if (r < 0)
@@ -1405,6 +1483,7 @@ static int dump_dhcp_leases(Table *table, const char *prefix, sd_bus *bus, const
 static int dump_ifindexes(Table *table, const char *prefix, const int *ifindexes) {
         int r;
 
+        assert(table);
         assert(prefix);
 
         if (!ifindexes || ifindexes[0] <= 0)
@@ -1436,6 +1515,9 @@ static int dump_ifindexes(Table *table, const char *prefix, const int *ifindexes
 
 static int dump_statistics(Table *table, const LinkInfo *info) {
         int r;
+
+        assert(table);
+        assert(info);
 
         if (!arg_stats)
                 return 0;
@@ -1548,15 +1630,50 @@ static int show_logs(const LinkInfo *info) {
                         NULL);
 }
 
+static int table_add_string_line(Table *table, const char *key, const char *value) {
+        int r;
+
+        assert(table);
+        assert(key);
+
+        if (isempty(value))
+                return 0;
+
+        r = table_add_many(table,
+                           TABLE_EMPTY,
+                           TABLE_STRING, key,
+                           TABLE_STRING, value);
+        if (r < 0)
+                return table_log_add_error(r);
+
+        return 0;
+}
+
+static int format_dropins(char **dropins) {
+        STRV_FOREACH(d, dropins) {
+                _cleanup_free_ char *s = NULL;
+                int glyph = *(d + 1) == NULL ? SPECIAL_GLYPH_TREE_RIGHT : SPECIAL_GLYPH_TREE_BRANCH;
+
+                s = strjoin(special_glyph(glyph), *d);
+                if (!s)
+                        return log_oom();
+
+                free_and_replace(*d, s);
+        }
+
+        return 0;
+}
+
 static int link_status_one(
                 sd_bus *bus,
                 sd_netlink *rtnl,
                 sd_hwdb *hwdb,
                 const LinkInfo *info) {
 
-        _cleanup_strv_free_ char **dns = NULL, **ntp = NULL, **sip = NULL, **search_domains = NULL, **route_domains = NULL;
-        _cleanup_free_ char *t = NULL, *network = NULL, *iaid = NULL, *duid = NULL,
-                *setup_state = NULL, *operational_state = NULL, *online_state = NULL, *lease_file = NULL, *activation_policy = NULL;
+        _cleanup_strv_free_ char **dns = NULL, **ntp = NULL, **sip = NULL, **search_domains = NULL,
+                **route_domains = NULL, **link_dropins = NULL, **network_dropins = NULL;
+        _cleanup_free_ char *t = NULL, *network = NULL, *iaid = NULL, *duid = NULL, *captive_portal = NULL,
+                *setup_state = NULL, *operational_state = NULL, *online_state = NULL, *activation_policy = NULL;
         const char *driver = NULL, *path = NULL, *vendor = NULL, *model = NULL, *link = NULL,
                 *on_color_operational, *off_color_operational, *on_color_setup, *off_color_setup, *on_color_online;
         _cleanup_free_ int *carrier_bound_to = NULL, *carrier_bound_by = NULL;
@@ -1565,6 +1682,7 @@ static int link_status_one(
         TableCell *cell;
         int r;
 
+        assert(bus);
         assert(rtnl);
         assert(info);
 
@@ -1574,9 +1692,7 @@ static int link_status_one(
         (void) sd_network_link_get_online_state(info->ifindex, &online_state);
         online_state_to_color(online_state, &on_color_online, NULL);
 
-        r = sd_network_link_get_setup_state(info->ifindex, &setup_state);
-        if (r == -ENODATA) /* If there's no info available about this iface, it's unmanaged by networkd */
-                setup_state = strdup("unmanaged");
+        (void) sd_network_link_get_setup_state(info->ifindex, &setup_state);
         setup_state_to_color(setup_state, &on_color_setup, &off_color_setup);
 
         (void) sd_network_link_get_dns(info->ifindex, &dns);
@@ -1584,9 +1700,24 @@ static int link_status_one(
         (void) sd_network_link_get_route_domains(info->ifindex, &route_domains);
         (void) sd_network_link_get_ntp(info->ifindex, &ntp);
         (void) sd_network_link_get_sip(info->ifindex, &sip);
+        (void) sd_network_link_get_captive_portal(info->ifindex, &captive_portal);
+        (void) sd_network_link_get_network_file(info->ifindex, &network);
+        (void) sd_network_link_get_network_file_dropins(info->ifindex, &network_dropins);
+        (void) sd_network_link_get_carrier_bound_to(info->ifindex, &carrier_bound_to);
+        (void) sd_network_link_get_carrier_bound_by(info->ifindex, &carrier_bound_by);
+        (void) sd_network_link_get_activation_policy(info->ifindex, &activation_policy);
 
         if (info->sd_device) {
+                const char *joined;
+
                 (void) sd_device_get_property_value(info->sd_device, "ID_NET_LINK_FILE", &link);
+
+                if (sd_device_get_property_value(info->sd_device, "ID_NET_LINK_FILE_DROPINS", &joined) >= 0) {
+                        r = strv_split_full(&link_dropins, joined, ":", EXTRACT_CUNESCAPE);
+                        if (r < 0)
+                                return r;
+                }
+
                 (void) sd_device_get_property_value(info->sd_device, "ID_NET_DRIVER", &driver);
                 (void) sd_device_get_property_value(info->sd_device, "ID_PATH", &path);
 
@@ -1601,15 +1732,24 @@ static int link_status_one(
         if (r == -ENOMEM)
                 return log_oom();
 
-        (void) sd_network_link_get_network_file(info->ifindex, &network);
-
-        (void) sd_network_link_get_carrier_bound_to(info->ifindex, &carrier_bound_to);
-        (void) sd_network_link_get_carrier_bound_by(info->ifindex, &carrier_bound_by);
-
-        if (asprintf(&lease_file, "/run/systemd/netif/leases/%d", info->ifindex) < 0)
-                return log_oom();
+        char lease_file[STRLEN("/run/systemd/netif/leases/") + DECIMAL_STR_MAX(int)];
+        xsprintf(lease_file, "/run/systemd/netif/leases/%i", info->ifindex);
 
         (void) dhcp_lease_load(&lease, lease_file);
+
+        r = format_dropins(network_dropins);
+        if (r < 0)
+                return r;
+
+        if (strv_prepend(&network_dropins, network) < 0)
+                return log_oom();
+
+        r = format_dropins(link_dropins);
+        if (r < 0)
+                return r;
+
+        if (strv_prepend(&link_dropins, link) < 0)
+                return log_oom();
 
         table = table_new("dot", "key", "value");
         if (!table)
@@ -1626,6 +1766,7 @@ static int link_status_one(
 
         table_set_header(table, false);
 
+        /* First line: circle, ifindex, ifname. */
         r = table_add_many(table,
                            TABLE_STRING, special_glyph(SPECIAL_GLYPH_BLACK_CIRCLE),
                            TABLE_SET_COLOR, on_color_operational);
@@ -1634,27 +1775,29 @@ static int link_status_one(
         r = table_add_cell_stringf(table, &cell, "%i: %s", info->ifindex, info->name);
         if (r < 0)
                 return table_log_add_error(r);
+        r = table_add_many(table, TABLE_EMPTY);
+        if (r < 0)
+                return table_log_add_error(r);
+
         (void) table_set_align_percent(table, cell, 0);
 
+        /* unit files and basic states. */
         r = table_add_many(table,
-                           TABLE_EMPTY,
                            TABLE_EMPTY,
                            TABLE_STRING, "Link File:",
                            TABLE_SET_ALIGN_PERCENT, 100,
-                           TABLE_STRING, strna(link),
+                           TABLE_STRV, link_dropins ?: STRV_MAKE("n/a"),
                            TABLE_EMPTY,
                            TABLE_STRING, "Network File:",
-                           TABLE_STRING, strna(network),
-                           TABLE_EMPTY,
-                           TABLE_STRING, "Type:",
-                           TABLE_STRING, strna(t),
+                           TABLE_STRV, network_dropins ?: STRV_MAKE("n/a"),
                            TABLE_EMPTY,
                            TABLE_STRING, "State:");
         if (r < 0)
                 return table_log_add_error(r);
+
         r = table_add_cell_stringf(table, NULL, "%s%s%s (%s%s%s)",
                                    on_color_operational, strna(operational_state), off_color_operational,
-                                   on_color_setup, strna(setup_state), off_color_setup);
+                                   on_color_setup, setup_state ?: "unmanaged", off_color_setup);
         if (r < 0)
                 return table_log_add_error(r);
 
@@ -1666,43 +1809,34 @@ static int link_status_one(
         if (r < 0)
                 return table_log_add_error(r);
 
+        r = table_add_string_line(table, "Type:", t);
+        if (r < 0)
+                return r;
+
+        r = table_add_string_line(table, "Kind:", info->netdev_kind);
+        if (r < 0)
+                return r;
+
+        r = table_add_string_line(table, "Path:", path);
+        if (r < 0)
+                return r;
+
+        r = table_add_string_line(table, "Driver:", driver);
+        if (r < 0)
+                return r;
+
+        r = table_add_string_line(table, "Vendor:", vendor);
+        if (r < 0)
+                return r;
+
+        r = table_add_string_line(table, "Model:", model);
+        if (r < 0)
+                return r;
+
         strv_sort(info->alternative_names);
         r = dump_list(table, "Alternative Names:", info->alternative_names);
         if (r < 0)
                 return r;
-
-        if (path) {
-                r = table_add_many(table,
-                                   TABLE_EMPTY,
-                                   TABLE_STRING, "Path:",
-                                   TABLE_STRING, path);
-                if (r < 0)
-                        return table_log_add_error(r);
-        }
-        if (driver) {
-                r = table_add_many(table,
-                                   TABLE_EMPTY,
-                                   TABLE_STRING, "Driver:",
-                                   TABLE_STRING, driver);
-                if (r < 0)
-                        return table_log_add_error(r);
-        }
-        if (vendor) {
-                r = table_add_many(table,
-                                   TABLE_EMPTY,
-                                   TABLE_STRING, "Vendor:",
-                                   TABLE_STRING, vendor);
-                if (r < 0)
-                        return table_log_add_error(r);
-        }
-        if (model) {
-                r = table_add_many(table,
-                                   TABLE_EMPTY,
-                                   TABLE_STRING, "Model:",
-                                   TABLE_STRING, model);
-                if (r < 0)
-                        return table_log_add_error(r);
-        }
 
         if (info->has_hw_address) {
                 r = dump_hw_address(table, hwdb, "Hardware Address:", &info->hw_address);
@@ -1740,14 +1874,9 @@ static int link_status_one(
                         return table_log_add_error(r);
         }
 
-        if (info->qdisc) {
-                r = table_add_many(table,
-                                   TABLE_EMPTY,
-                                   TABLE_STRING, "QDisc:",
-                                   TABLE_STRING, info->qdisc);
-                if (r < 0)
-                        return table_log_add_error(r);
-        }
+        r = table_add_string_line(table, "QDisc:", info->qdisc);
+        if (r < 0)
+                return r;
 
         if (info->master > 0) {
                 r = table_add_many(table,
@@ -1805,11 +1934,15 @@ static int link_status_one(
                 if (r < 0)
                         return table_log_add_error(r);
 
-                if (info->port_state <= BR_STATE_BLOCKING)
+                if (info->port_state <= BR_STATE_BLOCKING) {
                         r = table_add_many(table,
                                            TABLE_EMPTY,
                                            TABLE_STRING, "Port State:",
                                            TABLE_STRING, bridge_state_to_string(info->port_state));
+                        if (r < 0)
+                                return table_log_add_error(r);
+                }
+
         } else if (streq_ptr(info->netdev_kind, "bond")) {
                 r = table_add_many(table,
                                    TABLE_EMPTY,
@@ -1817,13 +1950,13 @@ static int link_status_one(
                                    TABLE_STRING, bond_mode_to_string(info->mode),
                                    TABLE_EMPTY,
                                    TABLE_STRING, "Miimon:",
-                                   TABLE_TIMESPAN_MSEC, jiffies_to_usec(info->miimon),
+                                   TABLE_TIMESPAN_MSEC, info->miimon * USEC_PER_MSEC,
                                    TABLE_EMPTY,
                                    TABLE_STRING, "Updelay:",
-                                   TABLE_TIMESPAN_MSEC, jiffies_to_usec(info->updelay),
+                                   TABLE_TIMESPAN_MSEC, info->updelay * USEC_PER_MSEC,
                                    TABLE_EMPTY,
                                    TABLE_STRING, "Downdelay:",
-                                   TABLE_TIMESPAN_MSEC, jiffies_to_usec(info->downdelay));
+                                   TABLE_TIMESPAN_MSEC, info->downdelay * USEC_PER_MSEC);
                 if (r < 0)
                         return table_log_add_error(r);
 
@@ -1933,6 +2066,7 @@ static int link_status_one(
                                    TABLE_STRING, ttl);
                 if (r < 0)
                         return table_log_add_error(r);
+
         } else if (streq_ptr(info->netdev_kind, "vlan") && info->vlan_id > 0) {
                 r = table_add_many(table,
                                    TABLE_EMPTY,
@@ -1940,6 +2074,7 @@ static int link_status_one(
                                    TABLE_UINT16, info->vlan_id);
                 if (r < 0)
                         return table_log_add_error(r);
+
         } else if (STRPTR_IN_SET(info->netdev_kind, "ipip", "sit", "gre", "gretap", "erspan", "vti")) {
                 if (in_addr_is_set(AF_INET, &info->local)) {
                         r = table_add_many(table,
@@ -1958,6 +2093,7 @@ static int link_status_one(
                         if (r < 0)
                                 return table_log_add_error(r);
                 }
+
         } else if (STRPTR_IN_SET(info->netdev_kind, "ip6gre", "ip6gretap", "ip6erspan", "vti6")) {
                 if (in_addr_is_set(AF_INET6, &info->local)) {
                         r = table_add_many(table,
@@ -1976,6 +2112,7 @@ static int link_status_one(
                         if (r < 0)
                                 return table_log_add_error(r);
                 }
+
         } else if (streq_ptr(info->netdev_kind, "geneve")) {
                 r = table_add_many(table,
                                    TABLE_EMPTY,
@@ -2070,6 +2207,7 @@ static int link_status_one(
                         if (r < 0)
                                 return table_log_add_error(r);
                 }
+
         } else if (STRPTR_IN_SET(info->netdev_kind, "macvlan", "macvtap")) {
                 r = table_add_many(table,
                                    TABLE_EMPTY,
@@ -2077,6 +2215,7 @@ static int link_status_one(
                                    TABLE_STRING, macvlan_mode_to_string(info->macvlan_mode));
                 if (r < 0)
                         return table_log_add_error(r);
+
         } else if (streq_ptr(info->netdev_kind, "ipvlan")) {
                 _cleanup_free_ char *p = NULL, *s = NULL;
 
@@ -2136,7 +2275,7 @@ static int link_status_one(
         if (info->has_tx_queues || info->has_rx_queues) {
                 r = table_add_many(table,
                                    TABLE_EMPTY,
-                                   TABLE_STRING, "Queue Length (Tx/Rx):");
+                                   TABLE_STRING, "Number of Queues (Tx/Rx):");
                 if (r < 0)
                         return table_log_add_error(r);
                 r = table_add_cell_stringf(table, NULL, "%" PRIu32 "/%" PRIu32, info->tx_queues, info->rx_queues);
@@ -2145,9 +2284,6 @@ static int link_status_one(
         }
 
         if (info->has_ethtool_link_info) {
-                const char *duplex = duplex_to_string(info->duplex);
-                const char *port = port_to_string(info->port);
-
                 if (IN_SET(info->autonegotiation, AUTONEG_DISABLE, AUTONEG_ENABLE)) {
                         r = table_add_many(table,
                                            TABLE_EMPTY,
@@ -2157,7 +2293,7 @@ static int link_status_one(
                                 return table_log_add_error(r);
                 }
 
-                if (info->speed > 0) {
+                if (info->speed > 0 && info->speed != UINT64_MAX) {
                         r = table_add_many(table,
                                            TABLE_EMPTY,
                                            TABLE_STRING, "Speed:",
@@ -2166,23 +2302,13 @@ static int link_status_one(
                                 return table_log_add_error(r);
                 }
 
-                if (duplex) {
-                        r = table_add_many(table,
-                                           TABLE_EMPTY,
-                                           TABLE_STRING, "Duplex:",
-                                           TABLE_STRING, duplex);
-                        if (r < 0)
-                                return table_log_add_error(r);
-                }
+                r = table_add_string_line(table, "Duplex:", duplex_to_string(info->duplex));
+                if (r < 0)
+                        return r;
 
-                if (port) {
-                        r = table_add_many(table,
-                                           TABLE_EMPTY,
-                                           TABLE_STRING, "Port:",
-                                           TABLE_STRING, port);
-                        if (r < 0)
-                                return table_log_add_error(r);
-                }
+                r = table_add_string_line(table, "Port:", port_to_string(info->port));
+                if (r < 0)
+                        return r;
         }
 
         r = dump_addresses(rtnl, lease, table, info->ifindex);
@@ -2213,15 +2339,9 @@ static int link_status_one(
         if (r < 0)
                 return r;
 
-        r = sd_network_link_get_activation_policy(info->ifindex, &activation_policy);
-        if (r >= 0) {
-                r = table_add_many(table,
-                                   TABLE_EMPTY,
-                                   TABLE_STRING, "Activation Policy:",
-                                   TABLE_STRING, activation_policy);
-                if (r < 0)
-                        return table_log_add_error(r);
-        }
+        r = table_add_string_line(table, "Activation Policy:", activation_policy);
+        if (r < 0)
+                return r;
 
         r = sd_network_link_get_required_for_online(info->ifindex);
         if (r >= 0) {
@@ -2229,6 +2349,16 @@ static int link_status_one(
                                    TABLE_EMPTY,
                                    TABLE_STRING, "Required For Online:",
                                    TABLE_BOOLEAN, r);
+                if (r < 0)
+                        return table_log_add_error(r);
+        }
+
+        if (captive_portal) {
+                r = table_add_many(table,
+                                   TABLE_EMPTY,
+                                   TABLE_STRING, "Captive Portal:",
+                                   TABLE_STRING, captive_portal,
+                                   TABLE_SET_URL, captive_portal);
                 if (r < 0)
                         return table_log_add_error(r);
         }
@@ -2389,18 +2519,18 @@ static int link_status(int argc, char *argv[], void *userdata) {
         _cleanup_(link_info_array_freep) LinkInfo *links = NULL;
         int r, c;
 
+        r = acquire_bus(&bus);
+        if (r < 0)
+                return r;
+
         if (arg_json_format_flags != JSON_FORMAT_OFF) {
                 if (arg_all || argc <= 1)
-                        return dump_manager_description();
+                        return dump_manager_description(bus);
                 else
-                        return dump_link_description(strv_skip(argv, 1));
+                        return dump_link_description(bus, strv_skip(argv, 1));
         }
 
         pager_open(arg_pager_flags);
-
-        r = sd_bus_open_system(&bus);
-        if (r < 0)
-                return log_error_errno(r, "Failed to connect system bus: %m");
 
         r = sd_netlink_open(&rtnl);
         if (r < 0)
@@ -2498,11 +2628,11 @@ static int link_lldp_status(int argc, char *argv[], void *userdata) {
         pager_open(arg_pager_flags);
 
         table = table_new("link",
-                          "chassis id",
-                          "system name",
+                          "chassis-id",
+                          "system-name",
                           "caps",
-                          "port id",
-                          "port description");
+                          "port-id",
+                          "port-description");
         if (!table)
                 return log_oom();
 
@@ -2511,39 +2641,25 @@ static int link_lldp_status(int argc, char *argv[], void *userdata) {
 
         table_set_header(table, arg_legend);
 
-        assert_se(cell = table_get_cell(table, 0, 0));
-        table_set_minimum_width(table, cell, 16);
-
-        assert_se(cell = table_get_cell(table, 0, 1));
-        table_set_minimum_width(table, cell, 17);
-
-        assert_se(cell = table_get_cell(table, 0, 2));
-        table_set_minimum_width(table, cell, 16);
-
         assert_se(cell = table_get_cell(table, 0, 3));
         table_set_minimum_width(table, cell, 11);
+        table_set_ersatz_string(table, TABLE_ERSATZ_DASH);
 
-        assert_se(cell = table_get_cell(table, 0, 4));
-        table_set_minimum_width(table, cell, 17);
-
-        assert_se(cell = table_get_cell(table, 0, 5));
-        table_set_minimum_width(table, cell, 16);
-
-        for (int i = 0; i < c; i++) {
+        FOREACH_ARRAY(link, links, c) {
                 _cleanup_fclose_ FILE *f = NULL;
 
-                r = open_lldp_neighbors(links[i].ifindex, &f);
+                r = open_lldp_neighbors(link->ifindex, &f);
                 if (r == -ENOENT)
                         continue;
                 if (r < 0) {
-                        log_warning_errno(r, "Failed to open LLDP data for %i, ignoring: %m", links[i].ifindex);
+                        log_warning_errno(r, "Failed to open LLDP data for %i, ignoring: %m", link->ifindex);
                         continue;
                 }
 
                 for (;;) {
-                        _cleanup_free_ char *cid = NULL, *pid = NULL, *sname = NULL, *pdesc = NULL, *capabilities = NULL;
                         const char *chassis_id = NULL, *port_id = NULL, *system_name = NULL, *port_description = NULL;
                         _cleanup_(sd_lldp_neighbor_unrefp) sd_lldp_neighbor *n = NULL;
+                        _cleanup_free_ char *capabilities = NULL;
                         uint16_t cc;
 
                         r = next_lldp_neighbor(f, &n);
@@ -2559,42 +2675,18 @@ static int link_lldp_status(int argc, char *argv[], void *userdata) {
                         (void) sd_lldp_neighbor_get_system_name(n, &system_name);
                         (void) sd_lldp_neighbor_get_port_description(n, &port_description);
 
-                        if (chassis_id) {
-                                cid = ellipsize(chassis_id, 17, 100);
-                                if (cid)
-                                        chassis_id = cid;
-                        }
-
-                        if (port_id) {
-                                pid = ellipsize(port_id, 17, 100);
-                                if (pid)
-                                        port_id = pid;
-                        }
-
-                        if (system_name) {
-                                sname = ellipsize(system_name, 16, 100);
-                                if (sname)
-                                        system_name = sname;
-                        }
-
-                        if (port_description) {
-                                pdesc = ellipsize(port_description, 16, 100);
-                                if (pdesc)
-                                        port_description = pdesc;
-                        }
-
                         if (sd_lldp_neighbor_get_enabled_capabilities(n, &cc) >= 0) {
                                 capabilities = lldp_capabilities_to_string(cc);
                                 all |= cc;
                         }
 
                         r = table_add_many(table,
-                                           TABLE_STRING, links[i].name,
-                                           TABLE_STRING, strna(chassis_id),
-                                           TABLE_STRING, strna(system_name),
-                                           TABLE_STRING, strna(capabilities),
-                                           TABLE_STRING, strna(port_id),
-                                           TABLE_STRING, strna(port_description));
+                                           TABLE_STRING, link->name,
+                                           TABLE_STRING, chassis_id,
+                                           TABLE_STRING, system_name,
+                                           TABLE_STRING, capabilities,
+                                           TABLE_STRING, port_id,
+                                           TABLE_STRING, port_description);
                         if (r < 0)
                                 return table_log_add_error(r);
 
@@ -2619,6 +2711,7 @@ static int link_delete_send_message(sd_netlink *rtnl, int index) {
         int r;
 
         assert(rtnl);
+        assert(index >= 0);
 
         r = sd_rtnl_message_new_link(rtnl, &req, RTM_DELLINK, index);
         if (r < 0)
@@ -2636,6 +2729,7 @@ static int link_up_down_send_message(sd_netlink *rtnl, char *command, int index)
         int r;
 
         assert(rtnl);
+        assert(index >= 0);
 
         r = sd_rtnl_message_new_link(rtnl, &req, RTM_SETLINK, index);
         if (r < 0)
@@ -2729,6 +2823,10 @@ static int link_renew_one(sd_bus *bus, int index, const char *name) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
+        assert(bus);
+        assert(index >= 0);
+        assert(name);
+
         r = bus_call_method(bus, bus_network_mgr, "RenewLink", &error, NULL, "i", index);
         if (r < 0)
                 return log_error_errno(r, "Failed to renew dynamic configuration of interface %s: %s",
@@ -2742,9 +2840,9 @@ static int link_renew(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
         int index, k = 0, r;
 
-        r = sd_bus_open_system(&bus);
+        r = acquire_bus(&bus);
         if (r < 0)
-                return log_error_errno(r, "Failed to connect system bus: %m");
+                return r;
 
         for (int i = 1; i < argc; i++) {
                 index = rtnl_resolve_interface_or_warn(&rtnl, argv[i]);
@@ -2763,6 +2861,10 @@ static int link_force_renew_one(sd_bus *bus, int index, const char *name) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
+        assert(bus);
+        assert(index >= 0);
+        assert(name);
+
         r = bus_call_method(bus, bus_network_mgr, "ForceRenewLink", &error, NULL, "i", index);
         if (r < 0)
                 return log_error_errno(r, "Failed to force renew dynamic configuration of interface %s: %s",
@@ -2776,9 +2878,9 @@ static int link_force_renew(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
         int k = 0, r;
 
-        r = sd_bus_open_system(&bus);
+        r = acquire_bus(&bus);
         if (r < 0)
-                return log_error_errno(r, "Failed to connect system bus: %m");
+                return r;
 
         for (int i = 1; i < argc; i++) {
                 int index = rtnl_resolve_interface_or_warn(&rtnl, argv[i]);
@@ -2794,32 +2896,32 @@ static int link_force_renew(int argc, char *argv[], void *userdata) {
 }
 
 static int verb_reload(int argc, char *argv[], void *userdata) {
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
-        r = sd_bus_open_system(&bus);
+        r = acquire_bus(&bus);
         if (r < 0)
-                return log_error_errno(r, "Failed to connect system bus: %m");
+                return r;
 
         r = bus_call_method(bus, bus_network_mgr, "Reload", &error, NULL, NULL);
         if (r < 0)
-                return log_error_errno(r, "Failed to reload network settings: %m");
+                return log_error_errno(r, "Failed to reload network settings: %s", bus_error_message(&error, r));
 
         return 0;
 }
 
 static int verb_reconfigure(int argc, char *argv[], void *userdata) {
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
         _cleanup_set_free_ Set *indexes = NULL;
         int index, r;
         void *p;
 
-        r = sd_bus_open_system(&bus);
+        r = acquire_bus(&bus);
         if (r < 0)
-                return log_error_errno(r, "Failed to connect system bus: %m");
+                return r;
 
         indexes = set_new(NULL);
         if (!indexes)
@@ -2839,11 +2941,463 @@ static int verb_reconfigure(int argc, char *argv[], void *userdata) {
                 index = PTR_TO_INT(p);
                 r = bus_call_method(bus, bus_network_mgr, "ReconfigureLink", &error, NULL, "i", index);
                 if (r < 0)
-                        return log_error_errno(r, "Failed to reconfigure network interface %s: %m",
-                                               FORMAT_IFNAME_FULL(index, FORMAT_IFNAME_IFINDEX));
+                        return log_error_errno(r, "Failed to reconfigure network interface %s: %s",
+                                               FORMAT_IFNAME_FULL(index, FORMAT_IFNAME_IFINDEX),
+                                               bus_error_message(&error, r));
         }
 
         return 0;
+}
+
+typedef enum ReloadFlags {
+        RELOAD_NETWORKD = 1 << 0,
+        RELOAD_UDEVD    = 1 << 1,
+} ReloadFlags;
+
+static int get_config_files_by_name(const char *name, char **ret_path, char ***ret_dropins) {
+        _cleanup_free_ char *path = NULL;
+        int r;
+
+        assert(name);
+        assert(ret_path);
+
+        STRV_FOREACH(i, NETWORK_DIRS) {
+                _cleanup_free_ char *p = NULL;
+
+                p = path_join(*i, name);
+                if (!p)
+                        return -ENOMEM;
+
+                r = RET_NERRNO(access(p, F_OK));
+                if (r >= 0) {
+                        path = TAKE_PTR(p);
+                        break;
+                }
+
+                if (r != -ENOENT)
+                        log_debug_errno(r, "Failed to determine whether '%s' exists, ignoring: %m", p);
+        }
+
+        if (!path)
+                return -ENOENT;
+
+        if (ret_dropins) {
+                _cleanup_free_ char *dropin_dirname = NULL;
+
+                dropin_dirname = strjoin(name, ".d");
+                if (!dropin_dirname)
+                        return -ENOMEM;
+
+                r = conf_files_list_dropins(ret_dropins, dropin_dirname, /* root = */ NULL, NETWORK_DIRS);
+                if (r < 0)
+                        return r;
+        }
+
+        *ret_path = TAKE_PTR(path);
+
+        return 0;
+}
+
+static int get_dropin_by_name(
+                const char *name,
+                char * const *dropins,
+                char **ret) {
+
+        assert(name);
+        assert(dropins);
+        assert(ret);
+
+        STRV_FOREACH(i, dropins)
+                if (path_equal_filename(*i, name)) {
+                        _cleanup_free_ char *d = NULL;
+
+                        d = strdup(*i);
+                        if (!d)
+                                return -ENOMEM;
+
+                        *ret = TAKE_PTR(d);
+                        return 1;
+                }
+
+        *ret = NULL;
+        return 0;
+}
+
+static int get_network_files_by_link(
+                sd_netlink **rtnl,
+                const char *link,
+                char **ret_path,
+                char ***ret_dropins) {
+
+        _cleanup_strv_free_ char **dropins = NULL;
+        _cleanup_free_ char *path = NULL;
+        int r, ifindex;
+
+        assert(rtnl);
+        assert(link);
+        assert(ret_path);
+        assert(ret_dropins);
+
+        ifindex = rtnl_resolve_interface_or_warn(rtnl, link);
+        if (ifindex < 0)
+                return ifindex;
+
+        r = sd_network_link_get_network_file(ifindex, &path);
+        if (r == -ENODATA)
+                return log_error_errno(SYNTHETIC_ERRNO(ENOENT),
+                                       "Link '%s' has no associated network file.", link);
+        if (r < 0)
+                return log_error_errno(r, "Failed to get network file for link '%s': %m", link);
+
+        r = sd_network_link_get_network_file_dropins(ifindex, &dropins);
+        if (r < 0 && r != -ENODATA)
+                return log_error_errno(r, "Failed to get network drop-ins for link '%s': %m", link);
+
+        *ret_path = TAKE_PTR(path);
+        *ret_dropins = TAKE_PTR(dropins);
+
+        return 0;
+}
+
+static int get_link_files_by_link(const char *link, char **ret_path, char ***ret_dropins) {
+        _cleanup_(sd_device_unrefp) sd_device *device = NULL;
+        _cleanup_strv_free_ char **dropins_split = NULL;
+        _cleanup_free_ char *p = NULL;
+        const char *path, *dropins;
+        int r;
+
+        assert(link);
+        assert(ret_path);
+        assert(ret_dropins);
+
+        r = sd_device_new_from_ifname(&device, link);
+        if (r < 0)
+                return log_error_errno(r, "Failed to create sd-device object for link '%s': %m", link);
+
+        r = sd_device_get_property_value(device, "ID_NET_LINK_FILE", &path);
+        if (r == -ENOENT)
+                return log_error_errno(r, "Link '%s' has no associated link file.", link);
+        if (r < 0)
+                return log_error_errno(r, "Failed to get link file for link '%s': %m", link);
+
+        r = sd_device_get_property_value(device, "ID_NET_LINK_FILE_DROPINS", &dropins);
+        if (r < 0 && r != -ENOENT)
+                return log_error_errno(r, "Failed to get link drop-ins for link '%s': %m", link);
+        if (r >= 0) {
+                r = strv_split_full(&dropins_split, dropins, ":", EXTRACT_CUNESCAPE);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to parse link drop-ins for link '%s': %m", link);
+        }
+
+        p = strdup(path);
+        if (!p)
+                return log_oom();
+
+        *ret_path = TAKE_PTR(p);
+        *ret_dropins = TAKE_PTR(dropins_split);
+
+        return 0;
+}
+
+static int get_config_files_by_link_config(
+                const char *link_config,
+                sd_netlink **rtnl,
+                char **ret_path,
+                char ***ret_dropins,
+                ReloadFlags *ret_reload) {
+
+        _cleanup_strv_free_ char **dropins = NULL, **link_config_split = NULL;
+        _cleanup_free_ char *path = NULL;
+        const char *ifname, *type;
+        ReloadFlags reload;
+        size_t n;
+        int r;
+
+        assert(link_config);
+        assert(rtnl);
+        assert(ret_path);
+        assert(ret_dropins);
+
+        link_config_split = strv_split(link_config, ":");
+        if (!link_config_split)
+                return log_oom();
+
+        n = strv_length(link_config_split);
+        if (n == 0 || isempty(link_config_split[0]))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No link name is given.");
+        if (n > 2)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid link config '%s'.", link_config);
+
+        ifname = link_config_split[0];
+        type = n == 2 ? link_config_split[1] : "network";
+
+        if (streq(type, "network")) {
+                if (!networkd_is_running())
+                        return log_error_errno(SYNTHETIC_ERRNO(ESRCH),
+                                               "Cannot get network file for link if systemd-networkd is not running.");
+
+                r = get_network_files_by_link(rtnl, ifname, &path, &dropins);
+                if (r < 0)
+                        return r;
+
+                reload = RELOAD_NETWORKD;
+        } else if (streq(type, "link")) {
+                r = get_link_files_by_link(ifname, &path, &dropins);
+                if (r < 0)
+                        return r;
+
+                reload = RELOAD_UDEVD;
+        } else
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "Invalid config type '%s' for link '%s'.", type, ifname);
+
+        *ret_path = TAKE_PTR(path);
+        *ret_dropins = TAKE_PTR(dropins);
+
+        if (ret_reload)
+                *ret_reload = reload;
+
+        return 0;
+}
+
+static int add_config_to_edit(
+                EditFileContext *context,
+                const char *path,
+                char * const *dropins) {
+
+        _cleanup_free_ char *new_path = NULL, *dropin_path = NULL, *old_dropin = NULL;
+        _cleanup_strv_free_ char **comment_paths = NULL;
+        int r;
+
+        assert(context);
+        assert(path);
+        assert(!arg_drop_in || dropins);
+
+        if (path_startswith(path, "/usr")) {
+                _cleanup_free_ char *name = NULL;
+
+                r = path_extract_filename(path, &name);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to extract filename from '%s': %m", path);
+
+                new_path = path_join(NETWORK_DIRS[0], name);
+                if (!new_path)
+                        return log_oom();
+        }
+
+        if (!arg_drop_in)
+                return edit_files_add(context, new_path ?: path, path, NULL);
+
+        r = get_dropin_by_name(arg_drop_in, dropins, &old_dropin);
+        if (r < 0)
+                return log_error_errno(r, "Failed to acquire drop-in '%s': %m", arg_drop_in);
+
+        if (r > 0 && !path_startswith(old_dropin, "/usr"))
+                /* An existing drop-in is found and not in /usr/. Let's edit it directly. */
+                dropin_path = TAKE_PTR(old_dropin);
+        else {
+                /* No drop-in was found or an existing drop-in resides in /usr/. Let's create
+                 * a new drop-in file. */
+                dropin_path = strjoin(new_path ?: path, ".d/", arg_drop_in);
+                if (!dropin_path)
+                        return log_oom();
+        }
+
+        comment_paths = strv_new(path);
+        if (!comment_paths)
+                return log_oom();
+
+        r = strv_extend_strv(&comment_paths, dropins, /* filter_duplicates = */ false);
+        if (r < 0)
+                return log_oom();
+
+        return edit_files_add(context, dropin_path, old_dropin, comment_paths);
+}
+
+static int udevd_reload(sd_bus *bus) {
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *w = NULL;
+        const char *job_path;
+        int r;
+
+        assert(bus);
+
+        r = bus_wait_for_jobs_new(bus, &w);
+        if (r < 0)
+                return log_error_errno(r, "Could not watch jobs: %m");
+
+        r = bus_call_method(bus,
+                            bus_systemd_mgr,
+                            "ReloadUnit",
+                            &error,
+                            &reply,
+                            "ss",
+                            "systemd-udevd.service",
+                            "replace");
+        if (r < 0)
+                return log_error_errno(r, "Failed to reload systemd-udevd: %s", bus_error_message(&error, r));
+
+        r = sd_bus_message_read(reply, "o", &job_path);
+        if (r < 0)
+                return bus_log_parse_error(r);
+
+        r = bus_wait_for_jobs_one(w, job_path, /* quiet = */ true, NULL);
+        if (r == -ENOEXEC) {
+                log_debug("systemd-udevd is not running, skipping reload.");
+                return 0;
+        }
+        if (r < 0)
+                return log_error_errno(r, "Failed to reload systemd-udevd: %m");
+
+        return 1;
+}
+
+static int verb_edit(int argc, char *argv[], void *userdata) {
+        _cleanup_(edit_file_context_done) EditFileContext context = {
+                .marker_start = DROPIN_MARKER_START,
+                .marker_end = DROPIN_MARKER_END,
+                .remove_parent = !!arg_drop_in,
+        };
+        _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
+        ReloadFlags reload = 0;
+        int r;
+
+        if (!on_tty())
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Cannot edit network config files if not on a tty.");
+
+        r = mac_selinux_init();
+        if (r < 0)
+                return r;
+
+        STRV_FOREACH(name, strv_skip(argv, 1)) {
+                _cleanup_strv_free_ char **dropins = NULL;
+                _cleanup_free_ char *path = NULL;
+                const char *link_config;
+
+                link_config = startswith(*name, "@");
+                if (link_config) {
+                        ReloadFlags flags;
+
+                        r = get_config_files_by_link_config(link_config, &rtnl, &path, &dropins, &flags);
+                        if (r < 0)
+                                return r;
+
+                        reload |= flags;
+
+                        r = add_config_to_edit(&context, path, dropins);
+                        if (r < 0)
+                                return r;
+
+                        continue;
+                }
+
+                if (ENDSWITH_SET(*name, ".network", ".netdev"))
+                        reload |= RELOAD_NETWORKD;
+                else if (endswith(*name, ".link"))
+                        reload |= RELOAD_UDEVD;
+                else
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid network config name '%s'.", *name);
+
+                r = get_config_files_by_name(*name, &path, &dropins);
+                if (r == -ENOENT) {
+                        if (arg_drop_in)
+                                return log_error_errno(r, "Cannot find network config '%s'.", *name);
+
+                        log_debug("No existing network config '%s' found, creating a new file.", *name);
+
+                        path = path_join(NETWORK_DIRS[0], *name);
+                        if (!path)
+                                return log_oom();
+
+                        r = edit_files_add(&context, path, NULL, NULL);
+                        if (r < 0)
+                                return r;
+                        continue;
+                }
+                if (r < 0)
+                        return log_error_errno(r, "Failed to get the path of network config '%s': %m", *name);
+
+                r = add_config_to_edit(&context, path, dropins);
+                if (r < 0)
+                        return r;
+        }
+
+        r = do_edit_files_and_install(&context);
+        if (r < 0)
+                return r;
+
+        if (arg_no_reload)
+                return 0;
+
+        if (!sd_booted() || running_in_chroot() > 0) {
+                log_debug("System is not booted with systemd or is running in chroot, skipping reload.");
+                return 0;
+        }
+
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
+
+        r = sd_bus_open_system(&bus);
+        if (r < 0)
+                return log_error_errno(r, "Failed to connect to system bus: %m");
+
+        if (FLAGS_SET(reload, RELOAD_UDEVD)) {
+                r = udevd_reload(bus);
+                if (r < 0)
+                        return r;
+        }
+
+        if (FLAGS_SET(reload, RELOAD_NETWORKD)) {
+                _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+
+                if (!networkd_is_running()) {
+                        log_debug("systemd-networkd is not running, skipping reload.");
+                        return 0;
+                }
+
+                r = bus_call_method(bus, bus_network_mgr, "Reload", &error, NULL, NULL);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to reload systemd-networkd: %s", bus_error_message(&error, r));
+        }
+
+        return 0;
+}
+
+static int verb_cat(int argc, char *argv[], void *userdata) {
+        _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
+        int r, ret = 0;
+
+        pager_open(arg_pager_flags);
+
+        STRV_FOREACH(name, strv_skip(argv, 1)) {
+                _cleanup_strv_free_ char **dropins = NULL;
+                _cleanup_free_ char *path = NULL;
+                const char *link_config;
+
+                link_config = startswith(*name, "@");
+                if (link_config) {
+                        r = get_config_files_by_link_config(link_config, &rtnl, &path, &dropins, /* ret_reload = */ NULL);
+                        if (r < 0)
+                                return ret < 0 ? ret : r;
+                } else {
+                        r = get_config_files_by_name(*name, &path, &dropins);
+                        if (r == -ENOENT) {
+                                log_error_errno(r, "Cannot find network config file '%s'.", *name);
+                                ret = ret < 0 ? ret : r;
+                                continue;
+                        }
+                        if (r < 0) {
+                                log_error_errno(r, "Failed to get the path of network config '%s': %m", *name);
+                                return ret < 0 ? ret : r;
+                        }
+                }
+
+                r = cat_files(path, dropins, /* flags = */ 0);
+                if (r < 0)
+                        return ret < 0 ? ret : r;
+        }
+
+        return ret;
 }
 
 static int help(void) {
@@ -2868,6 +3422,8 @@ static int help(void) {
                "  forcerenew DEVICES...  Trigger DHCP reconfiguration of all connected clients\n"
                "  reconfigure DEVICES... Reconfigure interfaces\n"
                "  reload                 Reload .network and .netdev files\n"
+               "  edit FILES|DEVICES...  Edit network configuration files\n"
+               "  cat FILES|DEVICES...   Show network configuration files\n"
                "\nOptions:\n"
                "  -h --help              Show this help\n"
                "     --version           Show package version\n"
@@ -2879,6 +3435,9 @@ static int help(void) {
                "  -n --lines=INTEGER     Number of journal entries to show\n"
                "     --json=pretty|short|off\n"
                "                         Generate JSON output\n"
+               "     --no-reload         Do not reload systemd-networkd or systemd-udevd\n"
+               "                         after editing network config\n"
+               "     --drop-in=NAME      Edit specified drop-in instead of main config file\n"
                "\nSee the %s for details.\n",
                program_invocation_short_name,
                ansi_highlight(),
@@ -2889,12 +3448,13 @@ static int help(void) {
 }
 
 static int parse_argv(int argc, char *argv[]) {
-
         enum {
                 ARG_VERSION = 0x100,
                 ARG_NO_PAGER,
                 ARG_NO_LEGEND,
                 ARG_JSON,
+                ARG_NO_RELOAD,
+                ARG_DROP_IN,
         };
 
         static const struct option options[] = {
@@ -2907,6 +3467,8 @@ static int parse_argv(int argc, char *argv[]) {
                 { "full",      no_argument,       NULL, 'l'           },
                 { "lines",     required_argument, NULL, 'n'           },
                 { "json",      required_argument, NULL, ARG_JSON      },
+                { "no-reload", no_argument,       NULL, ARG_NO_RELOAD },
+                { "drop-in",   required_argument, NULL, ARG_DROP_IN   },
                 {}
         };
 
@@ -2931,6 +3493,34 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case ARG_NO_LEGEND:
                         arg_legend = false;
+                        break;
+
+                case ARG_NO_RELOAD:
+                        arg_no_reload = true;
+                        break;
+
+                case ARG_DROP_IN:
+                        if (isempty(optarg))
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Empty drop-in file name.");
+
+                        if (!endswith(optarg, ".conf")) {
+                                char *conf;
+
+                                conf = strjoin(optarg, ".conf");
+                                if (!conf)
+                                        return log_oom();
+
+                                free_and_replace(arg_drop_in, conf);
+                        } else {
+                                r = free_and_strdup(&arg_drop_in, optarg);
+                                if (r < 0)
+                                        return log_oom();
+                        }
+
+                        if (!filename_is_valid(arg_drop_in))
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                       "Invalid drop-in file name '%s'.", arg_drop_in);
+
                         break;
 
                 case 'a':
@@ -2970,68 +3560,23 @@ static int parse_argv(int argc, char *argv[]) {
 
 static int networkctl_main(int argc, char *argv[]) {
         static const Verb verbs[] = {
-                { "list",        VERB_ANY, VERB_ANY, VERB_DEFAULT, list_links          },
-                { "status",      VERB_ANY, VERB_ANY, 0,            link_status         },
-                { "lldp",        VERB_ANY, VERB_ANY, 0,            link_lldp_status    },
-                { "label",       1,        1,        0,            list_address_labels },
-                { "delete",      2,        VERB_ANY, 0,            link_delete         },
-                { "up",          2,        VERB_ANY, 0,            link_up_down        },
-                { "down",        2,        VERB_ANY, 0,            link_up_down        },
-                { "renew",       2,        VERB_ANY, 0,            link_renew          },
-                { "forcerenew",  2,        VERB_ANY, 0,            link_force_renew    },
-                { "reconfigure", 2,        VERB_ANY, 0,            verb_reconfigure    },
-                { "reload",      1,        1,        0,            verb_reload         },
+                { "list",        VERB_ANY, VERB_ANY, VERB_DEFAULT|VERB_ONLINE_ONLY, list_links          },
+                { "status",      VERB_ANY, VERB_ANY, VERB_ONLINE_ONLY,              link_status         },
+                { "lldp",        VERB_ANY, VERB_ANY, 0,                             link_lldp_status    },
+                { "label",       1,        1,        0,                             list_address_labels },
+                { "delete",      2,        VERB_ANY, 0,                             link_delete         },
+                { "up",          2,        VERB_ANY, 0,                             link_up_down        },
+                { "down",        2,        VERB_ANY, 0,                             link_up_down        },
+                { "renew",       2,        VERB_ANY, VERB_ONLINE_ONLY,              link_renew          },
+                { "forcerenew",  2,        VERB_ANY, VERB_ONLINE_ONLY,              link_force_renew    },
+                { "reconfigure", 2,        VERB_ANY, VERB_ONLINE_ONLY,              verb_reconfigure    },
+                { "reload",      1,        1,        VERB_ONLINE_ONLY,              verb_reload         },
+                { "edit",        2,        VERB_ANY, 0,                             verb_edit           },
+                { "cat",         2,        VERB_ANY, 0,                             verb_cat            },
                 {}
         };
 
         return dispatch_verb(argc, argv, verbs, NULL);
-}
-
-static int check_netns_match(void) {
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
-        struct stat st;
-        uint64_t id;
-        int r;
-
-        r = sd_bus_open_system(&bus);
-        if (r < 0)
-                return log_error_errno(r, "Failed to connect system bus: %m");
-
-        r = sd_bus_get_property_trivial(
-                        bus,
-                        "org.freedesktop.network1",
-                        "/org/freedesktop/network1",
-                        "org.freedesktop.network1.Manager",
-                        "NamespaceId",
-                        &error,
-                        't',
-                        &id);
-        if (r < 0) {
-                log_debug_errno(r, "Failed to query network namespace of networkd, ignoring: %s", bus_error_message(&error, r));
-                return 0;
-        }
-        if (id == 0) {
-                log_debug("systemd-networkd.service not running in a network namespace (?), skipping netns check.");
-                return 0;
-        }
-
-        if (stat("/proc/self/ns/net", &st) < 0)
-                return log_error_errno(r, "Failed to determine our own network namespace ID: %m");
-
-        if (id != st.st_ino)
-                return log_error_errno(SYNTHETIC_ERRNO(EREMOTE),
-                                       "networkctl must be invoked in same network namespace as systemd-networkd.service.");
-
-        return 0;
-}
-
-static void warn_networkd_missing(void) {
-
-        if (access("/run/systemd/netif/state", F_OK) >= 0)
-                return;
-
-        fprintf(stderr, "WARNING: systemd-networkd is not running, output will be incomplete.\n\n");
 }
 
 static int run(int argc, char* argv[]) {
@@ -3042,12 +3587,6 @@ static int run(int argc, char* argv[]) {
         r = parse_argv(argc, argv);
         if (r <= 0)
                 return r;
-
-        r = check_netns_match();
-        if (r < 0)
-                return r;
-
-        warn_networkd_missing();
 
         return networkctl_main(argc, argv);
 }

@@ -3,6 +3,7 @@
 #include "condition.h"
 #include "conf-parser.h"
 #include "escape.h"
+#include "logarithm.h"
 #include "networkd-link.h"
 #include "networkd-util.h"
 #include "parse-util.h"
@@ -26,7 +27,6 @@ DEFINE_STRING_TABLE_LOOKUP_TO_STRING(network_config_source, NetworkConfigSource)
 
 int network_config_state_to_string_alloc(NetworkConfigState s, char **ret) {
         static const char* states[] = {
-                [LOG2U(NETWORK_CONFIG_STATE_PROBING)]     = "probing",
                 [LOG2U(NETWORK_CONFIG_STATE_REQUESTING)]  = "requesting",
                 [LOG2U(NETWORK_CONFIG_STATE_CONFIGURING)] = "configuring",
                 [LOG2U(NETWORK_CONFIG_STATE_CONFIGURED)]  = "configured",
@@ -214,13 +214,12 @@ int config_parse_mud_url(
                 void *userdata) {
 
         _cleanup_free_ char *unescaped = NULL;
-        char **url = data;
+        char **url = ASSERT_PTR(data);
         ssize_t l;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(url);
 
         if (isempty(rvalue)) {
                 *url = mfree(*url);
@@ -241,50 +240,6 @@ int config_parse_mud_url(
         }
 
         return free_and_replace(*url, unescaped);
-}
-
-static void network_config_hash_func(const NetworkConfigSection *c, struct siphash *state) {
-        siphash24_compress_string(c->filename, state);
-        siphash24_compress(&c->line, sizeof(c->line), state);
-}
-
-static int network_config_compare_func(const NetworkConfigSection *x, const NetworkConfigSection *y) {
-        int r;
-
-        r = strcmp(x->filename, y->filename);
-        if (r != 0)
-                return r;
-
-        return CMP(x->line, y->line);
-}
-
-DEFINE_HASH_OPS(network_config_hash_ops, NetworkConfigSection, network_config_hash_func, network_config_compare_func);
-
-int network_config_section_new(const char *filename, unsigned line, NetworkConfigSection **s) {
-        NetworkConfigSection *cs;
-
-        cs = malloc0(offsetof(NetworkConfigSection, filename) + strlen(filename) + 1);
-        if (!cs)
-                return -ENOMEM;
-
-        strcpy(cs->filename, filename);
-        cs->line = line;
-
-        *s = TAKE_PTR(cs);
-
-        return 0;
-}
-
-unsigned hashmap_find_free_section_line(Hashmap *hashmap) {
-        NetworkConfigSection *cs;
-        unsigned n = 0;
-        void *entry;
-
-        HASHMAP_FOREACH_KEY(entry, cs, hashmap)
-                if (n < cs->line)
-                        n = cs->line;
-
-        return n + 1;
 }
 
 int log_link_message_full_errno(Link *link, sd_netlink_message *m, int level, int err, const char *msg) {

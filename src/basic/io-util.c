@@ -49,14 +49,12 @@ int flush_fd(int fd) {
 }
 
 ssize_t loop_read(int fd, void *buf, size_t nbytes, bool do_poll) {
-        uint8_t *p = buf;
+        uint8_t *p = ASSERT_PTR(buf);
         ssize_t n = 0;
 
         assert(fd >= 0);
-        assert(buf);
 
-        /* If called with nbytes == 0, let's call read() at least
-         * once, to validate the operation */
+        /* If called with nbytes == 0, let's call read() at least once, to validate the operation */
 
         if (nbytes > (size_t) SSIZE_MAX)
                 return -EINVAL;
@@ -108,13 +106,24 @@ int loop_read_exact(int fd, void *buf, size_t nbytes, bool do_poll) {
 }
 
 int loop_write(int fd, const void *buf, size_t nbytes, bool do_poll) {
-        const uint8_t *p = buf;
+        const uint8_t *p;
 
         assert(fd >= 0);
-        assert(buf);
 
-        if (_unlikely_(nbytes > (size_t) SSIZE_MAX))
-                return -EINVAL;
+        if (nbytes == 0) {
+                static const dummy_t dummy[0];
+                assert_cc(sizeof(dummy) == 0);
+                p = (const void*) dummy; /* Some valid pointer, in case NULL was specified */
+        } else {
+                assert(buf);
+
+                if (nbytes == SIZE_MAX)
+                        nbytes = strlen(buf);
+                else if (_unlikely_(nbytes > (size_t) SSIZE_MAX))
+                        return -EINVAL;
+
+                p = buf;
+        }
 
         do {
                 ssize_t k;
@@ -159,15 +168,29 @@ int pipe_eof(int fd) {
 }
 
 int ppoll_usec(struct pollfd *fds, size_t nfds, usec_t timeout) {
-        struct timespec ts;
         int r;
 
         assert(fds || nfds == 0);
 
+        /* This is a wrapper around ppoll() that does primarily two things:
+         *
+         *  ✅ Takes a usec_t instead of a struct timespec
+         *
+         *  ✅ Guarantees that if an invalid fd is specified we return EBADF (i.e. converts POLLNVAL to
+         *     EBADF). This is done because EBADF is a programming error usually, and hence should bubble up
+         *     as error, and not be eaten up as non-error POLLNVAL event.
+         *
+         *  ⚠️ ⚠️ ⚠️ Note that this function does not add any special handling for EINTR. Don't forget
+         *  poll()/ppoll() will return with EINTR on any received signal always, there is no automatic
+         *  restarting via SA_RESTART available. Thus, typically you want to handle EINTR not as an error,
+         *  but just as reason to restart things, under the assumption you use a more appropriate mechanism
+         *  to handle signals, such as signalfd() or signal handlers. ⚠️ ⚠️ ⚠️
+         */
+
         if (nfds == 0)
                 return 0;
 
-        r = ppoll(fds, nfds, timeout == USEC_INFINITY ? NULL : timespec_store(&ts, timeout), NULL);
+        r = ppoll(fds, nfds, timeout == USEC_INFINITY ? NULL : TIMESPEC_STORE(timeout), NULL);
         if (r < 0)
                 return -errno;
         if (r == 0)
@@ -190,6 +213,9 @@ int fd_wait_for_event(int fd, int event, usec_t timeout) {
                 .events = event,
         };
         int r;
+
+        /* ⚠️ ⚠️ ⚠️ Keep in mind you almost certainly want to handle -EINTR gracefully in the caller, see
+         * ppoll_usec() above! ⚠️ ⚠️ ⚠️ */
 
         r = ppoll_usec(&pollfd, 1, timeout);
         if (r <= 0)
@@ -346,4 +372,14 @@ size_t iovw_size(struct iovec_wrapper *iovw) {
                 n += iovw->iovec[i].iov_len;
 
         return n;
+}
+
+void iovec_array_free(struct iovec *iov, size_t n) {
+        if (!iov)
+                return;
+
+        for (size_t i = 0; i < n; i++)
+                free(iov[i].iov_base);
+
+        free(iov);
 }

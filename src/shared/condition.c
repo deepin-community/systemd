@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fnmatch.h>
@@ -17,12 +18,16 @@
 #include "apparmor-util.h"
 #include "architecture.h"
 #include "audit-util.h"
+#include "battery-util.h"
 #include "blockdev-util.h"
 #include "cap-list.h"
 #include "cgroup-util.h"
+#include "compare-operator.h"
 #include "condition.h"
+#include "confidential-virt.h"
 #include "cpu-set-util.h"
-#include "efi-loader.h"
+#include "creds-util.h"
+#include "efi-api.h"
 #include "env-file.h"
 #include "env-util.h"
 #include "extract-word.h"
@@ -32,10 +37,12 @@
 #include "glob-util.h"
 #include "hostname-util.h"
 #include "ima-util.h"
+#include "initrd-util.h"
 #include "limits-util.h"
 #include "list.h"
 #include "macro.h"
 #include "mountpoint-util.h"
+#include "nulstr-util.h"
 #include "os-util.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -50,7 +57,7 @@
 #include "string-table.h"
 #include "string-util.h"
 #include "tomoyo-util.h"
-#include "udev-util.h"
+#include "tpm2-util.h"
 #include "uid-alloc-range.h"
 #include "user-util.h"
 #include "virt.h"
@@ -89,9 +96,7 @@ Condition* condition_free(Condition *c) {
 }
 
 Condition* condition_free_list_type(Condition *head, ConditionType type) {
-        Condition *c, *n;
-
-        LIST_FOREACH_SAFE(conditions, c, n, head)
+        LIST_FOREACH(conditions, c, head)
                 if (type < 0 || c->type == type) {
                         LIST_REMOVE(conditions, head, c);
                         condition_free(c);
@@ -102,37 +107,28 @@ Condition* condition_free_list_type(Condition *head, ConditionType type) {
 }
 
 static int condition_test_kernel_command_line(Condition *c, char **env) {
-        _cleanup_free_ char *line = NULL;
-        const char *p;
-        bool equal;
+        _cleanup_strv_free_ char **args = NULL;
         int r;
 
         assert(c);
         assert(c->parameter);
         assert(c->type == CONDITION_KERNEL_COMMAND_LINE);
 
-        r = proc_cmdline(&line);
+        r = proc_cmdline_strv(&args);
         if (r < 0)
                 return r;
 
-        equal = strchr(c->parameter, '=');
+        bool equal = strchr(c->parameter, '=');
 
-        for (p = line;;) {
-                _cleanup_free_ char *word = NULL;
+        STRV_FOREACH(word, args) {
                 bool found;
 
-                r = extract_first_word(&p, &word, NULL, EXTRACT_UNQUOTE|EXTRACT_RELAX);
-                if (r < 0)
-                        return r;
-                if (r == 0)
-                        break;
-
                 if (equal)
-                        found = streq(word, c->parameter);
+                        found = streq(*word, c->parameter);
                 else {
                         const char *f;
 
-                        f = startswith(word, c->parameter);
+                        f = startswith(*word, c->parameter);
                         found = f && IN_SET(*f, 0, '=');
                 }
 
@@ -143,77 +139,49 @@ static int condition_test_kernel_command_line(Condition *c, char **env) {
         return false;
 }
 
-typedef enum {
-        /* Listed in order of checking. Note that some comparators are prefixes of others, hence the longest
-         * should be listed first. */
-        ORDER_LOWER_OR_EQUAL,
-        ORDER_GREATER_OR_EQUAL,
-        ORDER_LOWER,
-        ORDER_GREATER,
-        ORDER_EQUAL,
-        ORDER_UNEQUAL,
-        _ORDER_MAX,
-        _ORDER_INVALID = -EINVAL,
-} OrderOperator;
+static int condition_test_credential(Condition *c, char **env) {
+        int (*gd)(const char **ret);
+        int r;
 
-static OrderOperator parse_order(const char **s) {
+        assert(c);
+        assert(c->parameter);
+        assert(c->type == CONDITION_CREDENTIAL);
 
-        static const char *const prefix[_ORDER_MAX] = {
-                [ORDER_LOWER_OR_EQUAL] = "<=",
-                [ORDER_GREATER_OR_EQUAL] = ">=",
-                [ORDER_LOWER] = "<",
-                [ORDER_GREATER] = ">",
-                [ORDER_EQUAL] = "=",
-                [ORDER_UNEQUAL] = "!=",
-        };
+        /* For now we'll do a very simple existence check and are happy with either a regular or an encrypted
+         * credential. Given that we check the syntax of the argument we have the option to later maybe allow
+         * contents checks too without breaking compatibility, but for now let's be minimalistic. */
 
-        OrderOperator i;
+        if (!credential_name_valid(c->parameter)) /* credentials with invalid names do not exist */
+                return false;
 
-        for (i = 0; i < _ORDER_MAX; i++) {
-                const char *e;
+        FOREACH_POINTER(gd, get_credentials_dir, get_encrypted_credentials_dir) {
+                _cleanup_free_ char *j = NULL;
+                const char *cd;
 
-                e = startswith(*s, prefix[i]);
-                if (e) {
-                        *s = e;
-                        return i;
-                }
+                r = gd(&cd);
+                if (r == -ENXIO) /* no env var set */
+                        continue;
+                if (r < 0)
+                        return r;
+
+                j = path_join(cd, c->parameter);
+                if (!j)
+                        return -ENOMEM;
+
+                if (laccess(j, F_OK) >= 0)
+                        return true; /* yay! */
+                if (errno != ENOENT)
+                        return -errno;
+
+                /* not found in this dir */
         }
 
-        return _ORDER_INVALID;
-}
-
-static bool test_order(int k, OrderOperator p) {
-
-        switch (p) {
-
-        case ORDER_LOWER:
-                return k < 0;
-
-        case ORDER_LOWER_OR_EQUAL:
-                return k <= 0;
-
-        case ORDER_EQUAL:
-                return k == 0;
-
-        case ORDER_UNEQUAL:
-                return k != 0;
-
-        case ORDER_GREATER_OR_EQUAL:
-                return k >= 0;
-
-        case ORDER_GREATER:
-                return k > 0;
-
-        default:
-                assert_not_reached();
-
-        }
+        return false;
 }
 
 static int condition_test_kernel_version(Condition *c, char **env) {
-        OrderOperator order;
+        CompareOperator operator;
         struct utsname u;
-        const char *p;
         bool first = true;
 
         assert(c);
@@ -222,9 +190,7 @@ static int condition_test_kernel_version(Condition *c, char **env) {
 
         assert_se(uname(&u) >= 0);
 
-        p = c->parameter;
-
-        for (;;) {
+        for (const char *p = c->parameter;;) {
                 _cleanup_free_ char *word = NULL;
                 const char *s;
                 int r;
@@ -236,30 +202,30 @@ static int condition_test_kernel_version(Condition *c, char **env) {
                         break;
 
                 s = strstrip(word);
-                order = parse_order(&s);
-                if (order >= 0) {
-                        s += strspn(s, WHITESPACE);
-                        if (isempty(s)) {
-                                if (first) {
-                                        /* For backwards compatibility, allow whitespace between the operator and
-                                         * value, without quoting, but only in the first expression. */
-                                        word = mfree(word);
-                                        r = extract_first_word(&p, &word, NULL, 0);
-                                        if (r < 0)
-                                                return log_debug_errno(r, "Failed to parse condition string \"%s\": %m", p);
-                                        if (r == 0)
-                                                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Unexpected end of expression: %s", p);
-                                        s = word;
-                                } else
+                operator = parse_compare_operator(&s, COMPARE_ALLOW_FNMATCH|COMPARE_EQUAL_BY_STRING);
+                if (operator < 0) /* No prefix? Then treat as glob string */
+                        operator = COMPARE_FNMATCH_EQUAL;
+
+                s += strspn(s, WHITESPACE);
+                if (isempty(s)) {
+                        if (first) {
+                                /* For backwards compatibility, allow whitespace between the operator and
+                                 * value, without quoting, but only in the first expression. */
+                                word = mfree(word);
+                                r = extract_first_word(&p, &word, NULL, 0);
+                                if (r < 0)
+                                        return log_debug_errno(r, "Failed to parse condition string \"%s\": %m", p);
+                                if (r == 0)
                                         return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Unexpected end of expression: %s", p);
-                        }
+                                s = word;
+                        } else
+                                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Unexpected end of expression: %s", p);
+                }
 
-                        r = test_order(strverscmp_improved(u.release, s), order);
-                } else
-                        /* No prefix? Then treat as glob string */
-                        r = fnmatch(s, u.release, 0) == 0;
-
-                if (r == 0)
+                r = version_or_fnmatch_compare(operator, u.release, s);
+                if (r < 0)
+                        return r;
+                if (!r)
                         return false;
 
                 first = false;
@@ -269,18 +235,15 @@ static int condition_test_kernel_version(Condition *c, char **env) {
 }
 
 static int condition_test_osrelease(Condition *c, char **env) {
-        const char *parameter = c->parameter;
         int r;
 
         assert(c);
-        assert(c->parameter);
         assert(c->type == CONDITION_OS_RELEASE);
 
-        for (;;) {
+        for (const char *parameter = ASSERT_PTR(c->parameter);;) {
                 _cleanup_free_ char *key = NULL, *condition = NULL, *actual_value = NULL;
-                OrderOperator order;
+                CompareOperator operator;
                 const char *word;
-                bool matches;
 
                 r = extract_first_word(&parameter, &condition, NULL, EXTRACT_UNQUOTE);
                 if (r < 0)
@@ -288,9 +251,9 @@ static int condition_test_osrelease(Condition *c, char **env) {
                 if (r == 0)
                         break;
 
-                /* parse_order() needs the string to start with the comparators */
+                /* parse_compare_operator() needs the string to start with the comparators */
                 word = condition;
-                r = extract_first_word(&word, &key, "!<=>", EXTRACT_RETAIN_SEPARATORS);
+                r = extract_first_word(&word, &key, COMPARE_OPERATOR_WITH_FNMATCH_CHARS, EXTRACT_RETAIN_SEPARATORS);
                 if (r < 0)
                         return log_debug_errno(r, "Failed to parse parameter: %m");
                 /* The os-release spec mandates env-var-like key names */
@@ -299,8 +262,8 @@ static int condition_test_osrelease(Condition *c, char **env) {
                                         "Failed to parse parameter, key/value format expected: %m");
 
                 /* Do not allow whitespace after the separator, as that's not a valid os-release format */
-                order = parse_order(&word);
-                if (order < 0 || isempty(word) || strchr(WHITESPACE, *word) != NULL)
+                operator = parse_compare_operator(&word, COMPARE_ALLOW_FNMATCH|COMPARE_EQUAL_BY_STRING);
+                if (operator < 0 || isempty(word) || strchr(WHITESPACE, *word) != NULL)
                         return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
                                         "Failed to parse parameter, key/value format expected: %m");
 
@@ -308,15 +271,10 @@ static int condition_test_osrelease(Condition *c, char **env) {
                 if (r < 0)
                         return log_debug_errno(r, "Failed to parse os-release: %m");
 
-                /* Might not be comparing versions, so do exact string matching */
-                if (order == ORDER_EQUAL)
-                        matches = streq_ptr(actual_value, word);
-                else if (order == ORDER_UNEQUAL)
-                        matches = !streq_ptr(actual_value, word);
-                else
-                        matches = test_order(strverscmp_improved(actual_value, word), order);
-
-                if (!matches)
+                r = version_or_fnmatch_compare(operator, actual_value, word);
+                if (r < 0)
+                        return r;
+                if (!r)
                         return false;
         }
 
@@ -324,7 +282,7 @@ static int condition_test_osrelease(Condition *c, char **env) {
 }
 
 static int condition_test_memory(Condition *c, char **env) {
-        OrderOperator order;
+        CompareOperator operator;
         uint64_t m, k;
         const char *p;
         int r;
@@ -336,19 +294,19 @@ static int condition_test_memory(Condition *c, char **env) {
         m = physical_memory();
 
         p = c->parameter;
-        order = parse_order(&p);
-        if (order < 0)
-                order = ORDER_GREATER_OR_EQUAL; /* default to >= check, if nothing is specified. */
+        operator = parse_compare_operator(&p, 0);
+        if (operator < 0)
+                operator = COMPARE_GREATER_OR_EQUAL; /* default to >= check, if nothing is specified. */
 
-        r = safe_atou64(p, &k);
+        r = parse_size(p, 1024, &k);
         if (r < 0)
-                return log_debug_errno(r, "Failed to parse size: %m");
+                return log_debug_errno(r, "Failed to parse size '%s': %m", p);
 
-        return test_order(CMP(m, k), order);
+        return test_order(CMP(m, k), operator);
 }
 
 static int condition_test_cpus(Condition *c, char **env) {
-        OrderOperator order;
+        CompareOperator operator;
         const char *p;
         unsigned k;
         int r, n;
@@ -362,45 +320,50 @@ static int condition_test_cpus(Condition *c, char **env) {
                 return log_debug_errno(n, "Failed to determine CPUs in affinity mask: %m");
 
         p = c->parameter;
-        order = parse_order(&p);
-        if (order < 0)
-                order = ORDER_GREATER_OR_EQUAL; /* default to >= check, if nothing is specified. */
+        operator = parse_compare_operator(&p, 0);
+        if (operator < 0)
+                operator = COMPARE_GREATER_OR_EQUAL; /* default to >= check, if nothing is specified. */
 
         r = safe_atou(p, &k);
         if (r < 0)
                 return log_debug_errno(r, "Failed to parse number of CPUs: %m");
 
-        return test_order(CMP((unsigned) n, k), order);
+        return test_order(CMP((unsigned) n, k), operator);
 }
 
 static int condition_test_user(Condition *c, char **env) {
         uid_t id;
         int r;
-        _cleanup_free_ char *username = NULL;
-        const char *u;
 
         assert(c);
         assert(c->parameter);
         assert(c->type == CONDITION_USER);
 
+        /* Do the quick&easy comparisons first, and only parse the UID later. */
+        if (streq(c->parameter, "root"))
+                return getuid() == 0 || geteuid() == 0;
+        if (streq(c->parameter, NOBODY_USER_NAME))
+                return getuid() == UID_NOBODY || geteuid() == UID_NOBODY;
+        if (streq(c->parameter, "@system"))
+                return uid_is_system(getuid()) || uid_is_system(geteuid());
+
         r = parse_uid(c->parameter, &id);
         if (r >= 0)
                 return id == getuid() || id == geteuid();
 
-        if (streq("@system", c->parameter))
-                return uid_is_system(getuid()) || uid_is_system(geteuid());
+        if (getpid_cached() == 1)  /* We already checked for "root" above, and we know that
+                                    * PID 1 is running as root, hence we know it cannot match. */
+                return false;
 
-        username = getusername_malloc();
+        /* getusername_malloc() may do an nss lookup, which is not allowed in PID 1. */
+        _cleanup_free_ char *username = getusername_malloc();
         if (!username)
                 return -ENOMEM;
 
         if (streq(username, c->parameter))
                 return 1;
 
-        if (getpid_cached() == 1)
-                return streq(c->parameter, "root");
-
-        u = c->parameter;
+        const char *u = c->parameter;
         r = get_user_creds(&u, &id, NULL, NULL, NULL, USER_CREDS_ALLOW_MISSING);
         if (r < 0)
                 return 0;
@@ -461,7 +424,8 @@ static int condition_test_group(Condition *c, char **env) {
 }
 
 static int condition_test_virtualization(Condition *c, char **env) {
-        int b, v;
+        Virtualization v;
+        int b;
 
         assert(c);
         assert(c->parameter);
@@ -477,7 +441,7 @@ static int condition_test_virtualization(Condition *c, char **env) {
         /* First, compare with yes/no */
         b = parse_boolean(c->parameter);
         if (b >= 0)
-                return b == !!v;
+                return b == (v != VIRTUALIZATION_NONE);
 
         /* Then, compare categorization */
         if (streq(c->parameter, "vm"))
@@ -491,7 +455,7 @@ static int condition_test_virtualization(Condition *c, char **env) {
 }
 
 static int condition_test_architecture(Condition *c, char **env) {
-        int a, b;
+        Architecture a, b;
 
         assert(c);
         assert(c->parameter);
@@ -547,38 +511,104 @@ static int condition_test_firmware_devicetree_compatible(const char *dtcarg) {
         return strv_contains(dtcompatlist, dtcarg);
 }
 
+static int condition_test_firmware_smbios_field(const char *expression) {
+        _cleanup_free_ char *field = NULL, *expected_value = NULL, *actual_value = NULL;
+        CompareOperator operator;
+        int r;
+
+        assert(expression);
+
+        /* Parse SMBIOS field */
+        r = extract_first_word(&expression, &field, COMPARE_OPERATOR_WITH_FNMATCH_CHARS, EXTRACT_RETAIN_SEPARATORS);
+        if (r < 0)
+                return r;
+        if (r == 0 || isempty(expression))
+                return -EINVAL;
+
+        /* Remove trailing spaces from SMBIOS field */
+        delete_trailing_chars(field, WHITESPACE);
+
+        /* Parse operator */
+        operator = parse_compare_operator(&expression, COMPARE_ALLOW_FNMATCH|COMPARE_EQUAL_BY_STRING);
+        if (operator < 0)
+                return operator;
+
+        /* Parse expected value */
+        r = extract_first_word(&expression, &expected_value, NULL, EXTRACT_UNQUOTE);
+        if (r < 0)
+                return r;
+        if (r == 0 || !isempty(expression))
+                return -EINVAL;
+
+        /* Read actual value from sysfs */
+        if (!filename_is_valid(field))
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid SMBIOS field name");
+
+        const char *p = strjoina("/sys/class/dmi/id/", field);
+        r = read_virtual_file(p, SIZE_MAX, &actual_value, NULL);
+        if (r < 0) {
+                log_debug_errno(r, "Failed to read %s: %m", p);
+                if (r == -ENOENT)
+                        return false;
+                return r;
+        }
+
+        /* Remove trailing newline */
+        delete_trailing_chars(actual_value, WHITESPACE);
+
+        /* Finally compare actual and expected value */
+        return version_or_fnmatch_compare(operator, actual_value, expected_value);
+}
+
 static int condition_test_firmware(Condition *c, char **env) {
-        sd_char *dtc;
+        sd_char *arg;
+        int r;
 
         assert(c);
         assert(c->parameter);
         assert(c->type == CONDITION_FIRMWARE);
 
         if (streq(c->parameter, "device-tree")) {
-                if (access("/sys/firmware/device-tree/", F_OK) < 0) {
+                if (access("/sys/firmware/devicetree/", F_OK) < 0) {
                         if (errno != ENOENT)
-                                log_debug_errno(errno, "Unexpected error when checking for /sys/firmware/device-tree/: %m");
+                                log_debug_errno(errno, "Unexpected error when checking for /sys/firmware/devicetree/: %m");
                         return false;
                 } else
                         return true;
-        } else if ((dtc = startswith(c->parameter, "device-tree-compatible("))) {
-                _cleanup_free_ char *dtcarg = NULL;
+        } else if ((arg = startswith(c->parameter, "device-tree-compatible("))) {
+                _cleanup_free_ char *dtc_arg = NULL;
                 char *end;
 
-                end = strchr(dtc, ')');
+                end = strrchr(arg, ')');
                 if (!end || *(end + 1) != '\0') {
-                        log_debug("Malformed Firmware condition \"%s\"", c->parameter);
+                        log_debug("Malformed ConditionFirmware=%s", c->parameter);
                         return false;
                 }
 
-                dtcarg = strndup(dtc, end - dtc);
-                if (!dtcarg)
+                dtc_arg = strndup(arg, end - arg);
+                if (!dtc_arg)
                         return -ENOMEM;
 
-                return condition_test_firmware_devicetree_compatible(dtcarg);
+                return condition_test_firmware_devicetree_compatible(dtc_arg);
         } else if (streq(c->parameter, "uefi"))
                 return is_efi_boot();
-        else {
+        else if ((arg = startswith(c->parameter, "smbios-field("))) {
+                _cleanup_free_ char *smbios_arg = NULL;
+                char *end;
+
+                end = strrchr(arg, ')');
+                if (!end || *(end + 1) != '\0')
+                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Malformed ConditionFirmware=%s: %m", c->parameter);
+
+                smbios_arg = strndup(arg, end - arg);
+                if (!smbios_arg)
+                        return log_oom_debug();
+
+                r = condition_test_firmware_smbios_field(smbios_arg);
+                if (r < 0)
+                        return log_debug_errno(r, "Malformed ConditionFirmware=%s: %m", c->parameter);
+                return r;
+        } else {
                 log_debug("Unsupported Firmware condition \"%s\"", c->parameter);
                 return false;
         }
@@ -606,7 +636,13 @@ static int condition_test_host(Condition *c, char **env) {
         if (!h)
                 return -ENOMEM;
 
-        return fnmatch(c->parameter, h, FNM_CASEFOLD) == 0;
+        r = fnmatch(c->parameter, h, FNM_CASEFOLD);
+        if (r == FNM_NOMATCH)
+                return false;
+        if (r != 0)
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "fnmatch() failed.");
+
+        return true;
 }
 
 static int condition_test_ac_power(Condition *c, char **env) {
@@ -624,29 +660,13 @@ static int condition_test_ac_power(Condition *c, char **env) {
 }
 
 static int has_tpm2(void) {
-        int r;
+        /* Checks whether the kernel has the TPM subsystem enabled and the firmware reports support. Note
+         * we don't check for actual TPM devices, since we might not have loaded the driver for it yet, i.e.
+         * during early boot where we very likely want to use this condition check).
+         *
+         * Note that we don't check if we ourselves are built with TPM2 support here! */
 
-        /* Checks whether the system has at least one TPM2 resource manager device, i.e. at least one "tpmrm"
-         * class device */
-
-        r = dir_is_empty("/sys/class/tpmrm");
-        if (r == 0)
-                return true; /* nice! we have a device */
-
-        /* Hmm, so Linux doesn't know of the TPM2 device (or we couldn't check for it), most likely because
-         * the driver wasn't loaded yet. Let's see if the firmware knows about a TPM2 device, in this
-         * case. This way we can answer the TPM2 question already during early boot (where we most likely
-         * need it) */
-        if (efi_has_tpm2())
-                return true;
-
-        /* OK, this didn't work either, in this case propagate the original errors */
-        if (r == -ENOENT)
-                return false;
-        if (r < 0)
-                return log_debug_errno(r, "Failed to determine whether system has TPM2 support: %m");
-
-        return !r;
+        return FLAGS_SET(tpm2_support(), TPM2_SUPPORT_SUBSYSTEM|TPM2_SUPPORT_FIRMWARE);
 }
 
 static int condition_test_security(Condition *c, char **env) {
@@ -670,6 +690,8 @@ static int condition_test_security(Condition *c, char **env) {
                 return is_efi_secure_boot();
         if (streq(c->parameter, "tpm2"))
                 return has_tpm2();
+        if (streq(c->parameter, "cvm"))
+                return detect_confidential_virtualization() > 0;
 
         return false;
 }
@@ -697,7 +719,6 @@ static int condition_test_capability(Condition *c, char **env) {
 
         for (;;) {
                 _cleanup_free_ char *line = NULL;
-                const char *p;
 
                 r = read_line(f, LONG_LINE_MAX, &line);
                 if (r < 0)
@@ -705,9 +726,9 @@ static int condition_test_capability(Condition *c, char **env) {
                 if (r == 0)
                         break;
 
-                p = startswith(line, "CapBnd:");
+                const char *p = startswith(line, "CapBnd:");
                 if (p) {
-                        if (sscanf(line+7, "%llx", &capabilities) != 1)
+                        if (sscanf(p, "%llx", &capabilities) != 1)
                                 return -EIO;
 
                         break;
@@ -787,7 +808,8 @@ static int condition_test_needs_update(Condition *c, char **env) {
         if (r < 0) {
                 log_debug_errno(r, "Failed to parse timestamp file '%s', using mtime: %m", p);
                 return true;
-        } else if (r == 0) {
+        }
+        if (isempty(timestamp_str)) {
                 log_debug("No data in timestamp file '%s', using mtime.", p);
                 return true;
         }
@@ -802,34 +824,47 @@ static int condition_test_needs_update(Condition *c, char **env) {
         return timespec_load_nsec(&usr.st_mtim) > timestamp;
 }
 
+static bool in_first_boot(void) {
+        static int first_boot = -1;
+        int r;
+
+        if (first_boot >= 0)
+                return first_boot;
+
+        const char *e = secure_getenv("SYSTEMD_FIRST_BOOT");
+        if (e) {
+                r = parse_boolean(e);
+                if (r < 0)
+                        log_debug_errno(r, "Failed to parse $SYSTEMD_FIRST_BOOT, ignoring: %m");
+                else
+                        return (first_boot = r);
+        }
+
+        r = RET_NERRNO(access("/run/systemd/first-boot", F_OK));
+        if (r < 0 && r != -ENOENT)
+                log_debug_errno(r, "Failed to check if /run/systemd/first-boot exists, assuming no: %m");
+        return r >= 0;
+}
+
 static int condition_test_first_boot(Condition *c, char **env) {
-        int r, q;
-        bool b;
+        int r;
 
         assert(c);
         assert(c->parameter);
         assert(c->type == CONDITION_FIRST_BOOT);
 
-        r = proc_cmdline_get_bool("systemd.condition-first-boot", &b);
-        if (r < 0)
-                log_debug_errno(r, "Failed to parse systemd.condition-first-boot= kernel command line argument, ignoring: %m");
-        if (r > 0)
-                return b == !!r;
+        // TODO: Parse c->parameter immediately when reading the config.
+        //       Apply negation when parsing too.
 
         r = parse_boolean(c->parameter);
         if (r < 0)
                 return r;
 
-        q = access("/run/systemd/first-boot", F_OK);
-        if (q < 0 && errno != ENOENT)
-                log_debug_errno(errno, "Failed to check if /run/systemd/first-boot exists, ignoring: %m");
-
-        return (q >= 0) == !!r;
+        return in_first_boot() == r;
 }
 
 static int condition_test_environment(Condition *c, char **env) {
         bool equal;
-        char **i;
 
         assert(c);
         assert(c->parameter);
@@ -937,7 +972,7 @@ static int condition_test_directory_not_empty(Condition *c, char **env) {
         assert(c->parameter);
         assert(c->type == CONDITION_DIRECTORY_NOT_EMPTY);
 
-        r = dir_is_empty(c->parameter);
+        r = dir_is_empty(c->parameter, /* ignore_hidden_or_backup= */ true);
         return r <= 0 && !IN_SET(r, -ENOENT, -ENOTDIR);
 }
 
@@ -1125,6 +1160,7 @@ int condition_test(Condition *c, char **env) {
                 [CONDITION_FILE_IS_EXECUTABLE]       = condition_test_file_is_executable,
                 [CONDITION_KERNEL_COMMAND_LINE]      = condition_test_kernel_command_line,
                 [CONDITION_KERNEL_VERSION]           = condition_test_kernel_version,
+                [CONDITION_CREDENTIAL]               = condition_test_credential,
                 [CONDITION_VIRTUALIZATION]           = condition_test_virtualization,
                 [CONDITION_SECURITY]                 = condition_test_security,
                 [CONDITION_CAPABILITY]               = condition_test_capability,
@@ -1171,10 +1207,7 @@ bool condition_test_list(
                 condition_test_logger_t logger,
                 void *userdata) {
 
-        Condition *c;
         int triggered = -1;
-
-        assert(!!logger == !!to_string);
 
         /* If the condition list is empty, then it is true */
         if (!first)
@@ -1234,8 +1267,6 @@ void condition_dump(Condition *c, FILE *f, const char *prefix, condition_to_stri
 }
 
 void condition_dump_list(Condition *first, FILE *f, const char *prefix, condition_to_string_t to_string) {
-        Condition *c;
-
         LIST_FOREACH(conditions, c, first)
                 condition_dump(c, f, prefix, to_string);
 }
@@ -1247,6 +1278,7 @@ static const char* const condition_type_table[_CONDITION_TYPE_MAX] = {
         [CONDITION_HOST] = "ConditionHost",
         [CONDITION_KERNEL_COMMAND_LINE] = "ConditionKernelCommandLine",
         [CONDITION_KERNEL_VERSION] = "ConditionKernelVersion",
+        [CONDITION_CREDENTIAL] = "ConditionCredential",
         [CONDITION_SECURITY] = "ConditionSecurity",
         [CONDITION_CAPABILITY] = "ConditionCapability",
         [CONDITION_AC_POWER] = "ConditionACPower",
@@ -1284,6 +1316,7 @@ static const char* const assert_type_table[_CONDITION_TYPE_MAX] = {
         [CONDITION_HOST] = "AssertHost",
         [CONDITION_KERNEL_COMMAND_LINE] = "AssertKernelCommandLine",
         [CONDITION_KERNEL_VERSION] = "AssertKernelVersion",
+        [CONDITION_CREDENTIAL] = "AssertCredential",
         [CONDITION_SECURITY] = "AssertSecurity",
         [CONDITION_CAPABILITY] = "AssertCapability",
         [CONDITION_AC_POWER] = "AssertACPower",

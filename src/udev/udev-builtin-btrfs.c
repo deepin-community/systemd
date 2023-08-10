@@ -6,23 +6,24 @@
 #include <sys/ioctl.h>
 
 #include "device-util.h"
+#include "errno-util.h"
 #include "fd-util.h"
 #include "string-util.h"
 #include "strxcpyx.h"
 #include "udev-builtin.h"
-#include "util.h"
 
-static int builtin_btrfs(sd_device *dev, sd_netlink **rtnl, int argc, char *argv[], bool test) {
+static int builtin_btrfs(UdevEvent *event, int argc, char *argv[], bool test) {
+        sd_device *dev = ASSERT_PTR(ASSERT_PTR(event)->dev);
         struct btrfs_ioctl_vol_args args = {};
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         int r;
 
         if (argc != 3 || !streq(argv[1], "ready"))
                 return log_device_error_errno(dev, SYNTHETIC_ERRNO(EINVAL), "Invalid arguments");
 
-        fd = open("/dev/btrfs-control", O_RDWR|O_CLOEXEC);
+        fd = open("/dev/btrfs-control", O_RDWR|O_CLOEXEC|O_NOCTTY);
         if (fd < 0) {
-                if (IN_SET(errno, ENOENT, ENXIO, ENODEV)) {
+                if (ERRNO_IS_DEVICE_ABSENT(errno)) {
                         /* Driver not installed? Then we aren't ready. This is useful in initrds that lack
                          * btrfs.ko. After the host transition (where btrfs.ko will hopefully become
                          * available) the device can be retriggered and will then be considered ready. */

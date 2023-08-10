@@ -1,14 +1,34 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-want_kernel_install = get_option('kernel-install')
+want_kernel_install = conf.get('ENABLE_KERNEL_INSTALL') == 1
+
+ukify_install = custom_target(
+        '60-ukify.install',
+        input : '60-ukify.install.in',
+        output : '60-ukify.install',
+        command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
+        install : want_kernel_install and want_ukify,
+        install_mode : 'rwxr-xr-x',
+        install_dir : kernelinstalldir)
+
+loaderentry_install = custom_target(
+        '90-loaderentry.install',
+        input : '90-loaderentry.install.in',
+        output : '90-loaderentry.install',
+        command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
+        install : want_kernel_install,
+        install_mode : 'rwxr-xr-x',
+        install_dir : kernelinstalldir)
+
+uki_copy_install = files('90-uki-copy.install')
+
+kernel_install_files = [
+        files('50-depmod.install'),
+        uki_copy_install,
+]
 
 if want_kernel_install
-        install_data('kernel-install',
-                     install_mode : 'rwxr-xr-x',
-                     install_dir : bindir)
-
-        install_data('50-depmod.install',
-                     '90-loaderentry.install',
+        install_data(kernel_install_files,
                      install_mode : 'rwxr-xr-x',
                      install_dir : kernelinstalldir)
 
@@ -20,4 +40,5 @@ if want_kernel_install
                                          mkdir_p.format(sysconfdir / 'kernel/install.d'))
         endif
 
+        test_kernel_install_sh = find_program('test-kernel-install.sh')
 endif

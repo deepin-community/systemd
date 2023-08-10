@@ -25,8 +25,10 @@ int bus_parse_unit_info(sd_bus_message *message, UnitInfo *u);
 int bus_append_unit_property_assignment(sd_bus_message *m, UnitType t, const char *assignment);
 int bus_append_unit_property_assignment_many(sd_bus_message *m, UnitType t, char **l);
 
-int bus_deserialize_and_dump_unit_file_changes(sd_bus_message *m, bool quiet, UnitFileChange **changes, size_t *n_changes);
+int bus_deserialize_and_dump_unit_file_changes(sd_bus_message *m, bool quiet);
 
 int unit_load_state(sd_bus *bus, const char *name, char **load_state);
 
 int unit_info_compare(const UnitInfo *a, const UnitInfo *b);
+
+int bus_service_manager_reload(sd_bus *bus);

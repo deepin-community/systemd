@@ -10,6 +10,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include "build.h"
 #include "fd-util.h"
 #include "main-func.h"
 #include "memory-util.h"
@@ -103,7 +104,7 @@ typedef struct Context {
 } Context;
 
 #define CONTEXT_EMPTY {                                 \
-                .fd = -1,                               \
+                .fd = -EBADF,                           \
                 .media_feature = _FEATURE_INVALID,      \
                 .media_state = _MEDIA_STATE_INVALID,    \
         }
@@ -140,9 +141,9 @@ static int set_drive_feature(Context *c, Feature f) {
 }
 
 #define ERRCODE(s)      ((((s)[2] & 0x0F) << 16) | ((s)[12] << 8) | ((s)[13]))
-#define SK(errcode)     (((errcode) >> 16) & 0xF)
-#define ASC(errcode)    (((errcode) >> 8) & 0xFF)
-#define ASCQ(errcode)   ((errcode) & 0xFF)
+#define SK(errcode)     (((errcode) >> 16) & 0xFU)
+#define ASC(errcode)    (((errcode) >> 8) & 0xFFU)
+#define ASCQ(errcode)   ((errcode) & 0xFFU)
 #define CHECK_CONDITION 0x01
 
 static int log_scsi_debug_errno(int error, const char *msg) {
@@ -541,7 +542,7 @@ static int dvd_ram_media_update_state(Context *c) {
                 return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "Invalid format capacities length.");
 
-        switch(format[8] & 3) {
+        switch (format[8] & 3) {
         case 1:
                 /* This means that last format was interrupted or failed, blank dvd-ram discs are
                  * factory formatted. Take no action here as it takes quite a while to reformat a
@@ -704,7 +705,7 @@ static int cd_media_toc(Context *c) {
         /* Take care to not iterate beyond the last valid track as specified in
          * the TOC, but also avoid going beyond the TOC length, just in case
          * the last track number is invalidly large */
-        for (size_t i = 4; i + 8 < len && num_tracks > 0; i += 8, --num_tracks) {
+        for (size_t i = 4; i + 8 <= len && num_tracks > 0; i += 8, --num_tracks) {
                 bool is_data_track;
                 uint32_t block;
 
@@ -712,7 +713,7 @@ static int cd_media_toc(Context *c) {
                 block = unaligned_read_be32(&toc[i + 4]);
 
                 log_debug("track=%u info=0x%x(%s) start_block=%"PRIu32,
-                          toc[i + 2], toc[i + 1] & 0x0f, is_data_track ? "data":"audio", block);
+                          toc[i + 2], toc[i + 1] & 0x0FU, is_data_track ? "data":"audio", block);
 
                 if (is_data_track)
                         c->media_track_count_data++;
@@ -743,13 +744,13 @@ static int open_drive(Context *c) {
         assert(c->fd < 0);
 
         for (int cnt = 0;; cnt++) {
-                fd = open(arg_node, O_RDONLY|O_NONBLOCK|O_CLOEXEC);
+                fd = open(arg_node, O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_NOCTTY);
                 if (fd >= 0)
                         break;
                 if (++cnt >= 20 || errno != EBUSY)
                         return log_debug_errno(errno, "Unable to open '%s': %m", arg_node);
 
-                (void) usleep(100 * USEC_PER_MSEC + random_u64_range(100 * USEC_PER_MSEC));
+                (void) usleep_safe(100 * USEC_PER_MSEC + random_u64_range(100 * USEC_PER_MSEC));
         }
 
         log_debug("probing: '%s'", arg_node);
@@ -897,13 +898,13 @@ static void print_properties(const Context *c) {
 }
 
 static int help(void) {
-        printf("Usage: %s [options] <device>\n"
-               "  -l --lock-media    lock the media (to enable eject request events)\n"
-               "  -u --unlock-media  unlock the media\n"
-               "  -e --eject-media   eject the media\n"
-               "  -d --debug         print debug messages to stderr\n"
-               "  -h --help          print this help text\n"
-               "\n",
+        printf("%s [OPTIONS...] DEVICE\n\n"
+               "  -l --lock-media    Lock the media (to enable eject request events)\n"
+               "  -u --unlock-media  Unlock the media\n"
+               "  -e --eject-media   Eject the media\n"
+               "  -d --debug         Print debug messages to stderr\n"
+               "  -h --help          Show this help text\n"
+               "     --version       Show package version\n",
                program_invocation_short_name);
 
         return 0;
@@ -916,6 +917,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "eject-media",  no_argument, NULL, 'e' },
                 { "debug",        no_argument, NULL, 'd' },
                 { "help",         no_argument, NULL, 'h' },
+                { "version",      no_argument, NULL, 'v' },
                 {}
         };
         int c;
@@ -938,6 +940,10 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
                 case 'h':
                         return help();
+                case 'v':
+                        return version();
+                case '?':
+                        return -EINVAL;
                 default:
                         assert_not_reached();
                 }

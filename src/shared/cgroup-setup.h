@@ -12,6 +12,7 @@ bool cg_is_legacy_wanted(void);
 bool cg_is_hybrid_wanted(void);
 
 int cg_weight_parse(const char *s, uint64_t *ret);
+int cg_cpu_weight_parse(const char *s, uint64_t *ret);
 int cg_cpu_shares_parse(const char *s, uint64_t *ret);
 int cg_blkio_weight_parse(const char *s, uint64_t *ret);
 
@@ -21,6 +22,9 @@ int cg_create(const char *controller, const char *path);
 int cg_attach(const char *controller, const char *path, pid_t pid);
 int cg_attach_fallback(const char *controller, const char *path, pid_t pid);
 int cg_create_and_attach(const char *controller, const char *path, pid_t pid);
+
+int cg_set_access(const char *controller, const char *path, uid_t uid, gid_t gid);
+int cg_set_access_recursive(const char *controller, const char *path, uid_t uid, gid_t gid);
 
 int cg_migrate(const char *cfrom, const char *pfrom, const char *cto, const char *pto, CGroupFlags flags);
 int cg_migrate_recursive(const char *cfrom, const char *pfrom, const char *cto, const char *pto, CGroupFlags flags);

@@ -5,7 +5,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: systemd\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-01-08 17:48+0100\n"
+"POT-Creation-Date: 2023-07-14 10:32+0100\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -55,6 +55,15 @@ msgstr ""
 
 #: src/core/org.freedesktop.systemd1.policy.in:65
 msgid "Authentication is required to reload the systemd state."
+msgstr ""
+
+#: src/core/org.freedesktop.systemd1.policy.in:74
+msgid "Dump the systemd state without rate limits"
+msgstr ""
+
+#: src/core/org.freedesktop.systemd1.policy.in:75
+msgid ""
+"Authentication is required to dump the systemd state without rate limits."
 msgstr ""
 
 #: src/home/org.freedesktop.home1.policy:13
@@ -107,6 +116,159 @@ msgid ""
 "Authentication is required to change the password of a user's home area."
 msgstr ""
 
+#: src/home/pam_systemd_home.c:287
+#, c-format
+msgid ""
+"Home of user %s is currently absent, please plug in the necessary storage "
+"device or backing file system."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:292
+#, c-format
+msgid "Too frequent login attempts for user %s, try again later."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:304
+msgid "Password: "
+msgstr ""
+
+#: src/home/pam_systemd_home.c:306
+#, c-format
+msgid "Password incorrect or not sufficient for authentication of user %s."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:307
+msgid "Sorry, try again: "
+msgstr ""
+
+#: src/home/pam_systemd_home.c:329
+msgid "Recovery key: "
+msgstr ""
+
+#: src/home/pam_systemd_home.c:331
+#, c-format
+msgid ""
+"Password/recovery key incorrect or not sufficient for authentication of user "
+"%s."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:332
+msgid "Sorry, reenter recovery key: "
+msgstr ""
+
+#: src/home/pam_systemd_home.c:352
+#, c-format
+msgid "Security token of user %s not inserted."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:353 src/home/pam_systemd_home.c:356
+msgid "Try again with password: "
+msgstr ""
+
+#: src/home/pam_systemd_home.c:355
+#, c-format
+msgid ""
+"Password incorrect or not sufficient, and configured security token of user "
+"%s not inserted."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:376
+msgid "Security token PIN: "
+msgstr ""
+
+#: src/home/pam_systemd_home.c:393
+#, c-format
+msgid "Please authenticate physically on security token of user %s."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:404
+#, c-format
+msgid "Please confirm presence on security token of user %s."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:415
+#, c-format
+msgid "Please verify user on security token of user %s."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:424
+msgid ""
+"Security token PIN is locked, please unlock it first. (Hint: Removal and re-"
+"insertion might suffice.)"
+msgstr ""
+
+#: src/home/pam_systemd_home.c:432
+#, c-format
+msgid "Security token PIN incorrect for user %s."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:433 src/home/pam_systemd_home.c:452
+#: src/home/pam_systemd_home.c:471
+msgid "Sorry, retry security token PIN: "
+msgstr ""
+
+#: src/home/pam_systemd_home.c:451
+#, c-format
+msgid "Security token PIN of user %s incorrect (only a few tries left!)"
+msgstr ""
+
+#: src/home/pam_systemd_home.c:470
+#, c-format
+msgid "Security token PIN of user %s incorrect (only one try left!)"
+msgstr ""
+
+#: src/home/pam_systemd_home.c:616
+#, c-format
+msgid "Home of user %s is currently not active, please log in locally first."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:618
+#, c-format
+msgid "Home of user %s is currently locked, please unlock locally first."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:645
+#, c-format
+msgid "Too many unsuccessful login attempts for user %s, refusing."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:868
+msgid "User record is blocked, prohibiting access."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:872
+msgid "User record is not valid yet, prohibiting access."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:876
+msgid "User record is not valid anymore, prohibiting access."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:881 src/home/pam_systemd_home.c:932
+msgid "User record not valid, prohibiting access."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:893
+#, c-format
+msgid "Too many logins, try again in %s."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:904
+msgid "Password change required."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:908
+msgid "Password expired, change required."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:914
+msgid "Password is expired, but can't change, refusing login."
+msgstr ""
+
+#: src/home/pam_systemd_home.c:918
+msgid "Password will expire soon, please change."
+msgstr ""
+
 #: src/hostname/org.freedesktop.hostname1.policy:20
 msgid "Set hostname"
 msgstr ""
@@ -139,6 +301,22 @@ msgstr ""
 
 #: src/hostname/org.freedesktop.hostname1.policy:52
 msgid "Authentication is required to get product UUID."
+msgstr ""
+
+#: src/hostname/org.freedesktop.hostname1.policy:61
+msgid "Get hardware serial number"
+msgstr ""
+
+#: src/hostname/org.freedesktop.hostname1.policy:62
+msgid "Authentication is required to get hardware serial number."
+msgstr ""
+
+#: src/hostname/org.freedesktop.hostname1.policy:71
+msgid "Get system description"
+msgstr ""
+
+#: src/hostname/org.freedesktop.hostname1.policy:72
+msgid "Authentication is required to get system description."
 msgstr ""
 
 #: src/import/org.freedesktop.import1.policy:22
@@ -806,43 +984,43 @@ msgid ""
 "shall be enabled."
 msgstr ""
 
-#: src/core/dbus-unit.c:359
+#: src/core/dbus-unit.c:364
 msgid "Authentication is required to start '$(unit)'."
 msgstr ""
 
-#: src/core/dbus-unit.c:360
+#: src/core/dbus-unit.c:365
 msgid "Authentication is required to stop '$(unit)'."
 msgstr ""
 
-#: src/core/dbus-unit.c:361
+#: src/core/dbus-unit.c:366
 msgid "Authentication is required to reload '$(unit)'."
 msgstr ""
 
-#: src/core/dbus-unit.c:362 src/core/dbus-unit.c:363
+#: src/core/dbus-unit.c:367 src/core/dbus-unit.c:368
 msgid "Authentication is required to restart '$(unit)'."
 msgstr ""
 
-#: src/core/dbus-unit.c:535
+#: src/core/dbus-unit.c:565
 msgid ""
 "Authentication is required to send a UNIX signal to the processes of "
 "'$(unit)'."
 msgstr ""
 
-#: src/core/dbus-unit.c:566
+#: src/core/dbus-unit.c:595
 msgid "Authentication is required to reset the \"failed\" state of '$(unit)'."
 msgstr ""
 
-#: src/core/dbus-unit.c:599
+#: src/core/dbus-unit.c:627
 msgid "Authentication is required to set properties on '$(unit)'."
 msgstr ""
 
-#: src/core/dbus-unit.c:708
+#: src/core/dbus-unit.c:728
 msgid ""
 "Authentication is required to delete files and directories associated with "
 "'$(unit)'."
 msgstr ""
 
-#: src/core/dbus-unit.c:757
+#: src/core/dbus-unit.c:776
 msgid ""
 "Authentication is required to freeze or thaw the processes of '$(unit)' unit."
 msgstr ""

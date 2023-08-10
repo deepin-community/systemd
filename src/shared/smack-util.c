@@ -12,8 +12,10 @@
 #include <unistd.h>
 
 #include "alloc-util.h"
+#include "errno-util.h"
 #include "fd-util.h"
 #include "fileio.h"
+#include "label.h"
 #include "log.h"
 #include "macro.h"
 #include "path-util.h"
@@ -66,8 +68,8 @@ int mac_smack_read_fd(int fd, SmackAttr attr, char **label) {
         return fgetxattr_malloc(fd, smack_attr_to_string(attr), label);
 }
 
-int mac_smack_apply(const char *path, SmackAttr attr, const char *label) {
-        int r;
+int mac_smack_apply_at(int dir_fd, const char *path, SmackAttr attr, const char *label) {
+        _cleanup_close_ int fd = -EBADF;
 
         assert(path);
         assert(attr >= 0 && attr < _SMACK_ATTR_MAX);
@@ -75,14 +77,11 @@ int mac_smack_apply(const char *path, SmackAttr attr, const char *label) {
         if (!mac_smack_use())
                 return 0;
 
-        if (label)
-                r = lsetxattr(path, smack_attr_to_string(attr), label, strlen(label), 0);
-        else
-                r = lremovexattr(path, smack_attr_to_string(attr));
-        if (r < 0)
+        fd = openat(dir_fd, path, O_PATH|O_CLOEXEC|O_NOFOLLOW);
+        if (fd < 0)
                 return -errno;
 
-        return 0;
+        return mac_smack_apply_fd(fd, attr, label);
 }
 
 int mac_smack_apply_fd(int fd, SmackAttr attr, const char *label) {
@@ -121,17 +120,22 @@ int mac_smack_apply_pid(pid_t pid, const char *label) {
         return r;
 }
 
-static int smack_fix_fd(int fd, const char *abspath, LabelFixFlags flags) {
+static int smack_fix_fd(
+                int fd,
+                const char *label_path,
+                LabelFixFlags flags) {
+
         const char *label;
         struct stat st;
         int r;
 
         /* The caller should have done the sanity checks. */
-        assert(abspath);
-        assert(path_is_absolute(abspath));
+        assert(fd >= 0);
+        assert(label_path);
+        assert(path_is_absolute(label_path));
 
         /* Path must be in /dev. */
-        if (!path_startswith(abspath, "/dev"))
+        if (!path_startswith(label_path, "/dev"))
                 return 0;
 
         if (fstat(fd, &st) < 0)
@@ -158,7 +162,7 @@ static int smack_fix_fd(int fd, const char *abspath, LabelFixFlags flags) {
                 r = -errno;
 
                 /* If the FS doesn't support labels, then exit without warning */
-                if (r == -EOPNOTSUPP)
+                if (ERRNO_IS_NOT_SUPPORTED(r))
                         return 0;
 
                 /* It the FS is read-only and we were told to ignore failures caused by that, suppress error */
@@ -170,70 +174,53 @@ static int smack_fix_fd(int fd, const char *abspath, LabelFixFlags flags) {
                     streq(old_label, label))
                         return 0;
 
-                return log_debug_errno(r, "Unable to fix SMACK label of %s: %m", abspath);
+                return log_debug_errno(r, "Unable to fix SMACK label of %s: %m", label_path);
         }
 
         return 0;
 }
 
-int mac_smack_fix_at(int dir_fd, const char *path, LabelFixFlags flags) {
+int mac_smack_fix_full(
+                int atfd,
+                const char *inode_path,
+                const char *label_path,
+                LabelFixFlags flags) {
+
+        _cleanup_close_ int opened_fd = -EBADF;
         _cleanup_free_ char *p = NULL;
-        _cleanup_close_ int fd = -1;
-        int r;
+        int r, inode_fd;
 
-        assert(path);
-
-        if (!mac_smack_use())
-                return 0;
-
-        if (dir_fd < 0) {
-                if (dir_fd != AT_FDCWD)
-                        return -EBADF;
-
-                return mac_smack_fix(path, flags);
-        }
-
-        fd = openat(dir_fd, path, O_NOFOLLOW|O_CLOEXEC|O_PATH);
-        if (fd < 0) {
-                if ((flags & LABEL_IGNORE_ENOENT) && errno == ENOENT)
-                        return 0;
-
-                return -errno;
-        }
-
-        if (!path_is_absolute(path)) {
-                r = fd_get_path(fd, &p);
-                if (r < 0)
-                        return r;
-                path = p;
-        }
-
-        return smack_fix_fd(fd, path, flags);
-}
-
-int mac_smack_fix_container(const char *path, const char *inside_path, LabelFixFlags flags) {
-        _cleanup_free_ char *abspath = NULL;
-        _cleanup_close_ int fd = -1;
-        int r;
-
-        assert(path);
+        assert(atfd >= 0 || atfd == AT_FDCWD);
+        assert(atfd >= 0 || inode_path);
 
         if (!mac_smack_use())
                 return 0;
 
-        r = path_make_absolute_cwd(path, &abspath);
-        if (r < 0)
-                return r;
+        if (inode_path) {
+                opened_fd = openat(atfd, inode_path, O_NOFOLLOW|O_CLOEXEC|O_PATH);
+                if (opened_fd < 0) {
+                        if ((flags & LABEL_IGNORE_ENOENT) && errno == ENOENT)
+                                return 0;
 
-        fd = open(abspath, O_NOFOLLOW|O_CLOEXEC|O_PATH);
-        if (fd < 0) {
-                if ((flags & LABEL_IGNORE_ENOENT) && errno == ENOENT)
-                        return 0;
+                        return -errno;
+                }
+                inode_fd = opened_fd;
+        } else
+                inode_fd = atfd;
 
-                return -errno;
+        if (!label_path) {
+                if (path_is_absolute(inode_path))
+                        label_path = inode_path;
+                else {
+                        r = fd_get_path(inode_fd, &p);
+                        if (r < 0)
+                                return r;
+
+                        label_path = p;
+                }
         }
 
-        return smack_fix_fd(fd, inside_path, flags);
+        return smack_fix_fd(inode_fd, label_path, flags);
 }
 
 int mac_smack_copy(const char *dest, const char *src) {
@@ -267,7 +254,7 @@ int mac_smack_read_fd(int fd, SmackAttr attr, char **label) {
         return -EOPNOTSUPP;
 }
 
-int mac_smack_apply(const char *path, SmackAttr attr, const char *label) {
+int mac_smack_apply_at(int dir_fd, const char *path, SmackAttr attr, const char *label) {
         return 0;
 }
 
@@ -279,11 +266,7 @@ int mac_smack_apply_pid(pid_t pid, const char *label) {
         return 0;
 }
 
-int mac_smack_fix_container(const char *path, const char *inside_path, LabelFixFlags flags) {
-        return 0;
-}
-
-int mac_smack_fix_at(int dirfd, const char *path, LabelFixFlags flags) {
+int mac_smack_fix_full(int atfd, const char *inode_path, const char *label_path, LabelFixFlags flags) {
         return 0;
 }
 
@@ -292,14 +275,37 @@ int mac_smack_copy(const char *dest, const char *src) {
 }
 #endif
 
-int rename_and_apply_smack_floor_label(const char *from, const char *to) {
+int renameat_and_apply_smack_floor_label(int fdf, const char *from, int fdt, const char *to) {
 
-        if (rename(from, to) < 0)
+        assert(fdf >= 0 || fdf == AT_FDCWD);
+        assert(fdt >= 0 || fdt == AT_FDCWD);
+
+        if (renameat(fdf, from, fdt, to) < 0)
                 return -errno;
 
 #if HAVE_SMACK_RUN_LABEL
-        return mac_smack_apply(to, SMACK_ATTR_ACCESS, SMACK_FLOOR_LABEL);
+        return mac_smack_apply_at(fdt, to, SMACK_ATTR_ACCESS, SMACK_FLOOR_LABEL);
 #else
         return 0;
 #endif
+}
+
+static int mac_smack_label_pre(int dir_fd, const char *path, mode_t mode) {
+        return 0;
+}
+
+static int mac_smack_label_post(int dir_fd, const char *path) {
+        return mac_smack_fix_full(dir_fd, path, NULL, 0);
+}
+
+int mac_smack_init(void) {
+        static const LabelOps label_ops = {
+                .pre = mac_smack_label_pre,
+                .post = mac_smack_label_post,
+        };
+
+        if (!mac_smack_use())
+                return 0;
+
+        return label_ops_set(&label_ops);
 }

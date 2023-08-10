@@ -71,7 +71,7 @@ int dns_scope_new(Manager *m, DnsScope **ret, Link *l, DnsProtocol protocol, int
         log_debug("New scope on link %s, protocol %s, family %s", l ? l->ifname : "*", dns_protocol_to_string(protocol), family == AF_UNSPEC ? "*" : af_to_name(family));
 
         /* Enforce ratelimiting for the multicast protocols */
-        s->ratelimit = (RateLimit) { MULTICAST_RATELIMIT_INTERVAL_USEC, MULTICAST_RATELIMIT_BURST };
+        s->ratelimit = (const RateLimit) { MULTICAST_RATELIMIT_INTERVAL_USEC, MULTICAST_RATELIMIT_BURST };
 
         *ret = s;
         return 0;
@@ -351,7 +351,7 @@ static int dns_scope_socket(
                 uint16_t port,
                 union sockaddr_union *ret_socket_address) {
 
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         union sockaddr_union sa;
         socklen_t salen;
         int r, ifindex;
@@ -424,7 +424,7 @@ static int dns_scope_socket(
                         return r;
         }
 
-        if (s->link) {
+        if (ifindex != 0) {
                 r = socket_set_unicast_if(fd, sa.sa.sa_family, ifindex);
                 if (r < 0)
                         return r;
@@ -474,7 +474,8 @@ static int dns_scope_socket(
                  * host result in EHOSTUNREACH, since Linux won't send the packets out of the specified
                  * interface, but delivers them directly to the local socket. */
                 if (s->link &&
-                    !manager_find_link_address(s->manager, sa.sa.sa_family, sockaddr_in_addr(&sa.sa))) {
+                    !manager_find_link_address(s->manager, sa.sa.sa_family, sockaddr_in_addr(&sa.sa)) &&
+                    in_addr_is_localhost(sa.sa.sa_family, sockaddr_in_addr(&sa.sa)) == 0) {
                         r = socket_bind_to_ifindex(fd, ifindex);
                         if (r < 0)
                                 return r;
@@ -529,7 +530,6 @@ static DnsScopeMatch match_subnet_reverse_lookups(
                 bool exclude_own) {
 
         union in_addr_union ia;
-        LinkAddress *a;
         int f, r;
 
         assert(s);
@@ -556,6 +556,9 @@ static DnsScopeMatch match_subnet_reverse_lookups(
         if (s->family != AF_UNSPEC && f != s->family)
                 return _DNS_SCOPE_MATCH_INVALID; /* Don't look for IPv4 addresses on LLMNR/mDNS over IPv6 and vice versa */
 
+        if (in_addr_is_null(f, &ia))
+                return DNS_SCOPE_NO;
+
         LIST_FOREACH(addresses, a, s->link->addresses) {
 
                 if (a->family != f)
@@ -568,6 +571,10 @@ static DnsScopeMatch match_subnet_reverse_lookups(
 
                 if (a->prefixlen == UCHAR_MAX) /* don't know subnet mask */
                         continue;
+
+                /* Don't send mDNS queries for the IPv4 broadcast address */
+                if (f == AF_INET && in_addr_equal(f, &a->in_addr_broadcast, &ia) > 0)
+                        return DNS_SCOPE_NO;
 
                 /* Check if the address is in the local subnet */
                 r = in_addr_prefix_covers(f, &a->in_addr, a->prefixlen, &ia);
@@ -587,7 +594,6 @@ DnsScopeMatch dns_scope_good_domain(
                 DnsQuery *q) {
 
         DnsQuestion *question;
-        DnsSearchDomain *d;
         const char *domain;
         uint64_t flags;
         int ifindex;
@@ -633,18 +639,15 @@ DnsScopeMatch dns_scope_good_domain(
             dns_name_equal(domain, "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa") > 0)
                 return DNS_SCOPE_NO;
 
-        /* Never respond to some of the domains listed in RFC6303 */
-        if (dns_name_endswith(domain, "0.in-addr.arpa") > 0 ||
-            dns_name_equal(domain, "255.255.255.255.in-addr.arpa") > 0 ||
-            dns_name_equal(domain, "0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa") > 0)
+        /* Never respond to some of the domains listed in RFC6303 + RFC6761 */
+        if (dns_name_dont_resolve(domain))
                 return DNS_SCOPE_NO;
 
-        /* Never respond to some of the domains listed in RFC6761 */
-        if (dns_name_endswith(domain, "invalid") > 0)
-                return DNS_SCOPE_NO;
-
-        /* Never go to network for the _gateway or _outbound domain — they're something special, synthesized locally. */
-        if (is_gateway_hostname(domain) || is_outbound_hostname(domain))
+        /* Never go to network for the _gateway, _outbound, _localdnsstub, _localdnsproxy domain — they're something special, synthesized locally. */
+        if (is_gateway_hostname(domain) ||
+            is_outbound_hostname(domain) ||
+            is_dns_stub_hostname(domain) ||
+            is_dns_proxy_stub_hostname(domain))
                 return DNS_SCOPE_NO;
 
         switch (s->protocol) {
@@ -654,11 +657,11 @@ DnsScopeMatch dns_scope_good_domain(
                 DnsScopeMatch m;
                 int n_best = -1;
 
-                if (dns_name_is_empty(domain)) {
+                if (dns_name_is_root(domain)) {
                         DnsResourceKey *t;
                         bool found = false;
 
-                        /* Refuse empty name if only A and/or AAAA records are requested. */
+                        /* Refuse root name if only A and/or AAAA records are requested. */
 
                         DNS_QUESTION_FOREACH(t, question)
                                 if (!IN_SET(t->type, DNS_TYPE_A, DNS_TYPE_AAAA)) {
@@ -695,9 +698,14 @@ DnsScopeMatch dns_scope_good_domain(
                 }
 
                 /* If there's a true search domain defined for this scope, and the query is single-label,
-                 * then let's resolve things here, prefereably. Note that LLMNR considers itself
+                 * then let's resolve things here, preferably. Note that LLMNR considers itself
                  * authoritative for single-label names too, at the same preference, see below. */
                 if (has_search_domains && dns_name_is_single_label(domain))
+                        return DNS_SCOPE_YES_BASE + 1;
+
+                /* If ResolveUnicastSingleLabel=yes and the query is single-label, then bump match result
+                   to prevent LLMNR monopoly among candidates. */
+                if (s->manager->resolve_unicast_single_label && dns_name_is_single_label(domain))
                         return DNS_SCOPE_YES_BASE + 1;
 
                 /* Let's return the number of labels in the best matching result */
@@ -767,8 +775,6 @@ DnsScopeMatch dns_scope_good_domain(
                         return DNS_SCOPE_MAYBE;
 
                 if ((dns_name_is_single_label(domain) && /* only resolve single label names via LLMNR */
-                     !is_gateway_hostname(domain) && /* don't resolve "_gateway" with LLMNR, let local synthesizing logic handle that */
-                     !is_outbound_hostname(domain) && /* similar for "_outbound" */
                      dns_name_equal(domain, "local") == 0 && /* don't resolve "local" with LLMNR, it's the top-level domain of mDNS after all, see above */
                      manager_is_own_hostname(s->manager, domain) <= 0))  /* never resolve the local hostname via LLMNR */
                         return DNS_SCOPE_YES_BASE + 1; /* Return +1, as we consider ourselves authoritative
@@ -1019,7 +1025,9 @@ void dns_scope_process_query(DnsScope *s, DnsStream *stream, DnsPacket *p) {
                 return;
         }
 
-        assert(dns_question_size(p->question) == 1);
+        if (dns_question_size(p->question) != 1)
+                return (void) log_debug("Received LLMNR query without question or multiple questions, ignoring.");
+
         key = dns_question_first_key(p->question);
 
         r = dns_zone_lookup(&s->zone, key, 0, &answer, &soa, &tentative);
@@ -1088,7 +1096,7 @@ DnsTransaction *dns_scope_find_transaction(
                 DnsResourceKey *key,
                 uint64_t query_flags) {
 
-        DnsTransaction *first, *t;
+        DnsTransaction *first;
 
         assert(scope);
         assert(key);
@@ -1117,7 +1125,7 @@ DnsTransaction *dns_scope_find_transaction(
                     !(t->query_flags & SD_RESOLVED_NO_CACHE))
                         continue;
 
-                /* If we are asked to clamp ttls an the existing transaction doesn't do it, we can't
+                /* If we are asked to clamp ttls and the existing transaction doesn't do it, we can't
                  * reuse */
                 if ((query_flags & SD_RESOLVED_CLAMP_TTL) &&
                     !(t->query_flags & SD_RESOLVED_CLAMP_TTL))
@@ -1177,11 +1185,10 @@ static int dns_scope_make_conflict_packet(
 }
 
 static int on_conflict_dispatch(sd_event_source *es, usec_t usec, void *userdata) {
-        DnsScope *scope = userdata;
+        DnsScope *scope = ASSERT_PTR(userdata);
         int r;
 
         assert(es);
-        assert(scope);
 
         scope->conflict_event_source = sd_event_source_disable_unref(scope->conflict_event_source);
 
@@ -1212,7 +1219,6 @@ static int on_conflict_dispatch(sd_event_source *es, usec_t usec, void *userdata
 }
 
 int dns_scope_notify_conflict(DnsScope *scope, DnsResourceRecord *rr) {
-        usec_t jitter;
         int r;
 
         assert(scope);
@@ -1241,15 +1247,12 @@ int dns_scope_notify_conflict(DnsScope *scope, DnsResourceRecord *rr) {
         if (scope->conflict_event_source)
                 return 0;
 
-        random_bytes(&jitter, sizeof(jitter));
-        jitter %= LLMNR_JITTER_INTERVAL_USEC;
-
         r = sd_event_add_time_relative(
                         scope->manager->event,
                         &scope->conflict_event_source,
-                        clock_boottime_or_monotonic(),
-                        jitter,
-                        LLMNR_JITTER_INTERVAL_USEC,
+                        CLOCK_BOOTTIME,
+                        random_u64_range(LLMNR_JITTER_INTERVAL_USEC),
+                        0,
                         on_conflict_dispatch, scope);
         if (r < 0)
                 return log_debug_errno(r, "Failed to add conflict dispatch event: %m");
@@ -1404,8 +1407,7 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
         _cleanup_(dns_answer_unrefp) DnsAnswer *answer = NULL;
         _cleanup_(dns_packet_unrefp) DnsPacket *p = NULL;
         _cleanup_set_free_ Set *types = NULL;
-        DnsTransaction *t;
-        DnsZoneItem *z, *i;
+        DnsZoneItem *z;
         unsigned size = 0;
         char *service_type;
         int r;
@@ -1483,12 +1485,16 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
                                                   "_services._dns-sd._udp.local");
                 if (!rr)
                         return log_oom();
+
                 rr->ptr.name = strdup(service_type);
+                if (!rr->ptr.name)
+                        return log_oom();
+
                 rr->ttl = MDNS_DEFAULT_TTL;
 
                 r = dns_zone_put(&scope->zone, scope, rr, false);
                 if (r < 0)
-                        log_warning_errno(r, "Failed to add DNS-SD PTR record to MDNS zone: %m");
+                        log_warning_errno(r, "Failed to add DNS-SD PTR record to MDNS zone, ignoring: %m");
 
                 r = dns_answer_add(answer, rr, 0, 0, NULL);
                 if (r < 0)
@@ -1514,9 +1520,9 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
                 r = sd_event_add_time_relative(
                                 scope->manager->event,
                                 &scope->announce_event_source,
-                                clock_boottime_or_monotonic(),
+                                CLOCK_BOOTTIME,
                                 MDNS_ANNOUNCE_DELAY,
-                                MDNS_JITTER_RANGE_USEC,
+                                0,
                                 on_announcement_timeout, scope);
                 if (r < 0)
                         return log_debug_errno(r, "Failed to schedule second announcement: %m");
@@ -1529,7 +1535,6 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
 
 int dns_scope_add_dnssd_services(DnsScope *scope) {
         DnssdService *service;
-        DnssdTxtData *txt_data;
         int r;
 
         assert(scope);
@@ -1563,7 +1568,6 @@ int dns_scope_add_dnssd_services(DnsScope *scope) {
 int dns_scope_remove_dnssd_services(DnsScope *scope) {
         _cleanup_(dns_resource_key_unrefp) DnsResourceKey *key = NULL;
         DnssdService *service;
-        DnssdTxtData *txt_data;
         int r;
 
         assert(scope);
@@ -1588,7 +1592,7 @@ int dns_scope_remove_dnssd_services(DnsScope *scope) {
 }
 
 static bool dns_scope_has_route_only_domains(DnsScope *scope) {
-        DnsSearchDomain *domain, *first;
+        DnsSearchDomain *first;
         bool route_only = false;
 
         assert(scope);
@@ -1638,4 +1642,24 @@ bool dns_scope_is_default_route(DnsScope *scope) {
         /* Otherwise check if we have any route-only domains, as a sensible heuristic: if so, let's not
          * volunteer as default route. */
         return !dns_scope_has_route_only_domains(scope);
+}
+
+int dns_scope_dump_cache_to_json(DnsScope *scope, JsonVariant **ret) {
+        _cleanup_(json_variant_unrefp) JsonVariant *cache = NULL;
+        int r;
+
+        assert(scope);
+        assert(ret);
+
+        r = dns_cache_dump_to_json(&scope->cache, &cache);
+        if (r < 0)
+                return r;
+
+        return json_build(ret,
+                          JSON_BUILD_OBJECT(
+                                          JSON_BUILD_PAIR_STRING("protocol", dns_protocol_to_string(scope->protocol)),
+                                          JSON_BUILD_PAIR_CONDITION(scope->family != AF_UNSPEC, "family", JSON_BUILD_INTEGER(scope->family)),
+                                          JSON_BUILD_PAIR_CONDITION(scope->link, "ifindex", JSON_BUILD_INTEGER(scope->link ? scope->link->ifindex : 0)),
+                                          JSON_BUILD_PAIR_CONDITION(scope->link, "ifname", JSON_BUILD_STRING(scope->link ? scope->link->ifname : NULL)),
+                                          JSON_BUILD_PAIR_VARIANT("cache", cache)));
 }

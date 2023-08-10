@@ -5,6 +5,8 @@
 #include "alloc-util.h"
 #include "errno-util.h"
 #include "errno.h"
+#include "hwdb-internal.h"
+#include "nulstr-util.h"
 #include "tests.h"
 
 TEST(failed_enumerate) {
@@ -21,7 +23,7 @@ TEST(failed_enumerate) {
 }
 
 #define DELL_MODALIAS \
-        "evdev:atkbd:dmi:bvnXXX:bvrYYY:bdZZZ:svnDellXXX:pnYYY"
+        "evdev:atkbd:dmi:bvnXXX:bvrYYY:bdZZZ:svnDellXXX:pnYYY:"
 
 TEST(basic_enumerate) {
         _cleanup_(sd_hwdb_unrefp) sd_hwdb *hwdb = NULL;
@@ -52,12 +54,32 @@ TEST(basic_enumerate) {
         assert_se(len1 == len2);
 }
 
-DEFINE_CUSTOM_TEST_MAIN(
-        LOG_DEBUG,
-        ({
-                _cleanup_(sd_hwdb_unrefp) sd_hwdb *hwdb = NULL;
-                int r = sd_hwdb_new(&hwdb);
-                if (r == -ENOENT || ERRNO_IS_PRIVILEGE(r))
-                        return log_tests_skipped_errno(r, "cannot open hwdb");
-        }),
-        /* no outro */);
+TEST(sd_hwdb_new_from_path) {
+        _cleanup_(sd_hwdb_unrefp) sd_hwdb *hwdb = NULL;
+        int r;
+
+        assert_se(sd_hwdb_new_from_path(NULL, &hwdb) == -EINVAL);
+        assert_se(sd_hwdb_new_from_path("", &hwdb) == -EINVAL);
+        assert_se(sd_hwdb_new_from_path("/path/that/should/not/exist", &hwdb) < 0);
+
+        NULSTR_FOREACH(hwdb_bin_path, hwdb_bin_paths) {
+                r = sd_hwdb_new_from_path(hwdb_bin_path, &hwdb);
+                if (r >= 0)
+                        break;
+        }
+
+        assert_se(r >= 0);
+}
+
+static int intro(void) {
+        _cleanup_(sd_hwdb_unrefp) sd_hwdb *hwdb = NULL;
+        int r;
+
+        r = sd_hwdb_new(&hwdb);
+        if (r == -ENOENT || ERRNO_IS_PRIVILEGE(r))
+                return log_tests_skipped_errno(r, "cannot open hwdb");
+
+        return EXIT_SUCCESS;
+}
+
+DEFINE_TEST_MAIN_WITH_INTRO(LOG_DEBUG, intro);

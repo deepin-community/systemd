@@ -3,7 +3,9 @@
 #include <getopt.h>
 #include <unistd.h>
 
+#include "build.h"
 #include "bus-error.h"
+#include "bus-locator.h"
 #include "copy.h"
 #include "main-func.h"
 #include "pretty-print.h"
@@ -45,7 +47,7 @@ static int dump_state(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
-        int fd = -1;
+        int fd = -EBADF;
         int r;
 
         r = sd_bus_open_system(&bus);
@@ -54,15 +56,7 @@ static int dump_state(int argc, char *argv[], void *userdata) {
 
         pager_open(arg_pager_flags);
 
-        r = sd_bus_call_method(
-                        bus,
-                        "org.freedesktop.oom1",
-                        "/org/freedesktop/oom1",
-                        "org.freedesktop.oom1.Manager",
-                        "DumpByFileDescriptor",
-                        &error,
-                        &reply,
-                        NULL);
+        r = bus_call_method(bus, bus_oom_mgr, "DumpByFileDescriptor", &error, &reply, NULL);
         if (r < 0)
                 return log_error_errno(r, "Failed to dump context: %s", bus_error_message(&error, r));
 

@@ -15,6 +15,9 @@
 #define UPLINK_INDEX_SELF -2 /* the interface itself is uplink */
 
 #define DHCP_ROUTE_METRIC 1024
+#define IPV6RA_ROUTE_METRIC_HIGH    512
+#define IPV6RA_ROUTE_METRIC_MEDIUM 1024
+#define IPV6RA_ROUTE_METRIC_LOW    2048
 #define DHCP6PD_ROUTE_METRIC 256
 
 typedef struct Link Link;
@@ -82,6 +85,8 @@ static inline bool in6_prefix_is_filtered(const struct in6_addr *prefix, uint8_t
         return address_is_filtered(AF_INET6, &(union in_addr_union) { .in6 = *prefix }, prefixlen, allow_list, deny_list);
 }
 
+int link_get_captive_portal(Link *link, const char **ret);
+
 const char* dhcp_use_domains_to_string(DHCPUseDomains p) _const_;
 DHCPUseDomains dhcp_use_domains_from_string(const char *s) _pure_;
 
@@ -89,7 +94,8 @@ const char *dhcp_option_data_type_to_string(DHCPOptionDataType d) _const_;
 DHCPOptionDataType dhcp_option_data_type_from_string(const char *d) _pure_;
 
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp);
-CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_or_ra_route_metric);
+CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_route_metric);
+CONFIG_PARSER_PROTOTYPE(config_parse_ipv6_accept_ra_route_metric);
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_use_dns);
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_use_domains);
 CONFIG_PARSER_PROTOTYPE(config_parse_dhcp_use_ntp);

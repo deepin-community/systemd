@@ -19,7 +19,6 @@
 #include "macro.h"
 #include "smack-setup.h"
 #include "string-util.h"
-#include "util.h"
 
 #if ENABLE_SMACK
 
@@ -49,9 +48,9 @@ static int fdopen_unlocked_at(int dfd, const char *dir, const char *name, int *s
 }
 
 static int write_access2_rules(const char *srcdir) {
-        _cleanup_close_ int load2_fd = -1, change_fd = -1;
+        _cleanup_close_ int load2_fd = -EBADF, change_fd = -EBADF;
         _cleanup_closedir_ DIR *dir = NULL;
-        int dfd = -1, r = 0;
+        int dfd = -EBADF, r = 0;
 
         load2_fd = open("/sys/fs/smackfs/load2", O_RDWR|O_CLOEXEC|O_NONBLOCK|O_NOCTTY);
         if (load2_fd < 0)  {
@@ -121,9 +120,9 @@ static int write_access2_rules(const char *srcdir) {
 }
 
 static int write_cipso2_rules(const char *srcdir) {
-        _cleanup_close_ int cipso2_fd = -1;
+        _cleanup_close_ int cipso2_fd = -EBADF;
         _cleanup_closedir_ DIR *dir = NULL;
-        int dfd = -1, r = 0;
+        int dfd = -EBADF, r = 0;
 
         cipso2_fd = open("/sys/fs/smackfs/cipso2", O_RDWR|O_CLOEXEC|O_NONBLOCK|O_NOCTTY);
         if (cipso2_fd < 0)  {
@@ -182,7 +181,7 @@ static int write_cipso2_rules(const char *srcdir) {
 static int write_netlabel_rules(const char *srcdir) {
         _cleanup_fclose_ FILE *dst = NULL;
         _cleanup_closedir_ DIR *dir = NULL;
-        int dfd = -1, r = 0;
+        int dfd = -EBADF, r = 0;
 
         dst = fopen("/sys/fs/smackfs/netlabel", "we");
         if (!dst)  {
@@ -239,7 +238,7 @@ static int write_netlabel_rules(const char *srcdir) {
 }
 
 static int write_onlycap_list(void) {
-        _cleanup_close_ int onlycap_fd = -1;
+        _cleanup_close_ int onlycap_fd = -EBADF;
         _cleanup_free_ char *list = NULL;
         _cleanup_fclose_ FILE *f = NULL;
         size_t len = 0;
@@ -304,7 +303,7 @@ int mac_smack_setup(bool *loaded_policy) {
         assert(loaded_policy);
 
         r = write_access2_rules("/etc/smack/accesses.d/");
-        switch(r) {
+        switch (r) {
         case -ENOENT:
                 log_debug("Smack is not enabled in the kernel.");
                 return 0;
@@ -336,7 +335,7 @@ int mac_smack_setup(bool *loaded_policy) {
 #endif
 
         r = write_cipso2_rules("/etc/smack/cipso.d/");
-        switch(r) {
+        switch (r) {
         case -ENOENT:
                 log_debug("Smack/CIPSO is not enabled in the kernel.");
                 return 0;
@@ -352,7 +351,7 @@ int mac_smack_setup(bool *loaded_policy) {
         }
 
         r = write_netlabel_rules("/etc/smack/netlabel.d/");
-        switch(r) {
+        switch (r) {
         case -ENOENT:
                 log_debug("Smack/CIPSO is not enabled in the kernel.");
                 return 0;
@@ -368,7 +367,7 @@ int mac_smack_setup(bool *loaded_policy) {
         }
 
         r = write_onlycap_list();
-        switch(r) {
+        switch (r) {
         case -ENOENT:
                 log_debug("Smack is not enabled in the kernel.");
                 break;
