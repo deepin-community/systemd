@@ -173,6 +173,10 @@ evdev:atkbd:dmi:*:svnPackardBell:pndots:*:rvnPackardBell:rnSJE01_CT:*
  KEYBOARD_KEY_ce=unknown  # Brightness Up, also emitted by acpi-video, ignore
  KEYBOARD_KEY_ef=unknown  # Brightness Down, also emitted by acpi-video, ignore
 
+# Predator PT314-52s
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svnAcer*:pnPredator*PT314-52s:pvr*
+ KEYBOARD_KEY_66=micmute                                # Microphone mute button
+
 # Predator PH 315-52
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnAcer*:pnPredator*PH*315-52:*
  KEYBOARD_KEY_ef=kbdillumup                             # Fn+F10
@@ -604,6 +608,11 @@ evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pn*[pP][aA][vV][iI][lL][iI][oO
  KEYBOARD_KEY_d7=!f22                                   # touchpad off
  KEYBOARD_KEY_d9=unknown
  KEYBOARD_KEY_d2=sysrq                                  # Fn+Print = SYSRQ
+
+# Pavilion gaming 15-dk1* (lid keys)
+evdev:atkbd:dmi:bvn*:bvr*:bd*:br*:efr*:svnHP:pnHPPavilionGamingLaptop15-dk1*:*
+ KEYBOARD_KEY_d7=unknown
+ KEYBOARD_KEY_d8=unknown
 
 # Spectre x360 13 (Prevents random airplane mode activation)
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pn*[sS][pP][eE][cC][tT][rR][eE]*x360*13*:*
@@ -1050,6 +1059,9 @@ evdev:input:b0003v04B3p301B*
 evdev:name:SIPODEV Lenovo HID Device:dmi:*:svnLENOVO:*:pvrLenovoideapadD330-10IGM:*
  KEYBOARD_KEY_70073=f21                                 # Fn+Supr (Touchpad toggle)
 
+evdev:name:SIPODEV Lenovo HID Device Consumer Control:dmi:*:svnLENOVO:*:pvrLenovoideapadD330-10IGM:*
+ KEYBOARD_KEY_c00ff=fn_esc                              # Fn+Tab (FnLk toggle)
+
 ###########################################################
 # LG
 ###########################################################
@@ -1438,9 +1450,13 @@ evdev:atkbd:dmi:bvn*:bvr*:bd*:svnMicro-Star*:pn*PR200*:*
  KEYBOARD_KEY_f7=reserved
  KEYBOARD_KEY_f8=reserved
 
-# MSI Wind U90/U100 generates separate touchpad on/off keycodes so ignore touchpad toggle keycode
+# MSI Wind U90/U100 generates separate touchpad on/off keycodes so ignore touchpad toggle keycode.
+# Also ignore Wi-Fi and Bluetooth keycodes, because they are generated when the HW rfkill state
+# changes, but the userspace also toggles the SW rfkill upon receiving these keycodes.
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnMICRO-STAR*:pnU90/U100:*
- KEYBOARD_KEY_e4=reserved
+ KEYBOARD_KEY_e4=unknown
+ KEYBOARD_KEY_e2=unknown
+ KEYBOARD_KEY_f6=unknown
 
 # Keymaps MSI Prestige And MSI Modern FnKeys and Special keys
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnMicro-Star*:pn*Prestige*:*

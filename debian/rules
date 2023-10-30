@@ -4,6 +4,7 @@
 #export DEB_BUILD_OPTIONS = nostrip
 
 export LC_ALL = C.UTF-8
+export DEB_CFLAGS_MAINT_APPEND = -ffat-lto-objects
 
 include /usr/share/dpkg/default.mk
 include /usr/share/debhelper/dh_package_notes/package-notes.mk
@@ -30,15 +31,10 @@ else
     GENSYMBOLS_LEVEL = 1
 endif
 
-# Workaround for https://bugs.debian.org/1041499
-ifeq ($(DEB_HOST_ARCH),mips64el)
-CROSS_WRAPPER = --native-file=$(CURDIR)/debian/extra/no-exe-wrapper.ini
-endif
-
 CONFFLAGS = \
-	$(CROSS_WRAPPER) \
 	-Db_lto=true \
 	-Db_pie=true \
+	-Dstatic-libsystemd=true \
 	-Dmode=release \
 	-Drootlibdir=/usr/lib/$(DEB_HOST_MULTIARCH) \
 	-Dsplit-usr=true \
@@ -69,7 +65,6 @@ CONFFLAGS = \
 	-Drpmmacrosdir=no \
 	-Dvconsole=false \
 	-Dfirstboot=true \
-	-Dsysupdate=false \
 	-Dxkbcommon=false \
 	-Dwheel-group=false \
 	-Dpwquality=false \
@@ -128,7 +123,8 @@ CONFFLAGS += \
 	-Dqrencode=true \
 	-Dhomed=true \
 	-Duserdb=true \
-	-Dpcre2=true
+	-Dpcre2=true \
+	-Dsysupdate=true
 else
 CONFFLAGS += \
 	-Daudit=false \
@@ -182,6 +178,8 @@ endif
 execute_after_dh_auto_clean:
 	rm -f debian/shlibs.local
 	# remove Python byte code files
+	rm -rf src/ukify/test/__pycache__/
+	rm -rf src/ukify/__pycache__/
 	rm -rf tools/__pycache__/
 	rm -rf tools/chromiumos/__pycache__/
 	rm -f po/systemd.pot
@@ -197,14 +195,8 @@ execute_before_dh_install:
 	rm -f debian/tmp/usr/lib/sysctl.d/50-default.conf
 	rm -f debian/tmp/etc/X11/xinit/xinitrc.d/50-systemd-user.sh
 	rmdir -p --ignore-fail-on-non-empty debian/tmp/etc/X11/xinit/xinitrc.d/
-	# those files should probably be shipped in a -dev package, remove for now
-	rm -rf debian/tmp/usr/share/dbus-1/interfaces/
-	# remove files related to factory-reset feature
-	find debian/tmp/ \( -name 'systemd-update-done*' -o \
-		-name systemd-journal-catalog-update.service -o \
-		-name systemd-hwdb-update.service -o \
-		-name ldconfig.service -o \
-		-name etc.conf \) -print -delete
+	# remove etc.conf and usr/share/factory for now, we are not using them yet
+	find debian/tmp/ -name etc.conf -print -delete
 	rm -rf debian/tmp/usr/share/factory/
 	# replace upstream sysusers.d/basic.conf with proper users for Debian
 	debian/extra/make-sysusers-basic > debian/tmp/usr/lib/sysusers.d/basic.conf
@@ -254,23 +246,13 @@ execute_after_dh_installman-arch:
 		(cd debian/$$pkg; find -type f -o -type l) | (cd debian/systemd; xargs rm -f --verbose); \
 		(cd debian/$$pkg; find -mindepth 1 -type d | sort -r) | (cd debian/systemd; xargs rmdir --ignore-fail-on-non-empty --verbose || true); \
 	done
-
-	# dh_installman is affected by false positives and mangles manpages named as lib*.so.*
-	# fixed in debhelper 13.7.2 by https://salsa.debian.org/debian/debhelper/-/merge_requests/69
-	for pkg in libnss-myhostname libnss-mymachines libnss-resolve libnss-systemd; do \
-		rm -rf debian/$$pkg/usr/share/man/so; \
-	done
-	# work around some more dh_installman issues
-	# see https://salsa.debian.org/debian/debhelper/-/merge_requests/69#note_316102
-	for pkg in libnss-myhostname libnss-mymachines libnss-resolve libnss-systemd; do \
-		rm -rf debian/$$pkg/usr/share/man/man2/; \
-	done
+	# Remove empty directories from (/usr)/lib.
+	# Those are not strictly needed and can trigger piuparts errors due to
+	# accidential directory removal by dpkg on merged-/usr systems.
+	find debian/systemd/usr/lib debian/systemd/lib/ -type d -empty -print -delete
 
 override_dh_missing:
 	dh_missing $(DH_MISSING)
-
-override_dh_installinit:
-	dh_installinit --no-start
 
 override_dh_installsystemd:
 	dh_installsystemd -psystemd-timesyncd
@@ -280,8 +262,12 @@ override_dh_installsystemd:
 	dh_installsystemd -psystemd-userdbd --no-stop-on-upgrade systemd-userdbd.socket
 	dh_installsystemd -psystemd-homed --no-also systemd-homed.service systemd-homed-activate.service
 	dh_installsystemd -psystemd-resolved
+	dh_installsystemd -pudev systemd-udevd.service
 
 override_dh_installsystemduser:
+
+execute_after_dh_installsysusers:
+	dh_installsysusers -pudev --name=debian-udev
 
 PROJECT_VERSION ?= $(shell awk '/(PROJECT|PACKAGE)_VERSION/ {print $$3}' obj-$(DEB_HOST_GNU_TYPE)/config.h | tr -d \")
 

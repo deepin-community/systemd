@@ -379,7 +379,12 @@ qemu_setup_swtpm_socket() {
     swtpm socket --tpm2 --tpmstate dir="$state_dir" --ctrl type=unixio,path="$state_dir/sock" &
     pid=$!
     if ! kill -0 "$pid"; then
-        echo >&2 "Failed to setup swtpm socket"
+        derror "Failed to start swtpm"
+        return 1
+    fi
+
+    if ! timeout 5 bash -c "until [[ -S $state_dir/sock ]]; do sleep .5; done"; then
+        derror "Failed to setup swtpm socket"
         return 1
     fi
 
@@ -563,7 +568,6 @@ run_qemu() {
         kernel_params+=(
             "oops=panic"
             "panic=1"
-            "softlockup_panic=1"
             "systemd.wants=end.service"
         )
     fi
@@ -1289,6 +1293,7 @@ install_suse_systemd() {
         systemd-container
         systemd-coredump
         systemd-experimental
+        systemd-homed
         systemd-journal-remote
         # Since commit fb6f25d7b979134a, systemd-resolved, which is shipped by
         # systemd-network sub-package on openSUSE, has its own testsuite.
@@ -1310,6 +1315,7 @@ install_suse_systemd() {
 
     dinfo "Install the data needed by the tests at runtime"
     inst_recursive "${SOURCE_DIR}/testdata"
+    inst_recursive "${SOURCE_DIR}/unit-tests/manual"
 
     # On openSUSE, this directory is not created at package install, at least
     # for now.
@@ -2259,8 +2265,8 @@ install_zoneinfo() {
 install_fonts() {
     dinfo "Install system fonts"
     for i in \
-        /usr/lib/kbd/consolefonts/eurlatgr* \
-        /usr/lib/kbd/consolefonts/latarcyrheb-sun16*; do
+        /usr/{lib,share}/kbd/consolefonts/eurlatgr* \
+        /usr/{lib,share}/kbd/consolefonts/latarcyrheb-sun16*; do
             [[ -f "$i" ]] || continue
             inst "$i"
     done

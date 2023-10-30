@@ -572,6 +572,10 @@ static int journal_file_verify_header(JournalFile *f) {
         if (journal_file_writable(f) && header_size != sizeof(Header))
                 return -EPROTONOSUPPORT;
 
+        /* Don't write to journal files without the new boot ID update behavior guarantee. */
+        if (journal_file_writable(f) && !JOURNAL_HEADER_TAIL_ENTRY_BOOT_ID(f->header))
+                return -EPROTONOSUPPORT;
+
         if (JOURNAL_HEADER_SEALED(f->header) && !JOURNAL_HEADER_CONTAINS(f->header, n_entry_arrays))
                 return -EBADMSG;
 
@@ -987,6 +991,11 @@ static int check_object(JournalFile *f, Object *o, uint64_t offset) {
                         return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
                                                "Invalid entry monotonic timestamp: %" PRIu64 ": %" PRIu64,
                                                le64toh(o->entry.monotonic),
+                                               offset);
+
+                if (sd_id128_is_null(o->entry.boot_id))
+                        return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                               "Invalid object entry with an empty boot ID: %" PRIu64,
                                                offset);
 
                 break;
@@ -2285,18 +2294,15 @@ static int journal_file_append_entry_internal(
                                                "timestamp %" PRIu64 ", refusing entry.",
                                                ts->realtime, le64toh(f->header->tail_entry_realtime));
 
-                if (!sd_id128_is_null(f->header->tail_entry_boot_id) && boot_id) {
-
-                        if (!sd_id128_equal(f->header->tail_entry_boot_id, *boot_id))
-                                return log_debug_errno(SYNTHETIC_ERRNO(EREMOTE),
-                                                       "Boot ID to write is different from previous boot id, refusing entry.");
-
-                        if (ts->monotonic < le64toh(f->header->tail_entry_monotonic))
-                                return log_debug_errno(SYNTHETIC_ERRNO(ENOTNAM),
-                                                       "Monotonic timestamp %" PRIu64 " smaller than previous monotonic "
-                                                       "timestamp %" PRIu64 ", refusing entry.",
-                                                       ts->monotonic, le64toh(f->header->tail_entry_monotonic));
-                }
+                if ((!boot_id || sd_id128_equal(*boot_id, f->header->tail_entry_boot_id)) &&
+                    ts->monotonic < le64toh(f->header->tail_entry_monotonic))
+                        return log_debug_errno(
+                                        SYNTHETIC_ERRNO(ENOTNAM),
+                                        "Monotonic timestamp %" PRIu64
+                                        " smaller than previous monotonic timestamp %" PRIu64
+                                        " while having the same boot ID, refusing entry.",
+                                        ts->monotonic,
+                                        le64toh(f->header->tail_entry_monotonic));
         }
 
         if (seqnum_id) {
@@ -3345,6 +3351,10 @@ void journal_file_reset_location(JournalFile *f) {
         f->current_monotonic = 0;
         zero(f->current_boot_id);
         f->current_xor_hash = 0;
+
+        /* Also reset the previous reading direction. Otherwise, next_beyond_location() may wrongly handle we
+         * already hit EOF. See issue #29216. */
+        f->last_direction = _DIRECTION_INVALID;
 }
 
 void journal_file_save_location(JournalFile *f, Object *o, uint64_t offset) {
@@ -3941,6 +3951,7 @@ int journal_file_open(
                                             MAX(MIN_COMPRESS_THRESHOLD, compress_threshold_bytes),
                 .strict_order = FLAGS_SET(file_flags, JOURNAL_STRICT_ORDER),
                 .newest_boot_id_prioq_idx = PRIOQ_IDX_NULL,
+                .last_direction = _DIRECTION_INVALID,
         };
 
         if (fname) {
