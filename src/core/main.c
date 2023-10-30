@@ -1396,19 +1396,19 @@ static int setup_os_release(RuntimeScope scope) {
         }
 
         if (scope == RUNTIME_SCOPE_SYSTEM) {
-                os_release_dst = strdup("/run/systemd/propagate/os-release");
+                os_release_dst = strdup("/run/systemd/propagate/.os-release-stage/os-release");
                 if (!os_release_dst)
                         return log_oom_debug();
         } else {
-                if (asprintf(&os_release_dst, "/run/user/" UID_FMT "/systemd/propagate/os-release", geteuid()) < 0)
+                if (asprintf(&os_release_dst, "/run/user/" UID_FMT "/systemd/propagate/.os-release-stage/os-release", geteuid()) < 0)
                         return log_oom_debug();
         }
 
         r = mkdir_parents_label(os_release_dst, 0755);
-        if (r < 0 && r != -EEXIST)
+        if (r < 0)
                 return log_debug_errno(r, "Failed to create parent directory of %s, ignoring: %m", os_release_dst);
 
-        r = copy_file(os_release_src, os_release_dst, /* open_flags= */ 0, 0644, COPY_MAC_CREATE);
+        r = copy_file_atomic(os_release_src, os_release_dst, 0644, COPY_MAC_CREATE|COPY_REPLACE);
         if (r < 0)
                 return log_debug_errno(r, "Failed to create %s, ignoring: %m", os_release_dst);
 
@@ -2201,7 +2201,7 @@ static void log_execution_mode(bool *ret_first_boot) {
                                 r = read_one_line_file("/etc/machine-id", &id_text);
                                 if (r < 0 || streq(id_text, "uninitialized")) {
                                         if (r < 0 && r != -ENOENT)
-                                                log_warning_errno(r, "Unexpected error while reading /etc/machine-id, ignoring: %m");
+                                                log_warning_errno(r, "Unexpected error while reading /etc/machine-id, assuming first boot: %m");
 
                                         first_boot = true;
                                         log_info("Detected first boot.");

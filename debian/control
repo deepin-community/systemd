@@ -15,7 +15,7 @@ Vcs-Browser: https://salsa.debian.org/systemd-team/systemd
 Homepage: https://www.freedesktop.org/wiki/Software/systemd
 Build-Depends: debhelper-compat (= 13),
                dh-exec,
-               dh-package-notes ( >= 0.9),
+               dh-package-notes,
                dh-sequence-installnss,
                dh-sequence-installsysusers,
                pkg-config,
@@ -68,7 +68,7 @@ Build-Depends: debhelper-compat (= 13),
                python3-pyelftools [amd64 i386 arm64 armhf riscv64] <!stage1>,
                python3-pyparsing <!nocheck>,
                python3-evdev:native <!nocheck>,
-               tzdata <!nocheck>,
+               tzdata-legacy <!nocheck> | tzdata (<< 2023c-8) <!nocheck>,
                libcap2-bin <!nocheck>,
                iproute2 <!nocheck>,
                zstd <!nocheck>,
@@ -105,9 +105,7 @@ Depends: ${shlibs:Depends},
 Conflicts: consolekit,
            libpam-ck-connector,
            systemd-shim,
-Breaks: resolvconf (<< 1.83~),
-        udev (<< 247~),
-        less (<< 563),
+Breaks: less (<< 563),
         sicherboot (<< 0.1.6),
 Provides: systemd-sysusers (= ${binary:Version}),
           systemd-tmpfiles (= ${binary:Version}),
@@ -128,6 +126,8 @@ Priority: important
 Conflicts: sysvinit-core,
            file-rc,
            systemd-shim,
+           initscripts,
+           orphan-sysvinit-scripts,
 Replaces: sysvinit-core,
 Pre-Depends: systemd
 Depends: ${misc:Depends},
@@ -191,10 +191,8 @@ Priority: standard
 Depends: ${shlibs:Depends},
          ${misc:Depends},
          systemd
-Breaks: systemd (<< 245.4-2~),
 Conflicts: time-daemon
-Replaces: time-daemon,
-          systemd (<< 245.4-2~),
+Replaces: time-daemon
 Provides: time-daemon
 Description: minimalistic service to synchronize local time with NTP servers
  The package contains the systemd-timesyncd system service that may be used to
@@ -339,7 +337,6 @@ Multi-Arch: foreign
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
          ${misc:Depends},
-         adduser,
          libudev1 (= ${binary:Version}),
          systemd-dev (>= ${source:Version}),
          s390-tools [s390],
@@ -442,6 +439,7 @@ Build-Profiles: <!stage1>
 Architecture: linux-any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         libnss-systemd (= ${binary:Version}),
          systemd (= ${binary:Version}),
 Description: dynamic user/group manager
  systemd-userdbd is a system service that multiplexes user/group lookups to all
@@ -529,8 +527,10 @@ Section: devel
 Depends: ${misc:Depends},
 Breaks: systemd (<< 253-2~),
         udev (<< 253-2~),
+        systemd-homed (<< 254.1-3~),
 Replaces: systemd (<< 253-2~),
           udev (<< 253-2~),
+          systemd-homed (<< 254.1-3~),
 Description: systemd development files
  This package contains the systemd and udev pkg-config files. Note that these
  are different from the libsystemd's and libudev's pkg-config files, which can

@@ -266,6 +266,30 @@
       <para>If <option>--verbose</option> is used, <varname>$KERNEL_INSTALL_VERBOSE=1</varname> will be
       exported for plugins. They may output additional logs in this case.</para>
 
+      <para><varname>$KERNEL_INSTALL_IMAGE_TYPE=uki|pe|unknown</varname> is set for the plugins to specify the
+      type of the kernel image.</para>
+
+      <variablelist>
+        <varlistentry>
+          <term>uki</term>
+          <listitem>
+            <para>Unified kernel image.</para>
+          </listitem>
+        </varlistentry>
+        <varlistentry>
+          <term>pe</term>
+          <listitem>
+            <para>PE binary.</para>
+          </listitem>
+        </varlistentry>
+        <varlistentry>
+          <term>unknown</term>
+          <listitem>
+            <para>Unknown type.</para>
+          </listitem>
+        </varlistentry>
+      </variablelist>
+
       <para><varname>$KERNEL_INSTALL_MACHINE_ID</varname> is set for the plugins to the desired machine-id to
       use. It's always a 128-bit ID. Normally it's read from <filename>/etc/machine-id</filename>, but it can
       also be overridden via <varname>$MACHINE_ID</varname> (see below). If not specified via these methods,
@@ -483,6 +507,16 @@
             See the Environment variables section above for details.</para>
           </listitem>
       </varlistentry>
+      <varlistentry>
+        <term>
+          <filename>/etc/kernel/uki.conf</filename>
+        </term>
+          <listitem>
+            <para>Ini-style configuration file for <citerefentry><refentrytitle>ukify</refentrytitle><manvolnum>1</manvolnum></citerefentry> which is only effective when <varname>$KERNEL_INSTALL_LAYOUT</varname> or <varname>layout=</varname> in <filename>install.conf</filename> is set to <option>uki</option> and <varname>$KERNEL_INSTALL_UKI_GENERATOR</varname> or <varname>uki_generator=</varname> in <filename>install.conf</filename> is set to <option>ukify</option>.
+            <varname>$KERNEL_INSTALL_CONF_ROOT</varname> may be used to override the path.
+            </para>
+          </listitem>
+      </varlistentry>
     </variablelist>
   </refsect1>
 
@@ -493,6 +527,7 @@
       <citerefentry><refentrytitle>os-release</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
       <citerefentry project='man-pages'><refentrytitle>depmod</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
       <citerefentry><refentrytitle>systemd-boot</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
+      <citerefentry><refentrytitle>ukify</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
       <ulink url="https://uapi-group.org/specifications/specs/boot_loader_specification">Boot Loader Specification</ulink>
     </para>
   </refsect1>

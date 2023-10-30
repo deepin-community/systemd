@@ -109,6 +109,7 @@ Depends: systemd-tests,
   libfido2-dev,
   libdw-dev,
   libqrencode-dev,
+  tzdata-legacy | tzdata (<< 2023c-8),
 Restrictions: needs-root, isolation-container, breaks-testbed
 
 Tests: upstream
@@ -189,6 +190,7 @@ Depends: systemd-tests,
   locales-all,
   stress,
   curl,
+  tzdata-legacy | tzdata (<< 2023c-8),
 Restrictions: needs-root, allow-stderr, isolation-machine
 
 Tests: boot-smoke
@@ -197,3 +199,10 @@ Depends: systemd-sysv,
   gdm3 [!s390x],
   xserver-xorg-video-dummy,
 Restrictions: needs-root, isolation-container, allow-stderr, breaks-testbed
+
+Tests: build-with-static-libsystemd
+Depends: systemd,
+  pkg-config,
+  build-essential,
+  libsystemd-dev,
+  libcap-dev,
