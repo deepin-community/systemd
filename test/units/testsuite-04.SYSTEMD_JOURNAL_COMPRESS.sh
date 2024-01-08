@@ -7,6 +7,9 @@ set -o pipefail
 mkdir /run/systemd/system/systemd-journald.service.d
 MACHINE_ID="$(</etc/machine-id)"
 
+# Reset the start-limit counters, as we're going to restart journald a couple of times
+systemctl reset-failed systemd-journald.service
+
 for c in NONE XZ LZ4 ZSTD; do
     cat >/run/systemd/system/systemd-journald.service.d/compress.conf <<EOF
 [Service]
@@ -19,7 +22,7 @@ EOF
     ID="$(systemd-id128 new)"
     systemd-cat -t "$ID" /bin/bash -c "for ((i=0;i<100;i++)); do echo -n hoge with ${c}; done; echo"
     journalctl --sync
-    timeout 10 bash -c "while ! SYSTEMD_LOG_LEVEL=debug journalctl --verify --quiet --file /var/log/journal/$MACHINE_ID/system.journal 2>&1 | grep -q -F 'compress=${c}'; do sleep .5; done"
+    timeout 10 bash -c "until SYSTEMD_LOG_LEVEL=debug journalctl --verify --quiet --file /var/log/journal/$MACHINE_ID/system.journal 2>&1 | grep -q -F 'compress=${c}'; do sleep .5; done"
 
     # $SYSTEMD_JOURNAL_COMPRESS= also works for journal-remote
     if [[ -x /usr/lib/systemd/systemd-journal-remote ]]; then
@@ -35,4 +38,5 @@ done
 rm /run/systemd/system/systemd-journald.service.d/compress.conf
 systemctl daemon-reload
 systemctl restart systemd-journald.service
+systemctl reset-failed systemd-journald.service
 journalctl --rotate

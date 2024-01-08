@@ -232,11 +232,9 @@ int device_set_syspath(sd_device *device, const char *_syspath, bool verify) {
                                                "sd-device: Syspath '%s' is not a subdirectory of /sys",
                                                _syspath);
 
-                syspath = strdup(_syspath);
-                if (!syspath)
-                        return log_oom_debug();
-
-                path_simplify(syspath);
+                r = path_simplify_alloc(_syspath, &syspath);
+                if (r < 0)
+                        return r;
         }
 
         assert_se(devpath = startswith(syspath, "/sys"));
@@ -424,8 +422,13 @@ _public_ int sd_device_new_from_subsystem_sysname(
         int r;
 
         assert_return(ret, -EINVAL);
-        assert_return(path_is_normalized(subsystem), -EINVAL);
-        assert_return(path_is_normalized(sysname), -EINVAL);
+        assert_return(subsystem, -EINVAL);
+        assert_return(sysname, -EINVAL);
+
+        if (!path_is_normalized(subsystem))
+                return -EINVAL;
+        if (!path_is_normalized(sysname))
+                return -EINVAL;
 
         /* translate sysname back to sysfs filename */
         name = strdupa_safe(sysname);
@@ -758,14 +761,12 @@ int device_read_uevent_file(sd_device *device) {
         path = strjoina(syspath, "/uevent");
 
         r = read_full_virtual_file(path, &uevent, &uevent_len);
-        if (r < 0) {
+        if (r == -EACCES || ERRNO_IS_NEG_DEVICE_ABSENT(r))
                 /* The uevent files may be write-only, the device may be already removed, or the device
                  * may not have the uevent file. */
-                if (r == -EACCES || ERRNO_IS_DEVICE_ABSENT(r))
-                        return 0;
-
+                return 0;
+        if (r < 0)
                 return log_device_debug_errno(device, r, "sd-device: Failed to read uevent file '%s': %m", path);
-        }
 
         for (size_t i = 0; i < uevent_len; i++)
                 switch (state) {

@@ -129,7 +129,7 @@ static void device_init(Unit *u) {
          * indefinitely for plugged in devices, something which cannot
          * happen for the other units since their operations time out
          * anyway. */
-        u->job_running_timeout = u->manager->default_device_timeout_usec;
+        u->job_running_timeout = u->manager->defaults.device_timeout_usec;
 
         u->ignore_on_isolate = true;
 
@@ -494,13 +494,13 @@ static void device_dump(Unit *u, FILE *f, const char *prefix) {
                         prefix, *i);
 }
 
-_pure_ static UnitActiveState device_active_state(Unit *u) {
+static UnitActiveState device_active_state(Unit *u) {
         assert(u);
 
         return state_translation_table[DEVICE(u)->state];
 }
 
-_pure_ static const char *device_sub_state_to_string(Unit *u) {
+static const char *device_sub_state_to_string(Unit *u) {
         assert(u);
 
         return device_state_to_string(DEVICE(u)->state);
@@ -516,9 +516,7 @@ static int device_update_description(Unit *u, sd_device *dev, const char *path) 
 
         desc = path;
 
-        if (dev &&
-            (sd_device_get_property_value(dev, "ID_MODEL_FROM_DATABASE", &model) >= 0 ||
-             sd_device_get_property_value(dev, "ID_MODEL", &model) >= 0)) {
+        if (dev && device_get_model_string(dev, &model) >= 0) {
                 desc = model;
 
                 /* Try to concatenate the device model string with a label, if there is one */
@@ -1028,11 +1026,6 @@ static void device_enumerate(Manager *m) {
                         goto fail;
                 }
 
-                /* This will fail if we are unprivileged, but that
-                 * should not matter much, as user instances won't run
-                 * during boot. */
-                (void) sd_device_monitor_set_receive_buffer_size(m->device_monitor, 128*1024*1024);
-
                 r = sd_device_monitor_filter_add_match_tag(m->device_monitor, "systemd");
                 if (r < 0) {
                         log_error_errno(r, "Failed to add udev tag match: %m");
@@ -1298,6 +1291,7 @@ const UnitVTable device_vtable = {
         .status_message_formats = {
                 .starting_stopping = {
                         [0] = "Expecting device %s...",
+                        [1] = "Waiting for device %s to disappear...",
                 },
                 .finished_start_job = {
                         [JOB_DONE]       = "Found device %s.",

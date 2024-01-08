@@ -1039,6 +1039,13 @@ void dns_transaction_process_reply(DnsTransaction *t, DnsPacket *p, bool encrypt
         if (t->state != DNS_TRANSACTION_PENDING)
                 return;
 
+        /* Increment the total failure counter only when it is the first attempt at querying and the upstream
+         * server returns a failure response code. This ensures a more accurate count of the number of queries
+         * that received a failure response code, as it doesn't consider retries. */
+
+        if (t->n_attempts == 1 && !IN_SET(DNS_PACKET_RCODE(p), DNS_RCODE_SUCCESS, DNS_RCODE_NXDOMAIN))
+                t->scope->manager->n_failure_responses_total++;
+
         /* Note that this call might invalidate the query. Callers
          * should hence not attempt to access the query or transaction
          * after calling this function. */
@@ -1473,6 +1480,8 @@ static int on_transaction_timeout(sd_event_source *s, usec_t usec, void *userdat
 
         assert(s);
 
+        t->seen_timeout = true;
+
         if (t->initial_jitter_scheduled && !t->initial_jitter_elapsed) {
                 log_debug("Initial jitter phase for transaction %" PRIu16 " elapsed.", t->id);
                 t->initial_jitter_elapsed = true;
@@ -1596,6 +1605,9 @@ static int dns_transaction_prepare(DnsTransaction *t, usec_t ts) {
          * has been prepared. */
 
         dns_transaction_stop_timeout(t);
+
+        if (t->n_attempts == 1 && t->seen_timeout)
+                t->scope->manager->n_timeouts_total++;
 
         if (!dns_scope_network_good(t->scope)) {
                 dns_transaction_complete(t, DNS_TRANSACTION_NETWORK_DOWN);
@@ -1723,6 +1735,14 @@ static int dns_transaction_prepare(DnsTransaction *t, usec_t ts) {
                                 dns_transaction_reset_answer(t);
                         else {
                                 if (t->n_attempts > 1 && !FLAGS_SET(query_flags, SD_RESOLVED_NO_STALE)) {
+
+                                        if (t->answer_rcode == DNS_RCODE_SUCCESS) {
+                                                if (t->seen_timeout)
+                                                        t->scope->manager->n_timeouts_served_stale_total++;
+                                                else
+                                                        t->scope->manager->n_failure_responses_served_stale_total++;
+                                        }
+
                                         char key_str[DNS_RESOURCE_KEY_STRING_MAX];
                                         log_debug("Serve Stale response rcode=%s for %s",
                                                 FORMAT_DNS_RCODE(t->answer_rcode),
@@ -1766,21 +1786,20 @@ static int dns_packet_append_zone(DnsPacket *p, DnsTransaction *t, DnsResourceKe
         return dns_packet_append_answer(p, answer, nscount);
 }
 
-static int dns_transaction_make_packet_mdns(DnsTransaction *t) {
+static int mdns_make_dummy_packet(DnsTransaction *t, DnsPacket **ret_packet, Set **ret_keys) {
         _cleanup_(dns_packet_unrefp) DnsPacket *p = NULL;
         _cleanup_set_free_ Set *keys = NULL;
-        unsigned qdcount, ancount = 0 /* avoid false maybe-uninitialized warning */, nscount;
         bool add_known_answers = false;
+        unsigned qdcount;
         usec_t ts;
         int r;
 
         assert(t);
+        assert(t->scope);
         assert(t->scope->protocol == DNS_PROTOCOL_MDNS);
+        assert(ret_packet);
+        assert(ret_keys);
 
-        /* Discard any previously prepared packet, so we can start over and coalesce again */
-        t->sent = dns_packet_unref(t->sent);
-
-        /* First, create a dummy packet to calculate packet size. */
         r = dns_packet_new_query(&p, t->scope->protocol, 0, false);
         if (r < 0)
                 return r;
@@ -1803,120 +1822,139 @@ static int dns_transaction_make_packet_mdns(DnsTransaction *t) {
         if (r < 0)
                 return r;
 
-        /*
-         * For mDNS, we want to coalesce as many open queries in pending transactions into one single
-         * query packet on the wire as possible. To achieve that, we iterate through all pending transactions
-         * in our current scope, and see whether their timing constraints allow them to be sent.
-         */
-
         assert_se(sd_event_now(t->scope->manager->event, CLOCK_BOOTTIME, &ts) >= 0);
 
-        for (bool restart = true; restart;) {
-                restart = false;
-                LIST_FOREACH(transactions_by_scope, other, t->scope->transactions) {
+        LIST_FOREACH(transactions_by_scope, other, t->scope->transactions) {
+
+                /* Skip ourselves */
+                if (other == t)
+                        continue;
+
+                if (other->state != DNS_TRANSACTION_PENDING)
+                        continue;
+
+                if (other->next_attempt_after > ts)
+                        continue;
+
+                if (!set_contains(keys, dns_transaction_key(other))) {
                         size_t saved_packet_size;
-                        bool append = false;
 
-                        /* Skip ourselves */
-                        if (other == t)
-                                continue;
-
-                        if (other->state != DNS_TRANSACTION_PENDING)
-                                continue;
-
-                        if (other->next_attempt_after > ts)
-                                continue;
-
-                        if (!set_contains(keys, dns_transaction_key(other))) {
-                                r = dns_packet_append_key(p, dns_transaction_key(other), 0, &saved_packet_size);
-                                /* If we can't stuff more questions into the packet, just give up.
-                                 * One of the 'other' transactions will fire later and take care of the rest. */
-                                if (r == -EMSGSIZE)
-                                        break;
-                                if (r < 0)
-                                        return r;
-
-                                r = dns_packet_append_zone(p, t, dns_transaction_key(other), NULL);
-                                if (r == -EMSGSIZE)
-                                        break;
-                                if (r < 0)
-                                        return r;
-
-                                append = true;
-                        }
-
-                        r = dns_transaction_prepare(other, ts);
-                        if (r < 0)
-                                return r;
-                        if (r == 0) {
-                                if (append)
-                                        dns_packet_truncate(p, saved_packet_size);
-
-                                /* In this case, not only this transaction, but multiple transactions may be
-                                 * freed. Hence, we need to restart the loop. */
-                                restart = true;
+                        r = dns_packet_append_key(p, dns_transaction_key(other), 0, &saved_packet_size);
+                        /* If we can't stuff more questions into the packet, just give up.
+                         * One of the 'other' transactions will fire later and take care of the rest. */
+                        if (r == -EMSGSIZE)
                                 break;
-                        }
-
-                        usec_t timeout = transaction_get_resend_timeout(other);
-                        r = dns_transaction_setup_timeout(other, timeout, usec_add(ts, timeout));
                         if (r < 0)
                                 return r;
 
-                        if (dns_key_is_shared(dns_transaction_key(other)))
-                                add_known_answers = true;
-
-                        if (append) {
-                                r = set_ensure_put(&keys, &dns_resource_key_hash_ops, dns_transaction_key(other));
-                                if (r < 0)
-                                        return r;
-                        }
-
-                        qdcount++;
-                        if (qdcount >= UINT16_MAX)
+                        r = dns_packet_append_zone(p, t, dns_transaction_key(other), NULL);
+                        if (r == -EMSGSIZE) {
+                                dns_packet_truncate(p, saved_packet_size);
                                 break;
+                        }
+                        if (r < 0)
+                                return r;
+
+                        r = set_ensure_put(&keys, &dns_resource_key_hash_ops, dns_transaction_key(other));
+                        if (r < 0)
+                                return r;
                 }
+
+                r = dns_transaction_prepare(other, ts);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        /* In this case, not only this transaction, but multiple transactions may be
+                         * freed. Hence, we need to restart the loop. */
+                        return -EAGAIN;
+
+                usec_t timeout = transaction_get_resend_timeout(other);
+                r = dns_transaction_setup_timeout(other, timeout, usec_add(ts, timeout));
+                if (r < 0)
+                        return r;
+
+                if (dns_key_is_shared(dns_transaction_key(other)))
+                        add_known_answers = true;
+
+                qdcount++;
+                if (qdcount >= UINT16_MAX)
+                        break;
         }
 
-        /* Append known answer section if we're asking for any shared record */
+        DNS_PACKET_HEADER(p)->qdcount = htobe16(qdcount);
+
+        /* Append known answers section if we're asking for any shared record */
         if (add_known_answers) {
                 r = dns_cache_export_shared_to_packet(&t->scope->cache, p, ts, 0);
                 if (r < 0)
                         return r;
+        }
 
-                ancount = be16toh(DNS_PACKET_HEADER(p)->ancount);
+        *ret_packet = TAKE_PTR(p);
+        *ret_keys = TAKE_PTR(keys);
+        return add_known_answers;
+}
+
+static int dns_transaction_make_packet_mdns(DnsTransaction *t) {
+        _cleanup_(dns_packet_unrefp) DnsPacket *p = NULL, *dummy = NULL;
+        _cleanup_set_free_ Set *keys = NULL;
+        bool add_known_answers;
+        DnsResourceKey *k;
+        unsigned c;
+        int r;
+
+        assert(t);
+        assert(t->scope->protocol == DNS_PROTOCOL_MDNS);
+
+        /* Discard any previously prepared packet, so we can start over and coalesce again */
+        t->sent = dns_packet_unref(t->sent);
+
+        /* First, create a dummy packet to calculate the number of known answers to be appended in the first packet. */
+        for (;;) {
+                r = mdns_make_dummy_packet(t, &dummy, &keys);
+                if (r == -EAGAIN)
+                        continue;
+                if (r < 0)
+                        return r;
+
+                add_known_answers = r;
+                break;
         }
 
         /* Then, create actual packet. */
-        p = dns_packet_unref(p);
         r = dns_packet_new_query(&p, t->scope->protocol, 0, false);
         if (r < 0)
                 return r;
 
         /* Questions */
-        DnsResourceKey *k;
+        c = 0;
         SET_FOREACH(k, keys) {
                 r = dns_packet_append_key(p, k, 0, NULL);
                 if (r < 0)
                         return r;
+                c++;
         }
-        DNS_PACKET_HEADER(p)->qdcount = htobe16(qdcount);
+        DNS_PACKET_HEADER(p)->qdcount = htobe16(c);
 
         /* Known answers */
         if (add_known_answers) {
-                r = dns_cache_export_shared_to_packet(&t->scope->cache, p, ts, ancount);
+                usec_t ts;
+
+                assert_se(sd_event_now(t->scope->manager->event, CLOCK_BOOTTIME, &ts) >= 0);
+
+                r = dns_cache_export_shared_to_packet(&t->scope->cache, p, ts, be16toh(DNS_PACKET_HEADER(dummy)->ancount));
                 if (r < 0)
                         return r;
         }
 
         /* Authorities */
-        nscount = 0;
+        c = 0;
         SET_FOREACH(k, keys) {
-                r = dns_packet_append_zone(p, t, k, &nscount);
+                r = dns_packet_append_zone(p, t, k, &c);
                 if (r < 0)
                         return r;
         }
-        DNS_PACKET_HEADER(p)->nscount = htobe16(nscount);
+        DNS_PACKET_HEADER(p)->nscount = htobe16(c);
 
         t->sent = TAKE_PTR(p);
         return 0;
@@ -2079,7 +2117,7 @@ int dns_transaction_go(DnsTransaction *t) {
                 dns_transaction_complete(t, DNS_TRANSACTION_RR_TYPE_UNSUPPORTED);
                 return 0;
         }
-        if (t->scope->protocol == DNS_PROTOCOL_LLMNR && ERRNO_IS_DISCONNECT(r)) {
+        if (t->scope->protocol == DNS_PROTOCOL_LLMNR && ERRNO_IS_NEG_DISCONNECT(r)) {
                 /* On LLMNR, if we cannot connect to a host via TCP when doing reverse lookups. This means we cannot
                  * answer this request with this protocol. */
                 dns_transaction_complete(t, DNS_TRANSACTION_NOT_FOUND);
@@ -2770,7 +2808,7 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
                         if (r == 0)
                                 continue;
 
-                        return FLAGS_SET(t->answer_query_flags, SD_RESOLVED_AUTHENTICATED);
+                        return FLAGS_SET(dt->answer_query_flags, SD_RESOLVED_AUTHENTICATED);
                 }
 
                 return true;
@@ -2797,7 +2835,7 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
                         /* We found the transaction that was supposed to find the SOA RR for us. It was
                          * successful, but found no RR for us. This means we are not at a zone cut. In this
                          * case, we require authentication if the SOA lookup was authenticated too. */
-                        return FLAGS_SET(t->answer_query_flags, SD_RESOLVED_AUTHENTICATED);
+                        return FLAGS_SET(dt->answer_query_flags, SD_RESOLVED_AUTHENTICATED);
                 }
 
                 return true;

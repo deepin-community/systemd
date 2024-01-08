@@ -254,8 +254,9 @@ static int mdns_scope_process_query(DnsScope *s, DnsPacket *p) {
         if (r < 0)
                 return log_debug_errno(r, "Failed to extract resource records from incoming packet: %m");
 
+        /* TODO: Support Known-Answers only packets gracefully. */
         if (dns_question_size(p->question) <= 0)
-                return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG), "Received mDNS query without question, ignoring.");
+                return 0;
 
         unicast_reply = mdns_should_reply_using_unicast(p);
         if (unicast_reply && !sender_on_local_subnet(s, p)) {
@@ -314,7 +315,7 @@ static int mdns_scope_process_query(DnsScope *s, DnsPacket *p) {
                 }
 
                 DNS_ANSWER_FOREACH_ITEM(item, answer) {
-                        DnsAnswerFlags flags = item->flags;
+                        DnsAnswerFlags flags = item->flags | DNS_ANSWER_REFUSE_TTL_NO_MATCH;
                         /* The cache-flush bit must not be set in legacy unicast responses.
                          * See section 6.7 of RFC 6762. */
                         if (legacy_query)

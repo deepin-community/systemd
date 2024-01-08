@@ -6,7 +6,7 @@
 
 #include "alloc-util.h"
 #include "fd-util.h"
-#include "io-util.h"
+#include "iovec-util.h"
 #include "parse-util.h"
 #include "show-status.h"
 #include "string-table.h"
@@ -94,11 +94,11 @@ int status_vprintf(const char *status, ShowStatusFlags flags, const char *format
         }
 
         iovec[n++] = IOVEC_MAKE_STRING(s);
-        iovec[n++] = IOVEC_MAKE_STRING("\n");
+        iovec[n++] = IOVEC_MAKE_STRING("\r\n"); /* use CRNL instead of just NL, to be robust towards TTYs in raw mode */
 
         if (prev_ephemeral && !FLAGS_SET(flags, SHOW_STATUS_EPHEMERAL))
                 iovec[n++] = IOVEC_MAKE_STRING(ANSI_ERASE_TO_END_OF_LINE);
-        prev_ephemeral = FLAGS_SET(flags, SHOW_STATUS_EPHEMERAL) ;
+        prev_ephemeral = FLAGS_SET(flags, SHOW_STATUS_EPHEMERAL);
 
         if (writev(fd, iovec, n) < 0)
                 return -errno;

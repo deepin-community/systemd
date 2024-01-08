@@ -417,6 +417,32 @@ TEST(parse_range) {
         assert_se(upper == 9999);
 }
 
+TEST(safe_atou_bounded) {
+        int r;
+        unsigned x;
+
+        r = safe_atou_bounded("12345", 12, 20000, &x);
+        assert_se(r == 0);
+        assert_se(x == 12345);
+
+        r = safe_atou_bounded("12", 12, 20000, &x);
+        assert_se(r == 0);
+        assert_se(x == 12);
+
+        r = safe_atou_bounded("20000", 12, 20000, &x);
+        assert_se(r == 0);
+        assert_se(x == 20000);
+
+        r = safe_atou_bounded("-1", 12, 20000, &x);
+        assert_se(r == -ERANGE);
+
+        r = safe_atou_bounded("11", 12, 20000, &x);
+        assert_se(r == -ERANGE);
+
+        r = safe_atou_bounded("20001", 12, 20000, &x);
+        assert_se(r == -ERANGE);
+}
+
 TEST(safe_atolli) {
         int r;
         long long l;
@@ -888,15 +914,30 @@ TEST(parse_mtu) {
         assert_se(parse_mtu(AF_UNSPEC, "4294967295", &mtu) >= 0 && mtu == 4294967295);
         assert_se(parse_mtu(AF_UNSPEC, "500", &mtu) >= 0 && mtu == 500);
         assert_se(parse_mtu(AF_UNSPEC, "1280", &mtu) >= 0 && mtu == 1280);
+        assert_se(parse_mtu(AF_UNSPEC, "4294967296", &mtu) == -ERANGE);
+        assert_se(parse_mtu(AF_UNSPEC, "68", &mtu) >= 0 && mtu == 68);
+        assert_se(parse_mtu(AF_UNSPEC, "67", &mtu) >= 0 && mtu == 67);
+        assert_se(parse_mtu(AF_UNSPEC, "0", &mtu) >= 0 && mtu == 0);
+        assert_se(parse_mtu(AF_UNSPEC, "", &mtu) == -EINVAL);
+
+        assert_se(parse_mtu(AF_INET, "1500", &mtu) >= 0 && mtu == 1500);
+        assert_se(parse_mtu(AF_INET, "1400", &mtu) >= 0 && mtu == 1400);
+        assert_se(parse_mtu(AF_INET, "65535", &mtu) >= 0 && mtu == 65535);
+        assert_se(parse_mtu(AF_INET, "65536", &mtu) >= 0 && mtu == 65536);
+        assert_se(parse_mtu(AF_INET, "4294967295", &mtu) >= 0 && mtu == 4294967295);
+        assert_se(parse_mtu(AF_INET, "500", &mtu) >= 0 && mtu == 500);
+        assert_se(parse_mtu(AF_INET, "1280", &mtu) >= 0 && mtu == 1280);
+        assert_se(parse_mtu(AF_INET, "4294967296", &mtu) == -ERANGE);
+        assert_se(parse_mtu(AF_INET, "68", &mtu) >= 0 && mtu == 68);
+        assert_se(parse_mtu(AF_INET, "67", &mtu) == -ERANGE);
+        assert_se(parse_mtu(AF_INET, "0", &mtu) == -ERANGE);
+        assert_se(parse_mtu(AF_INET, "", &mtu) == -EINVAL);
+
         assert_se(parse_mtu(AF_INET6, "1280", &mtu) >= 0 && mtu == 1280);
         assert_se(parse_mtu(AF_INET6, "1279", &mtu) == -ERANGE);
-        assert_se(parse_mtu(AF_UNSPEC, "4294967296", &mtu) == -ERANGE);
         assert_se(parse_mtu(AF_INET6, "4294967296", &mtu) == -ERANGE);
         assert_se(parse_mtu(AF_INET6, "68", &mtu) == -ERANGE);
-        assert_se(parse_mtu(AF_UNSPEC, "68", &mtu) >= 0 && mtu == 68);
-        assert_se(parse_mtu(AF_UNSPEC, "67", &mtu) == -ERANGE);
-        assert_se(parse_mtu(AF_UNSPEC, "0", &mtu) == -ERANGE);
-        assert_se(parse_mtu(AF_UNSPEC, "", &mtu) == -EINVAL);
+        assert_se(parse_mtu(AF_INET6, "", &mtu) == -EINVAL);
 }
 
 TEST(parse_loadavg_fixed_point) {

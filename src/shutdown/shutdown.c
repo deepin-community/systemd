@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "sd-daemon.h"
+#include "sd-messages.h"
 
 #include "alloc-util.h"
 #include "async.h"
@@ -168,13 +169,11 @@ static int switch_root_initramfs(void) {
          * Disable sync() during switch-root, we after all sync'ed here plenty, and a dumb sync (as opposed
          * to the "smart" sync() we did here that looks at progress parameters) would defeat much of our
          * efforts here. As the new root will be /run/initramfs/, it is not necessary to mount /run/
-         * recursively. Also, do not umount filesystems before MS_MOVE, as that should be done by ourself. */
+         * recursively. */
         return switch_root(
                         /* new_root= */ "/run/initramfs",
                         /* old_root_after= */ "/oldroot",
-                        /* flags= */ SWITCH_ROOT_DONT_SYNC |
-                                     SWITCH_ROOT_SKIP_RECURSIVE_RUN |
-                                     SWITCH_ROOT_SKIP_RECURSIVE_UMOUNT);
+                        /* flags= */ SWITCH_ROOT_DONT_SYNC);
 }
 
 /* Read the following fields from /proc/meminfo:
@@ -388,6 +387,13 @@ int main(int argc, char *argv[]) {
                 goto error;
         }
 
+        /* This is primarily useful when running systemd in a VM, as it provides the user running the VM with
+         * a mechanism to pick up systemd's exit status in the VM. Note that we execute this as early as
+         * possible since otherwise we might shut down the VM before the AF_VSOCK buffers have been flushed.
+         * While this doesn't guarantee the message will arrive, in practice we do enough work after this
+         * that the message should always arrive on the host */
+        (void) sd_notifyf(0, "EXIT_STATUS=%i", arg_exit_code);
+
         (void) cg_get_root_path(&cgroup);
         bool in_container = detect_container() > 0;
 
@@ -583,10 +589,6 @@ int main(int argc, char *argv[]) {
         if (!in_container)
                 sync_with_progress();
 
-        /* This is primarily useful when running systemd in a VM, as it provides the user running the VM with
-         * a mechanism to pick up systemd's exit status in the VM. */
-        (void) sd_notifyf(0, "EXIT_STATUS=%i", arg_exit_code);
-
         if (streq(arg_verb, "exit")) {
                 if (in_container) {
                         log_info("Exiting container.");
@@ -654,6 +656,8 @@ int main(int argc, char *argv[]) {
         r = log_error_errno(errno, "Failed to invoke reboot(): %m");
 
   error:
-        log_emergency_errno(r, "Critical error while doing system shutdown: %m");
+        log_struct_errno(LOG_EMERG, r,
+                         LOG_MESSAGE("Critical error while doing system shutdown: %m"),
+                         "MESSAGE_ID=" SD_MESSAGE_SHUTDOWN_ERROR_STR);
         freeze();
 }

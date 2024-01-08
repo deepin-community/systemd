@@ -47,7 +47,8 @@ static bool route_lifetime_is_valid(const Route *route) {
                 route->lifetime_usec > now(CLOCK_BOOTTIME);
 }
 
-static Route *link_find_default_gateway(Link *link, int family, Route *gw) {
+bool link_find_default_gateway(Link *link, int family, Route **gw) {
+        bool found = false;
         Route *route;
 
         assert(link);
@@ -69,16 +70,24 @@ static Route *link_find_default_gateway(Link *link, int family, Route *gw) {
                         continue;
                 if (!in_addr_is_set(route->gw_family, &route->gw))
                         continue;
-                if (gw) {
-                        if (route->gw_weight > gw->gw_weight)
+
+                /* Found a default gateway. */
+                if (!gw)
+                        return true;
+
+                /* If we have already found another gw, then let's compare their weight and priority. */
+                if (*gw) {
+                        if (route->gw_weight > (*gw)->gw_weight)
                                 continue;
-                        if (route->priority >= gw->priority)
+                        if (route->priority >= (*gw)->priority)
                                 continue;
                 }
-                gw = route;
+
+                *gw = route;
+                found = true;
         }
 
-        return gw;
+        return found;
 }
 
 int manager_find_uplink(Manager *m, int family, Link *exclude, Link **ret) {
@@ -98,7 +107,7 @@ int manager_find_uplink(Manager *m, int family, Link *exclude, Link **ret) {
                 if (link->state != LINK_STATE_CONFIGURED)
                         continue;
 
-                gw = link_find_default_gateway(link, family, gw);
+                link_find_default_gateway(link, family, &gw);
         }
 
         if (!gw)
@@ -153,9 +162,9 @@ bool gateway_is_ready(Link *link, bool onlink, int family, const union in_addr_u
                         continue;
                 if (FLAGS_SET(a->flags, IFA_F_NOPREFIXROUTE))
                         continue;
-                if (in_addr_is_set(a->family, &a->in_addr_peer))
-                        continue;
-                if (in_addr_prefix_covers(family, &a->in_addr, a->prefixlen, gw) > 0)
+                if (in_addr_prefix_covers(a->family,
+                                          in_addr_is_set(a->family, &a->in_addr_peer) ? &a->in_addr_peer : &a->in_addr,
+                                          a->prefixlen, gw) > 0)
                         return true;
         }
 

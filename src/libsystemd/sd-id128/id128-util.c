@@ -9,9 +9,27 @@
 #include "hexdecoct.h"
 #include "id128-util.h"
 #include "io-util.h"
+#include "sha256.h"
 #include "stdio-util.h"
 #include "string-util.h"
 #include "sync-util.h"
+
+int id128_from_string_nonzero(const char *s, sd_id128_t *ret) {
+        sd_id128_t t;
+        int r;
+
+        assert(ret);
+
+        r = sd_id128_from_string(ASSERT_PTR(s), &t);
+        if (r < 0)
+                return r;
+
+        if (sd_id128_is_null(t))
+                return -ENXIO;
+
+        *ret = t;
+        return 0;
+}
 
 bool id128_is_valid(const char *s) {
         size_t l;
@@ -146,7 +164,7 @@ int id128_write_fd(int fd, Id128Flag f, sd_id128_t id) {
         }
 
         buffer[sz - 1] = '\n';
-        r = loop_write(fd, buffer, sz, false);
+        r = loop_write(fd, buffer, sz);
         if (r < 0)
                 return r;
 
@@ -216,4 +234,22 @@ int id128_get_product(sd_id128_t *ret) {
 
         *ret = uuid;
         return 0;
+}
+
+sd_id128_t id128_digest(const void *data, size_t size) {
+        assert(data || size == 0);
+
+        /* Hashes a UUID from some arbitrary data */
+
+        if (size == SIZE_MAX)
+                size = strlen(data);
+
+        uint8_t h[SHA256_DIGEST_SIZE];
+        sd_id128_t id;
+
+        /* Take the first half of the SHA256 result */
+        assert_cc(sizeof(h) >= sizeof(id.bytes));
+        memcpy(id.bytes, sha256_direct(data, size, h), sizeof(id.bytes));
+
+        return id128_make_v4_uuid(id);
 }

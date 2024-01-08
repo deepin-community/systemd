@@ -5,16 +5,18 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "sd-messages.h"
+
 #include "battery-util.h"
 #include "build.h"
-#include "constants.h"
 #include "errno-util.h"
-#include "glyph-util.h"
 #include "fd-util.h"
+#include "glyph-util.h"
 #include "io-util.h"
 #include "log.h"
 #include "main-func.h"
 #include "parse-util.h"
+#include "plymouth-util.h"
 #include "pretty-print.h"
 #include "proc-cmdline.h"
 #include "socket-util.h"
@@ -49,14 +51,8 @@ static int help(void) {
         return 0;
 }
 
-static bool ERRNO_IS_NO_PLYMOUTH(int r) {
-        return IN_SET(abs(r), EAGAIN, ENOENT) || ERRNO_IS_DISCONNECT(r);
-}
-
 static int plymouth_send_message(const char *mode, const char *message) {
-        static const union sockaddr_union sa = PLYMOUTH_SOCKET;
         _cleanup_free_ char *plymouth_message = NULL;
-        _cleanup_close_ int fd = -EBADF;
         int c, r;
 
         assert(mode);
@@ -70,37 +66,11 @@ static int plymouth_send_message(const char *mode, const char *message) {
         if (c < 0)
                 return log_oom();
 
-        /* We set SOCK_NONBLOCK here so that we rather drop the
-         * message than wait for plymouth */
-        fd = socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
-        if (fd < 0)
-                return log_warning_errno(errno, "socket() failed: %m");
-
-        if (connect(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0)
-                return log_full_errno(ERRNO_IS_NO_PLYMOUTH(errno) ? LOG_DEBUG : LOG_WARNING, errno,
-                                      "Failed to connect to plymouth: %m");
-
-        r = loop_write(fd, plymouth_message, c, /* do_poll = */ false);
+        /* We set SOCK_NONBLOCK here so that we rather drop the message than wait for plymouth */
+        r = plymouth_send_raw(plymouth_message, c, SOCK_NONBLOCK);
         if (r < 0)
                 return log_full_errno(ERRNO_IS_NO_PLYMOUTH(r) ? LOG_DEBUG : LOG_WARNING, r,
-                                      "Failed to write to plymouth: %m");
-
-        return 0;
-}
-
-static int parse_proc_cmdline_item(const char *key, const char *value, void *data) {
-        int r;
-
-        assert(key);
-
-        if (streq(key, "systemd.battery-check")) {
-
-                r = value ? parse_boolean(value) : 1;
-                if (r < 0)
-                        log_warning_errno(r, "Failed to parse %s switch, ignoring: %s", key, value);
-                else
-                        arg_doit = r;
-        }
+                                      "Failed to communicate with plymouth: %m");
 
         return 0;
 }
@@ -153,9 +123,9 @@ static int run(int argc, char *argv[]) {
 
         log_setup();
 
-        r = proc_cmdline_parse(parse_proc_cmdline_item, NULL, PROC_CMDLINE_STRIP_RD_PREFIX);
+        r = proc_cmdline_get_bool("systemd.battery-check", PROC_CMDLINE_STRIP_RD_PREFIX|PROC_CMDLINE_TRUE_WHEN_MISSING, &arg_doit);
         if (r < 0)
-                log_warning_errno(r, "Failed to parse kernel command line, ignoring: %m");
+                log_warning_errno(r, "Failed to parse systemd.battery-check= kernel command line option, ignoring: %m");
 
         r = parse_argv(argc, argv);
         if (r <= 0)
@@ -173,8 +143,9 @@ static int run(int argc, char *argv[]) {
         }
         if (r == 0)
                 return 0;
-
-        log_emergency("%s " BATTERY_LOW_MESSAGE, special_glyph(SPECIAL_GLYPH_LOW_BATTERY));
+        log_struct(LOG_EMERG,
+                   LOG_MESSAGE("%s " BATTERY_LOW_MESSAGE, special_glyph(SPECIAL_GLYPH_LOW_BATTERY)),
+                   "MESSAGE_ID=" SD_MESSAGE_BATTERY_LOW_WARNING_STR);
 
         fd = open_terminal("/dev/console", O_WRONLY|O_NOCTTY|O_CLOEXEC);
         if (fd < 0)
@@ -195,7 +166,9 @@ static int run(int argc, char *argv[]) {
         if (r < 0)
                 return log_warning_errno(r, "Failed to check battery status, assuming not charged yet, powering off: %m");
         if (r > 0) {
-                log_emergency("Battery level critically low, powering off.");
+                log_struct(LOG_EMERG,
+                           LOG_MESSAGE("Battery level critically low, powering off."),
+                           "MESSAGE_ID=" SD_MESSAGE_BATTERY_LOW_POWEROFF_STR);
                 return r;
         }
 
