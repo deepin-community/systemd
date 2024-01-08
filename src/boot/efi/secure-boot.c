@@ -2,7 +2,6 @@
 
 #include "console.h"
 #include "proto/security-arch.h"
-#include "sbat.h"
 #include "secure-boot.h"
 #include "util.h"
 #include "vmm.h"
@@ -32,10 +31,6 @@ SecureBootMode secure_boot_mode(void) {
 
         return decode_secure_boot_mode(secure, audit, deployed, setup);
 }
-
-#ifdef SBAT_DISTRO
-static const char sbat[] _used_ _section_(".sbat") = SBAT_SECTION_TEXT;
-#endif
 
 EFI_STATUS secure_boot_enroll_at(EFI_FILE *root_dir, const char16_t *path, bool force) {
         assert(root_dir);
@@ -79,6 +74,8 @@ EFI_STATUS secure_boot_enroll_at(EFI_FILE *root_dir, const char16_t *path, bool 
                         /* user aborted, returning EFI_SUCCESS here allows the user to go back to the menu */
                         return EFI_SUCCESS;
                 }
+
+                printf("\n");
         }
 
         _cleanup_(file_closep) EFI_FILE *dir = NULL;
@@ -122,6 +119,7 @@ EFI_STATUS secure_boot_enroll_at(EFI_FILE *root_dir, const char16_t *path, bool 
                 }
         }
 
+        printf("Custom Secure Boot keys successfully enrolled, rebooting the system now!\n");
         /* The system should be in secure boot mode now and we could continue a regular boot. But at least
          * TPM PCR7 measurements should change on next boot. Reboot now so that any OS we load does not end
          * up relying on the old PCR state. */

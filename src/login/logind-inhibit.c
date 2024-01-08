@@ -47,6 +47,7 @@ int inhibitor_new(Inhibitor **ret, Manager *m, const char* id) {
                 .mode = _INHIBIT_MODE_INVALID,
                 .uid = UID_INVALID,
                 .fifo_fd = -EBADF,
+                .pid = PIDREF_NULL,
         };
 
         i->state_file = path_join("/run/systemd/inhibit", id);
@@ -81,6 +82,8 @@ Inhibitor* inhibitor_free(Inhibitor *i) {
         free(i->state_file);
         free(i->fifo_path);
 
+        pidref_done(&i->pid);
+
         return mfree(i);
 }
 
@@ -110,7 +113,7 @@ static int inhibitor_save(Inhibitor *i) {
                 inhibit_what_to_string(i->what),
                 inhibit_mode_to_string(i->mode),
                 i->uid,
-                i->pid);
+                i->pid.pid);
 
         if (i->who) {
                 _cleanup_free_ char *cc = NULL;
@@ -173,11 +176,11 @@ int inhibitor_start(Inhibitor *i) {
         if (i->started)
                 return 0;
 
-        dual_timestamp_get(&i->since);
+        dual_timestamp_now(&i->since);
 
         log_debug("Inhibitor %s (%s) pid="PID_FMT" uid="UID_FMT" mode=%s started.",
                   strna(i->who), strna(i->why),
-                  i->pid, i->uid,
+                  i->pid.pid, i->uid,
                   inhibit_mode_to_string(i->mode));
 
         i->started = true;
@@ -195,7 +198,7 @@ void inhibitor_stop(Inhibitor *i) {
         if (i->started)
                 log_debug("Inhibitor %s (%s) pid="PID_FMT" uid="UID_FMT" mode=%s stopped.",
                           strna(i->who), strna(i->why),
-                          i->pid, i->uid,
+                          i->pid.pid, i->uid,
                           inhibit_mode_to_string(i->mode));
 
         inhibitor_remove_fifo(i);
@@ -242,7 +245,8 @@ int inhibitor_load(Inhibitor *i) {
         }
 
         if (pid) {
-                r = parse_pid(pid, &i->pid);
+                pidref_done(&i->pid);
+                r = pidref_set_pidstr(&i->pid, pid);
                 if (r < 0)
                         log_debug_errno(r, "Failed to parse PID of inhibitor: %s", pid);
         }
@@ -372,18 +376,20 @@ InhibitWhat manager_inhibit_what(Manager *m, InhibitMode mm) {
         return what;
 }
 
-static int pid_is_active(Manager *m, pid_t pid) {
+static int pidref_is_active_session(Manager *m, const PidRef *pid) {
         Session *s;
         int r;
 
-        /* Get client session.  This is not what you are looking for these days.
+        assert(m);
+        assert(pid);
+
+        /* Get client session. This is not what you are looking for these days.
          * FIXME #6852 */
-        r = manager_get_session_by_pid(m, pid, &s);
+        r = manager_get_session_by_pidref(m, pid, &s);
         if (r < 0)
                 return r;
 
-        /* If there's no session assigned to it, then it's globally
-         * active on all ttys */
+        /* If there's no session assigned to it, then it's globally active on all ttys */
         if (r == 0)
                 return 1;
 
@@ -405,7 +411,8 @@ bool manager_is_inhibited(
         bool inhibited = false;
 
         assert(m);
-        assert(w > 0 && w < _INHIBIT_WHAT_MAX);
+        assert(w > 0);
+        assert(w < _INHIBIT_WHAT_MAX);
 
         HASHMAP_FOREACH(i, m->inhibitors) {
                 if (!i->started)
@@ -417,7 +424,7 @@ bool manager_is_inhibited(
                 if (i->mode != mm)
                         continue;
 
-                if (ignore_inactive && pid_is_active(m, i->pid) <= 0)
+                if (ignore_inactive && pidref_is_active_session(m, &i->pid) <= 0)
                         continue;
 
                 if (ignore_uid && i->uid == uid)
@@ -451,7 +458,7 @@ const char *inhibit_what_to_string(InhibitWhat w) {
             "handle-reboot-key")+1];
         char *p;
 
-        if (w < 0 || w >= _INHIBIT_WHAT_MAX)
+        if (!inhibit_what_is_valid(w))
                 return NULL;
 
         p = buffer;

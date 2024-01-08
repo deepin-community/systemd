@@ -205,10 +205,6 @@ static int manager_connect_udev(Manager *m) {
         if (r < 0)
                 return log_error_errno(r, "Failed to initialize device monitor: %m");
 
-        r = sd_device_monitor_set_receive_buffer_size(m->device_monitor, RCVBUF_SIZE);
-        if (r < 0)
-                log_warning_errno(r, "Failed to increase buffer size for device monitor, ignoring: %m");
-
         r = sd_device_monitor_filter_add_match_subsystem_devtype(m->device_monitor, "net", NULL);
         if (r < 0)
                 return log_error_errno(r, "Could not add device monitor filter for net subsystem: %m");
@@ -651,7 +647,6 @@ Manager* manager_free(Manager *m) {
          * by the upstream link. And the links may be referenced by netlink slots. Hence, two
          * set_free() must be called after the above sd_netlink_unref(). */
         m->routes = set_free(m->routes);
-        m->routes_foreign = set_free(m->routes_foreign);
 
         m->nexthops = set_free(m->nexthops);
         m->nexthops_by_id = hashmap_free(m->nexthops_by_id);
@@ -692,7 +687,7 @@ int manager_start(Manager *m) {
                 log_warning_errno(r, "Failed to update state file %s, ignoring: %m", m->state_file);
 
         HASHMAP_FOREACH(link, m->links_by_index) {
-                r = link_save(link);
+                r = link_save_and_clean(link);
                 if (r < 0)
                         log_link_warning_errno(link, r, "Failed to update link state file %s, ignoring: %m", link->state_file);
         }
@@ -716,14 +711,14 @@ int manager_load_config(Manager *m) {
         return manager_build_dhcp_pd_subnet_ids(m);
 }
 
-static int manager_enumerate_internal(
+int manager_enumerate_internal(
                 Manager *m,
                 sd_netlink *nl,
                 sd_netlink_message *req,
                 int (*process)(sd_netlink *, sd_netlink_message *, Manager *)) {
 
         _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *reply = NULL;
-        int k, r;
+        int r;
 
         assert(m);
         assert(nl);
@@ -739,11 +734,8 @@ static int manager_enumerate_internal(
                 return r;
 
         m->enumerating = true;
-        for (sd_netlink_message *reply_one = reply; reply_one; reply_one = sd_netlink_message_next(reply_one)) {
-                k = process(nl, reply_one, m);
-                if (k < 0 && r >= 0)
-                        r = k;
-        }
+        for (sd_netlink_message *reply_one = reply; reply_one; reply_one = sd_netlink_message_next(reply_one))
+                RET_GATHER(r, process(nl, reply_one, m));
         m->enumerating = false;
 
         return r;
@@ -778,17 +770,18 @@ static int manager_enumerate_qdisc(Manager *m) {
 }
 
 static int manager_enumerate_tclass(Manager *m) {
-        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL;
-        int r;
+        Link *link;
+        int r = 0;
 
         assert(m);
         assert(m->rtnl);
 
-        r = sd_rtnl_message_new_traffic_control(m->rtnl, &req, RTM_GETTCLASS, 0, 0, 0);
-        if (r < 0)
-                return r;
+        /* TC class can be enumerated only per link. See tc_dump_tclass() in net/sched/sched_api.c. */
 
-        return manager_enumerate_internal(m, m->rtnl, req, manager_rtnl_process_tclass);
+        HASHMAP_FOREACH(link, m->links_by_index)
+                RET_GATHER(r, link_enumerate_tclass(link, 0));
+
+        return r;
 }
 
 static int manager_enumerate_addresses(Manager *m) {

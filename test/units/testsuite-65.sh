@@ -165,6 +165,11 @@ systemd-analyze cat-config /etc/systemd/system.conf >/dev/null
 systemd-analyze cat-config systemd/system.conf systemd/journald.conf >/dev/null
 systemd-analyze cat-config systemd/system.conf foo/bar systemd/journald.conf >/dev/null
 systemd-analyze cat-config foo/bar
+systemd-analyze cat-config --tldr systemd/system.conf >/dev/null
+systemd-analyze cat-config --tldr /etc/systemd/system.conf >/dev/null
+systemd-analyze cat-config --tldr systemd/system.conf systemd/journald.conf >/dev/null
+systemd-analyze cat-config --tldr systemd/system.conf foo/bar systemd/journald.conf >/dev/null
+systemd-analyze cat-config --tldr foo/bar
 # security
 systemd-analyze security
 systemd-analyze security --json=off
@@ -236,6 +241,18 @@ set -e
 rm /tmp/testfile.service
 rm /tmp/testfile2.service
 
+cat <<EOF >/tmp/sample.service
+[Unit]
+Description = A Sample Service
+
+[Service]
+ExecStart = echo hello
+Slice=support.slice
+EOF
+
+# Zero exit status since no additional dependencies are recursively loaded when the unit file is loaded
+systemd-analyze verify --recursive-errors=no /tmp/sample.service
+
 cat <<EOF >/tmp/testfile.service
 [Service]
 ExecStart = echo hello
@@ -278,6 +295,44 @@ EOF
 # The new overall exposure level assigned to the unit is less than the set thresholds
 # Verifies that the --offline= option works with --root=
 systemd-analyze security --threshold=90 --offline=true --root=/tmp/img/ testfile.service
+
+cat <<EOF >/tmp/foo@.service
+[Service]
+ExecStart=ls
+EOF
+
+cat <<EOF >/tmp/hoge@test.service
+[Service]
+ExecStart=ls
+EOF
+
+# issue #30357
+pushd /tmp
+systemd-analyze verify foo@bar.service
+systemd-analyze verify foo@.service
+systemd-analyze verify hoge@test.service
+(! systemd-analyze verify hoge@nonexist.service)
+(! systemd-analyze verify hoge@.service)
+popd
+pushd /
+systemd-analyze verify tmp/foo@bar.service
+systemd-analyze verify tmp/foo@.service
+systemd-analyze verify tmp/hoge@test.service
+(! systemd-analyze verify tmp/hoge@nonexist.service)
+(! systemd-analyze verify tmp/hoge@.service)
+popd
+pushd /usr
+systemd-analyze verify ../tmp/foo@bar.service
+systemd-analyze verify ../tmp/foo@.service
+systemd-analyze verify ../tmp/hoge@test.service
+(! systemd-analyze verify ../tmp/hoge@nonexist.service)
+(! systemd-analyze verify ../tmp/hoge@.service)
+popd
+systemd-analyze verify /tmp/foo@bar.service
+systemd-analyze verify /tmp/foo@.service
+systemd-analyze verify /tmp/hoge@test.service
+(! systemd-analyze verify /tmp/hoge@nonexist.service)
+(! systemd-analyze verify /tmp/hoge@.service)
 
 # Added an additional "INVALID_ID" id to the .json to verify that nothing breaks when input is malformed
 # The PrivateNetwork id description and weight was changed to verify that 'security' is actually reading in
@@ -543,6 +598,12 @@ cat <<EOF >/tmp/testfile.json
 "CapabilityBoundingSet_CAP_SYS_PACCT":
     {"description_good": "Service cannot use acct()",
     "description_bad": "Service may use acct()",
+    "weight": 25,
+    "range": 1
+    },
+"CapabilityBoundingSet_CAP_BPF":
+    {"description_good": "Service may load BPF programs",
+    "description_bad": "Service may not load BPF programs",
     "weight": 25,
     "range": 1
     },
@@ -815,13 +876,13 @@ check deny yes /run/systemd/system/deny-list.service
 check deny no deny-list.service
 
 output=$(systemd-run -p "SystemCallFilter=@system-service" -p "SystemCallFilter=~@resources:ENOANO @privileged" -p "SystemCallFilter=@clock" sleep 60 2>&1)
-name=$(echo "$output" | awk '{ print $4 }')
+name=$(echo "$output" | awk '{ print $4 }' | cut -d';' -f1)
 
 check allow yes /run/systemd/transient/"$name"
 check allow no "$name"
 
 output=$(systemd-run -p "SystemCallFilter=~@known" -p "SystemCallFilter=@system-service" -p "SystemCallFilter=~@resources:ENOANO @privileged" -p "SystemCallFilter=@clock" sleep 60 2>&1)
-name=$(echo "$output" | awk '{ print $4 }')
+name=$(echo "$output" | awk '{ print $4 }' | cut -d';' -f1)
 
 check deny yes /run/systemd/transient/"$name"
 check deny no "$name"

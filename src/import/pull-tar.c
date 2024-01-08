@@ -192,7 +192,7 @@ static void tar_pull_report_progress(TarPull *i, TarProgress p) {
                 assert_not_reached();
         }
 
-        sd_notifyf(false, "X_IMPORT_PROGRESS=%u", percent);
+        sd_notifyf(false, "X_IMPORT_PROGRESS=%u%%", percent);
         log_debug("Combined progress %u%%", percent);
 }
 
@@ -245,7 +245,7 @@ static int tar_pull_make_local_copy(TarPull *i) {
                                 BTRFS_SNAPSHOT_FALLBACK_DIRECTORY|
                                 BTRFS_SNAPSHOT_RECURSIVE);
         else
-                r = copy_tree(i->final_path, t, UID_INVALID, GID_INVALID, COPY_REFLINK|COPY_HARDLINKS, NULL);
+                r = copy_tree(i->final_path, t, UID_INVALID, GID_INVALID, COPY_REFLINK|COPY_HARDLINKS, NULL, NULL);
         if (r < 0)
                 return log_error_errno(r, "Failed to create local image: %m");
 
@@ -516,7 +516,7 @@ static int tar_pull_job_on_open_disk_tar(PullJob *j) {
                 (void) rm_rf(where, REMOVE_ROOT|REMOVE_PHYSICAL|REMOVE_SUBVOLUME);
 
         if (i->flags & PULL_BTRFS_SUBVOL)
-                r = btrfs_subvol_make_fallback(where, 0755);
+                r = btrfs_subvol_make_fallback(AT_FDCWD, where, 0755);
         else
                 r = RET_NERRNO(mkdir(where, 0755));
         if (r == -EEXIST && (i->flags & PULL_DIRECT)) /* EEXIST is OK if in direct mode, but not otherwise,

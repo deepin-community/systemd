@@ -1365,7 +1365,17 @@ bool dns_scope_name_wants_search_domain(DnsScope *s, const char *name) {
         if (s->protocol != DNS_PROTOCOL_DNS)
                 return false;
 
-        return dns_name_is_single_label(name);
+        if (!dns_name_is_single_label(name))
+                return false;
+
+        /* If we allow single-label domain lookups on unicast DNS, and this scope has a search domain that matches
+         * _exactly_ this name, then do not use search domains. */
+        if (s->manager->resolve_unicast_single_label)
+                LIST_FOREACH(domains, d, dns_scope_get_search_domains(s))
+                        if (dns_name_equal(name, d->name) > 0)
+                                return false;
+
+        return true;
 }
 
 bool dns_scope_network_good(DnsScope *s) {
@@ -1418,9 +1428,17 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
         if (scope->protocol != DNS_PROTOCOL_MDNS)
                 return 0;
 
+        r = sd_event_get_state(scope->manager->event);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to get event loop state: %m");
+
+        /* If this is called on exit, through manager_free() -> link_free(), then we cannot announce. */
+        if (r == SD_EVENT_FINISHED)
+                return 0;
+
         /* Check if we're done with probing. */
         LIST_FOREACH(transactions_by_scope, t, scope->transactions)
-                if (DNS_TRANSACTION_IS_LIVE(t->state))
+                if (t->probing && DNS_TRANSACTION_IS_LIVE(t->state))
                         return 0;
 
         /* Check if there're services pending conflict resolution. */

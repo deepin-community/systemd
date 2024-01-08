@@ -546,7 +546,7 @@ testcase_lvm_basic() {
     # Mount mypart1 through by-label devlink
     mkdir -p /tmp/mypart1-mount-point
     mount /dev/disk/by-label/mylvpart1 /tmp/mypart1-mount-point
-    timeout 30 bash -c "while ! systemctl -q is-active /tmp/mypart1-mount-point; do sleep .2; done"
+    timeout 30 bash -c "until systemctl -q is-active /tmp/mypart1-mount-point; do sleep .2; done"
     # Extend the partition and check if the device and mount units are still active.
     # See https://bugzilla.redhat.com/show_bug.cgi?id=2158628
     # Note, the test below may be unstable with LVM2 without the following patch:
@@ -556,8 +556,8 @@ testcase_lvm_basic() {
     # is hopefully fast.
     lvm lvextend -y --size 8M "/dev/$vgroup/mypart1"
     udevadm wait --settle --timeout="$timeout" "/dev/disk/by-label/mylvpart1"
-    timeout 30 bash -c "while ! systemctl -q is-active '/dev/$vgroup/mypart1'; do sleep .2; done"
-    timeout 30 bash -c "while ! systemctl -q is-active /tmp/mypart1-mount-point; do sleep .2; done"
+    timeout 30 bash -c "until systemctl -q is-active '/dev/$vgroup/mypart1'; do sleep .2; done"
+    timeout 30 bash -c "until systemctl -q is-active /tmp/mypart1-mount-point; do sleep .2; done"
     # Umount the partition, otherwise the underlying device unit will stay in
     # the inactive state and not be collected, and helper_check_device_units() will fail.
     systemctl show /tmp/mypart1-mount-point
@@ -756,7 +756,7 @@ EOF
         udevadm wait --settle --timeout=30 "/dev/disk/by-uuid/deadbeef-dead-dead-beef-11111111111$i" "/dev/disk/by-label/encdisk$i"
         # Add the device into /etc/crypttab, reload systemd, and then activate
         # the device so we can create a filesystem on it later
-        echo "encbtrfs$i UUID=deadbeef-dead-dead-beef-11111111111$i /etc/btrfs_keyfile luks,noearly" >>/etc/crypttab
+        echo "encbtrfs$i UUID=deadbeef-dead-dead-beef-11111111111$i /etc/btrfs_keyfile luks" >>/etc/crypttab
         systemctl daemon-reload
         systemctl start "systemd-cryptsetup@encbtrfs$i"
     done
@@ -956,7 +956,7 @@ testcase_long_sysfs_path() {
     echo "UUID=deadbeef-dead-dead-beef-222222222222 $mpoint ext4 defaults 0 0" >>/etc/fstab
     systemctl daemon-reload
     mount "$mpoint"
-    timeout 30 bash -c "while ! systemctl -q is-active '$mpoint'; do sleep .2; done"
+    timeout 30 bash -c "until systemctl -q is-active '$mpoint'; do sleep .2; done"
     test -e "$mpoint/test"
     umount "$mpoint"
 
@@ -1158,6 +1158,10 @@ testcase_mdadm_lvm() {
     udevadm wait --settle --timeout=30 --removed "${expected_symlinks[@]}"
     helper_check_device_units
 }
+
+# Disable the mdmonitor service, since it fails if there's no valid email address
+# configured in /etc/mdadm.conf, which just unnecessarily pollutes the logs
+systemctl list-unit-files mdmonitor.service >/dev/null && systemctl mask --runtime mdmonitor.service
 
 udevadm settle
 udevadm control --log-level debug

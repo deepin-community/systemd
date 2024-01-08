@@ -131,6 +131,8 @@ static void print_welcome(int rfd) {
         pn = os_release_pretty_name(pretty_name, os_name);
         ac = isempty(ansi_color) ? "0" : ansi_color;
 
+        (void) reset_terminal_fd(STDIN_FILENO, /* switch_to_text= */ false);
+
         if (colors_enabled())
                 printf("\nWelcome to your new installation of \x1B[%sm%s\x1B[0m!\n", ac, pn);
         else
@@ -446,7 +448,7 @@ static int process_locale(int rfd) {
 
         locales[i] = NULL;
 
-        r = write_env_file_at(pfd, f, locales);
+        r = write_env_file(pfd, f, NULL, locales);
         if (r < 0)
                 return log_error_errno(r, "Failed to write /etc/locale.conf: %m");
 
@@ -534,7 +536,7 @@ static int process_keymap(int rfd) {
 
         keymap = STRV_MAKE(strjoina("KEYMAP=", arg_keymap));
 
-        r = write_env_file_at(pfd, f, keymap);
+        r = write_vconsole_conf(pfd, f, keymap);
         if (r < 0)
                 return log_error_errno(r, "Failed to write /etc/vconsole.conf: %m");
 
@@ -792,13 +794,11 @@ static int prompt_root_password(int rfd) {
                 }
 
                 r = check_password_quality(*a, /* old */ NULL, "root", &error);
-                if (r < 0) {
-                        if (ERRNO_IS_NOT_SUPPORTED(r))
-                                log_warning("Password quality check is not supported, proceeding anyway.");
-                        else
-                                return log_error_errno(r, "Failed to check password quality: %m");
-                }
-                if (r == 0)
+                if (ERRNO_IS_NEG_NOT_SUPPORTED(r))
+                        log_warning("Password quality check is not supported, proceeding anyway.");
+                else if (r < 0)
+                        return log_error_errno(r, "Failed to check password quality: %m");
+                else if (r == 0)
                         log_warning("Password is weak, accepting anyway: %s", error);
 
                 r = ask_password_tty(-1, msg2, NULL, 0, 0, NULL, &b);
@@ -1208,7 +1208,8 @@ static int process_reset(int rfd) {
                        "/etc/vconsole.conf",
                        "/etc/hostname",
                        "/etc/machine-id",
-                       "/etc/kernel/cmdline") {
+                       "/etc/kernel/cmdline",
+                       "/etc/localtime") {
                 r = reset_one(rfd, p);
                 if (r < 0)
                         return r;
@@ -1650,7 +1651,7 @@ static int run(int argc, char *argv[]) {
                  * opposed to some other file system tree/image) */
 
                 bool enabled;
-                r = proc_cmdline_get_bool("systemd.firstboot", &enabled);
+                r = proc_cmdline_get_bool("systemd.firstboot", /* flags = */ 0, &enabled);
                 if (r < 0)
                         return log_error_errno(r, "Failed to parse systemd.firstboot= kernel command line argument, ignoring: %m");
                 if (r > 0 && !enabled) {

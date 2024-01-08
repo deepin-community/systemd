@@ -11,6 +11,7 @@
 #include "device-private.h"
 #include "device-util.h"
 #include "dirent-util.h"
+#include "escape.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
@@ -23,15 +24,20 @@
 #include "parse-util.h"
 #include "path-util.h"
 #include "proc-cmdline.h"
+#include "socket-util.h"
 #include "stat-util.h"
+#include "string-table.h"
 #include "strv.h"
 #include "strxcpyx.h"
 #include "sysctl-util.h"
 #include "syslog-util.h"
 #include "udev-builtin.h"
 #include "udev-event.h"
+#include "udev-format.h"
 #include "udev-node.h"
 #include "udev-rules.h"
+#include "udev-spawn.h"
+#include "udev-trace.h"
 #include "udev-util.h"
 #include "user-util.h"
 #include "virt.h"
@@ -1115,6 +1121,62 @@ static void check_token_delimiters(UdevRuleLine *rule_line, const char *line) {
         }
 }
 
+int udev_rule_parse_value(char *str, char **ret_value, char **ret_endpos) {
+        char *i, *j;
+        bool is_escaped;
+
+        /* value must be double quotated */
+        is_escaped = str[0] == 'e';
+        str += is_escaped;
+        if (str[0] != '"')
+                return -EINVAL;
+
+        if (!is_escaped) {
+                /* unescape double quotation '\"'->'"' */
+                for (j = str, i = str + 1; *i != '"'; i++, j++) {
+                        if (*i == '\0')
+                                return -EINVAL;
+                        if (i[0] == '\\' && i[1] == '"')
+                                i++;
+                        *j = *i;
+                }
+                j[0] = '\0';
+                /*
+                 * The return value must be terminated by two subsequent NULs
+                 * so it could be safely interpreted as nulstr.
+                 */
+                j[1] = '\0';
+        } else {
+                _cleanup_free_ char *unescaped = NULL;
+                ssize_t l;
+
+                /* find the end position of value */
+                for (i = str + 1; *i != '"'; i++) {
+                        if (i[0] == '\\')
+                                i++;
+                        if (*i == '\0')
+                                return -EINVAL;
+                }
+                i[0] = '\0';
+
+                l = cunescape_length(str + 1, i - (str + 1), 0, &unescaped);
+                if (l < 0)
+                        return l;
+
+                assert(l <= i - (str + 1));
+                memcpy(str, unescaped, l + 1);
+                /*
+                 * The return value must be terminated by two subsequent NULs
+                 * so it could be safely interpreted as nulstr.
+                 */
+                str[l + 1] = '\0';
+        }
+
+        *ret_value = str;
+        *ret_endpos = i + 1;
+        return 0;
+}
+
 static int parse_line(char **line, char **ret_key, char **ret_attr, UdevRuleOperatorType *ret_op, char **ret_value) {
         char *key_begin, *key_end, *attr, *tmp;
         UdevRuleOperatorType op;
@@ -1699,7 +1761,7 @@ static bool token_match_attr(UdevRuleToken *token, sd_device *dev, UdevEvent *ev
 
         switch (token->attr_subst_type) {
         case SUBST_TYPE_FORMAT:
-                (void) udev_event_apply_format(event, name, nbuf, sizeof(nbuf), false, &truncated);
+                (void) udev_event_apply_format(event, name, nbuf, sizeof(nbuf), false, NULL, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "sysfs attribute name", name,
                                             token->type == TK_M_ATTR ? "ATTR" : "ATTRS", /* is_match = */ true);
@@ -1847,6 +1909,22 @@ static int attr_subst_subdir(char attr[static UDEV_PATH_SIZE]) {
         return -ENOENT;
 }
 
+static size_t udev_replace_ifname(char *str) {
+        size_t replaced = 0;
+
+        assert(str);
+
+        /* See ifname_valid_full(). */
+
+        for (char *p = str; *p != '\0'; p++)
+                if (!ifname_valid_char(*p)) {
+                        *p = '_';
+                        replaced++;
+                }
+
+        return replaced;
+}
+
 static int udev_rule_apply_token_to_event(
                 UdevRuleToken *token,
                 sd_device *dev,
@@ -1903,10 +1981,9 @@ static int udev_rule_apply_token_to_event(
         case TK_M_NAME:
                 return token_match_string(token, event->name);
         case TK_M_ENV: {
-                const char *val;
+                const char *val = NULL;
 
-                if (sd_device_get_property_value(dev, token->data, &val) < 0)
-                        val = hashmap_get(properties_list, token->data);
+                (void) device_get_property_value_with_fallback(dev, token->data, properties_list, &val);
 
                 return token_match_string(token, val);
         }
@@ -1961,7 +2038,7 @@ static int udev_rule_apply_token_to_event(
                 char buf[UDEV_PATH_SIZE];
                 bool truncated;
 
-                (void) udev_event_apply_format(event, token->data, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->data, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "sysctl entry name", token->data, "SYSCTL", /* is_match = */ true);
                         return false;
@@ -1979,7 +2056,7 @@ static int udev_rule_apply_token_to_event(
                 struct stat statbuf;
                 bool match, truncated;
 
-                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "file name", token->value, "TEST", /* is_match = */ true);
                         return false;
@@ -2022,7 +2099,7 @@ static int udev_rule_apply_token_to_event(
                 size_t count;
 
                 event->program_result = mfree(event->program_result);
-                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "command", token->value, "PROGRAM", /* is_match = */ true);
                         return false;
@@ -2054,7 +2131,7 @@ static int udev_rule_apply_token_to_event(
                 char buf[UDEV_PATH_SIZE];
                 bool truncated;
 
-                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "file name to be imported", token->value, "IMPORT", /* is_match = */ true);
                         return false;
@@ -2105,7 +2182,7 @@ static int udev_rule_apply_token_to_event(
                 char buf[UDEV_LINE_SIZE], result[UDEV_LINE_SIZE];
                 bool truncated;
 
-                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "command", token->value, "IMPORT", /* is_match = */ true);
                         return false;
@@ -2184,7 +2261,7 @@ static int udev_rule_apply_token_to_event(
                         event->builtin_run |= mask;
                 }
 
-                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "builtin command", token->value, "IMPORT", /* is_match = */ true);
                         return false;
@@ -2240,7 +2317,7 @@ static int udev_rule_apply_token_to_event(
                 char buf[UDEV_PATH_SIZE];
                 bool truncated;
 
-                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "property name", token->value, "IMPORT", /* is_match = */ true);
                         return false;
@@ -2301,7 +2378,7 @@ static int udev_rule_apply_token_to_event(
                 if (token->op == OP_ASSIGN_FINAL)
                         event->owner_final = true;
 
-                (void) udev_event_apply_format(event, token->value, owner, sizeof(owner), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, owner, sizeof(owner), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "user name", token->value, "OWNER", /* is_match = */ false);
                         break;
@@ -2324,7 +2401,7 @@ static int udev_rule_apply_token_to_event(
                 if (token->op == OP_ASSIGN_FINAL)
                         event->group_final = true;
 
-                (void) udev_event_apply_format(event, token->value, group, sizeof(group), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, group, sizeof(group), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "group name", token->value, "GROUP", /* is_match = */ false);
                         break;
@@ -2346,7 +2423,7 @@ static int udev_rule_apply_token_to_event(
                 if (token->op == OP_ASSIGN_FINAL)
                         event->mode_final = true;
 
-                (void) udev_event_apply_format(event, token->value, mode_str, sizeof(mode_str), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, mode_str, sizeof(mode_str), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "mode", token->value, "MODE", /* is_match = */ false);
                         break;
@@ -2398,7 +2475,7 @@ static int udev_rule_apply_token_to_event(
                 if (!name)
                         return log_oom();
 
-                (void) udev_event_apply_format(event, token->value, label_str, sizeof(label_str), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, label_str, sizeof(label_str), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "security label", token->value, "SECLABEL", /* is_match = */ false);
                         break;
@@ -2442,7 +2519,7 @@ static int udev_rule_apply_token_to_event(
                 }
 
                 if (token->op == OP_ADD &&
-                    sd_device_get_property_value(dev, name, &val) >= 0) {
+                    device_get_property_value_with_fallback(dev, name, properties_list, &val) >= 0) {
                         l = strpcpyl_full(&p, l, &truncated, val, " ", NULL);
                         if (truncated) {
                                 log_event_warning(dev, token,
@@ -2452,7 +2529,7 @@ static int udev_rule_apply_token_to_event(
                         }
                 }
 
-                (void) udev_event_apply_format(event, token->value, p, l, false, &truncated);
+                (void) udev_event_apply_format(event, token->value, p, l, false, properties_list, &truncated);
                 if (truncated) {
                         _cleanup_free_ char *key_with_name = strjoin("ENV{", name, "}");
                         log_event_truncated(dev, token, "property value", token->value,
@@ -2477,7 +2554,7 @@ static int udev_rule_apply_token_to_event(
                 char buf[UDEV_PATH_SIZE];
                 bool truncated;
 
-                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "tag name", token->value, "TAG", /* is_match = */ false);
                         break;
@@ -2514,7 +2591,7 @@ static int udev_rule_apply_token_to_event(
                         break;
                 }
 
-                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "network interface name", token->value, "NAME", /* is_match = */ false);
                         break;
@@ -2552,7 +2629,7 @@ static int udev_rule_apply_token_to_event(
                         device_cleanup_devlinks(dev);
 
                 (void) udev_event_apply_format(event, token->value, buf, sizeof(buf),
-                                               /* replace_whitespace = */ event->esc != ESCAPE_NONE, &truncated);
+                                               /* replace_whitespace = */ event->esc != ESCAPE_NONE, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "symbolic link path", token->value, "SYMLINK", /* is_match = */ false);
                         break;
@@ -2624,7 +2701,7 @@ static int udev_rule_apply_token_to_event(
                         log_event_error_errno(dev, token, r, "Could not find file matches '%s', ignoring: %m", buf);
                         break;
                 }
-                (void) udev_event_apply_format(event, token->value, value, sizeof(value), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, value, sizeof(value), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "attribute value", token->value, "ATTR", /* is_match = */ false);
                         break;
@@ -2644,13 +2721,13 @@ static int udev_rule_apply_token_to_event(
                 char buf[UDEV_PATH_SIZE], value[UDEV_NAME_SIZE];
                 bool truncated;
 
-                (void) udev_event_apply_format(event, token->data, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->data, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "sysctl entry name", token->data, "SYSCTL", /* is_match = */ false);
                         break;
                 }
 
-                (void) udev_event_apply_format(event, token->value, value, sizeof(value), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, value, sizeof(value), false, properties_list, &truncated);
                 if (truncated) {
                         _cleanup_free_ char *key_with_name = strjoin("SYSCTL{", buf, "}");
                         log_event_truncated(dev, token, "sysctl value", token->value,
@@ -2679,7 +2756,7 @@ static int udev_rule_apply_token_to_event(
                 if (IN_SET(token->op, OP_ASSIGN, OP_ASSIGN_FINAL))
                         ordered_hashmap_clear_free_key(event->run_list);
 
-                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, &truncated);
+                (void) udev_event_apply_format(event, token->value, buf, sizeof(buf), false, properties_list, &truncated);
                 if (truncated) {
                         log_event_truncated(dev, token, "command", token->value,
                                             token->type == TK_A_RUN_BUILTIN ? "RUN{builtin}" : "RUN{program}",
@@ -2878,3 +2955,11 @@ int udev_rules_apply_static_dev_perms(UdevRules *rules) {
 
         return 0;
 }
+
+static const char* const resolve_name_timing_table[_RESOLVE_NAME_TIMING_MAX] = {
+        [RESOLVE_NAME_NEVER] = "never",
+        [RESOLVE_NAME_LATE]  = "late",
+        [RESOLVE_NAME_EARLY] = "early",
+};
+
+DEFINE_STRING_TABLE_LOOKUP(resolve_name_timing, ResolveNameTiming);

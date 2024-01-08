@@ -1308,6 +1308,19 @@ int dns_cache_export_shared_to_packet(DnsCache *cache, DnsPacket *p, usec_t ts, 
                         if (usec_sub_unsigned(j->until, ts) < j->rr->ttl * USEC_PER_SEC / 2)
                                 continue;
 
+                        if (max_rr > 0 && ancount >= max_rr) {
+                                DNS_PACKET_HEADER(p)->ancount = htobe16(ancount);
+                                ancount = 0;
+
+                                r = dns_packet_new_query(&p->more, p->protocol, 0, true);
+                                if (r < 0)
+                                        return r;
+
+                                p = p->more;
+
+                                max_rr = UINT_MAX;
+                        }
+
                         r = dns_packet_append_rr(p, j->rr, 0, NULL, NULL);
                         if (r == -EMSGSIZE) {
                                 if (max_rr == 0)
@@ -1333,18 +1346,6 @@ int dns_cache_export_shared_to_packet(DnsCache *cache, DnsPacket *p, usec_t ts, 
                                 return r;
 
                         ancount++;
-                        if (max_rr > 0 && ancount >= max_rr) {
-                                DNS_PACKET_HEADER(p)->ancount = htobe16(ancount);
-                                ancount = 0;
-
-                                r = dns_packet_new_query(&p->more, p->protocol, 0, true);
-                                if (r < 0)
-                                        return r;
-
-                                p = p->more;
-
-                                max_rr = UINT_MAX;
-                        }
                 }
 
 finalize:
@@ -1407,7 +1408,7 @@ int dns_cache_dump_to_json(DnsCache *cache, JsonVariant **ret) {
                         _cleanup_(json_variant_unrefp) JsonVariant *l = NULL;
 
                         LIST_FOREACH(by_key, j, i) {
-                                _cleanup_(json_variant_unrefp) JsonVariant *rj = NULL, *item = NULL;
+                                _cleanup_(json_variant_unrefp) JsonVariant *rj = NULL;
 
                                 assert(j->rr);
 
@@ -1419,13 +1420,11 @@ int dns_cache_dump_to_json(DnsCache *cache, JsonVariant **ret) {
                                 if (r < 0)
                                         return r;
 
-                                r = json_build(&item, JSON_BUILD_OBJECT(
-                                                               JSON_BUILD_PAIR_VARIANT("rr", rj),
-                                                               JSON_BUILD_PAIR_BASE64("raw", j->rr->wire_format, j->rr->wire_format_size)));
-                                if (r < 0)
-                                        return r;
-
-                                r = json_variant_append_array(&l, item);
+                                r = json_variant_append_arrayb(
+                                                &l,
+                                                JSON_BUILD_OBJECT(
+                                                                JSON_BUILD_PAIR_VARIANT("rr", rj),
+                                                                JSON_BUILD_PAIR_BASE64("raw", j->rr->wire_format, j->rr->wire_format_size)));
                                 if (r < 0)
                                         return r;
                         }

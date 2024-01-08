@@ -79,7 +79,6 @@ struct Manager {
         /* Manager stores routes without RTA_OIF attribute. */
         unsigned route_remove_messages;
         Set *routes;
-        Set *routes_foreign;
 
         /* Route table name */
         Hashmap *route_table_numbers_by_name;
@@ -113,6 +112,11 @@ int manager_start(Manager *m);
 
 int manager_load_config(Manager *m);
 
+int manager_enumerate_internal(
+                Manager *m,
+                sd_netlink *nl,
+                sd_netlink_message *req,
+                int (*process)(sd_netlink *, sd_netlink_message *, Manager *));
 int manager_enumerate(Manager *m);
 
 int manager_set_hostname(Manager *m, const char *hostname);

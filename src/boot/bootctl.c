@@ -132,6 +132,8 @@ static int help(int argc, char *argv[], void *userdata) {
         _cleanup_free_ char *link = NULL;
         int r;
 
+        pager_open(arg_pager_flags);
+
         r = terminal_urlify_man("bootctl", "1", &link);
         if (r < 0)
                 return log_oom();
@@ -260,7 +262,7 @@ static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 0);
         assert(argv);
 
-        while ((c = getopt_long(argc, argv, "hpxR", options, NULL)) >= 0)
+        while ((c = getopt_long(argc, argv, "hpxRq", options, NULL)) >= 0)
                 switch (c) {
 
                 case 'h':

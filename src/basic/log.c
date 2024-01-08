@@ -21,7 +21,7 @@
 #include "errno-util.h"
 #include "fd-util.h"
 #include "format-util.h"
-#include "io-util.h"
+#include "iovec-util.h"
 #include "log.h"
 #include "macro.h"
 #include "missing_syscall.h"
@@ -53,6 +53,7 @@ static int log_facility = LOG_DAEMON;
 static bool ratelimit_kmsg = true;
 
 static int console_fd = STDERR_FILENO;
+static int console_fd_is_tty = -1; /* tri-state: -1 means don't know */
 static int syslog_fd = -EBADF;
 static int kmsg_fd = -EBADF;
 static int journal_fd = -EBADF;
@@ -108,12 +109,14 @@ bool _log_message_dummy = false; /* Always false */
 static void log_close_console(void) {
         /* See comment in log_close_journal() */
         (void) safe_close_above_stdio(TAKE_FD(console_fd));
+        console_fd_is_tty = -1;
 }
 
 static int log_open_console(void) {
 
         if (!always_reopen_console) {
                 console_fd = STDERR_FILENO;
+                console_fd_is_tty = -1;
                 return 0;
         }
 
@@ -125,6 +128,7 @@ static int log_open_console(void) {
                         return fd;
 
                 console_fd = fd_move_above_stdio(fd);
+                console_fd_is_tty = true;
         }
 
         return 0;
@@ -381,6 +385,7 @@ void log_forget_fds(void) {
         /* Do not call from library code. */
 
         console_fd = kmsg_fd = syslog_fd = journal_fd = -EBADF;
+        console_fd_is_tty = -1;
 }
 
 void log_set_max_level(int level) {
@@ -402,6 +407,16 @@ void log_set_max_level(int level) {
 
 void log_set_facility(int facility) {
         log_facility = facility;
+}
+
+static bool check_console_fd_is_tty(void) {
+        if (console_fd < 0)
+                return false;
+
+        if (console_fd_is_tty < 0)
+                console_fd_is_tty = isatty(console_fd) > 0;
+
+        return console_fd_is_tty;
 }
 
 static int write_to_console(
@@ -462,7 +477,12 @@ static int write_to_console(
         iovec[n++] = IOVEC_MAKE_STRING(buffer);
         if (off)
                 iovec[n++] = IOVEC_MAKE_STRING(off);
-        iovec[n++] = IOVEC_MAKE_STRING("\n");
+
+        /* When writing to a TTY we output an extra '\r' (i.e. CR) first, to generate CRNL rather than just
+         * NL. This is a robustness thing in case the TTY is currently in raw mode (specifically: has the
+         * ONLCR flag off). We want that subsequent output definitely starts at the beginning of the line
+         * again, after all. If the TTY is not in raw mode the extra CR should not hurt. */
+        iovec[n++] = IOVEC_MAKE_STRING(check_console_fd_is_tty() ? "\r\n" : "\n");
 
         if (writev(console_fd, iovec, n) < 0) {
 
@@ -541,7 +561,7 @@ static int write_to_syslog(
                 if (!syslog_is_stream)
                         break;
 
-                if (IOVEC_INCREMENT(iovec, ELEMENTSOF(iovec), n))
+                if (iovec_increment(iovec, ELEMENTSOF(iovec), n))
                         break;
         }
 
@@ -1191,13 +1211,13 @@ int log_set_target_from_string(const char *e) {
 }
 
 int log_set_max_level_from_string(const char *e) {
-        int t;
+        int r;
 
-        t = log_level_from_string(e);
-        if (t < 0)
-                return t;
+        r = log_level_from_string(e);
+        if (r < 0)
+                return r;
 
-        log_set_max_level(t);
+        log_set_max_level(r);
         return 0;
 }
 
@@ -1276,7 +1296,7 @@ static bool should_parse_proc_cmdline(void) {
         if (getpid_cached() == 1)
                 return true;
 
-        /* Otherwise, parse the commandline if invoked directly by systemd. */
+        /* Otherwise, parse the command line if invoked directly by systemd. */
         return invoked_by_systemd();
 }
 
@@ -1380,46 +1400,46 @@ bool log_get_show_tid(void) {
 }
 
 int log_show_color_from_string(const char *e) {
-        int t;
+        int r;
 
-        t = parse_boolean(e);
-        if (t < 0)
-                return t;
+        r = parse_boolean(e);
+        if (r < 0)
+                return r;
 
-        log_show_color(t);
+        log_show_color(r);
         return 0;
 }
 
 int log_show_location_from_string(const char *e) {
-        int t;
+        int r;
 
-        t = parse_boolean(e);
-        if (t < 0)
-                return t;
+        r = parse_boolean(e);
+        if (r < 0)
+                return r;
 
-        log_show_location(t);
+        log_show_location(r);
         return 0;
 }
 
 int log_show_time_from_string(const char *e) {
-        int t;
+        int r;
 
-        t = parse_boolean(e);
-        if (t < 0)
-                return t;
+        r = parse_boolean(e);
+        if (r < 0)
+                return r;
 
-        log_show_time(t);
+        log_show_time(r);
         return 0;
 }
 
 int log_show_tid_from_string(const char *e) {
-        int t;
+        int r;
 
-        t = parse_boolean(e);
-        if (t < 0)
-                return t;
+        r = parse_boolean(e);
+        if (r < 0)
+                return r;
 
-        log_show_tid(t);
+        log_show_tid(r);
         return 0;
 }
 
@@ -1451,7 +1471,7 @@ void log_received_signal(int level, const struct signalfd_siginfo *si) {
         if (pid_is_valid(si->ssi_pid)) {
                 _cleanup_free_ char *p = NULL;
 
-                (void) get_process_comm(si->ssi_pid, &p);
+                (void) pid_get_comm(si->ssi_pid, &p);
 
                 log_full(level,
                          "Received SIG%s from PID %"PRIu32" (%s).",
