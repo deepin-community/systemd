@@ -474,7 +474,7 @@ Description: home area manager
 
 Package: systemd-boot
 Build-Profiles: <!stage1>
-Architecture: amd64 i386 arm64 armhf riscv64
+Architecture: amd64 i386 arm64 armhf riscv64 loong64
 Depends: ${shlibs:Depends},
          ${misc:Depends},
          systemd-boot-efi (= ${binary:Version}),
@@ -494,7 +494,7 @@ Description: simple UEFI boot manager - tools and services
 
 Package: systemd-boot-efi
 Build-Profiles: <!stage1>
-Architecture: amd64 i386 arm64 armhf riscv64
+Architecture: amd64 i386 arm64 armhf riscv64 loong64
 Multi-Arch: same
 Pre-Depends: ${misc:Pre-Depends},
 Depends: ${misc:Depends},

@@ -1,3 +1,9 @@
+systemd (255.2-4deepin1) unstable; urgency=medium
+
+  * Enable systemd-boot for loong64.
+
+ -- LiChengGang <lichenggang@uniontech.com>  Wed, 14 Aug 2024 21:29:57 +0800
+
 systemd (255.2-4) sid; urgency=medium
 
   * autopkgtest: add btrfs-progs Depends to upstream suite.
