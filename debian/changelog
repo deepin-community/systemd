@@ -1,3 +1,9 @@
+systemd (255.2-4deepin2) unstable; urgency=medium
+
+  * Cancel the fsckd check prompt at boot time.
+
+ -- liujianqiang <liujianqiang@uniontech.com>  Mon, 23 Sep 2024 18:01:23 +0800
+
 systemd (255.2-4deepin1) sid; urgency=medium
 
   * Adapt UOS mandatory access control.

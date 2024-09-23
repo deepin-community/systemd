@@ -15,3 +15,4 @@ test-flush-the-socket-once-the-triggered-unit-exits.patch
 test-install-correct-kpartx-udev-rules-on-Debian.patch
 
 adapt-umac-of-usec.patch
+uniontech001-cancel-the-fsckd-check-prompt-at-boot-time.patch
