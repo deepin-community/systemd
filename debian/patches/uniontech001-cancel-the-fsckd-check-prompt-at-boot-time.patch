@@ -1,0 +1,13 @@
+Index: systemd/src/fsckd/fsckd.c
+===================================================================
+--- systemd.orig/src/fsckd/fsckd.c	2024-05-31 10:23:24.539775004 +0800
++++ systemd/src/fsckd/fsckd.c	2024-05-31 10:46:32.078365864 +0800
+@@ -319,7 +319,7 @@
+                 l10n_cancel_message = _("Press Ctrl+C to cancel all filesystem checks in progress");
+                 plymouth_cancel_message = strjoina("fsckd-cancel-msg:", l10n_cancel_message);
+ 
+-                r = plymouth_send_message(m->plymouth_fd, plymouth_cancel_message, false);
++                r = plymouth_send_message(m->plymouth_fd, "", false);
+                 if (r < 0)
+                         log_warning_errno(r, "Can't send filesystem cancel message to plymouth: %m");
+ 
