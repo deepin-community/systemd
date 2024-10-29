@@ -16,3 +16,4 @@ test-install-correct-kpartx-udev-rules-on-Debian.patch
 
 adapt-umac-of-usec.patch
 uniontech001-cancel-the-fsckd-check-prompt-at-boot-time.patch
+add-usecfs-magic.patch
