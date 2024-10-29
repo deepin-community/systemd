@@ -1,3 +1,9 @@
+systemd (255.2-4deepin3) unstable; urgency=medium
+
+  * add usecfs magic.
+
+ -- zhouzilong <zhouzilong@uniontech.com>  Tue, 29 Oct 2024 21:43:21 +0800
+
 systemd (255.2-4deepin2) unstable; urgency=medium
 
   * Cancel the fsckd check prompt at boot time.
