@@ -1,0 +1,13 @@
+Index: deepin-systemd/meson_options.txt
+===================================================================
+--- deepin-systemd.orig/meson_options.txt	2025-01-20 14:52:46.099010069 +0800
++++ deepin-systemd/meson_options.txt	2025-01-20 15:04:54.088327274 +0800
+@@ -81,7 +81,7 @@
+        description : 'bump /proc/sys/fs/file-max to LONG_MAX')
+ option('bump-proc-sys-fs-nr-open', type : 'boolean',
+        description : 'bump /proc/sys/fs/nr_open to INT_MAX')
+-option('log-trace', type : 'boolean', value : false,
++option('log-trace', type : 'boolean', value : true,
+        description : 'enable low level debug logging')
+ option('user-path', type : 'string',
+        description : '$PATH to use for user sessions')

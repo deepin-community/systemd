@@ -9,11 +9,11 @@ Change-Id: I641b7b08f72bd34aa37c80d52f9c4909df756c62
  src/shared/umac-util.c | 8 ++++++--
  2 files changed, 7 insertions(+), 3 deletions(-)
 
-diff --git a/src/core/umac-access.c b/src/core/umac-access.c
-index cabca5fb43..1b68e581a4 100644
---- a/src/core/umac-access.c
-+++ b/src/core/umac-access.c
-@@ -111,7 +111,7 @@ static int access_init2(sd_bus_error *error) {
+Index: deepin-systemd/src/core/umac-access.c
+===================================================================
+--- deepin-systemd.orig/src/core/umac-access.c	2025-01-20 15:16:08.000000000 +0800
++++ deepin-systemd/src/core/umac-access.c	2025-01-20 15:16:08.000000000 +0800
+@@ -111,7 +111,7 @@
                  int enforce, saved_errno = errno;
  
                  enforce = security_getenforce();
@@ -22,22 +22,23 @@ index cabca5fb43..1b68e581a4 100644
  
                  /* If enforcement isn't on, then let's suppress this
                   * error, and just don't do any AVC checks. The
-diff --git a/src/shared/umac-util.c b/src/shared/umac-util.c
-index 9f9c94cd7a..7b6b54ef31 100644
---- a/src/shared/umac-util.c
-+++ b/src/shared/umac-util.c
-@@ -2,8 +2,10 @@
+Index: deepin-systemd/src/shared/umac-util.c
+===================================================================
+--- deepin-systemd.orig/src/shared/umac-util.c	2025-01-20 15:16:08.000000000 +0800
++++ deepin-systemd/src/shared/umac-util.c	2025-01-20 15:16:41.884896561 +0800
+@@ -2,8 +2,11 @@
  
  #if HAVE_SELINUX
  #include <selinux/selinux.h>
 +#include <selinux/usec.h>
  #endif
  #include "umac-util.h"
++#include "string-util.h"
 +#include "log.h"
  
  #if HAVE_SELINUX
  static int cached_use = -1;
-@@ -11,8 +13,10 @@ static int cached_use = -1;
+@@ -11,8 +14,10 @@
  
  bool umac_use(void) {
  #if HAVE_SELINUX
@@ -50,6 +51,3 @@ index 9f9c94cd7a..7b6b54ef31 100644
  
          return cached_use;
  #else
--- 
-2.20.1
-
