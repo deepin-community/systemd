@@ -51,8 +51,9 @@ fi
 if [ -z "$2" ]; then
     systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable getty@tty1.service || true
     systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable remote-fs.target || true
-    systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable systemd-pstore.service || true
 fi
+
+systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} disable systemd-pstore.service || true
 
 # Create /etc/machine-id
 systemd-machine-id-setup ${DPKG_ROOT:+--root="$DPKG_ROOT"}

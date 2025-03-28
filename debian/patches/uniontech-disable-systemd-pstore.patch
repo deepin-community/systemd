@@ -1,0 +1,13 @@
+Index: deepin-systemd/presets/90-systemd.preset
+===================================================================
+--- deepin-systemd.orig/presets/90-systemd.preset	2025-01-20 14:52:46.107010433 +0800
++++ deepin-systemd/presets/90-systemd.preset	2025-03-28 11:53:07.455053247 +0800
+@@ -23,7 +23,7 @@
+ enable systemd-resolved.service
+ enable systemd-homed.service
+ enable systemd-userdbd.socket
+-enable systemd-pstore.service
++disable systemd-pstore.service
+ enable systemd-boot-update.service
+ enable systemd-journald-audit.socket
+ 
