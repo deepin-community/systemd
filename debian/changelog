@@ -1,5 +1,6 @@
 systemd (255.2-4deepin8) unstable; urgency=medium
 
+  * Disable seccomp support on mips64el.
   * disable systemd-pstore.service.
 
  -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 28 Mar 2025 11:54:35 +0800
