@@ -20,3 +20,4 @@ add-usecfs-magic.patch
 change-security.selinux2-to-security.usec_proc-attr.patch
 fix-usec-status-incorrect-in-umac_use.patch
 uniontech-enable-trace.patch
+uniontech-disable-systemd-pstore.patch
