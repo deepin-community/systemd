@@ -1,0 +1,22 @@
+--- systemd-255.2.orig/src/basic/filesystems-gperf.gperf
++++ systemd-255.2/src/basic/filesystems-gperf.gperf
+@@ -28,6 +28,7 @@ afs,             {AFS_FS_MAGIC, AFS_SUPE
+ anon_inodefs,    {ANON_INODE_FS_MAGIC}
+ autofs,          {AUTOFS_SUPER_MAGIC}
+ balloon-kvm,     {BALLOON_KVM_MAGIC}
++bcachefs,        {BCACHEFS_SUPER_MAGIC}
+ bdev,            {BDEVFS_MAGIC}
+ binder,          {BINDERFS_SUPER_MAGIC}
+ binfmt_misc,     {BINFMTFS_MAGIC}
+--- systemd-255.2.orig/src/basic/missing_magic.h
++++ systemd-255.2/src/basic/missing_magic.h
+@@ -203,3 +203,9 @@
+ #define USEC_MAGIC 0x39070324
+ #endif
+ 
++/* Added in Linux commit e2f48c48090dea172c0c571101041de64634dae5. Remove when next sync'd */
++#ifndef BCACHEFS_SUPER_MAGIC
++#  define BCACHEFS_SUPER_MAGIC 0xca451a4e
++#else
++_Static_assert(BCACHEFS_SUPER_MAGIC == 0xca451a4e, "BCACHEFS_SUPER_MAGIC must be 0xca451a4e");
++#endif
