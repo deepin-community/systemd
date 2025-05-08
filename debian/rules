@@ -97,7 +97,7 @@ CONFFLAGS = \
 	-Dresolve=true \
 	-Dstatus-unit-format-default=combined \
 	-Dstandalone-binaries=true \
-	-Dseccomp=$(if $(filter mips64el,$(DEB_HOST_ARCH)),false,true)
+	-Dseccomp=$(if $(filter mips64el loong64 sw64,$(DEB_HOST_ARCH)),disabled,enabled)
 
 ifeq (, $(filter stage1, $(DEB_BUILD_PROFILES)))
 CONFFLAGS += \
