@@ -1,3 +1,9 @@
+systemd (255.2-4deepin12) unstable; urgency=medium
+  
+  * feat: add sw64 support
+
+ -- Deepin Packages Builder <packages@deepin.org>  Tue, 20 May 2025 14:47:36 +0800
+
 systemd (255.2-4deepin11) unstable; urgency=medium
 
   * Improve boot performance.
