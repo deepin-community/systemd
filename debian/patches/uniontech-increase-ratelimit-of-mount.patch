@@ -1,0 +1,13 @@
+Index: deepin-systemd/src/core/mount.c
+===================================================================
+--- deepin-systemd.orig/src/core/mount.c	2025-01-20 14:52:46.143012069 +0800
++++ deepin-systemd/src/core/mount.c	2025-05-28 11:47:30.837436710 +0800
+@@ -2017,7 +2017,7 @@
+         mnt_init_debug(0);
+ 
+         if (!m->mount_monitor) {
+-                unsigned mount_rate_limit_burst = 5;
++                unsigned mount_rate_limit_burst = 15;
+                 int fd;
+ 
+                 m->mount_monitor = mnt_new_monitor();
