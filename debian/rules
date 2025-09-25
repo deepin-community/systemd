@@ -31,6 +31,12 @@ else
     GENSYMBOLS_LEVEL = 1
 endif
 
+ifeq (,$(filter uos Uos UOS,$(shell lsb_release -i -s)))
+    DEBUG_SHELL_FLAG = /usr/bin/bash
+else
+    DEBUG_SHELL_FLAG = "/sbin/agetty -o '-p -- \\\\\\\\u' --noclear - linux"
+endif
+
 CONFFLAGS = \
 	-Db_lto=true \
 	-Db_pie=true \
@@ -51,7 +57,7 @@ CONFFLAGS = \
 	-Dsysvinit-path=/etc/init.d \
 	-Dsysvrcnd-path=/etc \
 	-Dlocalegen-path=/usr/sbin/locale-gen \
-	-Ddebug-shell=/usr/bin/bash \
+	-Ddebug-shell=$(DEBUG_SHELL_FLAG) \
 	-Dzshcompletiondir=/usr/share/zsh/vendor-completions \
 	-Ddbuspolicydir=/usr/share/dbus-1/system.d/ \
 	-Dsupport-url=$(SUPPORT_URL) \
