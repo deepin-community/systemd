@@ -1,3 +1,9 @@
+systemd (255.2-4deepin13) unstable; urgency=medium
+
+  * In Uos, the debug-shell should require a login to access.
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Thu, 25 Sep 2025 13:13:12 +0800
+
 systemd (255.2-4deepin12) unstable; urgency=medium
   
   * feat: add sw64 support
