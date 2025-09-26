@@ -1,3 +1,10 @@
+systemd (255.2-4deepin14) unstable; urgency=medium
+
+  * add zh_Hk translation
+  
+
+ -- jiahe.liu <liujiahe@uniontech.com>  Fri, 26 Sep 2025 14:42:08 +0800
+
 systemd (255.2-4deepin13) unstable; urgency=medium
 
   * In Uos, the debug-shell should require a login to access.
