@@ -25,3 +25,4 @@ uniontech-disable-systemd-pstore.patch
 0002-basic-add-bcachefs-magic.patch
 uniontech-increase-ratelimit-of-mount.patch
 0001-deepin-sw_64-support.diff
+uniontech-add-tpmfs.patch
