@@ -1,0 +1,26 @@
+Index: systemd/po/zh_HK.po
+===================================================================
+--- systemd.orig/po/zh_HK.po
++++ systemd/po/zh_HK.po
+@@ -274,7 +274,7 @@ msgstr "設定靜態主機名稱"
+ 
+ #: src/hostname/org.freedesktop.hostname1.policy:31
+ msgid "Authentication is required to set the statically configured local hostname, as well as the pretty hostname."
+-msgstr "設定靜態預先設定或 pretty 本地主機名稱需要身份驗證。"
++msgstr "設定靜態預先設定或美觀本地主機名稱需要身份驗證。"
+ 
+ #: src/hostname/org.freedesktop.hostname1.policy:41
+ msgid "Set machine information"
+Index: systemd/po/zh_TW.po
+===================================================================
+--- systemd.orig/po/zh_TW.po
++++ systemd/po/zh_TW.po
+@@ -274,7 +274,7 @@ msgstr "設定靜態主機名稱"
+ 
+ #: src/hostname/org.freedesktop.hostname1.policy:31
+ msgid "Authentication is required to set the statically configured local hostname, as well as the pretty hostname."
+-msgstr "設定靜態預先設定或 pretty 本地主機名稱需要身份驗證。"
++msgstr "設定靜態預先設定或美觀本地主機名稱需要身份驗證。"
+ 
+ #: src/hostname/org.freedesktop.hostname1.policy:41
+ msgid "Set machine information"
