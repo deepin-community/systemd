@@ -1,7 +1,7 @@
 Index: deepin-systemd/src/basic/filesystems-gperf.gperf
 ===================================================================
---- deepin-systemd.orig/src/basic/filesystems-gperf.gperf	2025-09-26 17:12:03.000000000 +0800
-+++ deepin-systemd/src/basic/filesystems-gperf.gperf	2025-09-26 17:13:44.591020062 +0800
+--- deepin-systemd.orig/src/basic/filesystems-gperf.gperf	2025-10-29 17:33:51.000000000 +0800
++++ deepin-systemd/src/basic/filesystems-gperf.gperf	2025-10-29 17:34:10.486422106 +0800
 @@ -60,6 +60,7 @@
  ext2,            {EXT2_SUPER_MAGIC}
  ext3,            {EXT3_SUPER_MAGIC}
@@ -10,15 +10,3 @@ Index: deepin-systemd/src/basic/filesystems-gperf.gperf
  exfat,           {EXFAT_SUPER_MAGIC}
  f2fs,            {F2FS_SUPER_MAGIC}
  # fuseblk is so closely related to fuse that it shares the same magic
-Index: deepin-systemd/src/basic/generate-filesystem-switch-case.py
-===================================================================
---- deepin-systemd.orig/src/basic/generate-filesystem-switch-case.py	2025-01-20 14:52:46.115010797 +0800
-+++ deepin-systemd/src/basic/generate-filesystem-switch-case.py	2025-09-26 17:13:43.410968246 +0800
-@@ -14,6 +14,7 @@
-         "devtmpfs",  # not a file system of its own, but just a "named superblock" of tmpfs
-         "ext2",      # ext4 is the newest revision of ext2 + ext3
-         "ext3",
-+        "tpmfs",
-         "fuseblk",   # closely related to fuse; they share a single magic, but the latter is more common
-         "gfs",       # magic taken over by gfs2
-         "msdos",     # vfat is the newest revision of msdos

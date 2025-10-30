@@ -33,8 +33,10 @@ endif
 
 ifeq (,$(filter uos Uos UOS,$(shell lsb_release -i -s)))
     DEBUG_SHELL_FLAG = /usr/bin/bash
+    UOS_SYSTEM = no
 else
     DEBUG_SHELL_FLAG = "/sbin/agetty -o '-p -- \\\\\\\\u' --noclear - linux"
+    UOS_SYSTEM = yes
 endif
 
 CONFFLAGS = \
@@ -158,6 +160,10 @@ CONFFLAGS += \
 endif
 
 override_dh_auto_configure:
+ifeq (yes,$(UOS_SYSTEM))
+	echo "UOS detected: applying uniontech-add-tpmfs.patch"
+	patch -p1 < debian/patches/uniontech-add-tpmfs.patch
+endif
 	dh_auto_configure \
 		-- $(CONFFLAGS) $(CONFFLAGS_DISTRO) $(CONFFLAGS_UPSTREAM)
 
