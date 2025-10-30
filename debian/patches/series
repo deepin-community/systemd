@@ -29,3 +29,4 @@ uniontech-increase-ratelimit-of-mount.patch
 #uniontech-add-tpmfs.patch
 uniontech-fix_zh_TW_HK_translation.patch
 uniontech-add-ug-bo-translation.patch
+uniontech-escape-spaces-when-serializing-as-well.patch

@@ -1,0 +1,70 @@
+From 8e1db771ff2bc129e5cf985185a9f1144573b255 Mon Sep 17 00:00:00 2001
+From: Frantisek Sumsal <frantisek@sumsal.cz>
+Date: Mon, 12 Feb 2024 18:32:03 +0100
+Subject: [PATCH] core: escape spaces when serializing as well
+
+Otherwise they might get stripped when reading the serialized data back.
+
+Resolves: #31214
+---
+ src/shared/serialize.c                  |  2 +-
+ test/units/testsuite-07.exec-context.sh | 33 +++++++++++++++++++++++++
+ 2 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/src/shared/serialize.c b/src/shared/serialize.c
+index 7099f67f92cd4..483cbc7419b25 100644
+--- a/src/shared/serialize.c
++++ b/src/shared/serialize.c
+@@ -46,7 +46,7 @@ int serialize_item_escaped(FILE *f, const char *key, const char *value) {
+         if (!value)
+                 return 0;
+ 
+-        c = cescape(value);
++        c = xescape(value, " ");
+         if (!c)
+                 return log_oom();
+ 
+diff --git a/test/units/testsuite-07.exec-context.sh b/test/units/testsuite-07.exec-context.sh
+index dd63163008ee7..e1e4367cc63f5 100755
+--- a/test/units/testsuite-07.exec-context.sh
++++ b/test/units/testsuite-07.exec-context.sh
+@@ -338,6 +338,39 @@ if [[ ! -v ASAN_OPTIONS ]] && systemctl --version | grep "+BPF_FRAMEWORK" && ker
+     (! systemd-run --wait --pipe -p RestrictFileSystems="~proc devtmpfs sysfs" ls /sys)
+ fi
+ 
++# Make sure we properly (de)serialize various string arrays, including whitespaces
++# See: https://github.com/systemd/systemd/issues/31214
++systemd-run --wait --pipe -p Environment="FOO='bar4    '" \
++            bash -xec '[[ $FOO == "bar4    " ]]'
++systemd-run --wait --pipe -p Environment="FOO='bar4    ' BAR='\n\n'" \
++            bash -xec "[[ \$FOO == 'bar4    ' && \$BAR == $'\n\n' ]]"
++systemd-run --wait --pipe -p Environment='FOO="bar4  \\  "' -p Environment="BAR='\n\t'" \
++            bash -xec "[[ \$FOO == 'bar4  \\  ' && \$BAR == $'\n\t' ]]"
++TEST_ENV_FILE="/tmp/test-env-file-$RANDOM-    "
++cat >"$TEST_ENV_FILE" <<EOF
++FOO="env file    "
++BAR="
++    "
++EOF
++systemd-run --wait --pipe cat "$TEST_ENV_FILE"
++systemd-run --wait --pipe -p ReadOnlyPaths="'$TEST_ENV_FILE'" \
++            bash -xec '[[ ! -w "$TEST_ENV_FILE" ]]'
++systemd-run --wait --pipe -p PrivateTmp=yes -p BindReadOnlyPaths="'$TEST_ENV_FILE':'/tmp/bar-    '" \
++            bash -xec '[[ -e "/tmp/bar-    " && ! -w "/tmp/bar-    " ]]'
++systemd-run --wait --pipe -p EnvironmentFile="$TEST_ENV_FILE" \
++            bash -xec "[[ \$FOO == 'env file    ' && \$BAR == $'\n    ' ]]"
++rm -f "$TEST_ENV_FILE"
++# manager_serialize()/manager_deserialize() uses similar machinery
++systemctl unset-environment FOO_WITH_SPACES
++systemctl set-environment FOO_WITH_SPACES="foo   " FOO_WITH_TABS="foo\t\t\t"
++systemctl show-environment
++systemctl show-environment | grep -F "FOO_WITH_SPACES=$'foo   '"
++systemctl show-environment | grep -F "FOO_WITH_TABS=$'foo\\\\t\\\\t\\\\t'"
++systemctl daemon-reexec
++systemctl show-environment
++systemctl show-environment | grep -F "FOO_WITH_SPACES=$'foo   '"
++systemctl show-environment | grep -F "FOO_WITH_TABS=$'foo\\\\t\\\\t\\\\t'"
++
+ # Ensure that clean-up codepaths work correctly if activation ultimately fails
+ touch /run/not-a-directory
+ mkdir /tmp/root
