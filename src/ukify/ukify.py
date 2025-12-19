@@ -131,6 +131,8 @@ def try_import(modname, name=None):
 
 def maybe_decompress(filename):
     """Decompress file if compressed. Return contents."""
+    if '../' in str(filename) or '..\\' in str(filename):
+        raise Exception('Invalid file path')
     f = open(filename, 'rb')
     start = f.read(4)
     f.seek(0)
@@ -191,6 +193,8 @@ class Uname:
     def scrape_x86(cls, filename, opts=None):
         # Based on https://gitlab.archlinux.org/archlinux/mkinitcpio/mkinitcpio/-/blob/master/functions#L136
         # and https://www.kernel.org/doc/html/latest/x86/boot.html#the-real-mode-kernel-header
+        if '../' in str(filename) or '..\\' in str(filename):
+            raise Exception('Invalid file path')
         with open(filename, 'rb') as f:
             f.seek(0x202)
             magic = f.read(4)
