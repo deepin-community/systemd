@@ -12,26 +12,55 @@ TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
 
-# Security Configuration
+# Security Hardening
 ProtectSystem=strict
 ProtectHome=yes
-#can't use PrivateTmp=yes,will depend on tmp.mount and cannot be started when shutting down
-#PrivateTmp=yes
-PrivateNetwork=yes
 ProtectHostname=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
+# Hide other processes
+ProtectProc=invisible
+
+# No network needed
+PrivateNetwork=yes
+# Only local sockets (if any)
 RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 RemoveIPC=yes
+# Block privilege escalation
+NoNewPrivileges=yes
+# W^X memory protection
+MemoryDenyWriteExecute=yes
 
-# Allow writing to specific paths,because we need to call hwclock
-ReadWritePaths=/etc/adjtime
+# Allow writing to adjtime (use "-" in case file doesn't exist yet)
+ReadWritePaths=-/etc/adjtime
+
+# Capability note: runs as root, so capabilities are bypassed for most ops.
+# hwclock uses direct device access, not syscalls requiring CAP_SYS_TIME.
+
+# Hardening NOT enabled — with justification:
+
+# ProtectClock=yes
+# need set rtc
+
+# PrivateDevices=yes
+# ❌ CANNOT enable: hwclock needs /dev/rtc*
+
+# PrivateTmp=yes
+#   → Disabled: runs during shutdown when tmp.mount may be inactive.
+
+# PrivateDevices=yes
+#   → Disabled: hwclock requires access to /dev/rtc0 or /dev/rtc,
+#     which are not available in private /dev.
+
+# CapabilityBoundingSet=
+#   → Not restricted: service runs as root and requires full device access.
+#     Restricting capabilities may break hwclock operation.
 
 [Install]
 WantedBy=poweroff.target reboot.target
