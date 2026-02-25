@@ -33,4 +33,11 @@ if [ "$1" = configure ] && dpkg --compare-versions "$2" lt 251.4-2; then
     fi
 fi
 
+# Create the dbus configuration file after the sysuser/passwd operation
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+   systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} systemd-resolve.conf
+fi
+
+touch /usr/share/dbus-1/system.d/org.freedesktop.resolve1.conf || true
+
 #DEBHELPER#
