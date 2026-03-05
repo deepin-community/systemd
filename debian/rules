@@ -92,6 +92,7 @@ CONFFLAGS = \
 	-Dfdisk=enabled \
 	-Dsysext=true \
 	-Dnscd=true \
+	-Dusec=$(if $(filter no,$(UOS_SYSTEM)),disabled,enabled) \
 	-Dselinux=enabled \
 	-Dhwdb=true \
 	-Dsysusers=true \

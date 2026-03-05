@@ -1,0 +1,648 @@
+From 83e0f2e5b61806bc9456e8b42ce26a6633b66ec3 Mon Sep 17 00:00:00 2001
+From: zhouzilong <zhouzilong@uniontech.com>
+Date: Thu, 5 Mar 2026 13:30:48 +0800
+Subject: [PATCH] implement USEC with libusec
+
+---
+ meson.build                                   |  5 ++
+ meson_options.txt                             |  2 +
+ src/core/main.c                               |  9 ++
+ src/core/meson.build                          |  6 +-
+ src/core/selinux-access.h                     |  4 +-
+ src/core/selinux-setup.c                      |  2 -
+ src/core/umac-setup.c                         | 86 -------------------
+ src/core/umac-setup.h                         |  8 --
+ src/core/{umac-access.c => usec-access.c}     | 49 +++++------
+ src/core/usec-setup.c                         | 80 +++++++++++++++++
+ src/{shared/umac-util.h => core/usec-setup.h} |  4 +-
+ src/shared/meson.build                        |  3 +-
+ src/shared/{umac-util.c => usec-util.c}       | 34 +++++---
+ src/shared/usec-util.h                        | 10 +++
+ 14 files changed, 159 insertions(+), 143 deletions(-)
+ delete mode 100644 src/core/umac-setup.c
+ delete mode 100644 src/core/umac-setup.h
+ rename src/core/{umac-access.c => usec-access.c} (87%)
+ create mode 100644 src/core/usec-setup.c
+ rename src/{shared/umac-util.h => core/usec-setup.h} (54%)
+ rename src/shared/{umac-util.c => usec-util.c} (52%)
+ create mode 100644 src/shared/usec-util.h
+
+diff --git a/meson.build b/meson.build
+index 4efaa1b..d72d37f 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1156,6 +1156,11 @@ libselinux = dependency('libselinux',
+                         required : get_option('selinux'))
+ conf.set10('HAVE_SELINUX', libselinux.found())
+ 
++libusec = dependency('libusec',
++                     version : '>= 1.0.0',
++                     required : get_option('usec'))
++conf.set10('HAVE_USEC', libusec.found())
++
+ libapparmor = dependency('libapparmor',
+                          version : '>= 2.13',
+                          required : get_option('apparmor'))
+diff --git a/meson_options.txt b/meson_options.txt
+index 8d2e3e9..d3a96a4 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -362,6 +362,8 @@ option('seccomp', type : 'feature', deprecated : { 'true' : 'enabled', 'false' :
+        description : 'SECCOMP support')
+ option('selinux', type : 'feature', deprecated : { 'true' : 'enabled', 'false' : 'disabled' },
+        description : 'SELinux support')
++option('usec', type : 'feature', deprecated : { 'true' : 'enabled', 'false' : 'disabled' },
++       description : 'USEC support')
+ option('apparmor', type : 'feature', deprecated : { 'true' : 'enabled', 'false' : 'disabled' },
+        description : 'AppArmor support')
+ option('smack', type : 'boolean',
+diff --git a/src/core/main.c b/src/core/main.c
+index 876c7d5..7de4778 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -97,6 +97,8 @@
+ #include "version.h"
+ #include "virt.h"
+ #include "watchdog.h"
++#include "usec-setup.h"
++#include "usec-util.h"
+ 
+ #if HAS_FEATURE_ADDRESS_SANITIZER
+ #include <sanitizer/lsan_interface.h>
+@@ -2679,6 +2681,12 @@ static int initialize_security(
+                 return r;
+         }
+ 
++        r = mac_usec_setup(loaded_policy);
++        if (r < 0) {
++                *ret_error_message = "Failed to load USEC policy";
++        }
++
++
+         r = mac_smack_setup(loaded_policy);
+         if (r < 0) {
+                 *ret_error_message = "Failed to load SMACK policy";
+@@ -3131,6 +3139,7 @@ finish:
+         }
+ 
+         mac_selinux_finish();
++        mac_usec_finish();
+ 
+         if (IN_SET(r, MANAGER_REEXECUTE, MANAGER_SWITCH_ROOT, MANAGER_SOFT_REBOOT))
+                 r = do_reexecute(r,
+diff --git a/src/core/meson.build b/src/core/meson.build
+index ef196a4..5185e10 100644
+--- a/src/core/meson.build
++++ b/src/core/meson.build
+@@ -55,8 +55,8 @@ libcore_sources = files(
+         'scope.c',
+         'selinux-access.c',
+         'selinux-setup.c',
+-        'umac-setup.c',
+-        'umac-access.c',
++        'usec-setup.c',
++        'usec-access.c',
+         'service.c',
+         'show-status.c',
+         'slice.c',
+@@ -133,6 +133,7 @@ libcore = shared_library(
+                         libpam,
+                         librt,
+                         libseccomp,
++                        libusec,
+                         libselinux,
+                         threads,
+                         userspace],
+@@ -176,6 +177,7 @@ executables += [
+                         libapparmor,
+                         libpam,
+                         libseccomp,
++                        libusec,
+                         libselinux,
+                 ],
+         },
+diff --git a/src/core/selinux-access.h b/src/core/selinux-access.h
+index cfa3503..9d6e788 100644
+--- a/src/core/selinux-access.h
++++ b/src/core/selinux-access.h
+@@ -17,7 +17,7 @@ struct audit_info {
+ 
+ 
+ int mac_selinux_access_check_internal(sd_bus_message *message, const char *unit_path, const char *unit_label, const char *permission, const char *function, sd_bus_error *error);
+-int umac_unit_access_check(sd_bus_message *message, const char *unit_path, const char *unit_context, const char *permission, const char *function, sd_bus_error *error);
++int mac_usec_access_check(sd_bus_message *message, const char *unit_path, const char *unit_context, const char *permission, const char *function, sd_bus_error *error);
+ #define mac_selinux_access_check(message, permission, error) \
+         mac_selinux_access_check_internal((message), NULL, NULL, (permission), __func__, (error))
+ 
+@@ -27,7 +27,7 @@ int umac_unit_access_check(sd_bus_message *message, const char *unit_path, const
+                 RC = mac_selinux_access_check_internal((message), (unit)->fragment_path, (unit)->access_selinux_context, (permission), __func__, (error)); \
+                 if (RC < 0)	\
+                         break;	\
+-                RC = umac_unit_access_check((message), (unit)->fragment_path, (unit)->access_selinux_context, (permission), __func__, (error)); \
++                RC = mac_usec_access_check((message), (unit)->fragment_path, (unit)->access_selinux_context, (permission), __func__, (error)); \
+         } while (0);		\
+         RC;		\
+ })
+diff --git a/src/core/selinux-setup.c b/src/core/selinux-setup.c
+index ae6b9fe..2111632 100644
+--- a/src/core/selinux-setup.c
++++ b/src/core/selinux-setup.c
+@@ -14,7 +14,6 @@
+ #include "log.h"
+ #include "macro.h"
+ #include "selinux-setup.h"
+-#include "umac-setup.h"
+ #include "selinux-util.h"
+ #include "string-util.h"
+ #include "time-util.h"
+@@ -102,6 +101,5 @@ int mac_selinux_setup(bool *loaded_policy) {
+                         log_debug("Unable to load SELinux policy. Ignoring.");
+         }
+ #endif
+-        umac_setup(loaded_policy);
+         return 0;
+ }
+diff --git a/src/core/umac-setup.c b/src/core/umac-setup.c
+deleted file mode 100644
+index 753b2ce..0000000
+--- a/src/core/umac-setup.c
++++ /dev/null
+@@ -1,86 +0,0 @@
+-/* SPDX-License-Identifier: LGPL-2.1+ */
+-
+-#include <errno.h>
+-#include <stdio.h>
+-#include <unistd.h>
+-
+-#if HAVE_SELINUX
+-#include <selinux/selinux.h>
+-#endif
+-
+-#include "log.h"
+-#include "macro.h"
+-#include "umac-setup.h"
+-#include "umac-util.h"
+-#include "string-util.h"
+-#include "initrd-util.h"
+-
+-#if HAVE_SELINUX
+-static int null_policyload2(int seqno __attribute__((unused))) {
+-        return 0;
+-}
+-#endif
+-
+-int umac_setup(bool *loaded_policy) {
+-
+-#if HAVE_SELINUX
+-        int enforce = 0;
+-        usec_t before_load, after_load;
+-        int r;
+-        static union selinux_callback cb_get = {
+-                .func_policyload = NULL,
+-        };
+-
+-        static const union selinux_callback cb_set = {
+-                .func_policyload = null_policyload2,
+-        };
+-
+-        assert(loaded_policy);
+-
+-		/* set selinux callback type for loading policy of umac
+-		 * this is the exclusive type of UOS usid
+-		*/
+-        selinux_set_callback(SELINUX_CB_POLICYLOAD_USEC, cb_set);
+-
+-		/* if libselinux support loading policy of umac,
+-		 * cb_get.func_policyload will be non-null pointer. and then
+-		 * call selinux_init_load_policy, it will loading
+-		 * umac policy rather than selinux policy.
+-		*/
+-        cb_get = selinux_get_callback(SELINUX_CB_POLICYLOAD_USEC);
+-		if (!cb_get.func_policyload)
+-			return 0;
+-
+-        /* Don't load policy in the initrd if we don't appear to have
+-         * it.  For the real root, we check below if we've already
+-         * loaded policy, and return gracefully.
+-         */
+-        if (in_initrd() && access(selinux_path(), F_OK) < 0)
+-                return 0;
+-
+-        /* Make sure we have no fds open while loading the policy and
+-         * transitioning */
+-        log_close();
+-
+-        /* Now load the policy */
+-        before_load = now(CLOCK_MONOTONIC);
+-        r = selinux_init_load_policy(&enforce);
+-        if (r == 0) {
+-                char timespan[FORMAT_TIMESPAN_MAX];
+-
+-                umac_reset();
+-
+-                log_open();
+-
+-                after_load = now(CLOCK_MONOTONIC);
+-
+-                log_info("Successfully loaded umac policy in %s.",
+-                         format_timespan(timespan, sizeof(timespan), after_load - before_load, 0));
+-        } else {
+-                log_open();
+-                log_warning("Failed to load new umac policy.");
+-        }
+-#endif
+-
+-        return 0;
+-}
+diff --git a/src/core/umac-setup.h b/src/core/umac-setup.h
+deleted file mode 100644
+index 0ae2e35..0000000
+--- a/src/core/umac-setup.h
++++ /dev/null
+@@ -1,8 +0,0 @@
+-/* SPDX-License-Identifier: LGPL-2.1+ */
+-#pragma once
+-
+-#include <stdbool.h>
+-
+-#define SELINUX_CB_POLICYLOAD_USEC 999
+-
+-int umac_setup(bool *loaded_policy);
+\ No newline at end of file
+diff --git a/src/core/umac-access.c b/src/core/usec-access.c
+similarity index 87%
+rename from src/core/umac-access.c
+rename to src/core/usec-access.c
+index d8fb68b..47f8a48 100644
+--- a/src/core/umac-access.c
++++ b/src/core/usec-access.c
+@@ -2,13 +2,11 @@
+ 
+ #include "selinux-access.h"
+ 
+-#if HAVE_SELINUX
++#if HAVE_USEC
+ 
+ #include <errno.h>
+-#include <selinux/avc.h>
+-#include <selinux/uavc.h>
+-#include <selinux/usec.h>
+-#include <selinux/selinux.h>
++#include <usec/avc.h>
++#include <usec/usec.h>
+ #include <stdio.h>
+ #include <sys/xattr.h>
+ #if HAVE_AUDIT
+@@ -22,8 +20,7 @@
+ #include "bus-util.h"
+ #include "log.h"
+ #include "path-util.h"
+-#include "selinux-util.h"
+-#include "umac-util.h"
++#include "usec-util.h"
+ #include "stdio-util.h"
+ #include "strv.h"
+ #include "format-util.h"
+@@ -38,7 +35,7 @@ static bool initialized = false;
+ */
+ static int audit_callback2(
+                 void *auditdata,
+-                security_class_t cls,
++                usec_security_class_t cls,
+                 char *msgbuf,
+                 size_t msgbufsize) {
+ 
+@@ -66,7 +63,7 @@ static int audit_callback2(
+ }
+ 
+ /*
+-   libselinux uses this callback when access gets denied or other
++   libusec uses this callback when access gets denied or other
+    events happen. If audit is turned on, messages will be reported
+    using audit netlink, otherwise they will be logged using the usual
+    channels.
+@@ -101,16 +98,16 @@ _printf_(2, 3) static int log_callback2(int type, const char *fmt, ...) {
+ 
+ static int access_init2(sd_bus_error *error) {
+ 
+-        if (!umac_use())
++        if (!mac_usec_use())
+                 return 0;
+ 
+         if (initialized)
+                 return 1;
+ 
+-        if (uavc_open(NULL, 0) != 0) {
++        if (usec_avc_open(NULL, 0) != 0) {
+                 int enforce, saved_errno = errno;
+ 
+-                enforce = security_getenforce();
++                enforce = usec_security_getenforce();
+                 log_full_errno(enforce != 0 ? LOG_ERR : LOG_WARNING, saved_errno, "Failed to open the USEC AVC: %m");
+ 
+                 /* If enforcement isn't on, then let's suppress this
+@@ -120,14 +117,14 @@ static int access_init2(sd_bus_error *error) {
+                 return 0;
+         }
+ 
+-        selinux_set_callback(SELINUX_CB_AUDIT, (union selinux_callback) audit_callback2);
+-        selinux_set_callback(SELINUX_CB_LOG, (union selinux_callback) log_callback2);
++        usec_set_callback(USEC_CB_AUDIT, (union usec_callback) audit_callback2);
++        usec_set_callback(USEC_CB_LOG, (union usec_callback) log_callback2);
+ 
+         initialized = true;
+         return 1;
+ }
+ 
+-static int mac_selinux_getfilecon2(const char *path, char **con) {
++static int mac_usec_getfilecon(const char *path, char **con) {
+         char *context = NULL;
+         int r = 0;
+ 
+@@ -152,13 +149,13 @@ static int mac_selinux_getfilecon2(const char *path, char **con) {
+         return 0;
+ }
+ 
+-static int mac_selinux_freecon2(char *con) {
++static int mac_usec_freecon(char *con) {
+         if (con != NULL)
+                 free(con);
+         return 0;
+ }
+ 
+-static int sd_bus_creds_get_umac_context(sd_bus_creds *c, char **ret) {
++static int sd_bus_creds_get_usec_context(sd_bus_creds *c, char **ret) {
+         assert_return(c, -EINVAL);
+ 
+ #define USID_LEN_MAX 255
+@@ -213,7 +210,7 @@ out:
+    If the machine is in permissive mode it will return ok.  Audit messages will
+    still be generated if the access would be denied in enforcing mode.
+ */
+-int umac_unit_access_check(
++int mac_usec_access_check(
+                 sd_bus_message *message,
+                 const char *unit_path,
+                 const char *unit_context,
+@@ -251,14 +248,14 @@ int umac_unit_access_check(
+         if (r < 0)
+                 goto finish;
+ 
+-        r = mac_selinux_getfilecon2(unit_path, &fcon2);
++        r = mac_usec_getfilecon(unit_path, &fcon2);
+         if (r < 0)
+                 goto finish;
+ 
+         if (fcon2) {
+                 fcon = fcon2;
+                 /* Get the subject usid if get the service file context2 success */
+-                r = sd_bus_creds_get_umac_context(creds, &scon2);
++                r = sd_bus_creds_get_usec_context(creds, &scon2);
+                 if (r < 0) {
+                         goto finish;
+                 }
+@@ -281,18 +278,18 @@ int umac_unit_access_check(
+         audit_info.function = function;
+         audit_info.avc_type = AVC_TYPE_USID;
+ 
+-        r = selinux_check_access(scon, fcon, tclass, permission, &audit_info);
++        r = usec_check_access_v1(scon, fcon, tclass, permission, &audit_info);
+         if (r < 0)
+-                r = sd_bus_error_setf(error, SD_BUS_ERROR_ACCESS_DENIED, "UMAC policy denies access.");
++                r = sd_bus_error_setf(error, SD_BUS_ERROR_ACCESS_DENIED, "USEC policy denies access.");
+ 
+-        log_debug("UMAC access check scon=%s tcon=%s tclass=%s perm=%s function=%s path=%s cmdline=%s: %i", scon, fcon, tclass, permission, function,unit_path, cl, r);
++        log_debug("USEC access check scon=%s tcon=%s tclass=%s perm=%s function=%s path=%s cmdline=%s: %i", scon, fcon, tclass, permission, function,unit_path, cl, r);
+ 
+ finish:
+-        mac_selinux_freecon2(fcon2);
++        mac_usec_freecon(fcon2);
+         if (scon2 != NULL)
+                 free(scon2);
+ 
+-        if (r < 0 && security_getenforce() != 1) {
++        if (r < 0 && usec_security_getenforce() != 1) {
+                 sd_bus_error_free(error);
+                 r = 0;
+         }
+@@ -302,7 +299,7 @@ finish:
+ 
+ #else
+ 
+-int umac_unit_access_check(
++int mac_usec_access_check(
+                 sd_bus_message *message,
+                 const char *unit_path,
+                 const char *unit_context,
+diff --git a/src/core/usec-setup.c b/src/core/usec-setup.c
+new file mode 100644
+index 0000000..618b1ff
+--- /dev/null
++++ b/src/core/usec-setup.c
+@@ -0,0 +1,80 @@
++/* SPDX-License-Identifier: LGPL-2.1+ */
++
++#include <errno.h>
++#include <stdio.h>
++#include <unistd.h>
++
++
++#if HAVE_USEC
++#include <usec/usec.h>
++#endif
++
++#include "log.h"
++#include "macro.h"
++#include "usec-setup.h"
++#include "usec-util.h"
++#include "string-util.h"
++#include "initrd-util.h"
++
++#if HAVE_USEC
++_printf_(2,3)
++static int null_log(int type, const char *fmt, ...) {
++        return 0;
++}
++#endif
++
++int mac_usec_setup(bool *loaded_policy) {
++
++ 
++#if HAVE_USEC
++        int enforce = 0;
++        usec_t before_load, after_load;
++        char *con;
++        int r;
++
++
++        assert(loaded_policy);
++
++        /* Turn off all of USEC' own logging, we want to do that */
++        usec_set_callback(USEC_CB_LOG, (const union usec_callback) { .func_log = null_log });
++
++
++        /* Don't load policy in the initrd if we don't appear to have
++         * it.  For the real root, we check below if we've already
++         * loaded policy, and return gracefully.
++         */
++        if (in_initrd() && access(usec_path(), F_OK) < 0)
++                return 0;
++
++        /* Make sure we have no fds open while loading the policy and
++         * transitioning */
++        log_close();
++
++        /* Now load the policy */
++        before_load = now(CLOCK_MONOTONIC);
++        r = usec_init_load_policy(&enforce);
++        if (r == 0) {
++                char timespan[FORMAT_TIMESPAN_MAX];
++
++                mac_usec_reset();
++
++                log_open();
++
++                after_load = now(CLOCK_MONOTONIC);
++
++                log_info("Successfully loaded USEC policy in %s.",
++                         format_timespan(timespan, sizeof(timespan), after_load - before_load, 0));
++        
++                        *loaded_policy = true;
++        } else {
++                log_open();
++                if (enforce > 0) {
++                        log_warning("Failed to load new USEC policy. Continuing with old policy.");
++                }else{
++                        log_debug("Unable to load USEC policy. Ignoring.");
++                }
++        }
++#endif
++
++        return 0;
++}
+diff --git a/src/shared/umac-util.h b/src/core/usec-setup.h
+similarity index 54%
+rename from src/shared/umac-util.h
+rename to src/core/usec-setup.h
+index fc1fe13..0d3143e 100644
+--- a/src/shared/umac-util.h
++++ b/src/core/usec-setup.h
+@@ -3,6 +3,4 @@
+ 
+ #include <stdbool.h>
+ 
+-bool umac_use(void);
+-void umac_reset(void);
+-int umac_init(void);
++int mac_usec_setup(bool *loaded_policy);
+\ No newline at end of file
+diff --git a/src/shared/meson.build b/src/shared/meson.build
+index 25de803..dd30846 100644
+--- a/src/shared/meson.build
++++ b/src/shared/meson.build
+@@ -149,7 +149,7 @@ shared_sources = files(
+         'rm-rf.c',
+         'securebits-util.c',
+         'selinux-util.c',
+-        'umac-util.c',
++        'usec-util.c',
+         'serialize.c',
+         'service-util.c',
+         'sleep-config.c',
+@@ -329,6 +329,7 @@ libshared_deps = [threads,
+                   libpam,
+                   librt,
+                   libseccomp,
++                  libusec,
+                   libselinux,
+                   libxenctrl_cflags,
+                   libxz,
+diff --git a/src/shared/umac-util.c b/src/shared/usec-util.c
+similarity index 52%
+rename from src/shared/umac-util.c
+rename to src/shared/usec-util.c
+index 5510dd8..f900e3f 100644
+--- a/src/shared/umac-util.c
++++ b/src/shared/usec-util.c
+@@ -1,21 +1,21 @@
+ /* SPDX-License-Identifier: LGPL-2.1+ */
+ 
+-#if HAVE_SELINUX
+-#include <selinux/selinux.h>
+-#include <selinux/usec.h>
++#if HAVE_USEC
++#include <usec/usec.h>
++#include <usec/avc.h>
+ #endif
+-#include "umac-util.h"
++#include "usec-util.h"
+ #include "string-util.h"
+ #include "log.h"
+ 
+-#if HAVE_SELINUX
++#if HAVE_USEC
+ static int cached_use = -1;
+ #endif
+ 
+-bool umac_use(void) {
+-#if HAVE_SELINUX
++bool mac_usec_use(void) {
++#if HAVE_USEC
+         if (cached_use < 0){
+-                cached_use = is_usec_enabled() > 0;
++                cached_use = is_usec_enabled_v1() > 0;
+                 log_trace("USEC enabled state cached to: %s", enabled_disabled(cached_use));
+         }
+ 
+@@ -25,18 +25,26 @@ bool umac_use(void) {
+ #endif
+ }
+ 
+-void umac_reset(void) {
+-#if HAVE_SELINUX
++void mac_usec_reset(void) {
++#if HAVE_USEC
+         cached_use = -1;
+ #endif
+ }
+ 
+-int umac_init(void) {
++int mac_usec_init(void) {
+         int r = 0;
+ 
+-#if HAVE_SELINUX
+-        if (!umac_use())
++#if HAVE_USEC
++        if (!mac_usec_use())
+                 return 0;
+ #endif
+         return r;
+ }
++
++void mac_usec_finish(void) {
++
++#if HAVE_USEC
++        usec_status_close();
++
++#endif
++}
+diff --git a/src/shared/usec-util.h b/src/shared/usec-util.h
+new file mode 100644
+index 0000000..1409ecd
+--- /dev/null
++++ b/src/shared/usec-util.h
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: LGPL-2.1+ */
++#pragma once
++
++#include <stdbool.h>
++
++bool mac_usec_use(void);
++void mac_usec_reset(void);
++int mac_usec_init(void);
++
++void mac_usec_finish(void);
+\ No newline at end of file
+-- 
+2.20.1
+
