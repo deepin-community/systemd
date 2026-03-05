@@ -1,3 +1,11 @@
+systemd (255.2-4deepin22) unstable; urgency=medium
+
+  * Adjust default MulticastDNS setting to 'no' in meson_options.txt.
+  * Add idempotent check for uniontech-add-tpmfs.patch to prevent
+    build failures on re-compilation.
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Thu, 05 Mar 2026 11:21:05 +0800
+
 systemd (255.2-4deepin21) unstable; urgency=medium
 
   * fix dbus read sysuser passwd
