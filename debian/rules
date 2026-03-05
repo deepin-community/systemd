@@ -162,7 +162,12 @@ endif
 override_dh_auto_configure:
 ifeq (yes,$(UOS_SYSTEM))
 	echo "UOS detected: applying uniontech-add-tpmfs.patch"
-	patch -p1 < debian/patches/uniontech-add-tpmfs.patch
+	if patch -p1 --dry-run -R < debian/patches/uniontech-add-tpmfs.patch >/dev/null 2>&1; then \
+        echo "UOS detected: patch already applied, skipping"; \
+    else \
+        echo "UOS detected: applying uniontech-add-tpmfs.patch"; \
+        patch -p1 < debian/patches/uniontech-add-tpmfs.patch; \
+    fi
 endif
 	dh_auto_configure \
 		-- $(CONFFLAGS) $(CONFFLAGS_DISTRO) $(CONFFLAGS_UPSTREAM)

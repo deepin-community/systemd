@@ -1,0 +1,13 @@
+Index: deepin-systemd/meson_options.txt
+===================================================================
+--- deepin-systemd.orig/meson_options.txt
++++ deepin-systemd/meson_options.txt
+@@ -338,7 +338,7 @@ option('default-dns-over-tls', type : 'c
+ option('default-mdns', type : 'combo',
+        choices : ['yes', 'resolve', 'no'],
+        description : 'default MulticastDNS mode',
+-       value : 'yes')
++       value : 'no')
+ option('default-llmnr', type : 'combo',
+        choices : ['yes', 'resolve', 'no'],
+        description : 'default LLMNR mode',
