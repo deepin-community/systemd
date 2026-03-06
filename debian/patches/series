@@ -32,3 +32,4 @@ uniontech-add-ug-bo-translation.patch
 uniontech-escape-spaces-when-serializing-as-well.patch
 uniontech-resolved-off-multidns.patch
 uniontech-implement-USEC-with-libusec.patch
+uniontech-resolved-short-ptr-timeout.patch

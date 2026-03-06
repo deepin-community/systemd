@@ -1,0 +1,50 @@
+Index: deepin-systemd/src/resolve/resolved-dns-query.c
+===================================================================
+--- deepin-systemd.orig/src/resolve/resolved-dns-query.c
++++ deepin-systemd/src/resolve/resolved-dns-query.c
+@@ -777,11 +777,44 @@ int dns_query_go(DnsQuery *q) {
+
+         dns_query_reset_answer(q);
+
++        /* --- Optimization to prevent hangs during reverse lookups in environments like VMware --- */
++        usec_t timeout_usec = SD_RESOLVED_QUERY_TIMEOUT_USEC;
++
++        if (IN_SET(q->request_family, AF_INET, AF_INET6)) {
++                bool is_problematic_range = false;
++
++                if (q->request_family == AF_INET) {
++                        uint32_t a = be32toh(q->request_address.in.s_addr);
++
++                        /* Focus ONLY on 192.168.0.0/16 and Link-Local.
++                        * 10.x.x.x and 172.x.x.x are left untouched as they are common in
++                        * enterprise intranets with functional DNS. */
++                        if ((a & 0xFFFF0000) == 0xC0A80000 ||           /* 192.168.0.0/16 (VMware/KVM default) */
++                            (a & 0xFFFF0000) == 0xA9FE0000)             /* 169.254.0.0/16 (Link-Local) */
++                                is_problematic_range = true;
++                } else if (q->request_family == AF_INET6) {
++                        /* IPv6 Link-Local (fe80::/10) is almost always safe to fail fast
++                        * if the local gateway doesn't respond instantly. */
++                        if ((q->request_address.in6.s6_addr[0] == 0xfe) &&
++                            ((q->request_address.in6.s6_addr[1] & 0xc0) == 0x80))
++                                is_problematic_range = true;
++                }
++
++                if (is_problematic_range) {
++                        /* Debug log to track why the timeout was shortened */
++                        log_warning("Detected VM-default or Link-Local address %s, using 2s timeout to avoid VMware hang.",
++                                IN_ADDR_TO_STRING(q->request_family, &q->request_address));
++
++                        timeout_usec = 2 * USEC_PER_SEC;
++                }
++        }
++        /* --- End of optimization --- */
++
+         r = event_reset_time_relative(
+                         q->manager->event,
+                         &q->timeout_event_source,
+                         CLOCK_BOOTTIME,
+-                        SD_RESOLVED_QUERY_TIMEOUT_USEC,
++                        timeout_usec,
+                         0, on_query_timeout, q,
+                         0, "query-timeout", true);
+         if (r < 0)
