@@ -1,3 +1,9 @@
+systemd (255.2-4deepin25) unstable; urgency=medium
+
+  * sleep: silence error message when homed is not installed
+
+ -- dongshengyuan <dongshengyuan@uniontech.com>  Mon, 16 Mar 2026 19:54:55 +0800
+
 systemd (255.2-4deepin24) unstable; urgency=medium
 
   * Optimized reverse DNS lookup timeout for 192.168.0.0/16 and link-local ranges.
