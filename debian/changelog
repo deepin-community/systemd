@@ -1,3 +1,10 @@
+systemd (255.2-4deepin25) unstable; urgency=medium
+
+  * Fix CVE-2026-4105: machined: reject invalid class types when
+    registering machines
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 15 Apr 2026 17:19:42 +0800
+
 systemd (255.2-4deepin24) unstable; urgency=medium
 
   * Optimized reverse DNS lookup timeout for 192.168.0.0/16 and link-local ranges.
