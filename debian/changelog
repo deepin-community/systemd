@@ -1,3 +1,13 @@
+systemd (255.2-4deepin25) unstable; urgency=medium
+
+  * Fix CVE-2026-29111: Local unprivileged user can trigger an assert in
+    systemd via varlink IPC API call with spurious data.
+    - Added null check in varlink_idl_validate_field_element_type() to
+      gracefully reject arrays/maps with null elements instead of triggering
+      an assertion that could freeze systemd (PID 1).
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 17 Apr 2026 05:50:00 +0800
+
 systemd (255.2-4deepin24) unstable; urgency=medium
 
   * Optimized reverse DNS lookup timeout for 192.168.0.0/16 and link-local ranges.
