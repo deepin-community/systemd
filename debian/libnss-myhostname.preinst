@@ -1,0 +1,36 @@
+#!/bin/sh
+set -e
+
+# Define paths for the NSS configuration and the dh_installnss trigger file
+CONF="${DPKG_ROOT}/etc/nsswitch.conf"
+WILL_INSTALL="${DPKG_ROOT}/etc/nsswitch.conf.nss.${DPKG_MAINTSCRIPT_PACKAGE}-will-install"
+
+# Function to handle the reordering logic during upgrade
+handle_upgrade_reordering() {
+    if [ -f "$CONF" ]; then
+        # Check if 'myhostname' exists and is positioned after 'dns'
+        # We use a basic grep pattern to ensure compatibility across environments
+        if grep -q -E '^hosts:.*(dns).*myhostname' "$CONF"; then
+
+            # 1. Remove 'myhostname' from the current line to 'clean the stage'
+            # This ensures that postinst's '! grep' check will fail, triggering the insertion
+            sed -i -E '/^hosts:/ s/\bmyhostname\b//g' "$CONF"
+
+            # 2. Clean up potential double spaces left by the removal
+            sed -i -E '/^hosts:/ s/\s+/ /g' "$CONF"
+            sed -i -E '/^hosts:/ s/\s+$//' "$CONF"
+
+            # 3. Manually create the trigger file
+            # dh_installnss normally only creates this on 'install'.
+            # Creating it here 'tricks' postinst into running its sed logic during 'upgrade'.
+            touch "$WILL_INSTALL"
+        fi
+    fi
+}
+
+if [ "$1" = upgrade ]; then
+    handle_upgrade_reordering
+fi
+
+# dh_installnss will append its own 'install' logic below this line
+#DEBHELPER#
