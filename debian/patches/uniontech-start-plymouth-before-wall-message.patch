@@ -1,0 +1,80 @@
+From: UnionTech <support@uniontech.com>
+Date: Mon, 28 Apr 2026 10:00:00 +0800
+Subject: fix: start plymouth before sending wall message on shutdown
+
+When shutting down, the wall message "The system will power off now!"
+appears on the screen before plymouth starts, which is visible to users.
+This happens because:
+
+1. logind sends wall message immediately when receiving shutdown request
+2. Then StartUnit poweroff.target is called
+3. plymouth-poweroff.service starts after display-manager.service stops
+
+The fix is to start plymouth service before sending wall message, so that
+plymouth can cover the text output. This ensures:
+- Wall messages are still sent to notify users on other TTYs
+- But the message is covered by plymouth splash screen
+- Users won't see raw text on screen during shutdown
+
+This follows the Debian approach where plymouth should be started early
+in the shutdown process.
+
+Origin: vendor
+
+--- a/src/login/logind-dbus.c
++++ b/src/login/logind-dbus.c
+@@ -1990,6 +1990,40 @@ static int method_cancel_scheduled_shutdown(
+         return 0;
+ }
+ 
++static int start_plymouth_for_shutdown(Manager *m, HandleAction action) {
++        const char *plymouth_unit = NULL;
++        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
++        int r;
++        _cleanup_free_ char *job = NULL;
++        assert(m);
++
++        /* Determine which plymouth service to start based on the action */
++        switch (action) {
++        case HANDLE_POWEROFF:
++                plymouth_unit = "plymouth-poweroff.service";
++                break;
++        case HANDLE_REBOOT:
++        case HANDLE_KEXEC:
++        case HANDLE_SOFT_REBOOT:
++                plymouth_unit = "plymouth-reboot.service";
++                break;
++        case HANDLE_HALT:
++                plymouth_unit = "plymouth-halt.service";
++                break;
++        default:
++                /* No plymouth service needed for sleep operations */
++                return 0;
++        }
++
++        /* Start plymouth service to cover the screen before sending wall message */
++        r = manager_start_unit(m, plymouth_unit, &error, &job);
++        if (r < 0)
++                log_debug_errno(r, "Failed to start %s, ignoring: %s",
++                                plymouth_unit, bus_error_message(&error, r));
++
++        return 0;
++}
++
+ static int method_do_shutdown_or_sleep(
+                 Manager *m,
+                 sd_bus_message *message,
+@@ -2095,6 +2129,13 @@ static int method_do_shutdown_or_sleep(
+         m->scheduled_shutdown_timeout = 0;
+         m->scheduled_shutdown_action = a;
+ 
++        /* Start plymouth before sending wall message so that the splash screen
++         * covers the text output. This prevents users from seeing raw text
++         * messages like "The system will power off now!" on the screen.
++         * Only do this for shutdown operations, not for sleep. */
++        if (a->inhibit_what == INHIBIT_SHUTDOWN)
++                (void) start_plymouth_for_shutdown(m, a->handle);
++
+         (void) setup_wall_message_timer(m, message);
+ 
+         r = bus_manager_shutdown_or_sleep_now_or_later(m, a, error);
