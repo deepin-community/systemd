@@ -1,3 +1,10 @@
+systemd (255.2-4deepin26) unstable; urgency=medium
+
+  * Disable wall broadcast messages by default, suppress "Broadcast message
+    from" and "The system will" notifications on scheduled shutdown/reboot.
+
+ -- zengwei <zengwei1@uniontech.com>  Wed, 30 Apr 2026 00:00:00 +0800
+
 systemd (255.2-4deepin25) unstable; urgency=medium
 
   * libnss-myhostname.nss: Install after `files`.
