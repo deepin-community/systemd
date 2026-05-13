@@ -34,3 +34,4 @@ uniontech-resolved-off-multidns.patch
 uniontech-implement-USEC-with-libusec.patch
 uniontech-resolved-short-ptr-timeout.patch
 uniontech-disable-shutdown-wall-messages.patch
+uniontech-systemctl-disable-wall.patch
