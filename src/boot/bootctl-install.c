@@ -1069,6 +1069,11 @@ int verb_remove(int argc, char *argv[], void *userdata) {
         if (q < 0 && r >= 0)
                 r = q;
 
+        char *fallback_path = strjoina("/EFI/systemd/systemd-boot-fallback", get_efi_arch(), ".efi");
+        q = remove_variables(uuid, fallback_path, true);
+        if (q < 0 && r >= 0)
+                r = q;
+
         q = remove_loader_variables();
         if (q < 0 && r >= 0)
                 r = q;

@@ -3291,7 +3291,7 @@ int dissected_image_load_verity_sig_partition(
 
         n = pread(fd, buf, p->size, p->offset);
         if (n < 0)
-                return -ENOMEM;
+                return -errno;
         if ((uint64_t) n != p->size)
                 return -EIO;
 

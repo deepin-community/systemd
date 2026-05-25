@@ -1,0 +1,25 @@
+From 301b4193a0f595008699b8f191bd23dfa3cb4b4b Mon Sep 17 00:00:00 2001
+From: Clayton Craft <clayton@craftyguy.net>
+Date: Wed, 29 Apr 2026 20:32:19 -0700
+Subject: [PATCH] bootctl: remove fallback EFI Boot#### variable on uninstall
+
+This cleans up the fallback Boot#### entry that was registered on
+install. The logic cleaning up variables was moved from verb_remove into
+a new remove_variables function, which mirrors the install side.
+
+Index: deepin-systemd-pr5/src/boot/bootctl-install.c
+===================================================================
+--- deepin-systemd-pr5.orig/src/boot/bootctl-install.c
++++ deepin-systemd-pr5/src/boot/bootctl-install.c
+@@ -1069,6 +1069,11 @@ int verb_remove(int argc, char *argv[],
+         if (q < 0 && r >= 0)
+                 r = q;
+ 
++        char *fallback_path = strjoina("/EFI/systemd/systemd-boot-fallback", get_efi_arch(), ".efi");
++        q = remove_variables(uuid, fallback_path, true);
++        if (q < 0 && r >= 0)
++                r = q;
++
+         q = remove_loader_variables();
+         if (q < 0 && r >= 0)
+                 r = q;

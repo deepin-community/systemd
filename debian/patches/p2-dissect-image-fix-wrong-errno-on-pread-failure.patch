@@ -1,0 +1,42 @@
+From fa0cd9b79f85dc6d24cd7d3f7c554b35bd5191fd Mon Sep 17 00:00:00 2001
+From: Chris Mason <clm@meta.com>
+Date: Fri, 22 May 2026 09:23:03 -0700
+Subject: [PATCH] dissect-image: fix wrong errno on pread failure
+
+In acquire_sig_for_roothash() the pread() failure branch returns
+-ENOMEM, which is copy-pasted from the malloc() check immediately
+above it:
+
+    _cleanup_free_ char *buf = new(char, partition_size+1);
+    if (!buf)
+            return -ENOMEM;
+
+    ssize_t n = pread(fd, buf, partition_size, partition_offset);
+    if (n < 0)
+            return -ENOMEM;
+
+pread() sets errno to the actual I/O failure (EIO, EINTR, EBADF,
+...). Aliasing those to -ENOMEM misleads dissect_log_error() and
+any caller that branches on the returned code; verity signature
+lookup failures get reported as out-of-memory.
+
+Fix by returning -errno from the pread() failure branch. The
+malloc() branch above is correct and unchanged.
+
+Fixes: 98ca65c36aa9 ("dissect: check that roothash in signature matches before selecting partition")
+Assisted-by: kres (claude-opus-4-7)
+Signed-off-by: Chris Mason <clm@meta.com>
+
+Index: deepin-systemd-pr5/src/shared/dissect-image.c
+===================================================================
+--- deepin-systemd-pr5.orig/src/shared/dissect-image.c
++++ deepin-systemd-pr5/src/shared/dissect-image.c
+@@ -3291,7 +3291,7 @@ int dissected_image_load_verity_sig_part
+ 
+         n = pread(fd, buf, p->size, p->offset);
+         if (n < 0)
+-                return -ENOMEM;
++                return -errno;
+         if ((uint64_t) n != p->size)
+                 return -EIO;
+ 

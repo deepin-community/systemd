@@ -2613,6 +2613,7 @@ static int method_disable_unit_files_generic(
         UnitFileFlags flags;
         size_t n_changes = 0;
         int r;
+        Unit *u;
 
         assert(message);
         assert(m);
@@ -2646,6 +2647,21 @@ static int method_disable_unit_files_generic(
                 return r;
         if (r == 0)
                 return 1; /* No authorization for now, but the async polkit stuff will call us again when it has it */
+
+        if (l) {
+                for (int i = 0; l[i]; i++) {
+                        r = manager_load_unit(m, l[i], NULL, error, &u);
+                        if (r < 0)
+                                break;
+
+                        r = mac_selinux_unit_access_check(
+                                u, message,
+                                "disable",
+                                error);
+                        if (r < 0)
+                                return r;
+                }
+        }
 
         r = call(m->runtime_scope, flags, NULL, l, &changes, &n_changes);
         m->unit_file_state_outdated = m->unit_file_state_outdated || n_changes > 0; /* See comments for this variable in manager.h */

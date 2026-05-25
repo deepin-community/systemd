@@ -90,6 +90,8 @@ DEF_TEMPLATE_B = '''\
 #    define systemd_NR_{syscall} {nr_s390}
 #  elif defined(__sparc__)
 #    define systemd_NR_{syscall} {nr_sparc}
+#  elif defined(__sw_64__)
+#    define systemd_NR_{syscall} {nr_sw_64}
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_{syscall} ({nr_x86_64} | /* __X32_SYSCALL_BIT */ 0x40000000)

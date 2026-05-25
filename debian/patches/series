@@ -35,3 +35,5 @@ uniontech-implement-USEC-with-libusec.patch
 uniontech-resolved-short-ptr-timeout.patch
 uniontech-disable-shutdown-wall-messages.patch
 uniontech-systemctl-disable-wall.patch
+p2-dissect-image-fix-wrong-errno-on-pread-failure.patch
+p2-bootctl-remove-fallback-EFI-Boot-variable-on-uninstall.patch

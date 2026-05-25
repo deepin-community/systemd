@@ -2017,7 +2017,7 @@ static void mount_enumerate(Manager *m) {
         mnt_init_debug(0);
 
         if (!m->mount_monitor) {
-                unsigned mount_rate_limit_burst = 5;
+                unsigned mount_rate_limit_burst = 15;
                 int fd;
 
                 m->mount_monitor = mnt_new_monitor();

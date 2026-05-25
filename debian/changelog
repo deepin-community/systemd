@@ -1,3 +1,17 @@
+systemd (255.2-4deepin28) stable; urgency=medium
+
+  * Backport upstream P2 bug fixes and security improvements:
+    - dissect-image: fix wrong errno (-ENOMEM) on pread failure (fa0cd9b7)
+    - bootctl: remove fallback EFI Boot#### variable on uninstall (301b4193)
+  * Note: Several P2 patches were skipped due to significant code divergence
+    between v255.2 and the upstream target version. Skipped patches include:
+    fstab-generator quota warning, dissect LUKS2 overflow, homed/fscrypt key
+    sealing, pkcs11 RSA-OAEP, stress-ng test fixes, varlink StartTransient
+    errors, NDisc fixlets, vmspawn SNP CPU, exec-invoke error code,
+    user-util groupname mangling, and repart varlink flush.
+
+ -- Sisyphus <sisyphus@deepin.org>  Mon, 25 May 2026 17:35:34 +0800
+
 systemd (255.2-4deepin27) unstable; urgency=medium
 
   * systemctl: disable wall messages by default (set arg_no_wall to true)

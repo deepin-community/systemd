@@ -33,6 +33,7 @@
 #    endif
 #  elif defined(__s390__)
 #  elif defined(__sparc__)
+#  elif defined(__sw_64__)
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #    else
@@ -85,6 +86,8 @@
 #    define systemd_NR_bpf 351
 #  elif defined(__sparc__)
 #    define systemd_NR_bpf 349
+#  elif defined(__sw_64__)
+#    define systemd_NR_bpf 170
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_bpf (321 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -153,6 +156,8 @@ assert_cc(__NR_bpf == systemd_NR_bpf);
 #    define systemd_NR_close_range 436
 #  elif defined(__sparc__)
 #    define systemd_NR_close_range 436
+#  elif defined(__sw_64__)
+#    define systemd_NR_close_range 283
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_close_range (436 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -221,6 +226,8 @@ assert_cc(__NR_close_range == systemd_NR_close_range);
 #    define systemd_NR_copy_file_range 375
 #  elif defined(__sparc__)
 #    define systemd_NR_copy_file_range 357
+#  elif defined(__sw_64__)
+#    define systemd_NR_copy_file_range 515
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_copy_file_range (326 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -357,6 +364,8 @@ assert_cc(__NR_fchmodat2 == systemd_NR_fchmodat2);
 #    define systemd_NR_getrandom 349
 #  elif defined(__sparc__)
 #    define systemd_NR_getrandom 347
+#  elif defined(__sw_64__)
+#    define systemd_NR_getrandom 511
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_getrandom (318 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -425,6 +434,8 @@ assert_cc(__NR_getrandom == systemd_NR_getrandom);
 #    define systemd_NR_memfd_create 350
 #  elif defined(__sparc__)
 #    define systemd_NR_memfd_create 348
+#  elif defined(__sw_64__)
+#    define systemd_NR_memfd_create 512
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_memfd_create (319 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -493,6 +504,8 @@ assert_cc(__NR_memfd_create == systemd_NR_memfd_create);
 #    define systemd_NR_mount_setattr 442
 #  elif defined(__sparc__)
 #    define systemd_NR_mount_setattr 442
+#  elif defined(__sw_64__)
+#    define systemd_NR_mount_setattr 181
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_mount_setattr (442 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -561,6 +574,8 @@ assert_cc(__NR_mount_setattr == systemd_NR_mount_setattr);
 #    define systemd_NR_move_mount 429
 #  elif defined(__sparc__)
 #    define systemd_NR_move_mount 429
+#  elif defined(__sw_64__)
+#    define systemd_NR_move_mount 276
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_move_mount (429 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -629,6 +644,8 @@ assert_cc(__NR_move_mount == systemd_NR_move_mount);
 #    define systemd_NR_name_to_handle_at 335
 #  elif defined(__sparc__)
 #    define systemd_NR_name_to_handle_at 332
+#  elif defined(__sw_64__)
+#    define systemd_NR_name_to_handle_at 497
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_name_to_handle_at (303 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -697,6 +714,8 @@ assert_cc(__NR_name_to_handle_at == systemd_NR_name_to_handle_at);
 #    define systemd_NR_open_tree 428
 #  elif defined(__sparc__)
 #    define systemd_NR_open_tree 428
+#  elif defined(__sw_64__)
+#    define systemd_NR_open_tree 275
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_open_tree (428 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -833,6 +852,8 @@ assert_cc(__NR_openat2 == systemd_NR_openat2);
 #    define systemd_NR_pidfd_open 434
 #  elif defined(__sparc__)
 #    define systemd_NR_pidfd_open 434
+#  elif defined(__sw_64__)
+#    define systemd_NR_pidfd_open 281
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_pidfd_open (434 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -901,6 +922,8 @@ assert_cc(__NR_pidfd_open == systemd_NR_pidfd_open);
 #    define systemd_NR_pidfd_send_signal 424
 #  elif defined(__sparc__)
 #    define systemd_NR_pidfd_send_signal 424
+#  elif defined(__sw_64__)
+#    define systemd_NR_pidfd_send_signal 271
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_pidfd_send_signal (424 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -969,6 +992,8 @@ assert_cc(__NR_pidfd_send_signal == systemd_NR_pidfd_send_signal);
 #    define systemd_NR_pkey_mprotect 384
 #  elif defined(__sparc__)
 #    define systemd_NR_pkey_mprotect 362
+#  elif defined(__sw_64__)
+#    define systemd_NR_pkey_mprotect 288
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_pkey_mprotect (329 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -1037,6 +1062,8 @@ assert_cc(__NR_pkey_mprotect == systemd_NR_pkey_mprotect);
 #    define systemd_NR_renameat2 347
 #  elif defined(__sparc__)
 #    define systemd_NR_renameat2 345
+#  elif defined(__sw_64__)
+#    define systemd_NR_renameat2 510
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_renameat2 (316 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -1105,6 +1132,8 @@ assert_cc(__NR_renameat2 == systemd_NR_renameat2);
 #    define systemd_NR_setns 339
 #  elif defined(__sparc__)
 #    define systemd_NR_setns 337
+#  elif defined(__sw_64__)
+#    define systemd_NR_setns 501
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_setns (308 | /* __X32_SYSCALL_BIT */ 0x40000000)
@@ -1173,6 +1202,8 @@ assert_cc(__NR_setns == systemd_NR_setns);
 #    define systemd_NR_statx 379
 #  elif defined(__sparc__)
 #    define systemd_NR_statx 360
+#  elif defined(__sw_64__)
+#    define systemd_NR_statx 518
 #  elif defined(__x86_64__)
 #    if defined(__ILP32__)
 #      define systemd_NR_statx (332 | /* __X32_SYSCALL_BIT */ 0x40000000)
