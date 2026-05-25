@@ -7,6 +7,7 @@
 #include "in-addr-prefix-util.h"
 #include "networkd-address-generation.h"
 #include "networkd-address.h"
+#include "networkd-dhcp-common.h"
 #include "networkd-dhcp-prefix-delegation.h"
 #include "networkd-dhcp6.h"
 #include "networkd-link.h"
@@ -699,6 +700,8 @@ static int dhcp_request_unreachable_route(
         route->protocol = RTPROT_DHCP;
         route->priority = IP6_RT_PRIO_USER;
         route->lifetime_usec = lifetime_usec;
+        if (source == NETWORK_CONFIG_SOURCE_DHCP6 && !route->table_set)
+                route->table = link_get_dhcp6_route_table(link);
 
         if (route_get(link->manager, NULL, route, &existing) < 0)
                 *configured = false;

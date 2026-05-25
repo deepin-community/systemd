@@ -11,6 +11,7 @@
 
 typedef enum {
         ARCHITECTURE_ALPHA,
+        ARCHITECTURE_SUNWAY,
         ARCHITECTURE_ARC,
         ARCHITECTURE_ARC_BE,
         ARCHITECTURE_ARM,
@@ -142,6 +143,9 @@ Architecture uname_architecture(void);
 #elif defined(__alpha__)
 #  define native_architecture() ARCHITECTURE_ALPHA
 #  define LIB_ARCH_TUPLE "alpha-linux-gnu"
+#elif defined(__sw_64__)
+#  define native_architecture() ARCHITECTURE_SUNWAY
+#  define LIB_ARCH_TUPLE "sw_64-linux-gnu"
 #elif defined(__aarch64__)
 #  if __BYTE_ORDER == __BIG_ENDIAN
 #    define native_architecture() ARCHITECTURE_ARM64_BE

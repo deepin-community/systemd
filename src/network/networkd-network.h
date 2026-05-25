@@ -183,6 +183,8 @@ struct Network {
         bool dhcp6_use_ntp_set;
         bool dhcp6_use_captive_portal;
         bool dhcp6_use_rapid_commit;
+        uint32_t dhcp6_route_table;
+        bool dhcp6_route_table_set;
         DHCPUseDomains dhcp6_use_domains;
         bool dhcp6_use_domains_set;
         uint32_t dhcp6_iaid;

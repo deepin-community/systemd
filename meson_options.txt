@@ -81,7 +81,7 @@ option('bump-proc-sys-fs-file-max', type : 'boolean',
        description : 'bump /proc/sys/fs/file-max to LONG_MAX')
 option('bump-proc-sys-fs-nr-open', type : 'boolean',
        description : 'bump /proc/sys/fs/nr_open to INT_MAX')
-option('log-trace', type : 'boolean', value : false,
+option('log-trace', type : 'boolean', value : true,
        description : 'enable low level debug logging')
 option('user-path', type : 'string',
        description : '$PATH to use for user sessions')
@@ -338,7 +338,7 @@ option('default-dns-over-tls', type : 'combo',
 option('default-mdns', type : 'combo',
        choices : ['yes', 'resolve', 'no'],
        description : 'default MulticastDNS mode',
-       value : 'yes')
+       value : 'no')
 option('default-llmnr', type : 'combo',
        choices : ['yes', 'resolve', 'no'],
        description : 'default LLMNR mode',
@@ -362,6 +362,8 @@ option('seccomp', type : 'feature', deprecated : { 'true' : 'enabled', 'false' :
        description : 'SECCOMP support')
 option('selinux', type : 'feature', deprecated : { 'true' : 'enabled', 'false' : 'disabled' },
        description : 'SELinux support')
+option('usec', type : 'feature', deprecated : { 'true' : 'enabled', 'false' : 'disabled' },
+       description : 'USEC support')
 option('apparmor', type : 'feature', deprecated : { 'true' : 'enabled', 'false' : 'disabled' },
        description : 'AppArmor support')
 option('smack', type : 'boolean',

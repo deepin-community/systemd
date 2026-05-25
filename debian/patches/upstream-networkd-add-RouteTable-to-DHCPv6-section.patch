@@ -1,0 +1,180 @@
+Index: deepin-systemd/man/systemd.network.xml
+===================================================================
+--- deepin-systemd.orig/man/systemd.network.xml
++++ deepin-systemd/man/systemd.network.xml
+@@ -3788,6 +3788,23 @@ ServerAddress=192.168.0.1/24</programlis
+         </listitem>
+       </varlistentry>
+ 
++      <varlistentry>
++        <term><varname>RouteTable=<replaceable>num</replaceable></varname></term>
++        <listitem>
++          <para>The table identifier for routes installed by the DHCPv6 client, e.g. unreachable
++          routes for delegated prefixes. Takes one of the predefined names <literal>default</literal>,
++          <literal>main</literal>, and <literal>local</literal>, names defined in
++          <varname>RouteTable=</varname> in
++          <citerefentry><refentrytitle>networkd.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
++          or a number between 1…4294967295.</para>
++
++          <para>When used in combination with <varname>VRF=</varname>, the VRF's routing table is
++          used when this parameter is not specified.</para>
++
++          <xi:include href="version-info.xml" xpointer="v255"/>
++        </listitem>
++      </varlistentry>
++
+     </variablelist>
+   </refsect1>
+ 
+Index: deepin-systemd/src/network/networkd-dhcp-common.c
+===================================================================
+--- deepin-systemd.orig/src/network/networkd-dhcp-common.c
++++ deepin-systemd/src/network/networkd-dhcp-common.c
+@@ -16,6 +16,7 @@
+ #include "networkd-manager.h"
+ #include "networkd-network.h"
+ #include "networkd-route-util.h"
++#include "networkd-util.h"
+ #include "parse-util.h"
+ #include "socket-util.h"
+ #include "string-table.h"
+@@ -50,6 +51,15 @@ uint32_t link_get_ipv6_accept_ra_route_t
+         return link_get_vrf_table(link);
+ }
+ 
++uint32_t link_get_dhcp6_route_table(Link *link) {
++        assert(link);
++        assert(link->network);
++
++        if (link->network->dhcp6_route_table_set)
++                return link->network->dhcp6_route_table;
++        return link_get_vrf_table(link);
++}
++
+ bool link_dhcp_enabled(Link *link, int family) {
+         assert(link);
+         assert(IN_SET(family, AF_INET, AF_INET6));
+@@ -702,7 +712,7 @@ int config_parse_dhcp_or_ra_route_table(
+ 
+         assert(filename);
+         assert(lvalue);
+-        assert(IN_SET(ltype, AF_INET, AF_INET6));
++        assert(IN_SET(ltype, NETWORK_CONFIG_SOURCE_DHCP4, NETWORK_CONFIG_SOURCE_DHCP6, NETWORK_CONFIG_SOURCE_NDISC));
+         assert(rvalue);
+ 
+         r = manager_get_route_table_from_string(network->manager, rvalue, &rt);
+@@ -713,11 +723,15 @@ int config_parse_dhcp_or_ra_route_table(
+         }
+ 
+         switch (ltype) {
+-        case AF_INET:
++        case NETWORK_CONFIG_SOURCE_DHCP4:
+                 network->dhcp_route_table = rt;
+                 network->dhcp_route_table_set = true;
+                 break;
+-        case AF_INET6:
++        case NETWORK_CONFIG_SOURCE_DHCP6:
++                network->dhcp6_route_table = rt;
++                network->dhcp6_route_table_set = true;
++                break;
++        case NETWORK_CONFIG_SOURCE_NDISC:
+                 network->ipv6_accept_ra_route_table = rt;
+                 network->ipv6_accept_ra_route_table_set = true;
+                 break;
+Index: deepin-systemd/src/network/networkd-dhcp-common.h
+===================================================================
+--- deepin-systemd.orig/src/network/networkd-dhcp-common.h
++++ deepin-systemd/src/network/networkd-dhcp-common.h
+@@ -55,6 +55,7 @@ typedef struct DUID {
+ 
+ uint32_t link_get_dhcp4_route_table(Link *link);
+ uint32_t link_get_ipv6_accept_ra_route_table(Link *link);
++uint32_t link_get_dhcp6_route_table(Link *link);
+ 
+ bool link_dhcp_enabled(Link *link, int family);
+ static inline bool link_dhcp4_enabled(Link *link) {
+Index: deepin-systemd/src/network/networkd-dhcp-prefix-delegation.c
+===================================================================
+--- deepin-systemd.orig/src/network/networkd-dhcp-prefix-delegation.c
++++ deepin-systemd/src/network/networkd-dhcp-prefix-delegation.c
+@@ -7,6 +7,7 @@
+ #include "in-addr-prefix-util.h"
+ #include "networkd-address-generation.h"
+ #include "networkd-address.h"
++#include "networkd-dhcp-common.h"
+ #include "networkd-dhcp-prefix-delegation.h"
+ #include "networkd-dhcp6.h"
+ #include "networkd-link.h"
+@@ -699,6 +700,8 @@ static int dhcp_request_unreachable_rout
+         route->protocol = RTPROT_DHCP;
+         route->priority = IP6_RT_PRIO_USER;
+         route->lifetime_usec = lifetime_usec;
++        if (source == NETWORK_CONFIG_SOURCE_DHCP6 && !route->table_set)
++                route->table = link_get_dhcp6_route_table(link);
+ 
+         if (route_get(link->manager, NULL, route, &existing) < 0)
+                 *configured = false;
+Index: deepin-systemd/src/network/networkd-network-gperf.gperf
+===================================================================
+--- deepin-systemd.orig/src/network/networkd-network-gperf.gperf
++++ deepin-systemd/src/network/networkd-network-gperf.gperf
+@@ -242,7 +242,7 @@ DHCPv4.IAID,
+ DHCPv4.DUIDType,                             config_parse_network_duid_type,                           0,                             0
+ DHCPv4.DUIDRawData,                          config_parse_network_duid_rawdata,                        0,                             0
+ DHCPv4.RouteMetric,                          config_parse_dhcp_route_metric,                           AF_INET,                       0
+-DHCPv4.RouteTable,                           config_parse_dhcp_or_ra_route_table,                      AF_INET,                       0
++DHCPv4.RouteTable,                           config_parse_dhcp_or_ra_route_table,                      NETWORK_CONFIG_SOURCE_DHCP4,            0
+ DHCPv4.UseTimezone,                          config_parse_bool,                                        0,                             offsetof(Network, dhcp_use_timezone)
+ DHCPv4.ListenPort,                           config_parse_uint16,                                      0,                             offsetof(Network, dhcp_client_port)
+ DHCPv4.SendRelease,                          config_parse_bool,                                        0,                             offsetof(Network, dhcp_send_release)
+@@ -283,6 +283,7 @@ DHCPv6.IAID,
+ DHCPv6.DUIDType,                             config_parse_duid_type,                                   0,                             offsetof(Network, dhcp6_duid)
+ DHCPv6.DUIDRawData,                          config_parse_duid_rawdata,                                0,                             offsetof(Network, dhcp6_duid)
+ DHCPv6.RapidCommit,                          config_parse_bool,                                        0,                             offsetof(Network, dhcp6_use_rapid_commit)
++DHCPv6.RouteTable,                           config_parse_dhcp_or_ra_route_table,                      NETWORK_CONFIG_SOURCE_DHCP6,            0
+ DHCPv6.NetLabel,                             config_parse_string,                                      CONFIG_PARSE_STRING_SAFE,      offsetof(Network, dhcp6_netlabel)
+ DHCPv6.SendRelease,                          config_parse_bool,                                        0,                             offsetof(Network, dhcp6_send_release)
+ DHCPv6.NFTSet,                               config_parse_nft_set,                                     NFT_SET_PARSE_NETWORK,         offsetof(Network, dhcp6_nft_set_context)
+@@ -297,7 +298,7 @@ IPv6AcceptRA.UseMTU,
+ IPv6AcceptRA.UseHopLimit,                    config_parse_bool,                                        0,                             offsetof(Network, ipv6_accept_ra_use_hop_limit)
+ IPv6AcceptRA.UseICMP6RateLimit,              config_parse_bool,                                        0,                             offsetof(Network, ipv6_accept_ra_use_icmp6_ratelimit)
+ IPv6AcceptRA.DHCPv6Client,                   config_parse_ipv6_accept_ra_start_dhcp6_client,           0,                             offsetof(Network, ipv6_accept_ra_start_dhcp6_client)
+-IPv6AcceptRA.RouteTable,                     config_parse_dhcp_or_ra_route_table,                      AF_INET6,                      0
++IPv6AcceptRA.RouteTable,                     config_parse_dhcp_or_ra_route_table,                      NETWORK_CONFIG_SOURCE_NDISC,            0
+ IPv6AcceptRA.RouteMetric,                    config_parse_ipv6_accept_ra_route_metric,                 0,                             0
+ IPv6AcceptRA.QuickAck,                       config_parse_bool,                                        0,                             offsetof(Network, ipv6_accept_ra_quickack)
+ IPv6AcceptRA.UseCaptivePortal,               config_parse_bool,                                        0,                             offsetof(Network, ipv6_accept_ra_use_captive_portal)
+@@ -596,7 +597,7 @@ DHCP.IAID,
+ DHCP.DUIDType,                               config_parse_network_duid_type,                           0,                             0
+ DHCP.DUIDRawData,                            config_parse_network_duid_rawdata,                        0,                             0
+ DHCP.RouteMetric,                            config_parse_dhcp_route_metric,                           AF_UNSPEC,                     0
+-DHCP.RouteTable,                             config_parse_dhcp_or_ra_route_table,                      AF_INET,                       0
++DHCP.RouteTable,                             config_parse_dhcp_or_ra_route_table,                      NETWORK_CONFIG_SOURCE_DHCP4,            0
+ DHCP.UseTimezone,                            config_parse_bool,                                        0,                             offsetof(Network, dhcp_use_timezone)
+ DHCP.ListenPort,                             config_parse_uint16,                                      0,                             offsetof(Network, dhcp_client_port)
+ DHCP.RapidCommit,                            config_parse_bool,                                        0,                             offsetof(Network, dhcp6_use_rapid_commit)
+Index: deepin-systemd/src/network/networkd-network.c
+===================================================================
+--- deepin-systemd.orig/src/network/networkd-network.c
++++ deepin-systemd/src/network/networkd-network.c
+@@ -410,6 +410,7 @@ int network_load_one(Manager *manager, O
+                 .dhcp6_use_ntp = true,
+                 .dhcp6_use_captive_portal = true,
+                 .dhcp6_use_rapid_commit = true,
++                .dhcp6_route_table = RT_TABLE_MAIN,
+                 .dhcp6_send_hostname = true,
+                 .dhcp6_duid.type = _DUID_TYPE_INVALID,
+                 .dhcp6_client_start_mode = _DHCP6_CLIENT_START_MODE_INVALID,
+Index: deepin-systemd/src/network/networkd-network.h
+===================================================================
+--- deepin-systemd.orig/src/network/networkd-network.h
++++ deepin-systemd/src/network/networkd-network.h
+@@ -183,6 +183,8 @@ struct Network {
+         bool dhcp6_use_ntp_set;
+         bool dhcp6_use_captive_portal;
+         bool dhcp6_use_rapid_commit;
++        uint32_t dhcp6_route_table;
++        bool dhcp6_route_table_set;
+         DHCPUseDomains dhcp6_use_domains;
+         bool dhcp6_use_domains_set;
+         uint32_t dhcp6_iaid;

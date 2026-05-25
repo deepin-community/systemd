@@ -53,6 +53,8 @@
 #ifndef __O_TMPFILE
 #if defined(__alpha__)
 #define __O_TMPFILE     0100000000
+#elif defined(__sw_64__)
+#define __O_TMPFILE     0100100000
 #elif defined(__parisc__) || defined(__hppa__)
 #define __O_TMPFILE     0400000000
 #elif defined(__sparc__) || defined(__sparc64__)

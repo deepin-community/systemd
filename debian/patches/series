@@ -35,3 +35,6 @@ uniontech-implement-USEC-with-libusec.patch
 uniontech-resolved-short-ptr-timeout.patch
 uniontech-disable-shutdown-wall-messages.patch
 uniontech-systemctl-disable-wall.patch
+upstream-dhcp-client-reject-oversized-messages.patch
+upstream-dns-packet-bail-out-early-if-too-short.patch
+upstream-networkd-add-RouteTable-to-DHCPv6-section.patch

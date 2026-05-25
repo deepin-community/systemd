@@ -16,6 +16,7 @@
 #include "networkd-manager.h"
 #include "networkd-network.h"
 #include "networkd-route-util.h"
+#include "networkd-util.h"
 #include "parse-util.h"
 #include "socket-util.h"
 #include "string-table.h"
@@ -47,6 +48,15 @@ uint32_t link_get_ipv6_accept_ra_route_table(Link *link) {
 
         if (link->network->ipv6_accept_ra_route_table_set)
                 return link->network->ipv6_accept_ra_route_table;
+        return link_get_vrf_table(link);
+}
+
+uint32_t link_get_dhcp6_route_table(Link *link) {
+        assert(link);
+        assert(link->network);
+
+        if (link->network->dhcp6_route_table_set)
+                return link->network->dhcp6_route_table;
         return link_get_vrf_table(link);
 }
 
@@ -702,7 +712,7 @@ int config_parse_dhcp_or_ra_route_table(
 
         assert(filename);
         assert(lvalue);
-        assert(IN_SET(ltype, AF_INET, AF_INET6));
+        assert(IN_SET(ltype, NETWORK_CONFIG_SOURCE_DHCP4, NETWORK_CONFIG_SOURCE_DHCP6, NETWORK_CONFIG_SOURCE_NDISC));
         assert(rvalue);
 
         r = manager_get_route_table_from_string(network->manager, rvalue, &rt);
@@ -713,11 +723,15 @@ int config_parse_dhcp_or_ra_route_table(
         }
 
         switch (ltype) {
-        case AF_INET:
+        case NETWORK_CONFIG_SOURCE_DHCP4:
                 network->dhcp_route_table = rt;
                 network->dhcp_route_table_set = true;
                 break;
-        case AF_INET6:
+        case NETWORK_CONFIG_SOURCE_DHCP6:
+                network->dhcp6_route_table = rt;
+                network->dhcp6_route_table_set = true;
+                break;
+        case NETWORK_CONFIG_SOURCE_NDISC:
                 network->ipv6_accept_ra_route_table = rt;
                 network->ipv6_accept_ra_route_table_set = true;
                 break;

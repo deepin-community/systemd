@@ -1,3 +1,21 @@
+systemd (255.2-4deepin28) stable; urgency=medium
+
+  * Backport upstream network stack fixes:
+  * dhcp-client: reject messages larger than maximum UDP payload
+    (6fa5ebc)
+  * dns-packet: bail out early if packet is too short (180985c, 6c119e1)
+  * networkd: add RouteTable= to [DHCPv6] section (f7e664)
+  * DHCP server patches (e75c406, e294a8, 94b39d2, c73478d, 252f385,
+    15103b6, 5e08ff8) skipped: target files do not exist in v255
+    (require upstream file split first)
+  * meson build fix (b261762) skipped: test file does not exist in v255
+  * dns-packet: bail out early (594f231) skipped: empty patch (truncated
+    download)
+  * sd-dhcp-server: parse/build (dced69a) skipped: empty patch
+    (truncated download)
+
+ -- Sisyphus <sisyphus@deepin.org>  Mon, 25 May 2026 17:34:36 +0800
+
 systemd (255.2-4deepin27) unstable; urgency=medium
 
   * systemctl: disable wall messages by default (set arg_no_wall to true)

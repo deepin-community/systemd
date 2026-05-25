@@ -2024,6 +2024,12 @@ static int client_verify_message_header(sd_dhcp_client *client, DHCPMessage *mes
                 return log_dhcp_client_errno(client, SYNTHETIC_ERRNO(EBADMSG),
                                              "Too small to be a DHCP message, ignoring.");
 
+        /* DHCP travels over UDP, so anything larger than the maximum UDP payload
+         * (65535 - 20 IP header - 8 UDP header = 65507) cannot be a valid message. */
+        if (len > 65507U)
+                return log_dhcp_client_errno(client, SYNTHETIC_ERRNO(EBADMSG),
+                                             "Too large to be a DHCP message, ignoring.");
+
         if (be32toh(message->magic) != DHCP_MAGIC_COOKIE)
                 return log_dhcp_client_errno(client, SYNTHETIC_ERRNO(EBADMSG),
                                              "Not a DHCP message, ignoring.");

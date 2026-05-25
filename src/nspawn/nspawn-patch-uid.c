@@ -279,6 +279,7 @@ static int is_fs_fully_userns_compatible(const struct statfs *sfs) {
                F_TYPE_EQUAL(sfs->f_type, PROC_SUPER_MAGIC) ||
                F_TYPE_EQUAL(sfs->f_type, PSTOREFS_MAGIC) ||
                F_TYPE_EQUAL(sfs->f_type, SELINUX_MAGIC) ||
+               F_TYPE_EQUAL(sfs->f_type, USEC_MAGIC) ||
                F_TYPE_EQUAL(sfs->f_type, SMACK_MAGIC) ||
                F_TYPE_EQUAL(sfs->f_type, SECURITYFS_MAGIC) ||
                F_TYPE_EQUAL(sfs->f_type, BPF_FS_MAGIC) ||

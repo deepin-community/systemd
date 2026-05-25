@@ -1156,6 +1156,11 @@ libselinux = dependency('libselinux',
                         required : get_option('selinux'))
 conf.set10('HAVE_SELINUX', libselinux.found())
 
+libusec = dependency('libusec',
+                     version : '>= 1.0.0',
+                     required : get_option('usec'))
+conf.set10('HAVE_USEC', libusec.found())
+
 libapparmor = dependency('libapparmor',
                          version : '>= 2.13',
                          required : get_option('apparmor'))
@@ -2149,6 +2154,7 @@ subdir('src/environment-d-generator')
 subdir('src/escape')
 subdir('src/firstboot')
 subdir('src/fsck')
+subdir('src/fsckd')
 subdir('src/fstab-generator')
 subdir('src/getty-generator')
 subdir('src/gpt-auto-generator')

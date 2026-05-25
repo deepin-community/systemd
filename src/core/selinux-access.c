@@ -26,12 +26,6 @@
 
 static bool initialized = false;
 
-struct audit_info {
-        sd_bus_creds *creds;
-        const char *path;
-        const char *cmdline;
-        const char *function;
-};
 
 /*
    Any time an access gets denied this callback will be called
@@ -256,6 +250,7 @@ int mac_selinux_access_check_internal(
                 .path = unit_path,
                 .cmdline = cl,
                 .function = function,
+                .avc_type = AVC_TYPE_SELINUX,
         };
 
         r = selinux_check_access(scon, acon, tclass, permission, &audit_info);
