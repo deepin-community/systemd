@@ -35,3 +35,10 @@ uniontech-implement-USEC-with-libusec.patch
 uniontech-resolved-short-ptr-timeout.patch
 uniontech-disable-shutdown-wall-messages.patch
 uniontech-systemctl-disable-wall.patch
+upstream-math-util-round-to-declared-FP-precision.patch
+upstream-replace-exp10-with-own-impl.patch
+upstream-math-util-drop-libm-where-possible.patch
+upstream-base-filesystem-powerpc-ifdef.patch
+upstream-base-filesystem-hppa-ifdef.patch
+upstream-meson-fs-relative_to.patch
+upstream-po-skip-automated-fuzzy-translations.patch

@@ -1,0 +1,39 @@
+diff --git a/po/meson.build b/po/meson.build
+index 0a140b40b5..682c16ab11 100644
+--- a/po/meson.build
++++ b/po/meson.build
+@@ -3,6 +3,12 @@
+ want_translations = get_option('translations')
+ 
+ if want_translations
++        # The msgmerge invocation hidden behind i18n.gettext()'s update-po target inserts auto-guessed
++        # "fuzzy" translations for new strings, which are almost always wrong, use a wrapper to skip it.
++        meson.override_find_program(
++                'msgmerge',
++                find_program('../tools/msgmerge-no-fuzzy.py'))
++
+         i18n = import('i18n')
+         i18n.gettext(meson.project_name(),
+                      preset : 'glib',
+diff --git a/tools/msgmerge-no-fuzzy.py b/tools/msgmerge-no-fuzzy.py
+new file mode 100755
+index 0000000000..a9171db695
+--- /dev/null
++++ b/tools/msgmerge-no-fuzzy.py
+@@ -0,0 +1,16 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: LGPL-2.1-or-later
++"""
++Fuzzy translations are always bogus, but the meson integration doesn't allow overriding. With this wrapper
++we can skip them.
++"""
++
++import os
++import shutil
++import sys
++
++msgmerge = shutil.which('msgmerge')
++if msgmerge is None:
++    sys.exit('msgmerge-no-fuzzy: msgmerge not found in PATH')
++
++os.execv(msgmerge, [msgmerge, '--no-fuzzy-matching', *sys.argv[1:]])

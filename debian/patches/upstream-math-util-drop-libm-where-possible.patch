@@ -1,0 +1,139 @@
+Index: deepin-systemd-pr4/meson.build
+===================================================================
+--- deepin-systemd-pr4.orig/meson.build
++++ deepin-systemd-pr4/meson.build
+@@ -381,6 +381,11 @@ possible_common_cc_flags = [
+         '-fstack-protector',
+         '-fstack-protector-strong',
+         '-fstrict-flex-arrays',
++        # We don't read errno from any libm call, and the math-errno fallback
++        # forces a DT_NEEDED on libm via the cold error path even when the hot
++        # path is a single hardware instruction (sqrtsd, etc.). Drop it so the
++        # builtins lower to pure hardware instructions.
++        '-fno-math-errno',
+         '--param=ssp-buffer-size=4',
+ ]
+ 
+Index: deepin-systemd-pr4/src/basic/meson.build
+===================================================================
+--- deepin-systemd-pr4.orig/src/basic/meson.build
++++ deepin-systemd-pr4/src/basic/meson.build
+@@ -273,7 +273,6 @@ libbasic = static_library(
+         fundamental_sources,
+         include_directories : basic_includes,
+         dependencies : [libcap,
+-                        libm,
+                         librt,
+                         threads,
+                         userspace],
+Index: deepin-systemd-pr4/src/libsystemd/meson.build
+===================================================================
+--- deepin-systemd-pr4.orig/src/libsystemd/meson.build
++++ deepin-systemd-pr4/src/libsystemd/meson.build
+@@ -205,7 +205,6 @@ libsystemd_tests += [
+                         libgio,
+                         libglib,
+                         libgobject,
+-                        libm,
+                         threads,
+                 ],
+         },
+Index: deepin-systemd-pr4/src/pcrlock/meson.build
+===================================================================
+--- deepin-systemd-pr4.orig/src/pcrlock/meson.build
++++ deepin-systemd-pr4/src/pcrlock/meson.build
+@@ -13,7 +13,6 @@ executables += [
+                         'pehash.c',
+                 ),
+                 'dependencies' : [
+-                        libm,
+                         libopenssl,
+                         tpm2,
+                 ],
+Index: deepin-systemd-pr4/src/test/meson.build
+===================================================================
+--- deepin-systemd-pr4.orig/src/test/meson.build
++++ deepin-systemd-pr4/src/test/meson.build
+@@ -368,7 +368,6 @@ executables += [
+         },
+         test_template + {
+                 'sources' : files('test-parse-util.c'),
+-                'dependencies' : libm,
+         },
+         test_template + {
+                 'sources' : files('test-process-util.c'),
+@@ -380,7 +379,6 @@ executables += [
+         },
+         test_template + {
+                 'sources' : files('test-random-util.c'),
+-                'dependencies' : libm,
+                 'timeout' : 120,
+         },
+         test_template + {
+Index: deepin-systemd-pr4/src/test/test-random-util.c
+===================================================================
+--- deepin-systemd-pr4.orig/src/test/test-random-util.c
++++ deepin-systemd-pr4/src/test/test-random-util.c
+@@ -1,7 +1,5 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
+-#include <math.h>
+-
+ #include "hexdecoct.h"
+ #include "log.h"
+ #include "memory-util.h"
+@@ -15,7 +13,7 @@ TEST(random_bytes) {
+         for (size_t i = 1; i < sizeof buf; i++) {
+                 random_bytes(buf, i);
+                 if (i + 1 < sizeof buf)
+-                        assert_se(buf[i] == 0);
++                        ASSERT_EQ(buf[i], 0);
+ 
+                 hexdump(stdout, buf, i);
+         }
+@@ -25,9 +23,9 @@ TEST(crypto_random_bytes) {
+         uint8_t buf[16] = {};
+ 
+         for (size_t i = 1; i < sizeof buf; i++) {
+-                assert_se(crypto_random_bytes(buf, i) == 0);
++                ASSERT_OK(crypto_random_bytes(buf, i));
+                 if (i + 1 < sizeof buf)
+-                        assert_se(buf[i] == 0);
++                        ASSERT_EQ(buf[i], 0);
+ 
+                 hexdump(stdout, buf, i);
+         }
+@@ -53,21 +51,25 @@ static void test_random_u64_range_one(un
+         /* Print histogram: vertical axis — value, horizontal axis — count.
+          *
+          * The expected value is always TOTAL/mod, because the distribution should be flat. The expected
+-         * variance is TOTAL×p×(1-p), where p==1/mod, and standard deviation the root of the variance.
+-         * Assert that the deviation from the expected value is less than 6 standard deviations.
++         * variance is TOTAL×p×(1-p), where p==1/mod. Assert that the deviation from the expected value
++         * is less than 6 standard deviations by comparing squared values (diff² < 36·variance), which
++         * avoids a sqrt() call and the libm dependency that comes with it at -O0.
+          */
+         unsigned scale = 2 * max / (columns() < 20 ? 80 : columns() - 20);
+         double exp = (double) TOTAL / mod;
++        double variance = exp * (mod > 1 ? mod - 1 : 1) / mod;
+ 
+         for (size_t i = 0; i < mod; i++) {
+-                double dev = (count[i] - exp) / sqrt(exp * (mod > 1 ? mod - 1 : 1) / mod);
+-                log_debug("%02zu: %5u (%+.3f)%*s",
+-                          i, count[i], dev,
++                double diff = count[i] - exp;
++                double dev_sq = diff * diff / variance;
++
++                log_debug("%02zu: %5u (z²=%.3f)%*s",
++                          i, count[i], dev_sq,
+                           (int) (count[i] / scale), "x");
+ 
+-                assert_se(fabs(dev) < 6); /* 6 sigma is excessive, but this check should be enough to
+-                                           * identify catastrophic failure while minimizing false
+-                                           * positives. */
++                ASSERT_TRUE(dev_sq < 36); /* 36 = 6²; 6 sigma is excessive, but this check should be
++                                           * enough to identify catastrophic failure while minimizing
++                                           * false positives. */
+         }
+ }
+ 
