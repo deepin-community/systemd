@@ -35,3 +35,13 @@ uniontech-implement-USEC-with-libusec.patch
 uniontech-resolved-short-ptr-timeout.patch
 uniontech-disable-shutdown-wall-messages.patch
 uniontech-systemctl-disable-wall.patch
+p1-errno-util-include-ENOENT-in-ERRNO_IS_XATTR_ABSENT.patch
+p1-logind-keep-lingering-users-at-startup-time-GC.patch
+p1-include-uapi-add-linux-openat2.h.patch
+p1-meson-Add-libucontext-to-libshared_deps.patch
+p1-network-restart-DHCPv6-NDisc-RADV-when-IPv6LL-dropped.patch
+p1-Revert-IPv6-MTU-check.patch
+p1-ptyfwd-Imply-PTY_FORWARD_READ_ONLY.patch
+p1-efi-api-fix-unaligned-access-in-efi_guid_to_id128.patch
+p1-libsystemd-network-propagate-sd_event_default-failure.patch
+p1-sd-dhcp6-client-fix-ref-leak-on-duplicate-option.patch

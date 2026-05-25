@@ -736,6 +736,12 @@ int radv_start(Link *link) {
         if (in6_addr_is_null(&link->ipv6ll_address))
                 return 0;
 
+        /* Update the source IPv6LL before the running check so replacement IPv6LL handover can
+         * rebind RADV without requiring stop/start. */
+        r = sd_radv_set_link_local_address(link->radv, &link->ipv6ll_address);
+        if (r < 0)
+                return r;
+
         if (sd_radv_is_running(link->radv))
                 return 0;
 

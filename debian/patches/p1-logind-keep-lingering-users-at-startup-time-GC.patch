@@ -1,0 +1,54 @@
+From 9f25feb4ed18bb3d1e21de932279b2b1b3098846 Mon Sep 17 00:00:00 2001
+From: Rocker Zhang <zhang.rocker.liyuan@gmail.com>
+Date: Sat, 16 May 2026 13:07:56 +0800
+Subject: [PATCH] logind: keep lingering users at startup-time GC
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+manager_startup() runs manager_gc(m, /* drop_not_started= */ false)
+before the user_start() loop. user_may_gc()'s linger guard requires
+user_unit_active() to be true to keep a user, but at this point the
+per-user units have not been started yet, so for any lingering user
+that ended up in the user_gc_queue the guard falls through and
+manager_gc frees the User struct before user_start() ever runs.
+
+This only manifests after `systemctl soft-reboot`, because /run is
+tmpfs and survives soft-reboot: /run/systemd/users/UID files persist,
+and manager_enumerate_users() in src/login/logind.c explicitly calls
+user_add_to_gc_queue() for every UID it loads from there. Cold boot is
+unaffected because /run is empty, so the linger users that come in via
+manager_enumerate_linger_users() never enter the GC queue at all and
+reach user_start() directly.
+
+Special-case the startup-time GC: if a linger file exists, keep the
+user regardless of unit state — user_start() is about to run and will
+queue the appropriate jobs. Steady-state GC (drop_not_started=true, in
+the event loop) still requires user_unit_active() so we don't hold on
+to records for lingering users whose units genuinely died.
+
+Fixes: https://github.com/systemd/systemd/issues/41789
+
+Co-developed-by: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/login/logind-user.c b/src/login/logind-user.c
+index 0595ce5bd2..11ca04dc8d 100644
+--- a/src/login/logind-user.c
++++ b/src/login/logind-user.c
+@@ -763,8 +763,14 @@ bool user_may_gc(User *u, bool drop_not_started) {
+ 
+         /* Is this a user that shall stay around forever ("linger")? Before we say "no" to GC'ing for lingering users, let's check
+          * if any of the three units that we maintain for this user is still around. If none of them is,
+-         * there's no need to keep this user around even if lingering is enabled. */
+-        if (user_check_linger_file(u) > 0 && user_unit_active(u))
++         * there's no need to keep this user around even if lingering is enabled.
++         *
++         * Exception: at startup-time GC (drop_not_started=false) the per-user units have not yet been
++         * started by manager_startup(), so requiring user_unit_active() here would unconditionally GC
++         * every lingering user before we get a chance to user_start() them. That breaks after a
++         * soft-reboot, where /run/systemd/users is preserved and feeds lingering users into the GC
++         * queue (cold boot is unaffected because /run is empty). See #41789. */
++        if (user_check_linger_file(u) > 0 && (!drop_not_started || user_unit_active(u)))
+                 return false;
+ 
+         /* Check if our job is still pending */

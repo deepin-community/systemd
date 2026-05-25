@@ -1,0 +1,28 @@
+From 2e1cf55dba673751f1c858560e0d8d65c670d4bd Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 21 May 2026 07:47:37 +0900
+Subject: [PATCH] Revert "network: fix max MTU check for IPv6 MTU adjustments"
+
+This reverts commit 32417c172383847ec78b672c537594e3efe8f0e0.
+
+IPv6 MTU cannot be larger than the current interface MTU.
+The previous behavior is correct.
+
+Index: deepin-systemd-pr2/src/network/networkd-sysctl.c
+===================================================================
+--- deepin-systemd-pr2.orig/src/network/networkd-sysctl.c
++++ deepin-systemd-pr2/src/network/networkd-sysctl.c
+@@ -195,10 +195,10 @@ int link_set_ipv6_mtu(Link *link) {
+                 return 0;
+ 
+         mtu = link->network->ipv6_mtu;
+-        if (mtu > link->max_mtu) {
++        if (mtu > link->mtu) {
+                 log_link_warning(link, "Reducing requested IPv6 MTU %"PRIu32" to the interface's maximum MTU %"PRIu32".",
+-                                 mtu, link->max_mtu);
+-                mtu = link->max_mtu;
++                                 mtu, link->mtu);
++                mtu = link->mtu;
+         }
+ 
+         return sysctl_write_ip_property_uint32(AF_INET6, link->ifname, "mtu", mtu);

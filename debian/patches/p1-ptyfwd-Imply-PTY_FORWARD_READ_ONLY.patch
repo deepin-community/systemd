@@ -1,0 +1,42 @@
+From 12836f982a29215ee0fa1a608ec7935c7ee903c4 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Wed, 20 May 2026 12:14:52 +0000
+Subject: [PATCH] ptyfwd: Imply PTY_FORWARD_READ_ONLY if stdin isn't readable
+
+if stdin is connected to a closed pipe or similar, imply
+PTY_FORWARD_READ_ONLY so we don't even try to read from it
+in the first place. Otherwise we'll immediately get a hangup
+which will cause the forwarder to call sd_event_exit() and
+shut down the event loop.
+
+Debugged-by: Christian Brauner <brauner@kernel.org>
+
+diff --git a/src/shared/ptyfwd.c b/src/shared/ptyfwd.c
+index 88cfd596d0..fcc1500dc5 100644
+--- a/src/shared/ptyfwd.c
++++ b/src/shared/ptyfwd.c
+@@ -934,6 +934,24 @@ int pty_forward_new(
+         assert(master >= 0);
+         assert(ret);
+ 
++        if (!FLAGS_SET(flags, PTY_FORWARD_READ_ONLY)) {
++                /* If stdin isn't actually opened for reading, or refers to the read end of a pipe (or
++                 * socket) whose peer has already hung up, then there's nothing for us to forward — imply
++                 * read-only mode. */
++                r = RET_NERRNO(fcntl(STDIN_FILENO, F_GETFL));
++                if (r < 0 && r != -EBADF)
++                        return log_debug_errno(errno, "Failed to query stdin flags: %m");
++                if (r == -EBADF || (r & O_ACCMODE_STRICT) == O_WRONLY)
++                        flags |= PTY_FORWARD_READ_ONLY;
++                else {
++                        r = pipe_eof(STDIN_FILENO);
++                        if (r < 0)
++                                log_debug_errno(r, "Failed to check whether stdin is at EOF, ignoring: %m");
++                        else if (r > 0)
++                                flags |= PTY_FORWARD_READ_ONLY;
++                }
++        }
++
+         f = new(PTYForward, 1);
+         if (!f)
+                 return -ENOMEM;

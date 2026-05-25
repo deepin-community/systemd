@@ -524,21 +524,23 @@ struct efi_guid {
 } _packed_;
 
 sd_id128_t efi_guid_to_id128(const void *guid) {
-        const struct efi_guid *uuid = ASSERT_PTR(guid); /* cast is safe, because struct efi_guid is packed */
+        struct efi_guid uuid;
         sd_id128_t id128;
 
-        id128.bytes[0] = (uuid->u1 >> 24) & 0xff;
-        id128.bytes[1] = (uuid->u1 >> 16) & 0xff;
-        id128.bytes[2] = (uuid->u1 >> 8) & 0xff;
-        id128.bytes[3] = uuid->u1 & 0xff;
+        memcpy(&uuid, ASSERT_PTR(guid), sizeof(uuid));
 
-        id128.bytes[4] = (uuid->u2 >> 8) & 0xff;
-        id128.bytes[5] = uuid->u2 & 0xff;
+        id128.bytes[0] = (uuid.u1 >> 24) & 0xff;
+        id128.bytes[1] = (uuid.u1 >> 16) & 0xff;
+        id128.bytes[2] = (uuid.u1 >> 8) & 0xff;
+        id128.bytes[3] = uuid.u1 & 0xff;
 
-        id128.bytes[6] = (uuid->u3 >> 8) & 0xff;
-        id128.bytes[7] = uuid->u3 & 0xff;
+        id128.bytes[4] = (uuid.u2 >> 8) & 0xff;
+        id128.bytes[5] = uuid.u2 & 0xff;
 
-        memcpy(&id128.bytes[8], uuid->u4, sizeof(uuid->u4));
+        id128.bytes[6] = (uuid.u3 >> 8) & 0xff;
+        id128.bytes[7] = uuid.u3 & 0xff;
+
+        memcpy(&id128.bytes[8], uuid.u4, sizeof(uuid.u4));
 
         return id128;
 }

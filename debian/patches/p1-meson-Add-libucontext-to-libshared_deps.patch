@@ -1,0 +1,19 @@
+From 1d102a663e7e3a023c32a707cc43efed71f2b062 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Thu, 21 May 2026 17:51:07 +0000
+Subject: [PATCH] meson: Add libucontext to libshared_deps
+
+Fixes #42236
+
+Index: deepin-systemd-pr2/src/shared/meson.build
+===================================================================
+--- deepin-systemd-pr2.orig/src/shared/meson.build
++++ deepin-systemd-pr2/src/shared/meson.build
+@@ -331,6 +331,7 @@ libshared_deps = [threads,
+                   libseccomp,
+                   libusec,
+                   libselinux,
++                  libucontext,
+                   libxenctrl_cflags,
+                   libxz,
+                   libzstd]

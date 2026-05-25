@@ -1,0 +1,51 @@
+From 24319a9c2cd392df38819ecc7cb235d384445fcb Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Thu, 21 May 2026 22:00:28 +0000
+Subject: [PATCH] efi-api: fix unaligned access in efi_guid_to_id128()
+
+EFI_GUID requires 4-byte alignment due to its uint32_t Data1 field, but
+callers may pass pointers at arbitrary offsets into serialized EFI
+variable buffers (e.g. bootctl walking BootXXXX entries). UBSan flagged
+the misaligned member access; the old comment claiming the struct was
+packed was wrong. Copy the bytes into an aligned local first.
+
+Co-developed-by: Claude Opus 4.7 <noreply@anthropic.com>
+
+Index: deepin-systemd-pr2/src/shared/efi-api.c
+===================================================================
+--- deepin-systemd-pr2.orig/src/shared/efi-api.c
++++ deepin-systemd-pr2/src/shared/efi-api.c
+@@ -524,21 +524,23 @@ struct efi_guid {
+ } _packed_;
+ 
+ sd_id128_t efi_guid_to_id128(const void *guid) {
+-        const struct efi_guid *uuid = ASSERT_PTR(guid); /* cast is safe, because struct efi_guid is packed */
++        struct efi_guid uuid;
+         sd_id128_t id128;
+ 
+-        id128.bytes[0] = (uuid->u1 >> 24) & 0xff;
+-        id128.bytes[1] = (uuid->u1 >> 16) & 0xff;
+-        id128.bytes[2] = (uuid->u1 >> 8) & 0xff;
+-        id128.bytes[3] = uuid->u1 & 0xff;
++        memcpy(&uuid, ASSERT_PTR(guid), sizeof(uuid));
+ 
+-        id128.bytes[4] = (uuid->u2 >> 8) & 0xff;
+-        id128.bytes[5] = uuid->u2 & 0xff;
++        id128.bytes[0] = (uuid.u1 >> 24) & 0xff;
++        id128.bytes[1] = (uuid.u1 >> 16) & 0xff;
++        id128.bytes[2] = (uuid.u1 >> 8) & 0xff;
++        id128.bytes[3] = uuid.u1 & 0xff;
+ 
+-        id128.bytes[6] = (uuid->u3 >> 8) & 0xff;
+-        id128.bytes[7] = uuid->u3 & 0xff;
++        id128.bytes[4] = (uuid.u2 >> 8) & 0xff;
++        id128.bytes[5] = uuid.u2 & 0xff;
+ 
+-        memcpy(&id128.bytes[8], uuid->u4, sizeof(uuid->u4));
++        id128.bytes[6] = (uuid.u3 >> 8) & 0xff;
++        id128.bytes[7] = uuid.u3 & 0xff;
++
++        memcpy(&id128.bytes[8], uuid.u4, sizeof(uuid.u4));
+ 
+         return id128;
+ }

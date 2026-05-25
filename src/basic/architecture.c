@@ -49,6 +49,9 @@ Architecture uname_architecture(void) {
 #elif defined(__alpha__)
                 { "alpha" ,     ARCHITECTURE_ALPHA    },
 
+#elif defined(__sw_64__)
+                { "sw_64",      ARCHITECTURE_SUNWAY   },
+
 #elif defined(__arc__)
                 { "arc",        ARCHITECTURE_ARC      },
                 { "arceb",      ARCHITECTURE_ARC_BE   },
@@ -145,6 +148,7 @@ static const char *const architecture_table[_ARCHITECTURE_MAX] = {
         [ARCHITECTURE_ARM]         = "arm",
         [ARCHITECTURE_ARM_BE]      = "arm-be",
         [ARCHITECTURE_ALPHA]       = "alpha",
+        [ARCHITECTURE_SUNWAY]      = "sunway",
         [ARCHITECTURE_ARC]         = "arc",
         [ARCHITECTURE_ARC_BE]      = "arc-be",
         [ARCHITECTURE_CRIS]        = "cris",

@@ -195,10 +195,10 @@ int link_set_ipv6_mtu(Link *link) {
                 return 0;
 
         mtu = link->network->ipv6_mtu;
-        if (mtu > link->max_mtu) {
+        if (mtu > link->mtu) {
                 log_link_warning(link, "Reducing requested IPv6 MTU %"PRIu32" to the interface's maximum MTU %"PRIu32".",
-                                 mtu, link->max_mtu);
-                mtu = link->max_mtu;
+                                 mtu, link->mtu);
+                mtu = link->mtu;
         }
 
         return sysctl_write_ip_property_uint32(AF_INET6, link->ifname, "mtu", mtu);
