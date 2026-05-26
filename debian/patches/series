@@ -35,3 +35,8 @@ uniontech-implement-USEC-with-libusec.patch
 uniontech-resolved-short-ptr-timeout.patch
 uniontech-disable-shutdown-wall-messages.patch
 uniontech-systemctl-disable-wall.patch
+resolved-polkit-checks.patch
+resolved-dns-memory-exhaustion.patch
+sdbus-depth-limit-variant.patch
+hwdb-reject-oob-fnmatch.patch
+exec-invoke-chdir-after-chroot.patch

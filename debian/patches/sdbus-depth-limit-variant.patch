@@ -1,0 +1,76 @@
+From 9b21738498affe2b7ec477be1b55e79a052d852f Mon Sep 17 00:00:00 2001
+From: TristanInSec <tristan.mtn@gmail.com>
+Date: Tue, 19 May 2026 17:33:06 -0400
+Subject: [PATCH] sd-bus: add depth limit to message_skip_fields() to prevent
+ stack overflow
+
+message_skip_fields() recurses for each nested variant ('v') type in
+D-Bus message header fields. A crafted message with deeply nested
+variants (e.g., a variant containing a variant containing a variant...)
+causes unbounded stack growth, leading to stack overflow and crash.
+
+Add a depth parameter that increments on each recursive call and
+rejects messages exceeding BUS_CONTAINER_DEPTH with -EBADMSG. This
+matches the existing depth limits enforced elsewhere in the sd-bus
+message processing (e.g., bus_message_enter_container).
+
+Index: deepin-systemd-pr1/src/libsystemd/sd-bus/bus-message.c
+===================================================================
+--- deepin-systemd-pr1.orig/src/libsystemd/sd-bus/bus-message.c
++++ deepin-systemd-pr1/src/libsystemd/sd-bus/bus-message.c
+@@ -3891,7 +3891,8 @@ static int message_skip_fields(
+                 sd_bus_message *m,
+                 size_t *ri,
+                 uint32_t array_size,
+-                const char **signature) {
++                const char **signature,
++                unsigned depth) {
+ 
+         size_t original_index;
+         int r;
+@@ -3900,6 +3901,9 @@ static int message_skip_fields(
+         assert(ri);
+         assert(signature);
+ 
++        if (depth >= BUS_CONTAINER_DEPTH)
++                return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG), "Maximum container nesting depth reached, refusing.");
++
+         original_index = *ri;
+ 
+         for (;;) {
+@@ -3980,7 +3984,7 @@ static int message_skip_fields(
+                                 if (r < 0)
+                                         return r;
+ 
+-                                r = message_skip_fields(m, ri, nas, (const char**) &s);
++                                r = message_skip_fields(m, ri, nas, (const char**) &s, depth + 1);
+                                 if (r < 0)
+                                         return r;
+                         }
+@@ -3994,7 +3998,7 @@ static int message_skip_fields(
+                         if (r < 0)
+                                 return r;
+ 
+-                        r = message_skip_fields(m, ri, UINT32_MAX, (const char**) &s);
++                        r = message_skip_fields(m, ri, UINT32_MAX, (const char**) &s, depth + 1);
+                         if (r < 0)
+                                 return r;
+ 
+@@ -4012,7 +4016,7 @@ static int message_skip_fields(
+                                 strncpy(sig, *signature + 1, l);
+                                 sig[l] = '\0';
+ 
+-                                r = message_skip_fields(m, ri, UINT32_MAX, (const char**) &s);
++                                r = message_skip_fields(m, ri, UINT32_MAX, (const char**) &s, depth + 1);
+                                 if (r < 0)
+                                         return r;
+                         }
+@@ -4186,7 +4190,7 @@ static int message_parse_fields(sd_bus_m
+                         break;
+ 
+                 default:
+-                        r = message_skip_fields(m, &ri, UINT32_MAX, (const char **) &signature);
++                        r = message_skip_fields(m, &ri, UINT32_MAX, (const char **) &signature, 0);
+                 }
+                 if (r < 0)
+                         return r;
