@@ -1,3 +1,13 @@
+systemd (255.2-4deepin28) unstable; urgency=medium
+
+  * Backport upstream P1 bug fixes:
+  * 8de5a7b9: sysupdate: list default component only if transfer
+    definition exists
+  * f50c3f54: sysusers: log new group name on write failure (null ptr
+    fix)
+
+ -- jiabowen <jiabowen@uniontech.com>  Tue, 26 May 2026 17:18:33 +0800
+
 systemd (255.2-4deepin27) unstable; urgency=medium
 
   * systemctl: disable wall messages by default (set arg_no_wall to true)

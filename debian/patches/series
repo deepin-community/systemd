@@ -35,3 +35,5 @@ uniontech-implement-USEC-with-libusec.patch
 uniontech-resolved-short-ptr-timeout.patch
 uniontech-disable-shutdown-wall-messages.patch
 uniontech-systemctl-disable-wall.patch
+sysupdate-list-default-component-only-if-transfer.patch
+sysusers-log-group-name-on-write-failure.patch

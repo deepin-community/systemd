@@ -1,0 +1,91 @@
+From 8de5a7b94d3af30b0686f14c4cc96a0575982aba Mon Sep 17 00:00:00 2001
+From: Philip Withnall <pwithnall@gnome.org>
+Date: Tue, 19 May 2026 15:46:36 +0100
+Subject: [PATCH] sysupdate: List default component only if transfer definition
+ exists
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`sysupdate --json=short components` lists the components known to
+sysupdate; these are the components which something like `updatectl`
+will try to update.
+
+The `default` component represents the host, and is meant to be listed
+if transfer definitions exist in (for example) `/etc/sysupdate.d`
+corresponding to the host OS. This then corresponds to `TARGET_HOST` in
+`updatectl` and causes it to try updating that target.
+
+The logic for working out whether the `default` component was present
+essentially boiled down to “does `{/run,/etc,/usr/lib}/sysupdate.d`
+exist”, and it didn’t check whether a `.transfer` or `.conf` file
+actually existed in the config directory.
+
+This is quite the corner case, but becomes more evident on systems where
+sysupdate is being used to update a portable service but not the main
+OS. At that point, if `/etc/sysupdate.d` exists empty (for some reason),
+`updatectl` falls over because it starts trying to update the host OS
+without any configuration to do so.
+
+So, modify `sysupdate` to more fully load the available configuration
+when listing components, and query it a bit more deeply to check whether
+a default component exists.
+
+If `sysupdate` is called with various command line arguments to affect
+how its configuration is loaded, do *not* say that a default component
+exists, as these arguments essentially anull the possibility of a
+default being used in that process.
+
+Add an integration test based on the reproducer provided by the issue
+reporter. This test has been tested to fail if the changes to
+`sysupdate.c` aren’t applied — if so, the second call to `sysupdate
+components` would return
+`{"default":true,"components":["some-component"]}`.
+
+Signed-off-by: Philip Withnall <pwithnall@gnome.org>
+Fixes: https://github.com/systemd/systemd/issues/41501
+
+Index: deepin-systemd-pr6/src/sysupdate/sysupdate.c
+===================================================================
+--- deepin-systemd-pr6.orig/src/sysupdate/sysupdate.c
++++ deepin-systemd-pr6/src/sysupdate/sysupdate.c
+@@ -1091,6 +1091,7 @@ static int component_name_valid(const ch
+ }
+ 
+ static int verb_components(int argc, char **argv, void *userdata) {
++        _cleanup_(context_freep) Context* context = NULL;
+         _cleanup_(loop_device_unrefp) LoopDevice *loop_device = NULL;
+         _cleanup_(umount_and_rmdir_and_freep) char *mounted_dir = NULL;
+         _cleanup_set_free_ Set *names = NULL;
+@@ -1105,6 +1106,10 @@ static int verb_components(int argc, cha
+         if (r < 0)
+                 return r;
+ 
++        r = context_make_offline(&context, loop_device ? loop_device->node : NULL);
++        if (r < 0)
++                return r;
++
+         STRV_FOREACH(i, l) {
+                 _cleanup_closedir_ DIR *d = NULL;
+                 _cleanup_free_ char *p = NULL;
+@@ -1135,7 +1140,6 @@ static int verb_components(int argc, cha
+                                 continue;
+ 
+                         if (streq(de->d_name, "sysupdate.d")) {
+-                                has_default_component = true;
+                                 continue;
+                         }
+ 
+@@ -1163,6 +1167,12 @@ static int verb_components(int argc, cha
+                 }
+         }
+ 
++        /* Does the system have at least one transfer file in /etc/sysupdate.d, which can be considered a
++         * TARGET_HOST? See target_get_argument() in sysupdated.c */
++        has_default_component = (!arg_definitions &&
++                                 !arg_component &&
++                                 context->n_transfers > 0);
++
+         if (!has_default_component && set_isempty(names)) {
+                 log_info("No components defined.");
+                 return 0;
