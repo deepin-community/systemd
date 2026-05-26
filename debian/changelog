@@ -1,3 +1,18 @@
+systemd (255.2-4deepin28) stable; urgency=medium
+
+  * Backport upstream critical security vulnerability patches:
+  * aa76d811: resolved: add missing polkit checks for
+    FlushCaches/ResetServerFeatures
+  * e7cd836d: resolved: cap pre-allocation for questions/RRs to prevent
+    DNS memory exhaustion
+  * 9b217384: sd-bus: add depth limit to message_skip_fields() to
+    prevent stack overflow via variant recursion
+  * b45a897e: sd-hwdb: reject out-of-bounds fnmatch prefixes to prevent
+    OOB read
+  * 4e02162a: core/exec-invoke: chdir after chroot to prevent CWD escape
+
+ -- jiabowen <jiabowen@uniontech.com>  Mon, 25 May 2026 17:32:05 +0800
+
 systemd (255.2-4deepin27) unstable; urgency=medium
 
   * systemctl: disable wall messages by default (set arg_no_wall to true)

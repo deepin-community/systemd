@@ -1,0 +1,101 @@
+From aa76d81122a1db488c7116cf44d949f07b8fb198 Mon Sep 17 00:00:00 2001
+From: TristanInSec <tristan.mtn@gmail.com>
+Date: Mon, 18 May 2026 13:30:51 -0400
+Subject: [PATCH] resolved: add missing polkit checks on FlushCaches and
+ ResetServerFeatures D-Bus methods
+
+The FlushCaches and ResetServerFeatures D-Bus methods perform
+destructive operations (flushing all DNS caches and resetting server
+feature negotiation including DNS-over-TLS state) without any
+authorization check. The corresponding Varlink methods already enforce
+polkit via verify_polkit(), but the D-Bus handlers were not updated.
+
+Add bus_verify_polkit_async() calls to both methods, matching the
+pattern used by ResetStatistics. Add the corresponding policy actions
+to the polkit policy file.
+
+Index: deepin-systemd-pr1/src/resolve/org.freedesktop.resolve1.policy
+===================================================================
+--- deepin-systemd-pr1.orig/src/resolve/org.freedesktop.resolve1.policy
++++ deepin-systemd-pr1/src/resolve/org.freedesktop.resolve1.policy
+@@ -139,4 +139,26 @@
+                 <annotate key="org.freedesktop.policykit.owner">unix-user:systemd-resolve</annotate>
+         </action>
+ 
++        <action id="org.freedesktop.resolve1.flush-caches">
++                <description gettext-domain="systemd">Flush DNS caches</description>
++                <message gettext-domain="systemd">Authentication is required to flush DNS caches.</message>
++                <defaults>
++                        <allow_any>auth_admin</allow_any>
++                        <allow_inactive>auth_admin</allow_inactive>
++                        <allow_active>auth_admin_keep</allow_active>
++                </defaults>
++                <annotate key="org.freedesktop.policykit.owner">unix-user:systemd-resolve</annotate>
++        </action>
++
++        <action id="org.freedesktop.resolve1.reset-server-features">
++                <description gettext-domain="systemd">Reset server features</description>
++                <message gettext-domain="systemd">Authentication is required to reset server features.</message>
++                <defaults>
++                        <allow_any>auth_admin</allow_any>
++                        <allow_inactive>auth_admin</allow_inactive>
++                        <allow_active>auth_admin_keep</allow_active>
++                </defaults>
++                <annotate key="org.freedesktop.policykit.owner">unix-user:systemd-resolve</annotate>
++        </action>
++
+ </policyconfig>
+Index: deepin-systemd-pr1/src/resolve/resolved-bus.c
+===================================================================
+--- deepin-systemd-pr1.orig/src/resolve/resolved-bus.c
++++ deepin-systemd-pr1/src/resolve/resolved-bus.c
+@@ -1815,9 +1815,24 @@ static int bus_method_get_link(sd_bus_me
+ 
+ static int bus_method_flush_caches(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+         Manager *m = ASSERT_PTR(userdata);
++        int r;
+ 
+         assert(message);
+ 
++        r = bus_verify_polkit_async(
++                        message,
++                        CAP_SYS_ADMIN,
++                        "org.freedesktop.resolve1.flush-caches",
++                        NULL,
++                        false,
++                        UID_INVALID,
++                        &m->polkit_registry,
++                        error);
++        if (r < 0)
++                return r;
++        if (r == 0)
++                return 1; /* Polkit will call us back */
++
+         bus_client_log(message, "cache flush");
+ 
+         manager_flush_caches(m, LOG_INFO);
+@@ -1827,9 +1842,24 @@ static int bus_method_flush_caches(sd_bu
+ 
+ static int bus_method_reset_server_features(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+         Manager *m = ASSERT_PTR(userdata);
++        int r;
+ 
+         assert(message);
+ 
++        r = bus_verify_polkit_async(
++                        message,
++                        CAP_SYS_ADMIN,
++                        "org.freedesktop.resolve1.reset-server-features",
++                        NULL,
++                        false,
++                        UID_INVALID,
++                        &m->polkit_registry,
++                        error);
++        if (r < 0)
++                return r;
++        if (r == 0)
++                return 1; /* Polkit will call us back */
++
+         bus_client_log(message, "server feature reset");
+ 
+         manager_reset_server_features(m);
