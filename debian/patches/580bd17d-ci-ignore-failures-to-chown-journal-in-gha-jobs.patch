@@ -1,0 +1,28 @@
+diff --git a/.github/workflows/coverage.yml b/.github/workflows/coverage.yml
+index 5143ea73e1..f9195e1811 100644
+--- a/.github/workflows/coverage.yml
++++ b/.github/workflows/coverage.yml
+@@ -131,7 +131,7 @@ jobs:
+ 
+       - name: Fix journal ownership
+         if: failure() && (github.repository == 'systemd/systemd' || github.repository == 'systemd/systemd-stable')
+-        run: sudo chown -R "$(id -u):$(id -g)" build/test/journal build/meson-logs
++        run: sudo chown -R "$(id -u):$(id -g)" build/test/journal build/meson-logs || true
+ 
+       - name: Archive failed test journals
+         uses: actions/upload-artifact@v7
+diff --git a/.github/workflows/mkosi.yml b/.github/workflows/mkosi.yml
+index de6673c957..2895b42772 100644
+--- a/.github/workflows/mkosi.yml
++++ b/.github/workflows/mkosi.yml
+@@ -320,7 +320,7 @@ jobs:
+ 
+       - name: Fix journal ownership
+         if: failure() && (github.repository == 'systemd/systemd' || github.repository == 'systemd/systemd-stable')
+-        run: sudo chown -R "$(id -u):$(id -g)" build/test/journal build/meson-logs
++        run: sudo chown -R "$(id -u):$(id -g)" build/test/journal build/meson-logs || true
+ 
+       - name: Archive failed test journals
+         uses: actions/upload-artifact@v7
+-- 
+2.50.1

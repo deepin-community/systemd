@@ -1,0 +1,54 @@
+diff --git a/src/libsystemd-network/sd-dhcp-client.c b/src/libsystemd-network/sd-dhcp-client.c
+index 5675c7d787..c6e73dbab0 100644
+--- a/src/libsystemd-network/sd-dhcp-client.c
++++ b/src/libsystemd-network/sd-dhcp-client.c
+@@ -1350,7 +1350,7 @@ int sd_dhcp_client_attach_event(sd_dhcp_client *client, sd_event *event, int64_t
+         else {
+                 r = sd_event_default(&client->event);
+                 if (r < 0)
+-                        return 0;
++                        return r;
+         }
+ 
+         client->event_priority = priority;
+diff --git a/src/libsystemd-network/sd-dhcp6-client.c b/src/libsystemd-network/sd-dhcp6-client.c
+index e2415a5b47..b78d1c29ec 100644
+--- a/src/libsystemd-network/sd-dhcp6-client.c
++++ b/src/libsystemd-network/sd-dhcp6-client.c
+@@ -1507,7 +1507,7 @@ int sd_dhcp6_client_attach_event(sd_dhcp6_client *client, sd_event *event, int64
+         else {
+                 r = sd_event_default(&client->event);
+                 if (r < 0)
+-                        return 0;
++                        return r;
+         }
+ 
+         client->event_priority = priority;
+diff --git a/src/libsystemd-network/sd-ndisc.c b/src/libsystemd-network/sd-ndisc.c
+index b6a55a5095..51e12d4528 100644
+--- a/src/libsystemd-network/sd-ndisc.c
++++ b/src/libsystemd-network/sd-ndisc.c
+@@ -137,7 +137,7 @@ int sd_ndisc_attach_event(sd_ndisc *nd, sd_event *event, int64_t priority) {
+         else {
+                 r = sd_event_default(&nd->event);
+                 if (r < 0)
+-                        return 0;
++                        return r;
+         }
+ 
+         nd->event_priority = priority;
+diff --git a/src/libsystemd-network/sd-radv.c b/src/libsystemd-network/sd-radv.c
+index 948f7bc382..df5fcc6c02 100644
+--- a/src/libsystemd-network/sd-radv.c
++++ b/src/libsystemd-network/sd-radv.c
+@@ -58,7 +58,7 @@ int sd_radv_attach_event(sd_radv *ra, sd_event *event, int64_t priority) {
+         else {
+                 r = sd_event_default(&ra->event);
+                 if (r < 0)
+-                        return 0;
++                        return r;
+         }
+ 
+         ra->event_priority = priority;
+-- 
+2.50.1

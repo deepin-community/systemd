@@ -1,0 +1,143 @@
+diff --git a/src/network/networkd-address.c b/src/network/networkd-address.c
+index 193c4a04b5..3880eab47f 100644
+--- a/src/network/networkd-address.c
++++ b/src/network/networkd-address.c
+@@ -886,11 +886,43 @@ static int address_drop(Address *in, bool removed_by_us) {
+ 
+         address_del_netlabel(address);
+ 
+-        /* FIXME: if the IPv6LL address is dropped, stop DHCPv6, NDISC, RADV. */
+         if (address->family == AF_INET6 &&
+-            in6_addr_equal(&address->in_addr.in6, &link->ipv6ll_address))
++            in6_addr_equal(&address->in_addr.in6, &link->ipv6ll_address)) {
+                 link->ipv6ll_address = (const struct in6_addr) {};
+ 
++                Address *a;
++                bool has_replacement;
++
++                /* If another ready IPv6LL address exists on this link, use it instead. */
++                SET_FOREACH(a, link->addresses) {
++                        if (a == address)
++                                continue;
++                        if (a->family != AF_INET6)
++                                continue;
++                        if (!in6_addr_is_link_local(&a->in_addr.in6))
++                                continue;
++                        if (!address_is_ready(a))
++                                continue;
++                        link->ipv6ll_address = a->in_addr.in6;
++                        break;
++                }
++
++                has_replacement = in6_addr_is_set(&link->ipv6ll_address);
++
++                /* Stop engines bound to the dropped IPv6LL source address. Do not return early on error.
++                 * address_detach() and link_update_operstate() must run to keep link state consistent. */
++                r = link_ipv6ll_lost(link, &address->in_addr.in6, has_replacement);
++                if (r < 0)
++                        log_link_warning_errno(link, r, "Failed to stop IPv6 services after IPv6LL loss, ignoring: %m");
++
++                /* If another IPv6LL address is available, restart engines with it. */
++                if (has_replacement) {
++                        r = link_ipv6ll_gained(link);
++                        if (r < 0)
++                                log_link_warning_errno(link, r, "Failed to restart IPv6 services with alternate IPv6LL address, ignoring: %m");
++                }
++        }
++
+         ipv4acd_detach(link, address);
+ 
+         address_detach(address);
+diff --git a/src/network/networkd-link.c b/src/network/networkd-link.c
+index a69a5e8979..16fb529797 100644
+--- a/src/network/networkd-link.c
++++ b/src/network/networkd-link.c
+@@ -813,6 +813,46 @@ int link_ipv6ll_gained(Link *link) {
+         return 0;
+ }
+ 
++int link_ipv6ll_lost(Link *link, const struct in6_addr *dropped_ipv6ll, bool has_replacement) {
++        int ret = 0, r;
++
++        assert(link);
++        assert(dropped_ipv6ll);
++
++        if (!IN_SET(link->state, LINK_STATE_CONFIGURING, LINK_STATE_CONFIGURED))
++                return 0;
++
++        log_link_info(link, "Lost IPv6LL address %s%s.",
++                      IN6_ADDR_TO_STRING(dropped_ipv6ll),
++                      has_replacement ? ", switching to alternate IPv6LL source" : "");
++
++        r = sd_dhcp6_client_stop(link->dhcp6_client);
++        if (r < 0)
++                RET_GATHER(ret, log_link_warning_errno(link, r, "Could not stop DHCPv6 client: %m"));
++
++        /* DHCPv6 must be restarted to switch the client's source address, while NDisc and
++         * RADV can switch to the replacement IPv6LL in link_ipv6ll_gained() without flushing
++         * learned state. Keep link->ndisc_configured as-is in this path. */
++        if (has_replacement)
++                return ret;
++
++        r = ndisc_stop(link);
++        if (r < 0)
++                RET_GATHER(ret, log_link_warning_errno(link, r, "Could not stop IPv6 Router Discovery: %m"));
++        link->ndisc_configured = false;
++        ndisc_flush(link);
++
++        r = sd_radv_stop(link->radv);
++        if (r < 0)
++                RET_GATHER(ret, log_link_warning_errno(link, r, "Could not stop IPv6 Router Advertisement: %m"));
++
++        r = link_request_stacked_netdevs(link, NETDEV_LOCAL_ADDRESS_IPV6LL);
++        if (r < 0)
++                RET_GATHER(ret, log_link_warning_errno(link, r, "Could not reconfigure stacked netdevs after IPv6LL loss: %m"));
++
++        return ret;
++}
++
+ int link_handle_bound_to_list(Link *link) {
+         bool required_up = false;
+         Link *l;
+diff --git a/src/network/networkd-link.h b/src/network/networkd-link.h
+index 456ec99185..b51736ae45 100644
+--- a/src/network/networkd-link.h
++++ b/src/network/networkd-link.h
+@@ -233,6 +233,7 @@ bool link_multicast_enabled(Link *link);
+ 
+ bool link_ipv6_enabled(Link *link);
+ int link_ipv6ll_gained(Link *link);
++int link_ipv6ll_lost(Link *link, const struct in6_addr *dropped_ipv6ll, bool has_replacement);
+ bool link_has_ipv6_connectivity(Link *link);
+ 
+ int link_stop_engines(Link *link, bool may_keep_dynamic);
+diff --git a/src/network/networkd-radv.c b/src/network/networkd-radv.c
+index 02322d4dab..1aafc0dd6d 100644
+--- a/src/network/networkd-radv.c
++++ b/src/network/networkd-radv.c
+@@ -697,6 +697,12 @@ int radv_start(Link *link) {
+         if (in6_addr_is_null(&link->ipv6ll_address))
+                 return 0;
+ 
++        /* Update the source IPv6LL before the running check so replacement IPv6LL handover can
++         * rebind RADV without requiring stop/start. */
++        r = sd_radv_set_link_local_address(link->radv, &link->ipv6ll_address);
++        if (r < 0)
++                return r;
++
+         if (sd_radv_is_running(link->radv))
+                 return 0;
+ 
+@@ -706,10 +712,6 @@ int radv_start(Link *link) {
+                         return log_link_debug_errno(link, r, "Failed to request DHCP delegated subnet prefix: %m");
+         }
+ 
+-        r = sd_radv_set_link_local_address(link->radv, &link->ipv6ll_address);
+-        if (r < 0)
+-                return r;
+-
+         log_link_debug(link, "Starting IPv6 Router Advertisements");
+         return sd_radv_start(link->radv);
+ }
+-- 
+2.50.1

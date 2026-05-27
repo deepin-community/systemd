@@ -1,0 +1,1114 @@
+diff --git a/src/cryptenroll/cryptenroll-pkcs11.c b/src/cryptenroll/cryptenroll-pkcs11.c
+index ae678f96e4..13feda47c4 100644
+--- a/src/cryptenroll/cryptenroll-pkcs11.c
++++ b/src/cryptenroll/cryptenroll-pkcs11.c
+@@ -45,6 +45,7 @@ int enroll_pkcs11(struct crypt_device *cd, const struct iovec *volume_key,const
+         size_t decrypted_key_size, saved_key_size;
+         _cleanup_free_ void *saved_key = NULL;
+         _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
++        Pkcs11RsaPadding rsa_padding = _PKCS11_RSA_PADDING_INVALID;
+         ssize_t base64_encoded_size;
+         const char *node;
+         int r;
+@@ -62,11 +63,14 @@ int enroll_pkcs11(struct crypt_device *cd, const struct iovec *volume_key,const
+                         "cryptenroll.pkcs11-pin",
+                         /* askpw_flags= */ 0,
+                         &pkey,
++                        &rsa_padding,
+                         /* ret_pin_used= */ NULL);
+         if (r < 0)
+                 return r;
+ 
+-        r = pkey_generate_volume_keys(pkey, &decrypted_key, &decrypted_key_size, &saved_key, &saved_key_size);
++        r = pkey_generate_volume_keys(pkey,
++                                      pkcs11_rsa_padding_to_oaep_hash(rsa_padding),
++                                      &decrypted_key, &decrypted_key_size, &saved_key, &saved_key_size);
+         if (r < 0)
+                 return log_error_errno(r, "Failed to generate volume keys: %m");
+ 
+@@ -104,7 +108,9 @@ int enroll_pkcs11(struct crypt_device *cd, const struct iovec *volume_key,const
+                            SD_JSON_BUILD_PAIR("type", JSON_BUILD_CONST_STRING("systemd-pkcs11")),
+                            SD_JSON_BUILD_PAIR("keyslots", SD_JSON_BUILD_ARRAY(SD_JSON_BUILD_STRING(keyslot_as_string))),
+                            SD_JSON_BUILD_PAIR_STRING("pkcs11-uri", private_uri ?: uri),
+-                           SD_JSON_BUILD_PAIR_BASE64("pkcs11-key", saved_key, saved_key_size));
++                           SD_JSON_BUILD_PAIR_BASE64("pkcs11-key", saved_key, saved_key_size),
++                           SD_JSON_BUILD_PAIR_CONDITION(rsa_padding > PKCS11_RSA_PADDING_PKCS1V15,
++                                                        "pkcs11-padding", SD_JSON_BUILD_STRING(pkcs11_rsa_padding_to_string(rsa_padding))));
+         if (r < 0)
+                 return log_error_errno(r, "Failed to prepare PKCS#11 JSON token object: %m");
+ 
+diff --git a/src/cryptsetup/cryptsetup-pkcs11.c b/src/cryptsetup/cryptsetup-pkcs11.c
+index 238905ae90..b8534b15ef 100644
+--- a/src/cryptsetup/cryptsetup-pkcs11.c
++++ b/src/cryptsetup/cryptsetup-pkcs11.c
+@@ -16,6 +16,7 @@ int decrypt_pkcs11_key(
+                 const char *volume_name,
+                 const char *friendly_name,
+                 const char *pkcs11_uri,
++                Pkcs11RsaPadding rsa_padding,
+                 const char *key_file,         /* We either expect key_file and associated parameters to be set (for file keys) … */
+                 size_t key_file_size,
+                 uint64_t key_file_offset,
+@@ -29,6 +30,7 @@ int decrypt_pkcs11_key(
+                 .friendly_name = friendly_name,
+                 .askpw_flags = askpw_flags,
+                 .until = until,
++                .rsa_padding = rsa_padding,
+         };
+         int r;
+ 
+@@ -83,6 +85,7 @@ int find_pkcs11_auto_data(
+                 char **ret_uri,
+                 void **ret_encrypted_key,
+                 size_t *ret_encrypted_key_size,
++                Pkcs11RsaPadding *ret_rsa_padding,
+                 int *ret_keyslot) {
+ 
+ #if HAVE_P11KIT
+@@ -90,11 +93,13 @@ int find_pkcs11_auto_data(
+         _cleanup_free_ void *key = NULL;
+         int r, keyslot = -1;
+         size_t key_size = 0;
++        Pkcs11RsaPadding rsa_padding = PKCS11_RSA_PADDING_PKCS1V15;
+ 
+         assert(cd);
+         assert(ret_uri);
+         assert(ret_encrypted_key);
+         assert(ret_encrypted_key_size);
++        assert(ret_rsa_padding);
+         assert(ret_keyslot);
+ 
+         /* Loads PKCS#11 metadata from LUKS2 JSON token headers. */
+@@ -148,6 +153,22 @@ int find_pkcs11_auto_data(
+                 r = sd_json_variant_unbase64(w, &key, &key_size);
+                 if (r < 0)
+                         return log_error_errno(r, "Failed to decode base64 encoded key: %m");
++
++                /* Optional padding-scheme tag. Absent in legacy tokens (which used PKCS#1 v1.5). */
++                w = sd_json_variant_by_key(v, "pkcs11-padding");
++                if (w) {
++                        Pkcs11RsaPadding p;
++
++                        if (!sd_json_variant_is_string(w))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
++                                                       "PKCS#11 token field 'pkcs11-padding' is not a string.");
++                        p = pkcs11_rsa_padding_from_string(sd_json_variant_string(w));
++                        if (p < 0)
++                                return log_error_errno(p,
++                                                       "PKCS#11 token field 'pkcs11-padding' has unsupported value '%s'.",
++                                                       sd_json_variant_string(w));
++                        rsa_padding = p;
++                }
+         }
+ 
+         if (!uri)
+@@ -159,6 +180,7 @@ int find_pkcs11_auto_data(
+         *ret_uri = TAKE_PTR(uri);
+         *ret_encrypted_key = TAKE_PTR(key);
+         *ret_encrypted_key_size = key_size;
++        *ret_rsa_padding = rsa_padding;
+         *ret_keyslot = keyslot;
+         return 0;
+ #else
+diff --git a/src/cryptsetup/cryptsetup-pkcs11.h b/src/cryptsetup/cryptsetup-pkcs11.h
+index 472e5d0e78..faccad599e 100644
+--- a/src/cryptsetup/cryptsetup-pkcs11.h
++++ b/src/cryptsetup/cryptsetup-pkcs11.h
+@@ -1,12 +1,14 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ #pragma once
+ 
++#include "pkcs11-padding.h"
+ #include "shared-forward.h"
+ 
+ int decrypt_pkcs11_key(
+                 const char *volume_name,
+                 const char *friendly_name,
+                 const char *pkcs11_uri,
++                Pkcs11RsaPadding rsa_padding,
+                 const char *key_file,
+                 size_t key_file_size,
+                 uint64_t key_file_offset,
+@@ -21,4 +23,5 @@ int find_pkcs11_auto_data(
+                 char **ret_uri,
+                 void **ret_encrypted_key,
+                 size_t *ret_encrypted_key_size,
++                Pkcs11RsaPadding *ret_rsa_padding,
+                 int *ret_keyslot);
+diff --git a/src/cryptsetup/cryptsetup-tokens/cryptsetup-token-systemd-pkcs11.c b/src/cryptsetup/cryptsetup-tokens/cryptsetup-token-systemd-pkcs11.c
+index e99fcfea85..9a279ddbb7 100644
+--- a/src/cryptsetup/cryptsetup-tokens/cryptsetup-token-systemd-pkcs11.c
++++ b/src/cryptsetup/cryptsetup-tokens/cryptsetup-token-systemd-pkcs11.c
+@@ -93,11 +93,12 @@ _public_ void cryptsetup_token_dump(
+         size_t pkcs11_key_size;
+         _cleanup_free_ char *pkcs11_uri = NULL, *key_str = NULL;
+         _cleanup_free_ void *pkcs11_key = NULL;
++        Pkcs11RsaPadding rsa_padding = PKCS11_RSA_PADDING_PKCS1V15;
+ 
+         if (dlopen_cryptsetup(LOG_DEBUG) < 0)
+                 return;
+ 
+-        r = parse_luks2_pkcs11_data(cd, json, &pkcs11_uri, &pkcs11_key, &pkcs11_key_size);
++        r = parse_luks2_pkcs11_data(cd, json, &pkcs11_uri, &pkcs11_key, &pkcs11_key_size, &rsa_padding);
+         if (r < 0)
+                 return (void) crypt_log_debug_errno(cd, r, "Failed to parse " TOKEN_NAME " metadata: %m.");
+ 
+@@ -107,6 +108,7 @@ _public_ void cryptsetup_token_dump(
+ 
+         crypt_log(cd, "\tpkcs11-uri: %s\n", pkcs11_uri);
+         crypt_log(cd, "\tpkcs11-key: %s\n", key_str);
++        crypt_log(cd, "\tpkcs11-padding: %s\n", pkcs11_rsa_padding_to_string(rsa_padding));
+ }
+ 
+ /*
+@@ -152,5 +154,19 @@ _public_ int cryptsetup_token_validate(
+         if (r < 0)
+                 return crypt_log_debug_errno(cd, r, "Failed to decode base64 encoded key: %m.");
+ 
++        /* Optional 'pkcs11-padding' field: must be a known padding scheme string if present. Older systemd
++         * versions will just ignore this field entirely and assume PKCS#1 v1.5. */
++        w = sd_json_variant_by_key(v, "pkcs11-padding");
++        if (w) {
++                if (!sd_json_variant_is_string(w)) {
++                        crypt_log_debug(cd, "PKCS#11 token field 'pkcs11-padding' is not a string.");
++                        return 1;
++                }
++                if (pkcs11_rsa_padding_from_string(sd_json_variant_string(w)) < 0) {
++                        crypt_log_debug(cd, "PKCS#11 token field 'pkcs11-padding' has unsupported value.");
++                        return 1;
++                }
++        }
++
+         return 0;
+ }
+diff --git a/src/cryptsetup/cryptsetup-tokens/luks2-pkcs11.c b/src/cryptsetup/cryptsetup-tokens/luks2-pkcs11.c
+index 723265479c..a55791d7d2 100644
+--- a/src/cryptsetup/cryptsetup-tokens/luks2-pkcs11.c
++++ b/src/cryptsetup/cryptsetup-tokens/luks2-pkcs11.c
+@@ -20,6 +20,7 @@ struct luks2_pkcs11_callback_data {
+         size_t pin_size;
+         void *encrypted_key;
+         size_t encrypted_key_size;
++        Pkcs11RsaPadding rsa_padding;
+         void *decrypted_key;
+         size_t decrypted_key_size;
+ };
+@@ -90,6 +91,7 @@ static int luks2_pkcs11_callback(
+                         object,
+                         data->encrypted_key,
+                         data->encrypted_key_size,
++                        data->rsa_padding,
+                         &data->decrypted_key,
+                         &data->decrypted_key_size);
+         if (r < 0)
+@@ -109,6 +111,7 @@ static int acquire_luks2_key_by_pin(
+                 size_t pin_size,
+                 void *encrypted_key,
+                 size_t encrypted_key_size,
++                Pkcs11RsaPadding rsa_padding,
+                 void **ret_decrypted_key,
+                 size_t *ret_decrypted_key_size) {
+ 
+@@ -119,6 +122,7 @@ static int acquire_luks2_key_by_pin(
+                 .pin_size = pin_size,
+                 .encrypted_key = encrypted_key,
+                 .encrypted_key_size = encrypted_key_size,
++                .rsa_padding = rsa_padding,
+         };
+ 
+         assert(pkcs11_uri);
+@@ -142,6 +146,7 @@ static int acquire_luks2_key_systemd(
+                 systemd_pkcs11_plugin_params *params,
+                 void *encrypted_key,
+                 size_t encrypted_key_size,
++                Pkcs11RsaPadding rsa_padding,
+                 void **ret_decrypted_key,
+                 size_t *ret_decrypted_key_size) {
+ 
+@@ -149,7 +154,8 @@ static int acquire_luks2_key_systemd(
+         _cleanup_(pkcs11_crypt_device_callback_data_release) pkcs11_crypt_device_callback_data data = {
+                 .encrypted_key = encrypted_key,
+                 .encrypted_key_size = encrypted_key_size,
+-                .free_encrypted_key = false
++                .free_encrypted_key = false,
++                .rsa_padding = rsa_padding,
+         };
+ 
+         assert(pkcs11_uri);
+@@ -189,6 +195,7 @@ int acquire_luks2_key(
+         _cleanup_(erase_and_freep) char *base64_encoded = NULL;
+         _cleanup_free_ char *pkcs11_uri = NULL;
+         _cleanup_free_ void *encrypted_key = NULL;
++        Pkcs11RsaPadding rsa_padding = PKCS11_RSA_PADDING_PKCS1V15;
+         systemd_pkcs11_plugin_params *pkcs11_params = userdata;
+         ssize_t base64_encoded_size;
+ 
+@@ -196,7 +203,7 @@ int acquire_luks2_key(
+         assert(ret_password);
+         assert(ret_password_size);
+ 
+-        r = parse_luks2_pkcs11_data(cd, json, &pkcs11_uri, &encrypted_key, &encrypted_key_size);
++        r = parse_luks2_pkcs11_data(cd, json, &pkcs11_uri, &encrypted_key, &encrypted_key_size, &rsa_padding);
+         if (r < 0)
+                 return r;
+ 
+@@ -208,11 +215,13 @@ int acquire_luks2_key(
+                         pkcs11_uri,
+                         pkcs11_params,
+                         encrypted_key, encrypted_key_size,
++                        rsa_padding,
+                         &decrypted_key, &decrypted_key_size);
+         else /* default activation that provides single PIN if needed */
+                 r = acquire_luks2_key_by_pin(
+                         cd, pkcs11_uri, pin, pin_size,
+                         encrypted_key, encrypted_key_size,
++                        rsa_padding,
+                         &decrypted_key, &decrypted_key_size);
+         if (r < 0)
+                 return r;
+@@ -232,7 +241,8 @@ int parse_luks2_pkcs11_data(
+                 const char *json,
+                 char **ret_uri,
+                 void **ret_encrypted_key,
+-                size_t *ret_encrypted_key_size) {
++                size_t *ret_encrypted_key_size,
++                Pkcs11RsaPadding *ret_rsa_padding) {
+ 
+         int r;
+         size_t key_size;
+@@ -240,6 +250,7 @@ int parse_luks2_pkcs11_data(
+         _cleanup_free_ void *key = NULL;
+         _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
+         sd_json_variant *w;
++        Pkcs11RsaPadding rsa_padding = PKCS11_RSA_PADDING_PKCS1V15;
+ 
+         assert(json);
+         assert(ret_uri);
+@@ -266,9 +277,27 @@ int parse_luks2_pkcs11_data(
+         if (r < 0)
+                 return crypt_log_debug_errno(cd, r, "Failed to decode base64 encoded key: %m.");
+ 
++        /* Optional padding-scheme tag. Absent in legacy tokens (which used PKCS#1 v1.5). */
++        w = sd_json_variant_by_key(v, "pkcs11-padding");
++        if (w) {
++                Pkcs11RsaPadding p;
++
++                if (!sd_json_variant_is_string(w))
++                        return crypt_log_debug_errno(cd, -EINVAL,
++                                                     "LUKS2 token field 'pkcs11-padding' is not a string.");
++                p = pkcs11_rsa_padding_from_string(sd_json_variant_string(w));
++                if (p < 0)
++                        return crypt_log_debug_errno(cd, p,
++                                                     "LUKS2 token field 'pkcs11-padding' has unsupported value '%s'.",
++                                                     sd_json_variant_string(w));
++                rsa_padding = p;
++        }
++
+         *ret_uri = TAKE_PTR(uri);
+         *ret_encrypted_key = TAKE_PTR(key);
+         *ret_encrypted_key_size = key_size;
++        if (ret_rsa_padding)
++                *ret_rsa_padding = rsa_padding;
+ 
+         return 0;
+ }
+diff --git a/src/cryptsetup/cryptsetup-tokens/luks2-pkcs11.h b/src/cryptsetup/cryptsetup-tokens/luks2-pkcs11.h
+index d233b7ad06..a4f11b6468 100644
+--- a/src/cryptsetup/cryptsetup-tokens/luks2-pkcs11.h
++++ b/src/cryptsetup/cryptsetup-tokens/luks2-pkcs11.h
+@@ -2,6 +2,7 @@
+ 
+ #pragma once
+ 
++#include "pkcs11-util.h"
+ #include "shared-forward.h"
+ 
+ int acquire_luks2_key(
+@@ -18,4 +19,5 @@ int parse_luks2_pkcs11_data(
+                 const char *json,
+                 char **ret_uri,
+                 void **ret_encrypted_key,
+-                size_t *ret_encrypted_key_size);
++                size_t *ret_encrypted_key_size,
++                Pkcs11RsaPadding *ret_rsa_padding);
+diff --git a/src/cryptsetup/cryptsetup.c b/src/cryptsetup/cryptsetup.c
+index b6ee120e5e..0f0d96372e 100644
+--- a/src/cryptsetup/cryptsetup.c
++++ b/src/cryptsetup/cryptsetup.c
+@@ -1815,6 +1815,7 @@ static int attach_luks_or_plain_or_bitlk_by_pkcs11(
+         _cleanup_(sd_event_unrefp) sd_event *event = NULL;
+         _cleanup_free_ void *discovered_key = NULL;
+         struct iovec discovered_key_data = {};
++        Pkcs11RsaPadding rsa_padding = PKCS11_RSA_PADDING_PKCS1V15;
+         int keyslot = arg_key_slot, r;
+         const char *uri = NULL;
+         bool use_libcryptsetup_plugin = use_token_plugins();
+@@ -1825,7 +1826,7 @@ static int attach_luks_or_plain_or_bitlk_by_pkcs11(
+ 
+         if (arg_pkcs11_uri_auto) {
+                 if (!use_libcryptsetup_plugin) {
+-                        r = find_pkcs11_auto_data(cd, &discovered_uri, &discovered_key, &discovered_key_size, &keyslot);
++                        r = find_pkcs11_auto_data(cd, &discovered_uri, &discovered_key, &discovered_key_size, &rsa_padding, &keyslot);
+                         if (IN_SET(r, -ENOTUNIQ, -ENXIO))
+                                 return log_debug_errno(SYNTHETIC_ERRNO(EAGAIN),
+                                                        "Automatic PKCS#11 metadata discovery was not possible because missing or not unique, falling back to traditional unlocking.");
+@@ -1861,6 +1862,7 @@ static int attach_luks_or_plain_or_bitlk_by_pkcs11(
+                                         name,
+                                         friendly,
+                                         uri,
++                                        rsa_padding,
+                                         key_file, arg_keyfile_size, arg_keyfile_offset,
+                                         key_data,
+                                         until,
+diff --git a/src/home/homectl-pkcs11.c b/src/home/homectl-pkcs11.c
+index 3ef1b80c22..69eee3e289 100644
+--- a/src/home/homectl-pkcs11.c
++++ b/src/home/homectl-pkcs11.c
+@@ -98,6 +98,7 @@ static int add_pkcs11_token_uri(sd_json_variant **v, const char *uri) {
+ static int add_pkcs11_encrypted_key(
+                 sd_json_variant **v,
+                 const char *uri,
++                Pkcs11RsaPadding rsa_padding,
+                 const void *encrypted_key, size_t encrypted_key_size,
+                 const void *decrypted_key, size_t decrypted_key_size) {
+ 
+@@ -126,7 +127,9 @@ static int add_pkcs11_encrypted_key(
+         r = sd_json_buildo(&e,
+                            SD_JSON_BUILD_PAIR_STRING("uri", uri),
+                            SD_JSON_BUILD_PAIR_BASE64("data", encrypted_key, encrypted_key_size),
+-                           SD_JSON_BUILD_PAIR_STRING("hashedPassword", hashed));
++                           SD_JSON_BUILD_PAIR_STRING("hashedPassword", hashed),
++                           SD_JSON_BUILD_PAIR_CONDITION(rsa_padding > PKCS11_RSA_PADDING_PKCS1V15,
++                                                        "padding", SD_JSON_BUILD_STRING(pkcs11_rsa_padding_to_string(rsa_padding))));
+         if (r < 0)
+                 return log_error_errno(r, "Failed to build encrypted JSON key object: %m");
+ 
+@@ -156,6 +159,7 @@ int identity_add_pkcs11_key_data(sd_json_variant **v, const char *uri) {
+         _cleanup_(erase_and_freep) char *pin = NULL;
+         size_t decrypted_key_size, saved_key_size;
+         _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
++        Pkcs11RsaPadding rsa_padding = _PKCS11_RSA_PADDING_INVALID;
+         int r;
+ 
+         assert(v);
+@@ -167,11 +171,14 @@ int identity_add_pkcs11_key_data(sd_json_variant **v, const char *uri) {
+                         "home.token-pin",
+                         /* askpw_flags= */ 0,
+                         &pkey,
++                        &rsa_padding,
+                         &pin);
+         if (r < 0)
+                 return r;
+ 
+-        r = pkey_generate_volume_keys(pkey, &decrypted_key, &decrypted_key_size, &saved_key, &saved_key_size);
++        r = pkey_generate_volume_keys(pkey,
++                                      pkcs11_rsa_padding_to_oaep_hash(rsa_padding),
++                                      &decrypted_key, &decrypted_key_size, &saved_key, &saved_key_size);
+         if (r < 0)
+                 return log_error_errno(r, "Failed to generate volume keys: %m");
+ 
+@@ -184,6 +191,7 @@ int identity_add_pkcs11_key_data(sd_json_variant **v, const char *uri) {
+         r = add_pkcs11_encrypted_key(
+                         v,
+                         uri,
++                        rsa_padding,
+                         saved_key, saved_key_size,
+                         decrypted_key, decrypted_key_size);
+         if (r < 0)
+diff --git a/src/home/homework-pkcs11.c b/src/home/homework-pkcs11.c
+index 626473d2c9..44607e4b5f 100644
+--- a/src/home/homework-pkcs11.c
++++ b/src/home/homework-pkcs11.c
+@@ -100,7 +100,7 @@ decrypt:
+         if (r < 0)
+                 return r;
+ 
+-        r = pkcs11_token_decrypt_data(m, session, object, data->encrypted_key->data, data->encrypted_key->size, &decrypted_key, &decrypted_key_size);
++        r = pkcs11_token_decrypt_data(m, session, object, data->encrypted_key->data, data->encrypted_key->size, data->encrypted_key->padding, &decrypted_key, &decrypted_key_size);
+         if (r < 0)
+                 return r;
+ 
+diff --git a/src/shared/crypto-util.c b/src/shared/crypto-util.c
+index fd09872a02..bca43aebc9 100644
+--- a/src/shared/crypto-util.c
++++ b/src/shared/crypto-util.c
+@@ -164,7 +164,7 @@ DLSYM_PROTOTYPE(EVP_PKEY_free) = NULL;
+ DLSYM_PROTOTYPE(EVP_PKEY_fromdata) = NULL;
+ DLSYM_PROTOTYPE(EVP_PKEY_fromdata_init) = NULL;
+ static DLSYM_PROTOTYPE(EVP_PKEY_get1_encoded_public_key) = NULL;
+-static DLSYM_PROTOTYPE(EVP_PKEY_get_base_id) = NULL;
++DLSYM_PROTOTYPE(EVP_PKEY_get_base_id) = NULL;
+ static DLSYM_PROTOTYPE(EVP_PKEY_get_bits) = NULL;
+ static DLSYM_PROTOTYPE(EVP_PKEY_get_bn_param) = NULL;
+ static DLSYM_PROTOTYPE(EVP_PKEY_get_group_name) = NULL;
+@@ -1123,52 +1123,6 @@ int kdf_kb_hmac_derive(
+         return 0;
+ }
+ 
+-int rsa_encrypt_bytes(
+-                EVP_PKEY *pkey,
+-                const void *decrypted_key,
+-                size_t decrypted_key_size,
+-                void **ret_encrypt_key,
+-                size_t *ret_encrypt_key_size) {
+-
+-        _cleanup_(EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx = NULL;
+-        _cleanup_free_ void *b = NULL;
+-        size_t l;
+-        int r;
+-
+-        assert(ret_encrypt_key);
+-        assert(ret_encrypt_key_size);
+-
+-        r = dlopen_libcrypto(LOG_DEBUG);
+-        if (r < 0)
+-                return r;
+-
+-        ctx = sym_EVP_PKEY_CTX_new(pkey, NULL);
+-        if (!ctx)
+-                return log_openssl_errors("Failed to allocate public key context");
+-
+-        if (sym_EVP_PKEY_encrypt_init(ctx) <= 0)
+-                return log_openssl_errors("Failed to initialize public key context");
+-
+-        if (sym_EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) <= 0)
+-                return log_openssl_errors("Failed to configure PKCS#1 padding");
+-
+-        if (sym_EVP_PKEY_encrypt(ctx, NULL, &l, decrypted_key, decrypted_key_size) <= 0)
+-                return log_openssl_errors("Failed to determine encrypted key size");
+-
+-        b = malloc(l);
+-        if (!b)
+-                return -ENOMEM;
+-
+-        if (sym_EVP_PKEY_encrypt(ctx, b, &l, decrypted_key, decrypted_key_size) <= 0)
+-                return log_openssl_errors("Failed to determine encrypted key size");
+-
+-        *ret_encrypt_key = TAKE_PTR(b);
+-        *ret_encrypt_key_size = l;
+-        return 0;
+-}
+-
+-/* Encrypt the key data using RSA-OAEP with the provided label and specified digest algorithm. Returns 0 on
+- * success, -EOPNOTSUPP if the digest algorithm is not supported, or < 0 for any other error. */
+ int rsa_oaep_encrypt_bytes(
+                 const EVP_PKEY *pkey,
+                 const char *digest_alg,
+@@ -1182,7 +1136,6 @@ int rsa_oaep_encrypt_bytes(
+ 
+         assert(pkey);
+         assert(digest_alg);
+-        assert(label);
+         assert(decrypted_key);
+         assert(decrypted_key_size > 0);
+         assert(ret_encrypt_key);
+@@ -1210,14 +1163,16 @@ int rsa_oaep_encrypt_bytes(
+         if (sym_EVP_PKEY_CTX_set_rsa_oaep_md(ctx, md) <= 0)
+                 return log_openssl_errors("Failed to configure RSA-OAEP MD");
+ 
+-        _cleanup_free_ char *duplabel = strdup(label);
+-        if (!duplabel)
+-                return log_oom_debug();
++        if (label) {
++                _cleanup_free_ char *duplabel = strdup(label);
++                if (!duplabel)
++                        return log_oom_debug();
+ 
+-        if (sym_EVP_PKEY_CTX_set0_rsa_oaep_label(ctx, duplabel, strlen(duplabel) + 1) <= 0)
+-                return log_openssl_errors("Failed to configure RSA-OAEP label");
+-        /* ctx owns this now, don't free */
+-        TAKE_PTR(duplabel);
++                if (sym_EVP_PKEY_CTX_set0_rsa_oaep_label(ctx, duplabel, strlen(duplabel) + 1) <= 0)
++                        return log_openssl_errors("Failed to configure RSA-OAEP label");
++                /* ctx owns this now, don't free */
++                TAKE_PTR(duplabel);
++        }
+ 
+         size_t size = 0;
+         if (sym_EVP_PKEY_encrypt(ctx, NULL, &size, decrypted_key, decrypted_key_size) <= 0)
+@@ -1259,8 +1214,9 @@ int rsa_pkey_to_suitable_key_size(
+         bits = sym_EVP_PKEY_get_bits(pkey);
+         log_debug("Bits in RSA key: %i", bits);
+ 
+-        /* We use PKCS#1 padding for the RSA cleartext, hence let's leave some extra space for it, hence only
+-         * generate a random key half the size of the RSA length */
++        /* We use RSA-OAEP for the cleartext, which has 2*hash_len + 2 bytes of overhead (e.g. 66 bytes
++         * for SHA-256, 42 for SHA-1). Leave plenty of headroom by only generating a key half the size of
++         * the RSA modulus. */
+         suitable_key_size = bits / 8 / 2;
+ 
+         if (suitable_key_size < 1)
+@@ -1862,6 +1818,7 @@ static int ecc_pkey_generate_volume_keys(
+ 
+ static int rsa_pkey_generate_volume_keys(
+                 EVP_PKEY *pkey,
++                const char *digest_alg,
+                 void **ret_decrypted_key,
+                 size_t *ret_decrypted_key_size,
+                 void **ret_saved_key,
+@@ -1872,6 +1829,7 @@ static int rsa_pkey_generate_volume_keys(
+         size_t decrypted_key_size, saved_key_size;
+         int r;
+ 
++        assert(digest_alg);
+         assert(ret_decrypted_key);
+         assert(ret_decrypted_key_size);
+         assert(ret_saved_key);
+@@ -1891,9 +1849,14 @@ static int rsa_pkey_generate_volume_keys(
+         if (r < 0)
+                 return log_debug_errno(r, "Failed to generate random key: %m");
+ 
+-        r = rsa_encrypt_bytes(pkey, decrypted_key, decrypted_key_size, &saved_key, &saved_key_size);
++        r = rsa_oaep_encrypt_bytes(
++                        pkey,
++                        digest_alg,
++                        /* label= */ NULL, /* matches PKCS#11 CKZ_DATA_SPECIFIED with empty source */
++                        decrypted_key, decrypted_key_size,
++                        &saved_key, &saved_key_size);
+         if (r < 0)
+-                return log_debug_errno(r, "Failed to encrypt random key: %m");
++                return log_debug_errno(r, "Failed to RSA-OAEP encrypt random key: %m");
+ 
+         *ret_decrypted_key = TAKE_PTR(decrypted_key);
+         *ret_decrypted_key_size = decrypted_key_size;
+@@ -1904,6 +1867,7 @@ static int rsa_pkey_generate_volume_keys(
+ 
+ int pkey_generate_volume_keys(
+                 EVP_PKEY *pkey,
++                const char *rsa_oaep_digest_alg,
+                 void **ret_decrypted_key,
+                 size_t *ret_decrypted_key_size,
+                 void **ret_saved_key,
+@@ -1925,7 +1889,7 @@ int pkey_generate_volume_keys(
+         switch (type) {
+ 
+         case EVP_PKEY_RSA:
+-                return rsa_pkey_generate_volume_keys(pkey, ret_decrypted_key, ret_decrypted_key_size, ret_saved_key, ret_saved_key_size);
++                return rsa_pkey_generate_volume_keys(pkey, rsa_oaep_digest_alg ?: "SHA-1", ret_decrypted_key, ret_decrypted_key_size, ret_saved_key, ret_saved_key_size);
+ 
+         case EVP_PKEY_EC:
+                 return ecc_pkey_generate_volume_keys(pkey, ret_decrypted_key, ret_decrypted_key_size, ret_saved_key, ret_saved_key_size);
+diff --git a/src/shared/crypto-util.h b/src/shared/crypto-util.h
+index 08c5e1ac85..7e975c0240 100644
+--- a/src/shared/crypto-util.h
++++ b/src/shared/crypto-util.h
+@@ -148,6 +148,7 @@ extern DLSYM_PROTOTYPE(EVP_PKEY_eq);
+ extern DLSYM_PROTOTYPE(EVP_PKEY_free);
+ extern DLSYM_PROTOTYPE(EVP_PKEY_fromdata_init);
+ extern DLSYM_PROTOTYPE(EVP_PKEY_fromdata);
++extern DLSYM_PROTOTYPE(EVP_PKEY_get_base_id);
+ extern DLSYM_PROTOTYPE(EVP_PKEY_get_id);
+ extern DLSYM_PROTOTYPE(EVP_PKEY_keygen_init);
+ extern DLSYM_PROTOTYPE(EVP_PKEY_keygen);
+@@ -348,8 +349,6 @@ int kdf_ss_derive(const char *digest, const void *key, size_t key_size, const vo
+ 
+ int kdf_kb_hmac_derive(const char *mode, const char *digest, const void *key, size_t key_size, const void *salt, size_t salt_size, const void *info, size_t info_size, const void *seed, size_t seed_size, size_t derive_size, void **ret);
+ 
+-int rsa_encrypt_bytes(EVP_PKEY *pkey, const void *decrypted_key, size_t decrypted_key_size, void **ret_encrypt_key, size_t *ret_encrypt_key_size);
+-
+ int rsa_oaep_encrypt_bytes(const EVP_PKEY *pkey, const char *digest_alg, const char *label, const void *decrypted_key, size_t decrypted_key_size, void **ret_encrypt_key, size_t *ret_encrypt_key_size);
+ 
+ int rsa_pkey_to_suitable_key_size(EVP_PKEY *pkey, size_t *ret_suitable_key_size);
+@@ -366,7 +365,7 @@ int ecc_pkey_new(int curve_id, EVP_PKEY **ret);
+ 
+ int ecc_ecdh(const EVP_PKEY *private_pkey, const EVP_PKEY *peer_pkey, void **ret_shared_secret, size_t *ret_shared_secret_size);
+ 
+-int pkey_generate_volume_keys(EVP_PKEY *pkey, void **ret_decrypted_key, size_t *ret_decrypted_key_size, void **ret_saved_key, size_t *ret_saved_key_size);
++int pkey_generate_volume_keys(EVP_PKEY *pkey, const char *rsa_oaep_digest_alg, void **ret_decrypted_key, size_t *ret_decrypted_key_size, void **ret_saved_key, size_t *ret_saved_key_size);
+ 
+ int pubkey_fingerprint(EVP_PKEY *pk, const EVP_MD *md, void **ret, size_t *ret_size);
+ 
+diff --git a/src/shared/pkcs11-padding.h b/src/shared/pkcs11-padding.h
+new file mode 100644
+index 0000000000..c65f9617d9
+--- /dev/null
++++ b/src/shared/pkcs11-padding.h
+@@ -0,0 +1,26 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include "basic-forward.h"
++
++typedef enum Pkcs11RsaPadding {
++        PKCS11_RSA_PADDING_PKCS1V15,    /* CKM_RSA_PKCS, RFC 8017 PKCS#1 v1.5 (legacy) */
++        PKCS11_RSA_PADDING_OAEP_SHA1,   /* CKM_RSA_PKCS_OAEP with SHA-1/MGF1-SHA-1 (more supported) */
++        PKCS11_RSA_PADDING_OAEP_SHA256, /* CKM_RSA_PKCS_OAEP with SHA-256/MGF1-SHA-256 (preferred if supported) */
++        _PKCS11_RSA_PADDING_MAX,
++        _PKCS11_RSA_PADDING_INVALID = -EINVAL,
++} Pkcs11RsaPadding;
++
++const char* pkcs11_rsa_padding_to_string(Pkcs11RsaPadding i);
++Pkcs11RsaPadding pkcs11_rsa_padding_from_string(const char *s);
++
++static inline const char* pkcs11_rsa_padding_to_oaep_hash(Pkcs11RsaPadding p) {
++        switch (p) {
++        case PKCS11_RSA_PADDING_OAEP_SHA1:
++                return "SHA-1";
++        case PKCS11_RSA_PADDING_OAEP_SHA256:
++                return "SHA-256";
++        default:
++                return NULL;
++        }
++}
+diff --git a/src/shared/pkcs11-util.c b/src/shared/pkcs11-util.c
+index dc843997a2..60d383998b 100644
+--- a/src/shared/pkcs11-util.c
++++ b/src/shared/pkcs11-util.c
+@@ -17,6 +17,7 @@
+ #include "memory-util.h"
+ #include "pkcs11-util.h"
+ #include "random-util.h"
++#include "string-table.h"
+ #include "string-util.h"
+ #include "strv.h"
+ 
+@@ -41,6 +42,14 @@ bool pkcs11_uri_valid(const char *uri) {
+         return true;
+ }
+ 
++static const char* const pkcs11_rsa_padding_table[_PKCS11_RSA_PADDING_MAX] = {
++        [PKCS11_RSA_PADDING_PKCS1V15]    = "pkcs1",
++        [PKCS11_RSA_PADDING_OAEP_SHA1]   = "oaep-sha1",
++        [PKCS11_RSA_PADDING_OAEP_SHA256] = "oaep-sha256",
++};
++
++DEFINE_STRING_TABLE_LOOKUP(pkcs11_rsa_padding, Pkcs11RsaPadding);
++
+ #if HAVE_P11KIT
+ 
+ DLSYM_PROTOTYPE(p11_kit_module_get_name) = NULL;
+@@ -1171,12 +1180,23 @@ static int pkcs11_token_decrypt_data_rsa(
+                 CK_OBJECT_HANDLE object,
+                 const void *encrypted_data,
+                 size_t encrypted_data_size,
++                Pkcs11RsaPadding rsa_padding,
+                 void **ret_decrypted_data,
+                 size_t *ret_decrypted_data_size) {
+ 
+-        static const CK_MECHANISM mechanism = {
+-                 .mechanism = CKM_RSA_PKCS
++        /* For RSA-OAEP we use SHA-256 or SHA-1 with the matching MGF1 and an empty (zero-length) label.
++         * SHA-256 is preferred when the token supports it, but for example SoftHSM doesn't support it. */
++        CK_RSA_PKCS_OAEP_PARAMS oaep_params_sha1 = {
++                .hashAlg = CKM_SHA_1,
++                .mgf = CKG_MGF1_SHA1,
++                .source = CKZ_DATA_SPECIFIED,
++        };
++        CK_RSA_PKCS_OAEP_PARAMS oaep_params_sha256 = {
++                .hashAlg = CKM_SHA256,
++                .mgf = CKG_MGF1_SHA256,
++                .source = CKZ_DATA_SPECIFIED,
+         };
++        CK_MECHANISM mechanism;
+         _cleanup_(erase_and_freep) CK_BYTE *dbuffer = NULL;
+         CK_ULONG dbuffer_size = 0;
+         CK_RV rv;
+@@ -1184,7 +1204,36 @@ static int pkcs11_token_decrypt_data_rsa(
+         assert(ret_decrypted_data);
+         assert(ret_decrypted_data_size);
+ 
+-        rv = m->C_DecryptInit(session, (CK_MECHANISM*) &mechanism, object);
++        switch (rsa_padding) {
++
++        case PKCS11_RSA_PADDING_PKCS1V15:
++                mechanism = (CK_MECHANISM) {
++                        .mechanism = CKM_RSA_PKCS,
++                };
++                break;
++
++        case PKCS11_RSA_PADDING_OAEP_SHA1:
++                mechanism = (CK_MECHANISM) {
++                        .mechanism = CKM_RSA_PKCS_OAEP,
++                        .pParameter = &oaep_params_sha1,
++                        .ulParameterLen = sizeof(oaep_params_sha1),
++                };
++                break;
++
++        case PKCS11_RSA_PADDING_OAEP_SHA256:
++                mechanism = (CK_MECHANISM) {
++                        .mechanism = CKM_RSA_PKCS_OAEP,
++                        .pParameter = &oaep_params_sha256,
++                        .ulParameterLen = sizeof(oaep_params_sha256),
++                };
++                break;
++
++        default:
++                return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
++                                       "Unknown RSA padding scheme requested for PKCS#11 decryption.");
++        }
++
++        rv = m->C_DecryptInit(session, &mechanism, object);
+         if (rv != CKR_OK)
+                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
+                                        "Failed to initialize decryption on security token: %s", sym_p11_kit_strerror(rv));
+@@ -1208,7 +1257,8 @@ static int pkcs11_token_decrypt_data_rsa(
+                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
+                                        "Failed to decrypt key on security token: %s", sym_p11_kit_strerror(rv));
+ 
+-        log_info("Successfully decrypted key with security token.");
++        log_info("Successfully decrypted key with security token (%s padding).",
++                 pkcs11_rsa_padding_to_string(rsa_padding));
+ 
+         *ret_decrypted_data = TAKE_PTR(dbuffer);
+         *ret_decrypted_data_size = dbuffer_size;
+@@ -1221,6 +1271,7 @@ int pkcs11_token_decrypt_data(
+                 CK_OBJECT_HANDLE object,
+                 const void *encrypted_data,
+                 size_t encrypted_data_size,
++                Pkcs11RsaPadding rsa_padding,
+                 void **ret_decrypted_data,
+                 size_t *ret_decrypted_data_size) {
+ 
+@@ -1241,7 +1292,7 @@ int pkcs11_token_decrypt_data(
+         switch (key_type) {
+ 
+         case CKK_RSA:
+-                return pkcs11_token_decrypt_data_rsa(m, session, object, encrypted_data, encrypted_data_size, ret_decrypted_data, ret_decrypted_data_size);
++                return pkcs11_token_decrypt_data_rsa(m, session, object, encrypted_data, encrypted_data_size, rsa_padding, ret_decrypted_data, ret_decrypted_data_size);
+ 
+         case CKK_EC:
+                 return pkcs11_token_decrypt_data_ecc(m, session, object, encrypted_data, encrypted_data_size, ret_decrypted_data, ret_decrypted_data_size);
+@@ -1529,6 +1580,7 @@ int pkcs11_find_token(
+ struct pkcs11_acquire_public_key_callback_data {
+         char *pin_used;
+         EVP_PKEY *pkey;
++        Pkcs11RsaPadding rsa_padding;
+         const char *askpw_friendly_name, *askpw_icon, *askpw_credential;
+         AskPasswordFlags askpw_flags;
+ };
+@@ -1539,6 +1591,86 @@ static void pkcs11_acquire_public_key_callback_data_release(struct pkcs11_acquir
+                 sym_EVP_PKEY_free(data->pkey);
+ }
+ 
++static int pkcs11_token_try_oaep_mechanism(
++                CK_FUNCTION_LIST *m,
++                CK_SESSION_HANDLE session,
++                CK_OBJECT_HANDLE private_key,
++                CK_MECHANISM_TYPE hash_alg,
++                CK_RSA_PKCS_MGF_TYPE mgf) {
++
++        CK_RSA_PKCS_OAEP_PARAMS params = {
++                .hashAlg = hash_alg,
++                .mgf = mgf,
++                .source = CKZ_DATA_SPECIFIED,
++        };
++        CK_MECHANISM mechanism = {
++                .mechanism = CKM_RSA_PKCS_OAEP,
++                .pParameter = &params,
++                .ulParameterLen = sizeof(params),
++        };
++        CK_RV rv;
++
++        rv = m->C_DecryptInit(session, &mechanism, private_key);
++        if (rv != CKR_OK)
++                return -EIO;
++
++        /* Accepted: terminate the operation. Per PKCS#11 spec section 5.2 any cryptographic function
++         * returning an error other than CKR_BUFFER_TOO_SMALL terminates the active operation, so feed
++         * deliberately invalid (too-short) ciphertext to C_Decrypt to trigger a cancellation that's
++         * likely to be portable across token implementations. */
++        CK_BYTE in[1] = {};
++        CK_BYTE out[1];
++        CK_ULONG out_len = sizeof(out);
++        (void) m->C_Decrypt(session, in, sizeof(in), out, &out_len);
++
++        return 0;
++}
++
++static int pkcs11_token_probe_rsa_oaep_padding(
++                CK_FUNCTION_LIST *m,
++                CK_SESSION_HANDLE session,
++                CK_OBJECT_HANDLE private_key,
++                Pkcs11RsaPadding *ret) {
++
++        CK_KEY_TYPE key_type;
++        CK_ATTRIBUTE key_type_template = { CKA_KEY_TYPE, &key_type, sizeof(key_type) };
++        CK_RV rv;
++        int r;
++
++        assert(m);
++        assert(ret);
++
++        /* Probes whether the token will accept the OAEP-SHA256 or OAEP-SHA1 mechanism for decryption with
++         * the given private key. On any failure (wrong key type, related-object lookup ambiguity yielded
++         * an EC private key, both mechanisms rejected, etc.) we bail out, this can only be best-effort. */
++        rv = m->C_GetAttributeValue(session, private_key, &key_type_template, /* ulCount= */ 1);
++        if (rv != CKR_OK)
++                return log_debug_errno(SYNTHETIC_ERRNO(EIO),
++                                       "Failed to retrieve private key type: %s", sym_p11_kit_strerror(rv));
++        if (key_type != CKK_RSA)
++                return log_debug_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
++                                       "Located private key is not RSA, skipping OAEP padding probe.");
++
++        /* For RSA-OAEP we use SHA-256 or SHA-1 with the matching MGF1 and an empty (zero-length) label.
++         * SHA-256 is preferred when the token supports it, but for example SoftHSM doesn't support it, so
++         * fall back to SHA-1 if it gets rejected. */
++        r = pkcs11_token_try_oaep_mechanism(m, session, private_key, CKM_SHA256, CKG_MGF1_SHA256);
++        if (r >= 0) {
++                *ret = PKCS11_RSA_PADDING_OAEP_SHA256;
++                log_debug("Token accepts OAEP-SHA256 for decryption.");
++                return 0;
++        }
++
++        r = pkcs11_token_try_oaep_mechanism(m, session, private_key, CKM_SHA_1, CKG_MGF1_SHA1);
++        if (r >= 0) {
++                *ret = PKCS11_RSA_PADDING_OAEP_SHA1;
++                log_debug("Token accepts OAEP-SHA1 for decryption.");
++                return 0;
++        }
++
++        return log_debug_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Token rejected both OAEP-SHA256 and OAEP-SHA1.");
++}
++
+ static int pkcs11_acquire_public_key_callback(
+                 CK_FUNCTION_LIST *m,
+                 CK_SESSION_HANDLE session,
+@@ -1702,6 +1834,30 @@ success:
+          * kernel's and the token's pool */
+         (void) pkcs11_token_acquire_rng(m, session);
+ 
++        /* Decide whether the enrolled key needs RSA padding metadata at all based on the public key we
++         * extracted (RSA vs EC). For RSA, default to OAEP-SHA1 which works on all known tokens (e.g.
++         * SoftHSM only accepts SHA-1), then try to upgrade to OAEP-SHA256 by probing the matching private
++         * key on the token. The probe is best-effort: if we cannot find the private key (e.g. token holds
++         * only the certificate, or the related-object lookup is ambiguous because CKA_ID is missing or
++         * doesn't match) we keep the OAEP-SHA1 default. For non-RSA keys (EC) we leave rsa_padding as
++         * _INVALID, so no padding tag is recorded and the decrypt path uses ECDH instead. */
++        data->rsa_padding = _PKCS11_RSA_PADDING_INVALID;
++
++        if (sym_EVP_PKEY_get_base_id(pkey) == EVP_PKEY_RSA) {
++                CK_OBJECT_HANDLE prototype = public_key != CK_INVALID_HANDLE ? public_key : certificate;
++                CK_OBJECT_HANDLE private_key = CK_INVALID_HANDLE;
++                Pkcs11RsaPadding padding = PKCS11_RSA_PADDING_OAEP_SHA1; /* default to SHA1 unless we can do better */
++
++                if (pkcs11_token_find_related_object(m, session, prototype, CKO_PRIVATE_KEY, &private_key) >= 0) {
++                        r = pkcs11_token_probe_rsa_oaep_padding(m, session, private_key, &padding);
++                        if (r < 0)
++                                log_info_errno(r, "Token rejected both OAEP-SHA256 and OAEP-SHA1, defaulting RSA enrollment to OAEP-SHA1.");
++                } else
++                        log_info("No matching PKCS#11 private key found, OAEP padding probe skipped, defaulting RSA enrollment to OAEP-SHA1.");
++
++                data->rsa_padding = padding;
++        }
++
+         data->pin_used = TAKE_PTR(pin_used);
+         data->pkey = TAKE_PTR(pkey);
+         return 0;
+@@ -1714,6 +1870,7 @@ int pkcs11_acquire_public_key(
+                 const char *askpw_credential,
+                 AskPasswordFlags askpw_flags,
+                 EVP_PKEY **ret_pkey,
++                Pkcs11RsaPadding *ret_rsa_padding,
+                 char **ret_pin_used) {
+ 
+         _cleanup_(pkcs11_acquire_public_key_callback_data_release) struct pkcs11_acquire_public_key_callback_data data = {
+@@ -1721,6 +1878,7 @@ int pkcs11_acquire_public_key(
+                 .askpw_icon = askpw_icon,
+                 .askpw_credential = askpw_credential,
+                 .askpw_flags = askpw_flags,
++                .rsa_padding = _PKCS11_RSA_PADDING_INVALID,
+         };
+         int r;
+ 
+@@ -1736,6 +1894,8 @@ int pkcs11_acquire_public_key(
+                 return r;
+ 
+         *ret_pkey = TAKE_PTR(data.pkey);
++        if (ret_rsa_padding)
++                *ret_rsa_padding = data.rsa_padding;
+         if (ret_pin_used)
+                 *ret_pin_used = TAKE_PTR(data.pin_used);
+         return 0;
+@@ -1978,6 +2138,7 @@ int pkcs11_crypt_device_callback(
+                         object,
+                         data->encrypted_key,
+                         data->encrypted_key_size,
++                        data->rsa_padding,
+                         &data->decrypted_key,
+                         &data->decrypted_key_size);
+         if (r < 0)
+diff --git a/src/shared/pkcs11-util.h b/src/shared/pkcs11-util.h
+index 7864598180..f4599a50f1 100644
+--- a/src/shared/pkcs11-util.h
++++ b/src/shared/pkcs11-util.h
+@@ -8,6 +8,7 @@
+ 
+ #include "ask-password-api.h"
+ #include "dlfcn-util.h"
++#include "pkcs11-padding.h"
+ #include "shared-forward.h"
+ 
+ bool pkcs11_uri_valid(const char *uri);
+@@ -66,7 +67,7 @@ int pkcs11_token_read_x509_certificate(CK_FUNCTION_LIST *m, CK_SESSION_HANDLE se
+ #endif
+ 
+ int pkcs11_token_find_private_key(CK_FUNCTION_LIST *m, CK_SESSION_HANDLE session, P11KitUri *search_uri, CK_OBJECT_HANDLE *ret_object);
+-int pkcs11_token_decrypt_data(CK_FUNCTION_LIST *m, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE object, const void *encrypted_data, size_t encrypted_data_size, void **ret_decrypted_data, size_t *ret_decrypted_data_size);
++int pkcs11_token_decrypt_data(CK_FUNCTION_LIST *m, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE object, const void *encrypted_data, size_t encrypted_data_size, Pkcs11RsaPadding rsa_padding, void **ret_decrypted_data, size_t *ret_decrypted_data_size);
+ 
+ int pkcs11_token_acquire_rng(CK_FUNCTION_LIST *m, CK_SESSION_HANDLE session);
+ 
+@@ -74,7 +75,7 @@ typedef int (*pkcs11_find_token_callback_t)(CK_FUNCTION_LIST *m, CK_SESSION_HAND
+ int pkcs11_find_token(const char *pkcs11_uri, pkcs11_find_token_callback_t callback, void *userdata);
+ 
+ #if HAVE_OPENSSL
+-int pkcs11_acquire_public_key(const char *uri, const char *askpw_friendly_name, const char *askpw_icon, const char *askpw_credential, AskPasswordFlags askpw_flags, EVP_PKEY **ret_pkey, char **ret_pin_used);
++int pkcs11_acquire_public_key(const char *uri, const char *askpw_friendly_name, const char *askpw_icon, const char *askpw_credential, AskPasswordFlags askpw_flags, EVP_PKEY **ret_pkey, Pkcs11RsaPadding *ret_rsa_padding, char **ret_pin_used);
+ #endif
+ 
+ typedef struct {
+@@ -87,6 +88,7 @@ typedef struct {
+         bool free_encrypted_key;
+         const char *askpw_credential;
+         AskPasswordFlags askpw_flags;
++        Pkcs11RsaPadding rsa_padding;
+ } pkcs11_crypt_device_callback_data;
+ 
+ void pkcs11_crypt_device_callback_data_release(pkcs11_crypt_device_callback_data *data);
+diff --git a/src/shared/user-record.c b/src/shared/user-record.c
+index 7c64171bf5..50b30fb256 100644
+--- a/src/shared/user-record.c
++++ b/src/shared/user-record.c
+@@ -729,6 +729,29 @@ static int dispatch_pkcs11_key_data(const char *name, sd_json_variant *variant,
+         return 0;
+ }
+ 
++static int dispatch_pkcs11_padding(const char *name, sd_json_variant *variant, sd_json_dispatch_flags_t flags, void *userdata) {
++        Pkcs11RsaPadding *p = ASSERT_PTR(userdata);
++        Pkcs11RsaPadding v;
++
++        if (sd_json_variant_is_null(variant)) {
++                *p = PKCS11_RSA_PADDING_PKCS1V15;
++                return 0;
++        }
++
++        if (!sd_json_variant_is_string(variant))
++                return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL),
++                                "JSON field '%s' is not a string.", strna(name));
++
++        v = pkcs11_rsa_padding_from_string(sd_json_variant_string(variant));
++        if (v < 0)
++                return json_log(variant, flags, v,
++                                "JSON field '%s' has unsupported value '%s'.",
++                                strna(name), sd_json_variant_string(variant));
++
++        *p = v;
++        return 0;
++}
++
+ static int dispatch_pkcs11_key(const char *name, sd_json_variant *variant, sd_json_dispatch_flags_t flags, void *userdata) {
+         UserRecord *h = userdata;
+         sd_json_variant *e;
+@@ -742,6 +765,7 @@ static int dispatch_pkcs11_key(const char *name, sd_json_variant *variant, sd_js
+                         { "uri",            SD_JSON_VARIANT_STRING, dispatch_pkcs11_uri,      offsetof(Pkcs11EncryptedKey, uri),             SD_JSON_MANDATORY },
+                         { "data",           SD_JSON_VARIANT_STRING, dispatch_pkcs11_key_data, 0,                                             SD_JSON_MANDATORY },
+                         { "hashedPassword", SD_JSON_VARIANT_STRING, sd_json_dispatch_string,  offsetof(Pkcs11EncryptedKey, hashed_password), SD_JSON_MANDATORY },
++                        { "padding",        SD_JSON_VARIANT_STRING, dispatch_pkcs11_padding,  offsetof(Pkcs11EncryptedKey, padding),         0                 },
+                         {},
+                 };
+ 
+@@ -752,7 +776,9 @@ static int dispatch_pkcs11_key(const char *name, sd_json_variant *variant, sd_js
+                         return log_oom();
+ 
+                 Pkcs11EncryptedKey *k = h->pkcs11_encrypted_key + h->n_pkcs11_encrypted_key;
+-                *k = (Pkcs11EncryptedKey) {};
++                *k = (Pkcs11EncryptedKey) {
++                        .padding = PKCS11_RSA_PADDING_PKCS1V15, /* legacy default if field is absent */
++                };
+ 
+                 r = sd_json_dispatch(e, pkcs11_key_dispatch_table, flags, k);
+                 if (r < 0) {
+diff --git a/src/shared/user-record.h b/src/shared/user-record.h
+index 4eb35d43e4..8a20a5535d 100644
+--- a/src/shared/user-record.h
++++ b/src/shared/user-record.h
+@@ -6,6 +6,7 @@
+ #include "sd-id128.h"
+ 
+ #include "bitfield.h"
++#include "pkcs11-padding.h"
+ #include "rlimit-util.h"
+ #include "shared-forward.h"
+ 
+@@ -189,6 +190,10 @@ typedef struct Pkcs11EncryptedKey {
+         /* Where to find the private key to decrypt the encrypted passphrase above */
+         char *uri;
+ 
++        /* Which RSA padding scheme was used to wrap the encrypted passphrase. Defaults to PKCS#1 v1.5 for
++         * legacy records that omit the field; new enrollments use RSA-OAEP with SHA-256 or SHA-1. */
++        Pkcs11RsaPadding padding;
++
+         /* What to test the decrypted passphrase against to allow access (classic UNIX password hash).  Note
+          * that the decrypted passphrase is also used for unlocking LUKS and fscrypt, and if the account is
+          * backed by LUKS or fscrypt the hashed password is only an additional layer of authentication, not
+diff --git a/test/units/TEST-24-CRYPTSETUP.sh b/test/units/TEST-24-CRYPTSETUP.sh
+index be0efa013c..a2afd7d720 100755
+--- a/test/units/TEST-24-CRYPTSETUP.sh
++++ b/test/units/TEST-24-CRYPTSETUP.sh
+@@ -261,6 +261,64 @@ if [[ -d /usr/lib/softhsm/tokens ]]; then
+     cryptsetup_start_and_check empty_pkcs11_auto
+     cryptsetup luksKillSlot -q "$IMAGE_EMPTY" 2
+     cryptsetup token remove --token-id 0 "$IMAGE_EMPTY"
++
++    # Verify that new RSA enrollments tag the LUKS2 token with the OAEP padding scheme. Old systemd
++    # versions ignore this field and fall back to PKCS#1 v1.5, which causes the token to refuse to
++    # decrypt the OAEP-wrapped blob, so this metadata is what makes graceful rejection on old systems
++    # possible. The actual OAEP hash variant (SHA-1 vs SHA-256) is probed at enrollment time and
++    # depends on what the token supports, but SoftHSM through at least 2.7.0 only accepts SHA-1
++    PIN="1234" systemd-cryptenroll --pkcs11-token-uri="pkcs11:token=TestToken;object=RSATestKey" --unlock-key-file="$IMAGE_EMPTY_KEYFILE" "$IMAGE_EMPTY"
++    cryptsetup luksDump --dump-json-metadata "$IMAGE_EMPTY" |
++        jq -e '.tokens | with_entries(select(.value.type == "systemd-pkcs11"))[]["pkcs11-padding"] | select(. == "oaep-sha256" or . == "oaep-sha1")' >/dev/null
++
++    # Forward-compat negative check: tampering with the padding tag must cause unlocking to fail
++    # cleanly (the token rejects the OAEP blob when asked to do PKCS#1 v1.5, and vice versa).
++    TOKEN_ID=$(cryptsetup luksDump --dump-json-metadata "$IMAGE_EMPTY" |
++        jq -r '.tokens | to_entries[] | select(.value.type == "systemd-pkcs11") | .key' | head -n1)
++    cryptsetup token export --token-id "$TOKEN_ID" "$IMAGE_EMPTY" |
++        jq '. + {"pkcs11-padding": "pkcs1"}' >"$WORKDIR/tampered-token.json"
++    cryptsetup token remove --token-id "$TOKEN_ID" "$IMAGE_EMPTY"
++    cryptsetup token import --json-file="$WORKDIR/tampered-token.json" --token-id "$TOKEN_ID" "$IMAGE_EMPTY"
++    cryptsetup_start_and_check -f empty_pkcs11_auto
++    # Restore the correct token and confirm unlock works again.
++    cryptsetup token remove --token-id "$TOKEN_ID" "$IMAGE_EMPTY"
++    cryptsetup luksKillSlot -q "$IMAGE_EMPTY" 2
++
++    PIN="1234" systemd-cryptenroll --pkcs11-token-uri="pkcs11:token=TestToken;object=RSATestKey" --unlock-key-file="$IMAGE_EMPTY_KEYFILE" "$IMAGE_EMPTY"
++    cryptsetup_start_and_check empty_pkcs11_auto
++    cryptsetup luksKillSlot -q "$IMAGE_EMPTY" 2
++    cryptsetup token remove --token-id 0 "$IMAGE_EMPTY"
++
++    # Backward-compat check: mock a legacy LUKS2 token wrapped with PKCS#1 v1.5 (no
++    # 'pkcs11-padding' field) and verify the new code can still decrypt it
++    SOFTHSM_MODULE=$(awk -F: '/^[[:space:]]*module[[:space:]]*:/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' /usr/share/p11-kit/modules/softhsm2.module)
++    [[ -n "$SOFTHSM_MODULE" ]] || { echo "Could not locate libsofthsm2.so via /usr/share/p11-kit/modules/softhsm2.module" >&2; exit 1; }
++    # Read the RSA public key out of the matching certificate object on the token, generate random key and
++    # wrap it
++    pkcs11-tool --module "$SOFTHSM_MODULE" --token-label TestToken --pin 1234 \
++                --read-object --type cert --label RSATestKey --output-file "$WORKDIR/rsa.der"
++    openssl x509 -inform DER -in "$WORKDIR/rsa.der" -pubkey -noout >"$WORKDIR/rsa-pub.pem"
++    openssl rand -out "$WORKDIR/decrypted.bin" 32
++    openssl pkeyutl -encrypt -pubin -inkey "$WORKDIR/rsa-pub.pem" \
++                    -pkeyopt rsa_padding_mode:pkcs1 \
++                    -in "$WORKDIR/decrypted.bin" -out "$WORKDIR/encrypted.bin"
++    base64 -w0 "$WORKDIR/decrypted.bin" >"$WORKDIR/passphrase"
++    cryptsetup luksAddKey --batch-mode --key-file="$IMAGE_EMPTY_KEYFILE" "$IMAGE_EMPTY" "$WORKDIR/passphrase"
++    LEGACY_SLOT=$(cryptsetup luksDump --dump-json-metadata "$IMAGE_EMPTY" |
++        jq -r '.keyslots | keys | map(tonumber) | max')
++    ENCRYPTED_B64=$(base64 -w0 "$WORKDIR/encrypted.bin")
++    cat >"$WORKDIR/legacy-token.json" <<EOF
++{
++    "type": "systemd-pkcs11",
++    "keyslots": ["$LEGACY_SLOT"],
++    "pkcs11-uri": "pkcs11:token=TestToken;object=RSATestKey;type=private",
++    "pkcs11-key": "$ENCRYPTED_B64"
++}
++EOF
++    cryptsetup token import --json-file="$WORKDIR/legacy-token.json" "$IMAGE_EMPTY"
++    cryptsetup_start_and_check empty_pkcs11_auto
++    cryptsetup luksKillSlot -q "$IMAGE_EMPTY" "$LEGACY_SLOT"
++    cryptsetup token remove --token-id 0 "$IMAGE_EMPTY"
+ fi
+ 
+ cryptsetup_start_and_check detached
+-- 
+2.50.1

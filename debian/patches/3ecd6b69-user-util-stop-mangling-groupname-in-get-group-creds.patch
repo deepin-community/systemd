@@ -1,0 +1,340 @@
+diff --git a/src/basic/user-util.c b/src/basic/user-util.c
+index b735d27474..b531761800 100644
+--- a/src/basic/user-util.c
++++ b/src/basic/user-util.c
+@@ -352,91 +352,75 @@ int get_user_creds(
+         return 0;
+ }
+ 
+-static int synthesize_group_creds(
+-                const char **groupname,
+-                gid_t *ret_gid) {
+-
++static int synthesize_group_creds(const char *groupname, char **ret_name, gid_t *ret_gid) {
+         assert(groupname);
+-        assert(*groupname);
+-
+-        if (STR_IN_SET(*groupname, "root", "0")) {
+-                *groupname = "root";
+-
+-                if (ret_gid)
+-                        *ret_gid = 0;
+-
+-                return 0;
+-        }
+-
+-        if (STR_IN_SET(*groupname, NOBODY_GROUP_NAME, "65534") &&
+-            synthesize_nobody()) {
+-                *groupname = NOBODY_GROUP_NAME;
+-
+-                if (ret_gid)
+-                        *ret_gid = GID_NOBODY;
+ 
+-                return 0;
+-        }
++        gid_t id;
++        const char *n;
++        int r;
+ 
+-        return -ENOMEDIUM;
++        if (STR_IN_SET(groupname, "root", "0")) {
++                id = 0;
++                n = "root";
++        } else if (STR_IN_SET(groupname, NOBODY_GROUP_NAME, "65534") &&
++                   synthesize_nobody()) {
++                id = GID_NOBODY;
++                n = NOBODY_GROUP_NAME;
++        } else
++                return -ENOMEDIUM;
++
++        r = strdup_to_full(ret_name, n);
++        if (r < 0)
++                return r;
++        if (ret_gid)
++                *ret_gid = id;
++        return 0;
+ }
+ 
+-int get_group_creds(const char **groupname, gid_t *ret_gid, UserCredsFlags flags) {
+-        bool patch_groupname = false;
+-        struct group *g;
++int get_group_creds(const char *groupname, UserCredsFlags flags, char **ret_name, gid_t *ret_gid) {
++        _cleanup_free_ struct group *gr = NULL;
+         gid_t id;
+         int r;
+ 
+         assert(groupname);
+-        assert(*groupname);
+ 
+         if (!FLAGS_SET(flags, USER_CREDS_PREFER_NSS)) {
+-                r = synthesize_group_creds(groupname, ret_gid);
++                r = synthesize_group_creds(groupname, ret_name, ret_gid);
+                 if (r >= 0)
+                         return 0;
+                 if (r != -ENOMEDIUM) /* not a groupname we can synthesize */
+                         return r;
+         }
+ 
+-        if (parse_gid(*groupname, &id) >= 0) {
+-                errno = 0;
+-                g = getgrgid(id);
+-
+-                if (g)
+-                        patch_groupname = true;
++        if (parse_gid(groupname, &id) >= 0) {
++                r = getgrgid_malloc(id, &gr);
++                if (r >= 0)
++                        groupname = gr->gr_name;
+                 else if (FLAGS_SET(flags, USER_CREDS_ALLOW_MISSING)) {
+                         if (ret_gid)
+                                 *ret_gid = id;
+-
++                        if (ret_name)
++                                *ret_name = NULL;
+                         return 0;
+                 }
+-        } else {
+-                errno = 0;
+-                g = getgrnam(*groupname);
+-        }
+-
+-        if (!g) {
+-                /* getgrnam() may fail with ENOENT if /etc/group is missing.
+-                 * For us that is equivalent to the name not being defined. */
+-                r = IN_SET(errno, 0, ENOENT) ? -ESRCH : -errno;
+-
+-                if (FLAGS_SET(flags, USER_CREDS_PREFER_NSS))
+-                        if (synthesize_group_creds(groupname, ret_gid) >= 0)
+-                                return 0;
++        } else
++                r = getgrnam_malloc(groupname, &gr);
+ 
++        if (r < 0) {
++                if (FLAGS_SET(flags, USER_CREDS_PREFER_NSS) &&
++                    synthesize_group_creds(groupname, ret_name, ret_gid) >= 0)
++                        return 0;
+                 return r;
+         }
+ 
+-        if (ret_gid) {
+-                if (!gid_is_valid(g->gr_gid))
+-                        return -EBADMSG;
+-
+-                *ret_gid = g->gr_gid;
+-        }
+-
+-        if (patch_groupname)
+-                *groupname = g->gr_name;
++        if (ret_gid && !gid_is_valid(gr->gr_gid))
++                return -EBADMSG;
+ 
++        r = strdup_to_full(ret_name, groupname);
++        if (r < 0)
++                return r;
++        if (ret_gid)
++                *ret_gid = gr->gr_gid;
+         return 0;
+ }
+ 
+@@ -521,7 +505,7 @@ int in_group(const char *name) {
+         int r;
+         gid_t gid;
+ 
+-        r = get_group_creds(&name, &gid, 0);
++        r = get_group_creds(name, /* flags= */ 0, /* ret_name= */ NULL, &gid);
+         if (r < 0)
+                 return r;
+ 
+diff --git a/src/basic/user-util.h b/src/basic/user-util.h
+index a8902aca61..939d108ceb 100644
+--- a/src/basic/user-util.h
++++ b/src/basic/user-util.h
+@@ -63,7 +63,7 @@ typedef enum UserCredsFlags {
+ } UserCredsFlags;
+ 
+ int get_user_creds(const char **username, uid_t *ret_uid, gid_t *ret_gid, const char **ret_home, const char **ret_shell, UserCredsFlags flags);
+-int get_group_creds(const char **groupname, gid_t *ret_gid, UserCredsFlags flags);
++int get_group_creds(const char *groupname, UserCredsFlags flags, char **ret_name, gid_t *ret_gid);
+ 
+ char* uid_to_name(uid_t uid);
+ char* gid_to_name(gid_t gid);
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+index 7370bc965f..1c883ff164 100644
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -902,26 +902,6 @@ static int get_fixed_user(
+         return 0;
+ }
+ 
+-static int get_fixed_group(
+-                const char *group_or_gid,
+-                const char **ret_groupname,
+-                gid_t *ret_gid) {
+-
+-        int r;
+-
+-        assert(group_or_gid);
+-        assert(ret_groupname);
+-
+-        r = get_group_creds(&group_or_gid, ret_gid, /* flags= */ 0);
+-        if (r < 0)
+-                return r;
+-
+-        /* group_or_gid is normalized by get_group_creds to groupname */
+-        *ret_groupname = group_or_gid;
+-
+-        return 0;
+-}
+-
+ static int get_supplementary_groups(
+                 const ExecContext *c,
+                 const char *user,
+@@ -989,8 +969,7 @@ static int get_supplementary_groups(
+                 if (k >= ngroups_max)
+                         return -E2BIG;
+ 
+-                const char *g = *i;
+-                r = get_group_creds(&g, l_gids + k, /* flags= */ 0);
++                r = get_group_creds(*i, /* flags= */ 0, /* ret_name= */ NULL, l_gids + k);
+                 if (r < 0)
+                         return r;
+ 
+@@ -5182,7 +5161,7 @@ int exec_invoke(
+ 
+         _cleanup_strv_free_ char **our_env = NULL, **pass_env = NULL, **joined_exec_search_path = NULL, **accum_env = NULL;
+         int r;
+-        const char *username = NULL, *groupname = NULL;
++        const char *username = NULL;
+         _cleanup_free_ char *home_buffer = NULL, *own_user = NULL;
+         _cleanup_(free_pressure_paths) char *pressure_path[_PRESSURE_RESOURCE_MAX] = {};
+         const char *pwent_home = NULL, *shell = NULL;
+@@ -5454,11 +5433,11 @@ int exec_invoke(
+                 }
+ 
+                 if (context->group) {
+-                        r = get_fixed_group(context->group, &groupname, &gid);
++                        r = get_group_creds(context->group, /* flags= */ 0, /* ret_name= */ NULL, &gid);
+                         if (r < 0) {
+                                 *exit_status = EXIT_GROUP;
+                                 log_error_errno(r, "Failed to determine credentials for group '%s': %s",
+-                                                u, STRERROR_GROUP(r));
++                                                context->group, STRERROR_GROUP(r));
+                                 return ERRNO_IS_NEG_BAD_ACCOUNT(r) ? -EINVAL : r;  /* Suppress confusing errno */
+                         }
+                 }
+diff --git a/src/core/scope.c b/src/core/scope.c
+index 167d3a37bd..f75c600829 100644
+--- a/src/core/scope.c
++++ b/src/core/scope.c
+@@ -356,13 +356,11 @@ static int scope_enter_start_chown(Scope *s) {
+                 }
+ 
+                 if (!isempty(s->group)) {
+-                        const char *group = s->group;
+-
+-                        r = get_group_creds(&group, &gid, 0);
++                        r = get_group_creds(s->group, /* flags= */ 0, /* ret_name= */ NULL, &gid);
+                         if (r < 0) {
+                                 log_unit_error_errno(UNIT(s), r,
+                                                      "Failed to resolve group '%s': %s",
+-                                                     group, STRERROR_GROUP(r));
++                                                     s->group, STRERROR_GROUP(r));
+                                 _exit(EXIT_GROUP);
+                         }
+                 }
+diff --git a/src/core/socket.c b/src/core/socket.c
+index 2cdb34c4be..c31e83fefe 100644
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -2057,13 +2057,11 @@ static int socket_chown(Socket *s, PidRef *ret_pid) {
+                 }
+ 
+                 if (!isempty(s->group)) {
+-                        const char *group = s->group;
+-
+-                        r = get_group_creds(&group, &gid, 0);
++                        r = get_group_creds(s->group, /* flags= */ 0, /* ret_name= */ NULL, &gid);
+                         if (r < 0) {
+                                 log_unit_error_errno(UNIT(s), r,
+                                                      "Failed to resolve group '%s': %s",
+-                                                     group, STRERROR_GROUP(r));
++                                                     s->group, STRERROR_GROUP(r));
+                                 _exit(EXIT_GROUP);
+                         }
+                 }
+diff --git a/src/run/run.c b/src/run/run.c
+index 60f3bf7405..d1f8200199 100644
+--- a/src/run/run.c
++++ b/src/run/run.c
+@@ -2571,7 +2571,7 @@ static int start_transient_scope(sd_bus *bus) {
+         if (arg_exec_group) {
+                 gid_t gid;
+ 
+-                r = get_group_creds(&arg_exec_group, &gid, 0);
++                r = get_group_creds(arg_exec_group, /* flags= */ 0, /* ret_name= */ NULL, &gid);
+                 if (r < 0)
+                         return log_error_errno(r, "Failed to resolve group '%s': %s",
+                                                arg_exec_group, STRERROR_GROUP(r));
+@@ -2615,10 +2615,9 @@ static int start_transient_scope(sd_bus *bus) {
+                 if (r < 0)
+                         return log_oom();
+ 
+-                if (!arg_exec_group) {
+-                        if (setresgid(gid, gid, gid) < 0)
+-                                return log_error_errno(errno, "Failed to change GID to " GID_FMT ": %m", gid);
+-                }
++                if (!arg_exec_group &&
++                    setresgid(gid, gid, gid) < 0)
++                        return log_error_errno(errno, "Failed to change GID to " GID_FMT ": %m", gid);
+ 
+                 if (setresuid(uid, uid, uid) < 0)
+                         return log_error_errno(errno, "Failed to change UID to " UID_FMT ": %m", uid);
+diff --git a/src/test/test-user-util.c b/src/test/test-user-util.c
+index 47bd01f9d0..f5bb24f32a 100644
+--- a/src/test/test-user-util.c
++++ b/src/test/test-user-util.c
+@@ -317,21 +317,22 @@ TEST(get_user_creds) {
+         test_get_user_creds_one("65534", NOBODY_USER_NAME, UID_NOBODY, GID_NOBODY, "/", NOLOGIN);
+ }
+ 
+-static void test_get_group_creds_one(const char *id, const char *name, gid_t gid) {
++static void test_get_group_creds_one(const char *id, const char *expected_name, gid_t expected_gid) {
+         gid_t rgid = GID_INVALID;
++        _cleanup_free_ char *rnam = NULL;
+         int r;
+ 
+-        log_info("/* %s(\"%s\", \"%s\", "GID_FMT") */", __func__, id, name, gid);
++        log_info("/* %s(\"%s\", \"%s\", "GID_FMT") */", __func__, id, expected_name, expected_gid);
+ 
+-        r = get_group_creds(&id, &rgid, 0);
+-        log_info_errno(r, "got \"%s\", "GID_FMT": %m", id, rgid);
+-        if (!synthesize_nobody() && streq(name, NOBODY_GROUP_NAME)) {
++        r = get_group_creds(id, /* flags= */ 0, &rnam, &rgid);
++        log_info_errno(r, "→ \"%s\", "GID_FMT": %m", strnull(rnam), rgid);
++        if (!synthesize_nobody() && streq(expected_name, NOBODY_GROUP_NAME)) {
+                 log_info("(skipping detailed tests because nobody is not synthesized)");
+                 return;
+         }
+         ASSERT_OK(r);
+-        ASSERT_STREQ(id, name);
+-        ASSERT_EQ(rgid, gid);
++        ASSERT_STREQ(rnam, expected_name);
++        ASSERT_EQ(rgid, expected_gid);
+ }
+ 
+ TEST(get_group_creds) {
+diff --git a/src/tmpfiles/tmpfiles.c b/src/tmpfiles/tmpfiles.c
+index 8b7b676598..09ab88931e 100644
+--- a/src/tmpfiles/tmpfiles.c
++++ b/src/tmpfiles/tmpfiles.c
+@@ -3796,7 +3796,7 @@ static int find_gid(const char *group, gid_t *ret_gid, Hashmap **cache) {
+ 
+         /* Second: pass to NSS if we are running "online" */
+         if (!arg_root)
+-                return get_group_creds(&group, ret_gid, 0);
++                return get_group_creds(group, /* flags= */ 0, /* ret_name= */ NULL, ret_gid);
+ 
+         /* Third, synthesize "root" unconditionally */
+         if (streq(group, "root")) {
+-- 
+2.50.1

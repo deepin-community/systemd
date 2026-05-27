@@ -1,0 +1,14 @@
+diff --git a/src/shared/meson.build b/src/shared/meson.build
+index 4d11a2637f..82072b06b6 100644
+--- a/src/shared/meson.build
++++ b/src/shared/meson.build
+@@ -410,6 +410,7 @@ libshared_deps = [libacl_cflags,
+                   libqrencode_cflags,
+                   libseccomp_cflags,
+                   libselinux_cflags,
++                  libucontext,
+                   libxenctrl_cflags,
+                   libxz_cflags,
+                   libzstd_cflags,
+-- 
+2.50.1

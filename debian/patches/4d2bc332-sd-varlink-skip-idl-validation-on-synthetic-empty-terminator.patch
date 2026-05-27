@@ -1,0 +1,79 @@
+diff --git a/src/libsystemd/sd-varlink/sd-varlink.c b/src/libsystemd/sd-varlink/sd-varlink.c
+index af9dd30973..1b0efa3992 100644
+--- a/src/libsystemd/sd-varlink/sd-varlink.c
++++ b/src/libsystemd/sd-varlink/sd-varlink.c
+@@ -73,6 +73,7 @@ static const char* const varlink_state_table[_VARLINK_STATE_MAX] = {
+ DEFINE_PRIVATE_STRING_TABLE_LOOKUP_TO_STRING(varlink_state, VarlinkState);
+ 
+ static void varlink_server_test_exit_on_idle(sd_varlink_server *s);
++static int varlink_reply_terminator(sd_varlink *v);
+ 
+ static void varlink_set_state(sd_varlink *v, VarlinkState state) {
+         assert(v);
+@@ -989,7 +990,9 @@ static int varlink_dispatch_sentinel(sd_varlink *v) {
+         /* Propagate the sentinel to the client if one was configured and no replies were enqueued by
+          * the callback. */
+         if (sentinel == POINTER_MAX)
+-                r = sd_varlink_reply(v, NULL);
++                /* Synthetic empty terminator. Skip IDL validation since the empty parameters wouldn't
++                 * satisfy any mandatory output fields the method declares. */
++                r = varlink_reply_terminator(v);
+         else {
+                 r = sd_varlink_error(v, sentinel, NULL);
+                 /* sd_varlink_error() deliberately returns a negative
+@@ -2298,10 +2301,10 @@ _public_ int sd_varlink_collectb(
+         return sd_varlink_collect_full(v, method, parameters, ret_parameters, ret_error_id, NULL);
+ }
+ 
+-_public_ int sd_varlink_reply(sd_varlink *v, sd_json_variant *parameters) {
++static int varlink_reply_internal(sd_varlink *v, sd_json_variant *parameters, bool skip_validation) {
+         int r;
+ 
+-        assert_return(v, -EINVAL);
++        assert(v);
+ 
+         if (v->state == VARLINK_DISCONNECTED)
+                 return varlink_log_errno(v, SYNTHETIC_ERRNO(ENOTCONN), "Not connected.");
+@@ -2313,8 +2316,9 @@ _public_ int sd_varlink_reply(sd_varlink *v, sd_json_variant *parameters) {
+ 
+         bool more = IN_SET(v->state, VARLINK_PROCESSING_METHOD_MORE, VARLINK_PENDING_METHOD_MORE);
+ 
+-        /* Validate parameters BEFORE sanitization */
+-        if (v->current_method) {
++        /* Validate parameters BEFORE sanitization. Validation should be skipped for the synthetic
++         * empty terminator. */
++        if (!skip_validation && v->current_method) {
+                 const char *bad_field = NULL;
+ 
+                 r = varlink_idl_validate_method_reply(v->current_method, parameters, more && v->sentinel ? SD_VARLINK_REPLY_CONTINUES : 0, &bad_field);
+@@ -2373,6 +2377,16 @@ _public_ int sd_varlink_reply(sd_varlink *v, sd_json_variant *parameters) {
+         return 1;
+ }
+ 
++static int varlink_reply_terminator(sd_varlink *v) {
++        return varlink_reply_internal(v, /* parameters= */ NULL, /* skip_validation= */ true);
++}
++
++_public_ int sd_varlink_reply(sd_varlink *v, sd_json_variant *parameters) {
++        assert_return(v, -EINVAL);
++
++        return varlink_reply_internal(v, parameters, /* skip_validation= */ false);
++}
++
+ _public_ int sd_varlink_replyb(sd_varlink *v, ...) {
+         _cleanup_(sd_json_variant_unrefp) sd_json_variant *parameters = NULL;
+         va_list ap;
+diff --git a/src/pcrlock/pcrlock.c b/src/pcrlock/pcrlock.c
+index a0d415209c..247c36cca1 100644
+--- a/src/pcrlock/pcrlock.c
++++ b/src/pcrlock/pcrlock.c
+@@ -5406,7 +5406,6 @@ static int vl_method_read_event_log(sd_varlink *link, sd_json_variant *parameter
+         if (r < 0)
+                 return r;
+ 
+-        // FIXME: We can't use a NULL sentinel here because the output fields in the IDL are non-nullable.
+         r = sd_varlink_set_sentinel(link, NULL);
+         if (r < 0)
+                 return r;
+-- 
+2.50.1

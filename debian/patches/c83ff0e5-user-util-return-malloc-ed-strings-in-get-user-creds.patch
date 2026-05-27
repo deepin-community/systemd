@@ -1,0 +1,819 @@
+diff --git a/src/basic/user-util.c b/src/basic/user-util.c
+index b531761800..aa629083c2 100644
+--- a/src/basic/user-util.c
++++ b/src/basic/user-util.c
+@@ -204,67 +204,97 @@ const char* default_root_shell(const char *root) {
+         return default_root_shell_at(rfd);
+ }
+ 
+-static int synthesize_user_creds(
+-                const char **username,
++static int return_user_creds(
++                const char *username,
++                uid_t uid, gid_t gid,
++                const char *home,
++                const char *shell,
++                char **ret_username,
+                 uid_t *ret_uid, gid_t *ret_gid,
+-                const char **ret_home,
+-                const char **ret_shell,
+-                UserCredsFlags flags) {
+-
+-        assert(username);
+-        assert(*username);
++                char **ret_home,
++                char **ret_shell) {
++        /* Helper function to help with the strdups and atomic setting of return params. */
+ 
+-        /* We enforce some special rules for uid=0 and uid=65534: in order to avoid NSS lookups for root we hardcode
+-         * their user record data. */
++        _cleanup_free_ char *s1 = NULL, *s2 = NULL, *s3 = NULL;
++        int r;
+ 
+-        if (STR_IN_SET(*username, "root", "0")) {
+-                *username = "root";
++        if (ret_username) {
++                r = strdup_to(&s1, username);
++                if (r < 0)
++                        return r;
++        }
+ 
+-                if (ret_uid)
+-                        *ret_uid = 0;
+-                if (ret_gid)
+-                        *ret_gid = 0;
+-                if (ret_home)
+-                        *ret_home = "/root";
+-                if (ret_shell)
+-                        *ret_shell = default_root_shell(NULL);
++        if (ret_home) {
++                r = strdup_to(&s2, home);
++                if (r < 0)
++                        return r;
++        }
+ 
+-                return 0;
++        if (ret_shell) {
++                r = strdup_to(&s3, shell);
++                if (r < 0)
++                        return r;
+         }
+ 
+-        if (STR_IN_SET(*username, NOBODY_USER_NAME, "65534") &&
+-            synthesize_nobody()) {
+-                *username = NOBODY_USER_NAME;
++        if (ret_username)
++                *ret_username = TAKE_PTR(s1);
++        if (ret_uid)
++                *ret_uid = uid;
++        if (ret_gid)
++                *ret_gid = gid;
++        if (ret_home)
++                *ret_home = TAKE_PTR(s2);
++        if (ret_shell)
++                *ret_shell = TAKE_PTR(s3);
++        return 0;
++}
+ 
+-                if (ret_uid)
+-                        *ret_uid = UID_NOBODY;
+-                if (ret_gid)
+-                        *ret_gid = GID_NOBODY;
+-                if (ret_home)
+-                        *ret_home = FLAGS_SET(flags, USER_CREDS_SUPPRESS_PLACEHOLDER) ? NULL : "/";
+-                if (ret_shell)
+-                        *ret_shell = FLAGS_SET(flags, USER_CREDS_SUPPRESS_PLACEHOLDER) ? NULL : NOLOGIN;
++static int synthesize_user_creds(
++                const char *username,
++                UserCredsFlags flags,
++                char **ret_username,
++                uid_t *ret_uid, gid_t *ret_gid,
++                char **ret_home,
++                char **ret_shell) {
++        assert(username);
+ 
+-                return 0;
+-        }
++        /* We enforce some special rules for uid=0 and uid=65534: in order to avoid nss lookups for root we
++         * hardcode their user record data. */
++        if (STR_IN_SET(username, "root", "0"))
++                return return_user_creds("root", 0, 0,
++                                         "/root",
++                                         ret_shell ? default_root_shell(NULL) : NULL,
++                                         ret_username,
++                                         ret_uid, ret_gid,
++                                         ret_home,
++                                         ret_shell);
++
++        if (STR_IN_SET(username, NOBODY_USER_NAME, "65534") &&
++            synthesize_nobody())
++                return return_user_creds(NOBODY_USER_NAME, UID_NOBODY, GID_NOBODY,
++                                         FLAGS_SET(flags, USER_CREDS_SUPPRESS_PLACEHOLDER) ? NULL : "/",
++                                         FLAGS_SET(flags, USER_CREDS_SUPPRESS_PLACEHOLDER) ? NULL : NOLOGIN,
++                                         ret_username,
++                                         ret_uid, ret_gid,
++                                         ret_home,
++                                         ret_shell);
+ 
+         return -ENOMEDIUM;
+ }
+ 
+ int get_user_creds(
+-                const char **username,
++                const char *username,
++                UserCredsFlags flags,
++                char **ret_username,
+                 uid_t *ret_uid, gid_t *ret_gid,
+-                const char **ret_home,
+-                const char **ret_shell,
+-                UserCredsFlags flags) {
++                char **ret_home,
++                char **ret_shell) {
+ 
+-        bool patch_username = false;
+         uid_t u = UID_INVALID;
+-        struct passwd *p;
++        _cleanup_free_ struct passwd *pw = NULL;
+         int r;
+ 
+         assert(username);
+-        assert(*username);
+         assert((ret_home || ret_shell) || !(flags & (USER_CREDS_SUPPRESS_PLACEHOLDER|USER_CREDS_CLEAN)));
+ 
+         if (!FLAGS_SET(flags, USER_CREDS_PREFER_NSS) ||
+@@ -279,77 +309,63 @@ int get_user_creds(
+                  * of the relevant users, but changing the UID/GID mappings for them is something we explicitly don't
+                  * support. */
+ 
+-                r = synthesize_user_creds(username, ret_uid, ret_gid, ret_home, ret_shell, flags);
++                r = synthesize_user_creds(username, flags, ret_username, ret_uid, ret_gid, ret_home, ret_shell);
+                 if (r >= 0)
+                         return 0;
+                 if (r != -ENOMEDIUM) /* not a username we can synthesize */
+                         return r;
+         }
+ 
+-        if (parse_uid(*username, &u) >= 0) {
+-                errno = 0;
+-                p = getpwuid(u);
++        if (parse_uid(username, &u) >= 0) {
++                r = getpwuid_malloc(u, &pw);
+ 
+                 /* If there are multiple users with the same id, make sure to leave $USER to the configured value
+                  * instead of the first occurrence in the database. However if the uid was configured by a numeric uid,
+                  * then let's pick the real username from /etc/passwd. */
+-                if (p)
+-                        patch_username = true;
+-                else if (FLAGS_SET(flags, USER_CREDS_ALLOW_MISSING) && !ret_gid && !ret_home && !ret_shell) {
++                if (r >= 0)
++                        username = pw->pw_name;
+ 
++                else if (FLAGS_SET(flags, USER_CREDS_ALLOW_MISSING) && !ret_gid && !ret_home && !ret_shell) {
+                         /* If the specified user is a numeric UID and it isn't in the user database, and the caller
+                          * passed USER_CREDS_ALLOW_MISSING and was only interested in the UID, then just return that
+                          * and don't complain. */
+-
++                        if (ret_username)
++                                *ret_username = NULL;
+                         if (ret_uid)
+                                 *ret_uid = u;
+-
+                         return 0;
+                 }
+-        } else {
+-                errno = 0;
+-                p = getpwnam(*username);
+-        }
+-        if (!p) {
+-                /* getpwnam() may fail with ENOENT if /etc/passwd is missing.
+-                 * For us that is equivalent to the name not being defined. */
+-                r = IN_SET(errno, 0, ENOENT) ? -ESRCH : -errno;
++        } else
++                r = getpwnam_malloc(username, &pw);
+ 
++        if (r < 0) {
+                 /* If the user requested that we only synthesize as fallback, do so now */
+-                if (FLAGS_SET(flags, USER_CREDS_PREFER_NSS))
+-                        if (synthesize_user_creds(username, ret_uid, ret_gid, ret_home, ret_shell, flags) >= 0)
+-                                return 0;
++                if (FLAGS_SET(flags, USER_CREDS_PREFER_NSS) &&
++                    synthesize_user_creds(username, flags, ret_username, ret_uid, ret_gid, ret_home, ret_shell) >= 0)
++                        return 0;
+ 
+                 return r;
+         }
+ 
+-        if (ret_uid && !uid_is_valid(p->pw_uid))
++        if (ret_uid && !uid_is_valid(pw->pw_uid))
+                 return -EBADMSG;
+ 
+-        if (ret_gid && !gid_is_valid(p->pw_gid))
++        if (ret_gid && !gid_is_valid(pw->pw_gid))
+                 return -EBADMSG;
+ 
+-        if (ret_uid)
+-                *ret_uid = p->pw_uid;
+-
+-        if (ret_gid)
+-                *ret_gid = p->pw_gid;
++        /* Note: we don't insist on normalized paths, since there are setups that have /./ in the path */
++        const char *h =
++                (FLAGS_SET(flags, USER_CREDS_SUPPRESS_PLACEHOLDER) && empty_or_root(pw->pw_dir)) ||
++                (FLAGS_SET(flags, USER_CREDS_CLEAN) && (!path_is_valid(pw->pw_dir) || !path_is_absolute(pw->pw_dir)))
++                ? NULL : pw->pw_dir;
+ 
+-        if (ret_home)
+-                /* Note: we don't insist on normalized paths, since there are setups that have /./ in the path */
+-                *ret_home = (FLAGS_SET(flags, USER_CREDS_SUPPRESS_PLACEHOLDER) && empty_or_root(p->pw_dir)) ||
+-                            (FLAGS_SET(flags, USER_CREDS_CLEAN) && (!path_is_valid(p->pw_dir) || !path_is_absolute(p->pw_dir)))
+-                            ? NULL : p->pw_dir;
++        const char *s =
++                (FLAGS_SET(flags, USER_CREDS_SUPPRESS_PLACEHOLDER) && shell_is_placeholder(pw->pw_shell)) ||
++                (FLAGS_SET(flags, USER_CREDS_CLEAN) && (!path_is_valid(pw->pw_shell) || !path_is_absolute(pw->pw_shell)))
++                ? NULL : pw->pw_shell;
+ 
+-        if (ret_shell)
+-                *ret_shell = (FLAGS_SET(flags, USER_CREDS_SUPPRESS_PLACEHOLDER) && shell_is_placeholder(p->pw_shell)) ||
+-                             (FLAGS_SET(flags, USER_CREDS_CLEAN) && (!path_is_valid(p->pw_shell) || !path_is_absolute(p->pw_shell)))
+-                             ? NULL : p->pw_shell;
+-
+-        if (patch_username)
+-                *username = p->pw_name;
+-
+-        return 0;
++        return return_user_creds(username, pw->pw_uid, pw->pw_gid, h, s,
++                                 ret_username, ret_uid, ret_gid, ret_home, ret_shell);
+ }
+ 
+ static int synthesize_group_creds(const char *groupname, char **ret_name, gid_t *ret_gid) {
+@@ -1055,7 +1071,7 @@ int is_this_me(const char *username) {
+ 
+         /* Checks if the specified username is our current one. Passed string might be a UID or a user name. */
+ 
+-        r = get_user_creds(&username, &uid, NULL, NULL, NULL, USER_CREDS_ALLOW_MISSING);
++        r = get_user_creds(username, /* flags= */ USER_CREDS_ALLOW_MISSING, NULL, &uid, NULL, NULL, NULL);
+         if (r < 0)
+                 return r;
+ 
+@@ -1063,10 +1079,8 @@ int is_this_me(const char *username) {
+ }
+ 
+ const char* get_home_root(void) {
+-        const char *e;
+-
+         /* For debug purposes allow overriding where we look for home dirs */
+-        e = secure_getenv("SYSTEMD_HOME_ROOT");
++        const char *e = secure_getenv("SYSTEMD_HOME_ROOT");
+         if (e && path_is_absolute(e) && path_is_normalized(e))
+                 return e;
+ 
+diff --git a/src/basic/user-util.h b/src/basic/user-util.h
+index 939d108ceb..641bdc06b0 100644
+--- a/src/basic/user-util.h
++++ b/src/basic/user-util.h
+@@ -62,7 +62,13 @@ typedef enum UserCredsFlags {
+         USER_CREDS_SUPPRESS_PLACEHOLDER = 1 << 3,  /* suppress home and/or shell fields if value is placeholder (root/empty/nologin) */
+ } UserCredsFlags;
+ 
+-int get_user_creds(const char **username, uid_t *ret_uid, gid_t *ret_gid, const char **ret_home, const char **ret_shell, UserCredsFlags flags);
++int get_user_creds(
++                const char *username,
++                UserCredsFlags flags,
++                char **ret_username,
++                uid_t *ret_uid, gid_t *ret_gid,
++                char **ret_home,
++                char **ret_shell);
+ int get_group_creds(const char *groupname, UserCredsFlags flags, char **ret_name, gid_t *ret_gid);
+ 
+ char* uid_to_name(uid_t uid);
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+index 1c883ff164..4f935c1439 100644
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -877,31 +877,6 @@ restore_stdio:
+         return r;
+ }
+ 
+-static int get_fixed_user(
+-                const char *user_or_uid,
+-                bool prefer_nss,
+-                const char **ret_username,
+-                uid_t *ret_uid,
+-                gid_t *ret_gid,
+-                const char **ret_home,
+-                const char **ret_shell) {
+-
+-        int r;
+-
+-        assert(user_or_uid);
+-        assert(ret_username);
+-
+-        r = get_user_creds(&user_or_uid, ret_uid, ret_gid, ret_home, ret_shell,
+-                           USER_CREDS_CLEAN|(prefer_nss ? USER_CREDS_PREFER_NSS : 0));
+-        if (r < 0)
+-                return r;
+-
+-        /* user_or_uid is normalized by get_user_creds to username */
+-        *ret_username = user_or_uid;
+-
+-        return 0;
+-}
+-
+ static int get_supplementary_groups(
+                 const ExecContext *c,
+                 const char *user,
+@@ -2015,6 +1990,7 @@ static int build_environment(
+                 char ***ret) {
+ 
+         _cleanup_strv_free_ char **e = NULL;
++        _cleanup_free_ char *_username = NULL, *_home = NULL, *_shell = NULL;
+         size_t n = 0;
+         pid_t exec_pid;
+         int r;
+@@ -2079,12 +2055,16 @@ static int build_environment(
+         if (!username && !c->dynamic_user && p->runtime_scope == RUNTIME_SCOPE_SYSTEM) {
+                 assert(!c->user);
+ 
+-                r = get_fixed_user("root", /* prefer_nss= */ false, &username, NULL, NULL, &home, &shell);
++                r = get_user_creds("root", USER_CREDS_CLEAN, &_username, NULL, NULL, &_home, &_shell);
+                 if (r < 0) {
+                         log_debug_errno(r, "Failed to determine credentials for user root: %s",
+                                         STRERROR_USER(r));
+                         return ERRNO_IS_NEG_BAD_ACCOUNT(r) ? -EINVAL : r;  /* Suppress confusing errno */
+                 }
++
++                username = _username;
++                home = _home;
++                shell = _shell;
+         }
+ 
+         bool set_user_login_env = exec_context_get_set_login_environment(c);
+@@ -4347,16 +4327,13 @@ static int send_user_lookup(
+         return 0;
+ }
+ 
+-static int acquire_home(const ExecContext *c, const char **home, char **ret_buf) {
+-        int r;
+-
++static int acquire_home(const ExecContext *c, char **home) {
+         assert(c);
+         assert(home);
+-        assert(ret_buf);
+ 
+         /* If WorkingDirectory=~ is set, try to acquire a usable home directory. */
+ 
+-        if (*home) /* Already acquired from get_fixed_user()? */
++        if (*home) /* Already acquired from get_user_creds()? */
+                 return 0;
+ 
+         if (!c->working_directory_home)
+@@ -4365,12 +4342,7 @@ static int acquire_home(const ExecContext *c, const char **home, char **ret_buf)
+         if (c->dynamic_user || (c->user && is_this_me(c->user) <= 0))
+                 return -EADDRNOTAVAIL;
+ 
+-        r = get_home_dir(ret_buf);
+-        if (r < 0)
+-                return r;
+-
+-        *home = *ret_buf;
+-        return 1;
++        return get_home_dir(home);
+ }
+ 
+ static int compile_suggested_paths(const ExecContext *c, const ExecParameters *p, char ***ret) {
+@@ -5162,9 +5134,8 @@ int exec_invoke(
+         _cleanup_strv_free_ char **our_env = NULL, **pass_env = NULL, **joined_exec_search_path = NULL, **accum_env = NULL;
+         int r;
+         const char *username = NULL;
+-        _cleanup_free_ char *home_buffer = NULL, *own_user = NULL;
++        _cleanup_free_ char *pwent_home = NULL, *shell = NULL, *_own_user = NULL, *_username = NULL;
+         _cleanup_(free_pressure_paths) char *pressure_path[_PRESSURE_RESOURCE_MAX] = {};
+-        const char *pwent_home = NULL, *shell = NULL;
+         dev_t journal_stream_dev = 0;
+         ino_t journal_stream_ino = 0;
+         bool needs_sandboxing,          /* Do we need to set up full sandboxing? (i.e. all namespacing, all MAC stuff, caps, yadda yadda */
+@@ -5400,36 +5371,40 @@ int exec_invoke(
+                         username = runtime->dynamic_creds->user->name;
+ 
+         } else {
+-                const char *u;
+-
+                 if (context->user)
+-                        u = context->user;
++                        username = context->user;
+                 else if (context->pam_name || FLAGS_SET(command->flags, EXEC_COMMAND_VIA_SHELL)) {
+                         /* If PAM is enabled but no user name is explicitly selected, then use our own one. */
+-                        own_user = getusername_malloc();
+-                        if (!own_user) {
++                        username = _own_user = getusername_malloc();
++                        if (!username) {
+                                 *exit_status = EXIT_USER;
+                                 return log_oom();
+                         }
+-                        u = own_user;
+-                } else
+-                        u = NULL;
++                }
+ 
+-                if (u) {
++                if (username) {
+                         /* We can't use nss unconditionally for root without risking deadlocks if some IPC services
+                          * will be started by pid1 and are ordered after us. But if SetLoginEnvironment= is
+                          * enabled *explicitly* (i.e. no exec_context_get_set_login_environment() here),
+                          * or PAM shall be invoked, let's consult NSS even for root, so that the user
+                          * gets accurate $SHELL in session(-like) contexts. */
+-                        r = get_fixed_user(u,
+-                                           /* prefer_nss= */ context->set_login_environment > 0 || context->pam_name,
+-                                           &username, &uid, &gid, &pwent_home, &shell);
++                        bool prefer_nss = context->set_login_environment > 0 || context->pam_name;
++
++                        r = get_user_creds(username,
++                                           USER_CREDS_CLEAN|(prefer_nss ? USER_CREDS_PREFER_NSS : 0),
++                                           &_username,
++                                           &uid,
++                                           &gid,
++                                           &pwent_home,
++                                           &shell);
+                         if (r < 0) {
+                                 *exit_status = EXIT_USER;
+                                 log_error_errno(r, "Failed to determine credentials for user '%s': %s",
+-                                                u, STRERROR_USER(r));
++                                                username, STRERROR_USER(r));
+                                 return ERRNO_IS_NEG_BAD_ACCOUNT(r) ? -EINVAL : r;  /* Suppress confusing errno */
+                         }
++
++                        username = _username;
+                 }
+ 
+                 if (context->group) {
+@@ -5460,7 +5435,7 @@ int exec_invoke(
+                 params->user_lookup_fd = safe_close(params->user_lookup_fd);
+         }
+ 
+-        r = acquire_home(context, &pwent_home, &home_buffer);
++        r = acquire_home(context, &pwent_home);
+         if (r < 0) {
+                 *exit_status = EXIT_CHDIR;
+                 return log_error_errno(r, "Failed to determine $HOME for the invoking user: %m");
+diff --git a/src/core/scope.c b/src/core/scope.c
+index f75c600829..5e116a6f31 100644
+--- a/src/core/scope.c
++++ b/src/core/scope.c
+@@ -344,13 +344,11 @@ static int scope_enter_start_chown(Scope *s) {
+                 gid_t gid = GID_INVALID;
+ 
+                 if (!isempty(s->user)) {
+-                        const char *user = s->user;
+-
+-                        r = get_user_creds(&user, &uid, &gid, NULL, NULL, 0);
++                        r = get_user_creds(s->user, /* flags= */ 0, NULL, &uid, &gid, NULL, NULL);
+                         if (r < 0) {
+                                 log_unit_error_errno(UNIT(s), r,
+                                                      "Failed to resolve user '%s': %s",
+-                                                     user, STRERROR_USER(r));
++                                                     s->user, STRERROR_USER(r));
+                                 _exit(EXIT_USER);
+                         }
+                 }
+diff --git a/src/core/socket.c b/src/core/socket.c
+index c31e83fefe..a33a8d6359 100644
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -2045,13 +2045,11 @@ static int socket_chown(Socket *s, PidRef *ret_pid) {
+                 /* Child */
+ 
+                 if (!isempty(s->user)) {
+-                        const char *user = s->user;
+-
+-                        r = get_user_creds(&user, &uid, &gid, NULL, NULL, 0);
++                        r = get_user_creds(s->user, /* flags= */ 0, NULL, &uid, &gid, NULL, NULL);
+                         if (r < 0) {
+                                 log_unit_error_errno(UNIT(s), r,
+                                                      "Failed to resolve user '%s': %s",
+-                                                     user, STRERROR_USER(r));
++                                                     s->user, STRERROR_USER(r));
+                                 _exit(EXIT_USER);
+                         }
+                 }
+diff --git a/src/coredump/coredump-submit.c b/src/coredump/coredump-submit.c
+index a108fe3eb5..fe1042ce4a 100644
+--- a/src/coredump/coredump-submit.c
++++ b/src/coredump/coredump-submit.c
+@@ -584,11 +584,9 @@ static int change_uid_gid(const CoredumpContext *context) {
+         gid_t gid = context->gid;
+ 
+         if (uid_is_system(uid)) {
+-                const char *user = "systemd-coredump";
+-
+-                r = get_user_creds(&user, &uid, &gid, NULL, NULL, 0);
++                r = get_user_creds("systemd-coredump", /* flags= */ 0, NULL, &uid, &gid, NULL, NULL);
+                 if (r < 0) {
+-                        log_warning_errno(r, "Cannot resolve %s user. Proceeding to dump core as root: %m", user);
++                        log_warning_errno(r, "Cannot resolve systemd-coredump user. Proceeding to dump core as root: %m");
+                         uid = gid = 0;
+                 }
+         }
+diff --git a/src/creds/creds.c b/src/creds/creds.c
+index 77f7442ab5..c382a0cf80 100644
+--- a/src/creds/creds.c
++++ b/src/creds/creds.c
+@@ -988,15 +988,14 @@ static int parse_argv(int argc, char *argv[], char ***ret_args) {
+                         else if (streq(opts.arg, "self"))
+                                 arg_uid = getuid();
+                         else {
+-                                const char *name = opts.arg;
+-
+                                 r = get_user_creds(
+-                                                &name,
++                                                opts.arg,
++                                                /* flags= */ 0,
++                                                /* ret_username= */ NULL,
+                                                 &arg_uid,
+                                                 /* ret_gid= */ NULL,
+                                                 /* ret_home= */ NULL,
+-                                                /* ret_shell= */ NULL,
+-                                                /* flags= */ 0);
++                                                /* ret_shell= */ NULL);
+                                 if (r < 0)
+                                         return log_error_errno(r, "Failed to resolve user '%s': %s",
+                                                                opts.arg, STRERROR_USER(r));
+diff --git a/src/login/loginctl.c b/src/login/loginctl.c
+index 63eafdceb4..19ee4c5b75 100644
+--- a/src/login/loginctl.c
++++ b/src/login/loginctl.c
+@@ -1184,7 +1184,7 @@ static int verb_show_user(int argc, char *argv[], uintptr_t _data, void *userdat
+                 const char *path;
+                 uid_t uid;
+ 
+-                r = get_user_creds((const char**) (argv+i), &uid, NULL, NULL, NULL, 0);
++                r = get_user_creds(argv[i], /* flags= */ 0, NULL, &uid, NULL, NULL, NULL);
+                 if (r < 0)
+                         return log_error_errno(r, "Failed to look up user %s: %m", argv[i]);
+ 
+@@ -1244,7 +1244,7 @@ static int verb_enable_linger(int argc, char *argv[], uintptr_t _data, void *use
+                 if (isempty(argv[i]))
+                         uid = UID_INVALID;
+                 else {
+-                        r = get_user_creds((const char**) (argv+i), &uid, NULL, NULL, NULL, 0);
++                        r = get_user_creds(argv[i], /* flags= */ 0, NULL, &uid, NULL, NULL, NULL);
+                         if (r < 0)
+                                 return log_error_errno(r, "Failed to look up user %s: %m", argv[i]);
+                 }
+@@ -1279,9 +1279,7 @@ static int verb_terminate_user(int argc, char *argv[], uintptr_t _data, void *us
+                 if (isempty(argv[i]))
+                         uid = getuid();
+                 else {
+-                        const char *u = argv[i];
+-
+-                        r = get_user_creds(&u, &uid, NULL, NULL, NULL, 0);
++                        r = get_user_creds(argv[i], /* flags= */ 0, NULL, &uid, NULL, NULL, NULL);
+                         if (r < 0)
+                                 return log_error_errno(r, "Failed to look up user %s: %m", argv[i]);
+                 }
+@@ -1314,9 +1312,7 @@ static int verb_kill_user(int argc, char *argv[], uintptr_t _data, void *userdat
+                 if (isempty(argv[i]))
+                         uid = getuid();
+                 else {
+-                        const char *u = argv[i];
+-
+-                        r = get_user_creds(&u, &uid, NULL, NULL, NULL, 0);
++                        r = get_user_creds(argv[i], /* flags= */ 0, NULL, &uid, NULL, NULL, NULL);
+                         if (r < 0)
+                                 return log_error_errno(r, "Failed to look up user %s: %m", argv[i]);
+                 }
+diff --git a/src/login/user-runtime-dir.c b/src/login/user-runtime-dir.c
+index cb623d98e5..bc522bcbca 100644
+--- a/src/login/user-runtime-dir.c
++++ b/src/login/user-runtime-dir.c
+@@ -183,7 +183,7 @@ static int do_umount(const char *user) {
+         /* The user may be already removed. So, first try to parse the string by parse_uid(),
+          * and if it fails, fall back to get_user_creds(). */
+         if (parse_uid(user, &uid) < 0) {
+-                r = get_user_creds(&user, &uid, NULL, NULL, NULL, 0);
++                r = get_user_creds(user, /* flags= */ 0, NULL, &uid, NULL, NULL, NULL);
+                 if (r < 0)
+                         return log_error_errno(r,
+                                                r == -ESRCH ? "No such user \"%s\"" :
+diff --git a/src/mount/mount-tool.c b/src/mount/mount-tool.c
+index 0869fe27e1..c35769e56a 100644
+--- a/src/mount/mount-tool.c
++++ b/src/mount/mount-tool.c
+@@ -244,17 +244,14 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
+                                 return r;
+                         break;
+ 
+-                OPTION_LONG("owner", "USER", "Add uid= and gid= options for USER"): {
+-                        const char *user = opts.arg;
+-
+-                        r = get_user_creds(&user, &arg_uid, &arg_gid, NULL, NULL, 0);
++                OPTION_LONG("owner", "USER", "Add uid= and gid= options for USER"):
++                        r = get_user_creds(opts.arg, /* flags= */ 0, NULL, &arg_uid, &arg_gid, NULL, NULL);
+                         if (r < 0)
+                                 return log_error_errno(r,
+                                                        r == -EBADMSG ? "UID or GID of user %s are invalid."
+                                                                      : "Cannot use \"%s\" as owner: %m",
+                                                        opts.arg);
+                         break;
+-                }
+ 
+                 OPTION_LONG("fsck", "BOOL", "Run a file system check before mount"):
+                         r = parse_boolean_argument("--fsck=", opts.arg, &arg_fsck);
+diff --git a/src/network/networkd-routing-policy-rule.c b/src/network/networkd-routing-policy-rule.c
+index 1cefad29de..98794bd736 100644
+--- a/src/network/networkd-routing-policy-rule.c
++++ b/src/network/networkd-routing-policy-rule.c
+@@ -1492,7 +1492,7 @@ static int config_parse_routing_policy_rule_uid_range(
+ 
+         assert(rvalue);
+ 
+-        if (get_user_creds(&rvalue, &p->start, NULL, NULL, NULL, 0) >= 0) {
++        if (get_user_creds(rvalue, /* flags= */ 0, NULL, &p->start, NULL, NULL, NULL) >= 0) {
+                 p->end = p->start;
+                 return 1;
+         }
+diff --git a/src/network/networkd.c b/src/network/networkd.c
+index 73e03c2a25..230339ba0c 100644
+--- a/src/network/networkd.c
++++ b/src/network/networkd.c
+@@ -42,13 +42,12 @@ static int run(int argc, char *argv[]) {
+         /* Drop privileges, but only if we have been started as root. If we are not running as root we assume all
+          * privileges are already dropped and we can't create our runtime directory. */
+         if (geteuid() == 0) {
+-                const char *user = "systemd-network";
+                 uid_t uid;
+                 gid_t gid;
+ 
+-                r = get_user_creds(&user, &uid, &gid, NULL, NULL, 0);
++                r = get_user_creds("systemd-network", /* flags= */ 0, NULL, &uid, &gid, NULL, NULL);
+                 if (r < 0)
+-                        return log_error_errno(r, "Cannot resolve user name %s: %m", user);
++                        return log_error_errno(r, "Cannot resolve user name %s: %m", "systemd-network");
+ 
+                 /* Create runtime directory. This is not necessary when networkd is
+                  * started with "RuntimeDirectory=systemd/netif", or after
+diff --git a/src/notify/notify.c b/src/notify/notify.c
+index 0058eb9d3b..667a7a6447 100644
+--- a/src/notify/notify.c
++++ b/src/notify/notify.c
+@@ -196,7 +196,7 @@ static int parse_argv(int argc, char *argv[], char ***ret_args) {
+                         break;
+ 
+                 OPTION_LONG("uid", "USER", "Set user to send from"):
+-                        r = get_user_creds(&opts.arg, &arg_uid, &arg_gid, NULL, NULL, 0);
++                        r = get_user_creds(opts.arg, /* flags= */ 0, NULL, &arg_uid, &arg_gid, NULL, NULL);
+                         if (r == -ESRCH) /* If the user doesn't exist, then accept it anyway as numeric */
+                                 r = parse_uid(opts.arg, &arg_uid);
+                         if (r < 0)
+diff --git a/src/resolve/resolved.c b/src/resolve/resolved.c
+index aaf206ac2c..66171e9b34 100644
+--- a/src/resolve/resolved.c
++++ b/src/resolve/resolved.c
+@@ -44,13 +44,12 @@ static int run(int argc, char *argv[]) {
+         /* Drop privileges, but only if we have been started as root. If we are not running as root we assume most
+          * privileges are already dropped and we can't create our directory. */
+         if (getuid() == 0) {
+-                const char *user = "systemd-resolve";
+                 uid_t uid;
+                 gid_t gid;
+ 
+-                r = get_user_creds(&user, &uid, &gid, NULL, NULL, 0);
++                r = get_user_creds("systemd-resolve", /* flags= */ 0, NULL, &uid, &gid, NULL, NULL);
+                 if (r < 0)
+-                        return log_error_errno(r, "Cannot resolve user name %s: %m", user);
++                        return log_error_errno(r, "Cannot resolve user name %s: %m", "systemd-resolve");
+ 
+                 /* As we're root, we can create the directory where resolv.conf will live */
+                 r = mkdir_safe_label("/run/systemd/resolve", 0755, uid, gid, MKDIR_WARN_MODE);
+diff --git a/src/run/run.c b/src/run/run.c
+index d1f8200199..9c85874db1 100644
+--- a/src/run/run.c
++++ b/src/run/run.c
+@@ -2581,19 +2581,18 @@ static int start_transient_scope(sd_bus *bus) {
+         }
+ 
+         if (arg_exec_user) {
+-                const char *un = arg_exec_user, *home, *shell;
++                _cleanup_free_ char *user = NULL, *home = NULL, *shell = NULL;
+                 uid_t uid;
+                 gid_t gid;
+ 
+-                r = get_user_creds(&un, &uid, &gid, &home, &shell,
+-                                   USER_CREDS_CLEAN|USER_CREDS_SUPPRESS_PLACEHOLDER|USER_CREDS_PREFER_NSS);
++                r = get_user_creds(arg_exec_user,
++                                   USER_CREDS_CLEAN|USER_CREDS_SUPPRESS_PLACEHOLDER|USER_CREDS_PREFER_NSS,
++                                   &user, &uid, &gid, &home, &shell);
+                 if (r < 0)
+                         return log_error_errno(r, "Failed to resolve user '%s': %s",
+                                                arg_exec_user, STRERROR_USER(r));
+ 
+-                r = free_and_strdup_warn(&arg_exec_user, un);
+-                if (r < 0)
+-                        return r;
++                free_and_replace(arg_exec_user, user);
+ 
+                 if (home) {
+                         r = strv_extendf(&user_env, "HOME=%s", home);
+diff --git a/src/shared/condition.c b/src/shared/condition.c
+index af5093a6a3..e0405eb7df 100644
+--- a/src/shared/condition.c
++++ b/src/shared/condition.c
+@@ -396,8 +396,7 @@ static int condition_test_user(Condition *c, char **env) {
+         if (streq(username, c->parameter))
+                 return 1;
+ 
+-        const char *u = c->parameter;
+-        r = get_user_creds(&u, &id, NULL, NULL, NULL, USER_CREDS_ALLOW_MISSING);
++        r = get_user_creds(c->parameter, USER_CREDS_ALLOW_MISSING, NULL, &id, NULL, NULL, NULL);
+         if (r < 0)
+                 return 0;
+ 
+diff --git a/src/shared/logs-show.c b/src/shared/logs-show.c
+index d125662410..b67fbd57d5 100644
+--- a/src/shared/logs-show.c
++++ b/src/shared/logs-show.c
+@@ -1704,9 +1704,7 @@ static int add_matches_for_coredump_uid(sd_journal *j, MatchUnitFlag flags, cons
+                 return 0;
+ 
+         if (cached_uid == 0) {
+-                const char *user = "systemd-coredump";
+-
+-                r = get_user_creds(&user, &cached_uid, NULL, NULL, NULL, 0);
++                r = get_user_creds("systemd-coredump", /* flags= */ 0, NULL, &cached_uid, NULL, NULL, NULL);
+                 if (r < 0) {
+                         log_debug_errno(r, "Failed to resolve systemd-coredump user, ignoring: %m");
+                         cached_uid = UID_INVALID;
+diff --git a/src/test/test-acl-util.c b/src/test/test-acl-util.c
+index 5967c4b406..6bf63d1e4f 100644
+--- a/src/test/test-acl-util.c
++++ b/src/test/test-acl-util.c
+@@ -41,8 +41,7 @@ TEST_RET(add_acls_for_user) {
+         ASSERT_OK_ZERO_ERRNO(system(cmd));
+ 
+         if (getuid() == 0 && !userns_has_single_user()) {
+-                const char *nobody = NOBODY_USER_NAME;
+-                r = get_user_creds(&nobody, &uid, NULL, NULL, NULL, 0);
++                r = get_user_creds(NOBODY_USER_NAME, /* flags= */ 0, NULL, &uid, NULL, NULL, NULL);
+                 if (r < 0)
+                         uid = 0;
+         } else
+diff --git a/src/test/test-ipcrm.c b/src/test/test-ipcrm.c
+index 238f0bf666..057dc0ae05 100644
+--- a/src/test/test-ipcrm.c
++++ b/src/test/test-ipcrm.c
+@@ -13,7 +13,7 @@ static int run(int argc, char *argv[]) {
+ 
+         test_setup_logging(LOG_INFO);
+ 
+-        r = get_user_creds(&name, &uid, NULL, NULL, NULL, 0);
++        r = get_user_creds(name, /* flags= */ 0, NULL, &uid, NULL, NULL, NULL);
+         if (r == -ESRCH)
+                 return log_tests_skipped("Failed to resolve user");
+         if (r < 0)
+diff --git a/src/test/test-user-util.c b/src/test/test-user-util.c
+index f5bb24f32a..53ad9422f3 100644
+--- a/src/test/test-user-util.c
++++ b/src/test/test-user-util.c
+@@ -287,8 +287,7 @@ TEST(valid_shell) {
+ }
+ 
+ static void test_get_user_creds_one(const char *id, const char *name, uid_t uid, gid_t gid, const char *home, const char *shell) {
+-        const char *rhome = NULL;
+-        const char *rshell = NULL;
++        _cleanup_free_ char *rname = NULL, *rhome = NULL, *rshell = NULL;
+         uid_t ruid = UID_INVALID;
+         gid_t rgid = GID_INVALID;
+         int r;
+@@ -296,15 +295,15 @@ static void test_get_user_creds_one(const char *id, const char *name, uid_t uid,
+         log_info("/* %s(\"%s\", \"%s\", "UID_FMT", "GID_FMT", \"%s\", \"%s\") */",
+                  __func__, id, name, uid, gid, home, shell);
+ 
+-        r = get_user_creds(&id, &ruid, &rgid, &rhome, &rshell, 0);
++        r = get_user_creds(id, /* flags= */ 0, &rname, &ruid, &rgid, &rhome, &rshell);
+         log_info_errno(r, "got \"%s\", "UID_FMT", "GID_FMT", \"%s\", \"%s\": %m",
+-                       id, ruid, rgid, strnull(rhome), strnull(rshell));
++                       strnull(rname), ruid, rgid, strnull(rhome), strnull(rshell));
+         if (!synthesize_nobody() && streq(name, NOBODY_USER_NAME)) {
+                 log_info("(skipping detailed tests because nobody is not synthesized)");
+                 return;
+         }
+         ASSERT_OK(r);
+-        ASSERT_STREQ(id, name);
++        ASSERT_STREQ(rname, name);
+         ASSERT_EQ(ruid, uid);
+         ASSERT_EQ(rgid, gid);
+         ASSERT_TRUE(path_equal(rhome, home));
+diff --git a/src/tmpfiles/tmpfiles.c b/src/tmpfiles/tmpfiles.c
+index 09ab88931e..fa2b21f73a 100644
+--- a/src/tmpfiles/tmpfiles.c
++++ b/src/tmpfiles/tmpfiles.c
+@@ -3771,7 +3771,7 @@ static int find_uid(const char *user, uid_t *ret_uid, Hashmap **cache) {
+ 
+         /* Second: pass to NSS if we are running "online" */
+         if (!arg_root)
+-                return get_user_creds(&user, ret_uid, NULL, NULL, NULL, 0);
++                return get_user_creds(user, /* flags= */ 0, NULL, ret_uid, NULL, NULL, NULL);
+ 
+         /* Third, synthesize "root" unconditionally */
+         if (streq(user, "root")) {
+-- 
+2.50.1

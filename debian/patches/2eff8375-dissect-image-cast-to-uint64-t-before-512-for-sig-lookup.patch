@@ -1,0 +1,17 @@
+diff --git a/src/shared/dissect-image.c b/src/shared/dissect-image.c
+index db813a7eb4..e00dce3fbd 100644
+--- a/src/shared/dissect-image.c
++++ b/src/shared/dissect-image.c
+@@ -1417,8 +1417,8 @@ static int dissect_image(
+ 
+                                         r = acquire_sig_for_roothash(
+                                                         fd,
+-                                                        start * 512,
+-                                                        size * 512,
++                                                        (uint64_t) start * 512,
++                                                        (uint64_t) size * 512,
+                                                         &root_hash,
+                                                         /* ret_root_hash_sig= */ NULL);
+                                         if (r < 0)
+-- 
+2.50.1

@@ -1,0 +1,15 @@
+diff --git a/src/shared/dissect-image.c b/src/shared/dissect-image.c
+index 17c14db3ff..f1149cdaa6 100644
+--- a/src/shared/dissect-image.c
++++ b/src/shared/dissect-image.c
+@@ -5509,7 +5509,7 @@ int mountfsd_make_directory(
+ 
+         _cleanup_close_ int fd = open(parent, O_DIRECTORY|O_CLOEXEC);
+         if (fd < 0)
+-                return log_debug_errno(r, "Failed to open '%s': %m", parent);
++                return log_debug_errno(errno, "Failed to open '%s': %m", parent);
+ 
+         return mountfsd_make_directory_fd(vl, fd, dirname, mode, flags, ret_directory_fd);
+ }
+-- 
+2.50.1

@@ -1,0 +1,88 @@
+diff --git a/src/sysupdate/sysupdate.c b/src/sysupdate/sysupdate.c
+index 7852ac3878..92c40ddf71 100644
+--- a/src/sysupdate/sysupdate.c
++++ b/src/sysupdate/sysupdate.c
+@@ -1731,6 +1731,7 @@ static int component_name_valid(const char *c) {
+ VERB_NOARG(verb_components, "components",
+            "Show list of components");
+ static int verb_components(int argc, char *argv[], uintptr_t _data, void *userdata) {
++        _cleanup_(context_freep) Context* context = NULL;
+         _cleanup_(loop_device_unrefp) LoopDevice *loop_device = NULL;
+         _cleanup_(umount_and_rmdir_and_freep) char *mounted_dir = NULL;
+         _cleanup_set_free_ Set *names = NULL;
+@@ -1743,6 +1744,10 @@ static int verb_components(int argc, char *argv[], uintptr_t _data, void *userda
+         if (r < 0)
+                 return r;
+ 
++        r = context_make_offline(&context, loop_device ? loop_device->node : NULL, 0);
++        if (r < 0)
++                return r;
++
+         ConfFile **directories = NULL;
+         size_t n_directories = 0;
+ 
+@@ -1757,7 +1762,6 @@ static int verb_components(int argc, char *argv[], uintptr_t _data, void *userda
+                 ConfFile *e = *i;
+ 
+                 if (streq(e->filename, "sysupdate.d")) {
+-                        has_default_component = true;
+                         continue;
+                 }
+ 
+@@ -1785,6 +1789,14 @@ static int verb_components(int argc, char *argv[], uintptr_t _data, void *userda
+                 TAKE_PTR(n);
+         }
+ 
++        /* Does the system have at least one transfer file in /etc/sysupdate.d, which can be considered a
++         * TARGET_HOST? See target_get_argument() in sysupdated.c */
++        has_default_component = (!arg_definitions &&
++                                 !arg_component &&
++                                 !arg_root &&
++                                 !arg_image &&
++                                 context->n_transfers > 0);
++
+         /* We use simple free() rather than strv_free() here, since set_free() will free the strings for us */
+         _cleanup_free_ char **z = set_get_strv(names);
+         if (!z)
+diff --git a/test/units/TEST-72-SYSUPDATE.sh b/test/units/TEST-72-SYSUPDATE.sh
+index 21a3ea00a5..e501a7647f 100755
+--- a/test/units/TEST-72-SYSUPDATE.sh
++++ b/test/units/TEST-72-SYSUPDATE.sh
+@@ -552,6 +552,35 @@ EOF
+ done
+ done
+ 
++# Regression test for https://github.com/systemd/systemd/issues/41501 — check
++# that a ‘default’ component is only listed by sysupdate if it’s fully configured
++mv "$CONFIGDIR" "$CONFIGDIR.backup"
++mkdir -p /run/sysupdate.some-component.d
++tee /run/sysupdate.some-component.d/portable.transfer << EOF
++[Transfer]
++ChangeLog=https://example.com/changelog/@v
++Verify=no
++
++[Source]
++Type=url-tar
++Path=https://example.com/does-not-matter/@v.tar.xz
++MatchPattern=some-component_@v-portable.tar.xz
++
++[Target]
++Type=directory
++Path=/var/lib/portables
++MatchPattern=some-component_@v
++CurrentSymlink=some-component
++EOF
++"$SYSUPDATE" --json=short components | grep -F '{"default":false,"components":["some-component"]}' >/dev/null
++mkdir /run/sysupdate.d
++"$SYSUPDATE" --json=short components | grep -F '{"default":false,"components":["some-component"]}' >/dev/null
++
++# Clean up regression test
++rmdir /run/sysupdate.d
++rm -rf /run/sysupdate.some-component.d
++mv "$CONFIGDIR.backup" "$CONFIGDIR"
++
+ # Make sure the processing of compressed streams still handles uncompressed streams shorter than
+ # COMPRESSION_MAGIC_BYTES_MAX correctly.
+ rm -rf "$CONFIGDIR" "$WORKDIR/blobs"
+-- 
+2.50.1

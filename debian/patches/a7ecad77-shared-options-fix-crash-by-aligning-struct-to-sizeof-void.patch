@@ -1,0 +1,86 @@
+diff --git a/src/basic/static-destruct.h b/src/basic/static-destruct.h
+index fdc4c7c41e..8e71c9b235 100644
+--- a/src/basic/static-destruct.h
++++ b/src/basic/static-destruct.h
+@@ -36,7 +36,8 @@ typedef struct SimpleCleanup {
+         free_func_t destroy;
+ } SimpleCleanup;
+ 
+-typedef struct StaticDestructor {
++/* Note: see the comment on struct Option in options.h for why _alignptr_ is required here. */
++typedef struct _alignptr_ StaticDestructor {
+         StaticDestructorType type;
+         union {
+                 SimpleCleanup simple;
+diff --git a/src/shared/options.h b/src/shared/options.h
+index fd3ab008d3..f02eb30027 100644
+--- a/src/shared/options.h
++++ b/src/shared/options.h
+@@ -29,7 +29,12 @@ typedef enum OptionFlags {
+         OPTION_HELP_ENTRY_VERBATIM = 1U << 6,  /* Same, but use the long_code in the first column as written */
+ } OptionFlags;
+ 
+-typedef struct Option {
++/* Note: the alignment attribute must match the one applied to each variable via _alignptr_ in
++ * _OPTION() below. Otherwise the struct's sizeof and the actual stride between consecutive entries
++ * placed in the SYSTEMD_OPTIONS section would not match on architectures where the natural
++ * alignment of the struct is smaller than sizeof(void*) (e.g. m68k). That would cause the
++ * pointer-arithmetic-based iteration over the section to read from padding bytes. */
++typedef struct _alignptr_ Option {
+         int id;
+         OptionFlags flags;
+         char short_code;
+@@ -38,6 +43,7 @@ typedef struct Option {
+         uintptr_t data;
+         const char *help;
+ } Option;
++assert_cc(sizeof(Option) % sizeof(void*) == 0);
+ 
+ #define _OPTION(counter, fl, sc, lc, mv, d, h)                          \
+         _section_("SYSTEMD_OPTIONS")                                    \
+diff --git a/src/shared/tests.h b/src/shared/tests.h
+index 9a2b7c0412..3f8fdf7fa7 100644
+--- a/src/shared/tests.h
++++ b/src/shared/tests.h
+@@ -89,7 +89,8 @@ int define_hex_ptr_internal(const char *hex, void **name, size_t *name_len);
+ /* Provide a convenient way to check if we're running in CI. */
+ const char* ci_environment(void);
+ 
+-typedef struct TestFunc {
++/* Note: see the comment on struct Option in options.h for why _alignptr_ is required here. */
++typedef struct _alignptr_ TestFunc {
+         union f {
+                 void (*void_func)(void);
+                 int (*int_func)(void);
+@@ -98,6 +99,7 @@ typedef struct TestFunc {
+         bool has_ret:1;
+         bool sd_booted:1;
+ } TestFunc;
++assert_cc(sizeof(TestFunc) % sizeof(void*) == 0);
+ 
+ /* See static-destruct.h for an explanation of how this works. */
+ #define REGISTER_TEST(func, ...)                                                                        \
+diff --git a/src/shared/verbs.h b/src/shared/verbs.h
+index 2a9df84e0c..253181e8c4 100644
+--- a/src/shared/verbs.h
++++ b/src/shared/verbs.h
+@@ -11,7 +11,8 @@ typedef enum VerbFlags {
+         VERB_GROUP_MARKER = 1 << 2,  /* Fake verb entry to separate groups */
+ } VerbFlags;
+ 
+-typedef struct {
++/* Note: see the comment on struct Option in options.h for why _alignptr_ is required here. */
++typedef struct _alignptr_ {
+         const char *verb;
+         unsigned min_args, max_args;
+         VerbFlags flags;
+@@ -20,6 +21,7 @@ typedef struct {
+         const char *argspec;
+         const char *help;
+ } Verb;
++assert_cc(sizeof(Verb) % sizeof(void*) == 0);
+ 
+ #define _VERB_DATA(d, v, a, amin, amax, f, dat, h)                      \
+         _section_("SYSTEMD_VERBS")                                      \
+-- 
+2.50.1

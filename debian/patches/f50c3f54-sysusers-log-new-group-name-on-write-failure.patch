@@ -1,0 +1,15 @@
+diff --git a/src/sysusers/sysusers.c b/src/sysusers/sysusers.c
+index cdbc053f6b..c22dbbeda0 100644
+--- a/src/sysusers/sysusers.c
++++ b/src/sysusers/sysusers.c
+@@ -821,7 +821,7 @@ static int write_temporary_group(
+                 r = putgrent_with_members(c, &n, group);
+                 if (r < 0)
+                         return log_error_errno(r, "Failed to add new group \"%s\" to temporary group file: %m",
+-                                               gr->gr_name);
++                                               n.gr_name);
+ 
+                 group_changed = true;
+         }
+-- 
+2.50.1

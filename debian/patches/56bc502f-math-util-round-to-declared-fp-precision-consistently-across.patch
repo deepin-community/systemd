@@ -1,0 +1,72 @@
+diff --git a/meson.build b/meson.build
+index c5af3b107c..a95cf80412 100644
+--- a/meson.build
++++ b/meson.build
+@@ -421,6 +421,7 @@ possible_common_cc_flags = [
+         '-Wno-string-plus-int',  # clang
+ 
+         '-fdiagnostics-show-option',
++        '-fexcess-precision=standard',
+         '-fno-common',
+         '-fstack-protector',
+         '-fstack-protector-strong',
+diff --git a/src/basic/math-util.h b/src/basic/math-util.h
+index cac5fc3131..9bcd994ae2 100644
+--- a/src/basic/math-util.h
++++ b/src/basic/math-util.h
+@@ -10,8 +10,22 @@
+ #define iszero_safe(x) (fpclassify(x) == FP_ZERO)
+ 
+ /* To avoid x == y and triggering compile warning -Wfloat-equal. This returns false if one of the argument is
+- * NaN or infinity. One of the argument must be a floating point. */
+-#define fp_equal(x, y) iszero_safe((x) - (y))
++ * NaN or infinity. One of the argument must be a floating point.
++ *
++ * The volatile temporaries force a memory roundtrip, truncating any excess precision (e.g. x87's
++ * 80-bit register width for double arithmetic) down to the declared type. -fexcess-precision=standard
++ * doesn't fully cover this on x87 — a function return value carried in ST(0) can still arrive at the
++ * caller in 80-bit precision (see gcc PR#323), so a value that should compare equal to a
++ * same-magnitude literal picks up extra mantissa bits and doesn't. The memory store-and-reload is
++ * the one operation guaranteed to truncate. The temporaries inherit the type of the subtraction
++ * expression so the macro stays generic over float / double / long double rather than silently
++ * truncating wider arguments. */
++#define fp_equal(x, y)                                                  \
++        ({                                                              \
++                volatile __typeof__((x) - (y)) _fp_x = (x);             \
++                volatile __typeof__((x) - (y)) _fp_y = (y);             \
++                iszero_safe(_fp_x - _fp_y);                             \
++        })
+ 
+ /* 10^n. Exact for |n| ≤ 22; otherwise multiplies and may accumulate rounding error. Saturates to
+  * 0.0 or +Inf outside binary64's exponent range; large |n| is capped internally so untrusted
+diff --git a/src/test/test-math-util.c b/src/test/test-math-util.c
+index 3e8a9d5ba3..805351761f 100644
+--- a/src/test/test-math-util.c
++++ b/src/test/test-math-util.c
+@@ -5,6 +5,15 @@
+ #include "math-util.h"
+ #include "tests.h"
+ 
++/* Computed at runtime via a noinline + volatile combination so the result crosses the function ABI
++ * boundary at the FPU's current precision (80-bit on i386/x87). Used to probe fp_equal's handling
++ * of excess precision — see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=323 for why
++ * -fexcess-precision=standard doesn't fully cover the caller side of a function return on x87. */
++static double _noinline_ one_tenth_via_division(void) {
++        volatile double ten = 10.0;
++        return 1.0 / ten;
++}
++
+ TEST(iszero_safe) {
+         /* zeros */
+         assert_se(iszero_safe(0.0));
+@@ -105,6 +114,8 @@ TEST(fp_equal) {
+         assert_se( fp_equal(0, 1 / INFINITY));
+         assert_se( fp_equal(42 / INFINITY, 1 / -INFINITY));
+         assert_se(!fp_equal(42 / INFINITY, INFINITY / INFINITY));
++
++        assert_se( fp_equal(one_tenth_via_division(), 0.1));
+ }
+ 
+ TEST(xexp10i) {
+-- 
+2.50.1
