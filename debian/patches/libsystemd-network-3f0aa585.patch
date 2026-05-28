@@ -1,0 +1,90 @@
+From 3f0aa5852ec4f53f7412cd8b86fd9d064bebd108 Mon Sep 17 00:00:00 2001
+From: Chris Mason <clm@meta.com>
+Date: Fri, 22 May 2026 09:13:55 -0700
+Subject: [PATCH] libsystemd-network: propagate sd_event_default() failure
+
+Four *_attach_event helpers swallow sd_event_default() failures and
+return success while leaving obj->event NULL:
+
+    sd_dhcp_client_attach_event   (sd-dhcp-client.c)
+    sd_dhcp6_client_attach_event  (sd-dhcp6-client.c)
+    sd_ndisc_attach_event         (sd-ndisc.c)
+    sd_radv_attach_event          (sd-radv.c)
+
+Each contains the same copy-pasted typo in the NULL-event branch:
+
+    r = sd_event_default(&obj->event);
+    if (r < 0)
+            return 0;          /* swallows -ENOMEM / -ECHILD */
+
+The caller is told the attach succeeded, but obj->event is still
+NULL. A subsequent *_start() then trips assert_return(obj->event,
+-EINVAL) and returns a spurious -EINVAL (or aborts on assert-abort
+builds), and any consumer of *_get_event() dereferences NULL.
+
+The sibling helper sd_dhcp_server_attach_event already uses the
+correct pattern:
+
+    r = sd_event_default(&server->event);
+    if (r < 0)
+            return r;
+
+Fix by returning r instead of 0 at each of the four sites so the
+sd_event_default() errno is propagated to the caller and ownership
+stays with the caller.
+
+Assisted-by: kres (claude-opus-4-7)
+Signed-off-by: Chris Mason <clm@meta.com>
+
+Index: 3f0aa585/src/libsystemd-network/sd-dhcp-client.c
+===================================================================
+--- 3f0aa585.orig/src/libsystemd-network/sd-dhcp-client.c
++++ 3f0aa585/src/libsystemd-network/sd-dhcp-client.c
+@@ -2428,7 +2428,7 @@ int sd_dhcp_client_attach_event(sd_dhcp_
+         else {
+                 r = sd_event_default(&client->event);
+                 if (r < 0)
+-                        return 0;
++                        return r;
+         }
+ 
+         client->event_priority = priority;
+Index: 3f0aa585/src/libsystemd-network/sd-dhcp6-client.c
+===================================================================
+--- 3f0aa585.orig/src/libsystemd-network/sd-dhcp6-client.c
++++ 3f0aa585/src/libsystemd-network/sd-dhcp6-client.c
+@@ -1508,7 +1508,7 @@ int sd_dhcp6_client_attach_event(sd_dhcp
+         else {
+                 r = sd_event_default(&client->event);
+                 if (r < 0)
+-                        return 0;
++                        return r;
+         }
+ 
+         client->event_priority = priority;
+Index: 3f0aa585/src/libsystemd-network/sd-ndisc.c
+===================================================================
+--- 3f0aa585.orig/src/libsystemd-network/sd-ndisc.c
++++ 3f0aa585/src/libsystemd-network/sd-ndisc.c
+@@ -112,7 +112,7 @@ int sd_ndisc_attach_event(sd_ndisc *nd,
+         else {
+                 r = sd_event_default(&nd->event);
+                 if (r < 0)
+-                        return 0;
++                        return r;
+         }
+ 
+         nd->event_priority = priority;
+Index: 3f0aa585/src/libsystemd-network/sd-radv.c
+===================================================================
+--- 3f0aa585.orig/src/libsystemd-network/sd-radv.c
++++ 3f0aa585/src/libsystemd-network/sd-radv.c
+@@ -58,7 +58,7 @@ int sd_radv_attach_event(sd_radv *ra, sd
+         else {
+                 r = sd_event_default(&ra->event);
+                 if (r < 0)
+-                        return 0;
++                        return r;
+         }
+ 
+         ra->event_priority = priority;
