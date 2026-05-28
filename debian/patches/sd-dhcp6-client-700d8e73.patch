@@ -1,0 +1,80 @@
+From 700d8e73d4c203b34d6f82c893fbb6c9b5d956d8 Mon Sep 17 00:00:00 2001
+From: Chris Mason <clm@meta.com>
+Date: Fri, 22 May 2026 09:14:51 -0700
+Subject: [PATCH] sd-dhcp6-client: fix ref leak on duplicate option add
+
+sd_dhcp6_client_add_option() and sd_dhcp6_client_add_vendor_option()
+store the caller's sd_dhcp6_option in an ordered container whose value
+destructor is sd_dhcp6_option_unref, registered via
+DEFINE_HASH_OPS_WITH_VALUE_DESTRUCTOR in dhcp6_option_hash_ops. The
+container therefore owns exactly one ref per stored slot.
+
+Both helpers guarded the ref bump only on r < 0:
+
+    r = ordered_{hashmap,set}_ensure_put(..., v);
+    if (r < 0)
+            return r;
+    sd_dhcp6_option_ref(v);
+
+ordered_hashmap_ensure_put() (and the ordered_set wrapper) forward the
+underlying hashmap_put_boldly tri-state verbatim: 1 on fresh insert, 0
+when the identical key+value pair is already stored (no new slot
+allocated), <0 on error. The r == 0 path fell through and bumped the
+refcount without a corresponding slot.
+
+The extra ref is permanently stranded once the container's destructor
+runs. In a long-running networkd that reapplies .network files on
+reload this leaks one sd_dhcp6_option allocation per duplicate-add.
+
+Fix by tightening the guard to r <= 0 in both helpers, so
+sd_dhcp6_option_ref(v) is reached only on a genuine new slot (r == 1).
+Propagate the tri-valued result by returning r from both helpers
+instead of a hard-coded constant.
+
+sd_dhcp6_client_add_vendor_option() is a public libsystemd sd_ API;
+its success return changes from a constant 1 to {0, 1}.
+sd_dhcp6_client_add_option() now also propagates the tri-valued
+result (previously a hard-coded 0 on success), giving the two parallel
+helpers identical return contracts.
+
+The sole non-fuzz in-tree callers are both in dhcp6_configure()
+(src/network/networkd-dhcp6.c), which treat any r >= 0 as success and
+do not distinguish 0 from 1, so the contract widening is caller-safe.
+
+Fixes: e7d5fe17db9d ("DHCP client: make SendOption work for DHCPv6 too.")
+Assisted-by: kres (claude-opus-4-7)
+Signed-off-by: Chris Mason <clm@meta.com>
+
+Index: 700d8e73/src/libsystemd-network/sd-dhcp6-client.c
+===================================================================
+--- 700d8e73.orig/src/libsystemd-network/sd-dhcp6-client.c
++++ 700d8e73/src/libsystemd-network/sd-dhcp6-client.c
+@@ -180,12 +180,12 @@ int sd_dhcp6_client_add_vendor_option(sd
+         }
+ 
+         r = ordered_set_ensure_put(&client->vendor_options, &dhcp6_option_hash_ops, v);
+-        if (r < 0)
++        if (r <= 0)
+                 return r;
+ 
+         sd_dhcp6_option_ref(v);
+ 
+-        return 1;
++        return r;
+ }
+ 
+ static int client_ensure_duid(sd_dhcp6_client *client) {
+@@ -542,11 +542,11 @@ int sd_dhcp6_client_add_option(sd_dhcp6_
+         assert_return(v, -EINVAL);
+ 
+         r = ordered_hashmap_ensure_put(&client->extra_options, &dhcp6_option_hash_ops, UINT_TO_PTR(v->option), v);
+-        if (r < 0)
++        if (r <= 0)
+                 return r;
+ 
+         sd_dhcp6_option_ref(v);
+-        return 0;
++        return r;
+ }
+ 
+ static void client_set_state(sd_dhcp6_client *client, DHCP6State state) {
