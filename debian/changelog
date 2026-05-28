@@ -1,3 +1,13 @@
+systemd (255.2-4deepin29) stable; urgency=medium
+
+  * Backport upstream fix: basic/path-util: fix executable_is_good  The
+    PATH_IN_SET macro in executable_is_good() was missing a comma
+    between string literals, causing adjacent string concatenation
+    ("true" "/bin/true" -> "true/bin/true") and breaking fsck detection
+    for /bin/true symlinks. Reported by qarmin (Rafał Mikrut).
+
+ -- jiabowen <jiabowen@uniontech.com>  Thu, 28 May 2026 16:26:37 +0800
+
 systemd (255.2-4deepin28) stable; urgency=medium
 
   * Backport upstream critical security vulnerability patches:
