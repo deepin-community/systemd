@@ -1,0 +1,27 @@
+From f50c3f548b9ce41300cc8d47f0d28a91a8d78a2a Mon Sep 17 00:00:00 2001
+From: Mikhail Nogin <joycap@altlinux.org>
+Date: Mon, 25 May 2026 16:33:43 +0300
+Subject: [PATCH] sysusers: log new group name on write failure
+
+When adding new groups, putgrent_with_members() is called with the newly
+constructed group n, but the error path logs gr->gr_name. gr belongs to
+the
+earlier loop over the existing group file and may be NULL after EOF.
+
+Log n.gr_name instead.
+
+Found by Linux Verification Center (linuxtesting.org) with Svace.
+
+Index: f50c3f54/src/sysusers/sysusers.c
+===================================================================
+--- f50c3f54.orig/src/sysusers/sysusers.c
++++ f50c3f54/src/sysusers/sysusers.c
+@@ -808,7 +808,7 @@ static int write_temporary_group(
+                 r = putgrent_with_members(c, &n, group);
+                 if (r < 0)
+                         return log_error_errno(r, "Failed to add new group \"%s\" to temporary group file: %m",
+-                                               gr->gr_name);
++                                               n.gr_name);
+ 
+                 group_changed = true;
+         }
