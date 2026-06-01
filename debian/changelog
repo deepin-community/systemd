@@ -1,3 +1,9 @@
+systemd (255.2-4deepin29) unstable; urgency=medium
+
+  * Skip clock restore for timesyncd.
+
+ -- dongshengyuan <dongshengyuan@uniontech.com>  Mon, 01 Jun 2026 17:06:06 +0800
+
 systemd (255.2-4deepin28) stable; urgency=medium
 
   * Backport upstream critical security vulnerability patches:
