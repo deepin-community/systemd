@@ -1,3 +1,10 @@
+systemd (255.2-4deepin29+deepin1) unstable; urgency=medium
+
+  * Backport upstream telinit compatibility hint and man page cleanup
+    patches
+
+ -- 贾博闻 <ut006444@PECI2782>  Tue, 02 Jun 2026 15:32:46 +0800
+
 systemd (255.2-4deepin29) unstable; urgency=medium
 
   * Skip clock restore for timesyncd.

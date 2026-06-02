@@ -41,3 +41,4 @@ sdbus-depth-limit-variant.patch
 hwdb-reject-oob-fnmatch.patch
 exec-invoke-chdir-after-chroot.patch
 uniontech-skip-clock-restore-for-timesyncd.patch
+telinit-compat-hint.patch
