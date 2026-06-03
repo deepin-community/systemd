@@ -1,3 +1,10 @@
+systemd (255.2-4deepin30) unstable; urgency=medium
+
+  * Fix tmpfiles x11 socket age-based cleanup causing unexpected removal
+    of live X11 sockets
+
+ -- jiabowen <jiabowen@uniontech.com>  Wed, 03 Jun 2026 14:20:24 +0800
+
 systemd (255.2-4deepin29) unstable; urgency=medium
 
   * Skip clock restore for timesyncd.
