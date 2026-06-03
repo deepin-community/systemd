@@ -42,3 +42,4 @@ hwdb-reject-oob-fnmatch.patch
 exec-invoke-chdir-after-chroot.patch
 uniontech-skip-clock-restore-for-timesyncd.patch
 fix-tmpfiles-x11-cleanup.patch
+fix-dnssec-validate-short-rsa-dnskey.patch

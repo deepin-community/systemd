@@ -1,3 +1,9 @@
+systemd (255.2-4deepin31) unstable; urgency=medium
+
+  * Fix DNSSEC: validate short RSA DNSKEY blobs to prevent out-of-bounds read
+
+ -- jiabowen <jiabowen@uniontech.com>  Wed, 03 Jun 2026 14:22:00 +0800
+
 systemd (255.2-4deepin30) unstable; urgency=medium
 
   * Fix tmpfiles x11 socket age-based cleanup causing unexpected removal
