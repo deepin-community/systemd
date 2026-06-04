@@ -42,3 +42,4 @@ hwdb-reject-oob-fnmatch.patch
 exec-invoke-chdir-after-chroot.patch
 uniontech-skip-clock-restore-for-timesyncd.patch
 fix-tmpfiles-x11-cleanup.patch
+add-UsrShareWritePaths-option-for-namespace-mount-control.patch
