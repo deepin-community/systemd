@@ -1,0 +1,79 @@
+diff --git a/src/basic/hostname-util.c b/src/basic/hostname-util.c
+index e743033..836c02c 100644
+--- a/src/basic/hostname-util.c
++++ b/src/basic/hostname-util.c
+@@ -173,6 +173,26 @@ char* hostname_cleanup(char *s) {
+         return s;
+ }
+ 
++
++bool machine_tag_is_valid(const char *s) {
++        size_t n;
++
++        if (!s)
++                return false;
++
++        n = strlen(s);
++        if (n <= 0 || n >= 256)
++                return false;
++
++        /* Don't allow "-" and "." as first or last char. (This is load-bearing, we want that "+"/"-"
++         * can be used as prefix for adding/removing tags from the list). */
++        if (strchr("-.", s[0]) ||
++            strchr("-.", s[n-1]))
++                return false;
++
++        return in_charset(s, ALPHANUMERICAL "-.");
++}
++
+ bool is_localhost(const char *hostname) {
+         assert(hostname);
+ 
+diff --git a/src/basic/hostname-util.h b/src/basic/hostname-util.h
+index bcac3d9..8c75ee8 100644
+--- a/src/basic/hostname-util.h
++++ b/src/basic/hostname-util.h
+@@ -47,6 +47,7 @@ typedef enum ValidHostnameFlags {
+ 
+ bool hostname_is_valid(const char *s, ValidHostnameFlags flags) _pure_;
+ char* hostname_cleanup(char *s);
++bool machine_tag_is_valid(const char *s) _pure_;
+ 
+ bool is_localhost(const char *hostname);
+ 
+diff --git a/src/test/test-hostname-util.c b/src/test/test-hostname-util.c
+index 77e9a19..369f54e 100644
+--- a/src/test/test-hostname-util.c
++++ b/src/test/test-hostname-util.c
+@@ -101,6 +101,31 @@ TEST(hostname_malloc) {
+         log_info("hostname_short_malloc: \"%s\"", l);
+ }
+ 
++TEST(machine_tag_is_valid) {
++        assert_se(machine_tag_is_valid("foo"));
++        assert_se(machine_tag_is_valid("foo-bar"));
++        assert_se(machine_tag_is_valid("foo.bar"));
++        assert_se(machine_tag_is_valid("foo.bar.baz"));
++        assert_se(machine_tag_is_valid("foo0"));
++        assert_se(machine_tag_is_valid("0"));
++        assert_se(machine_tag_is_valid("a"));
++
++        assert_se(!machine_tag_is_valid(NULL));
++        assert_se(!machine_tag_is_valid(""));
++        assert_se(!machine_tag_is_valid("fööbar"));    /* non-ASCII */
++        assert_se(!machine_tag_is_valid("foo/bar"));
++        assert_se(!machine_tag_is_valid("foo_bar"));
++        assert_se(!machine_tag_is_valid("-foo"));
++        assert_se(!machine_tag_is_valid("foo-"));
++        assert_se(!machine_tag_is_valid(".foo"));
++        assert_se(!machine_tag_is_valid("foo."));
++
++        /* Length boundary: 255 characters is fine, 256 is too long */
++        _cleanup_free_ char *max = strrep("a", 255), *over = strrep("a", 256);
++        assert_se(machine_tag_is_valid(max));
++        assert_se(!machine_tag_is_valid(over));
++}
++
+ TEST(default_hostname) {
+         if (!hostname_is_valid(FALLBACK_HOSTNAME, 0)) {
+                 log_error("Configured fallback hostname \"%s\" is not valid.", FALLBACK_HOSTNAME);
