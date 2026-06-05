@@ -1,0 +1,266 @@
+From: xml <xiamengliang@uniontech.com>
+Date: Wed, 3 Jun 2026 13:46:16 +0800
+Subject: add UsrShareWritePaths= option for namespace mount control
+
+Add a new UsrShareWritePaths= configuration option that allows remounting
+the covering mount point of specified paths as read-write. This runs
+after all other mount operations, enabling it to undo read-only flags
+set by ProtectSystem=, ReadOnlyPaths=, etc.
+
+The implementation includes:
+- New UsrShareWritePaths field in ExecContext and NamespaceParameters
+- find_covering_mount_point() to locate the nearest ancestor mount point
+- apply_usr_share_write_paths() to perform the remount operation
+- Serialization/deserialization support for daemon-reload
+- Configuration parsing via gperf with path validation
+- Support for '-' (ignore errors) and '+' (force prefix) modifiers
+- Path validation to ensure paths must be /usr/share or its subdirectories
+---
+ src/core/exec-invoke.c                |   4 +-
+ src/core/execute-serialize.c          |   8 +++
+ src/core/execute.c                    |   5 +-
+ src/core/execute.h                    |   1 +
+ src/core/load-fragment-gperf.gperf.in |   1 +
+ src/core/namespace.c                  | 107 ++++++++++++++++++++++++++++++++++
+ src/core/namespace.h                  |   1 +
+ 7 files changed, 125 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+index 2af4b25..32926c0 100644
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -3134,6 +3134,7 @@ static int apply_mount_namespace(
+                 .read_write_paths = read_write_paths,
+                 .read_only_paths = needs_sandboxing ? context->read_only_paths : NULL,
+                 .inaccessible_paths = needs_sandboxing ? context->inaccessible_paths : NULL,
++                .usr_share_write_paths = needs_sandboxing ? context->usr_share_write_paths : NULL,
+
+                 .exec_paths = needs_sandboxing ? context->exec_paths : NULL,
+                 .no_exec_paths = needs_sandboxing ? context->no_exec_paths : NULL,
+@@ -3823,7 +3824,8 @@ static bool exec_context_need_unprivileged_private_users(
+                !strv_isempty(context->read_only_paths) ||
+                !strv_isempty(context->inaccessible_paths) ||
+                !strv_isempty(context->exec_paths) ||
+-               !strv_isempty(context->no_exec_paths);
++               !strv_isempty(context->no_exec_paths) ||
++               !strv_isempty(context->usr_share_write_paths);
+ }
+
+ static bool exec_context_shall_confirm_spawn(const ExecContext *context) {
+diff --git a/src/core/execute-serialize.c b/src/core/execute-serialize.c
+index 6c62bdf..36f7505 100644
+--- a/src/core/execute-serialize.c
++++ b/src/core/execute-serialize.c
+@@ -2252,6 +2252,10 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
+         if (r < 0)
+                 return r;
+
++        r = serialize_strv(f, "exec-context-usr-share-write-paths", c->usr_share_write_paths);
++        if (r < 0)
++                return r;
++
+         r = serialize_strv(f, "exec-context-exec-search-path", c->exec_search_path);
+         if (r < 0)
+                 return r;
+@@ -3184,6 +3188,10 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
+                         r = deserialize_strv(val, &c->no_exec_paths);
+                         if (r < 0)
+                                 return r;
++                } else if ((val = startswith(l, "exec-context-usr-share-write-paths="))) {
++                        r = deserialize_strv(val, &c->usr_share_write_paths);
++                        if (r < 0)
++                                return r;
+                 } else if ((val = startswith(l, "exec-context-exec-search-path="))) {
+                         r = deserialize_strv(val, &c->exec_search_path);
+                         if (r < 0)
+diff --git a/src/core/execute.c b/src/core/execute.c
+index ef0bf88..ee38243 100644
+--- a/src/core/execute.c
++++ b/src/core/execute.c
+@@ -208,7 +208,8 @@ bool exec_needs_mount_namespace(
+             !strv_isempty(context->read_only_paths) ||
+             !strv_isempty(context->inaccessible_paths) ||
+             !strv_isempty(context->exec_paths) ||
+-            !strv_isempty(context->no_exec_paths))
++            !strv_isempty(context->no_exec_paths) ||
++            !strv_isempty(context->usr_share_write_paths))
+                 return true;
+
+         if (context->n_bind_mounts > 0)
+@@ -549,6 +550,7 @@ void exec_context_done(ExecContext *c) {
+         c->inaccessible_paths = strv_free(c->inaccessible_paths);
+         c->exec_paths = strv_free(c->exec_paths);
+         c->no_exec_paths = strv_free(c->no_exec_paths);
++        c->usr_share_write_paths = strv_free(c->usr_share_write_paths);
+         c->exec_search_path = strv_free(c->exec_search_path);
+
+         bind_mount_free_many(c->bind_mounts, c->n_bind_mounts);
+@@ -1235,6 +1237,7 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix) {
+         strv_dump(f, prefix, "InaccessiblePaths", c->inaccessible_paths);
+         strv_dump(f, prefix, "ExecPaths", c->exec_paths);
+         strv_dump(f, prefix, "NoExecPaths", c->no_exec_paths);
++        strv_dump(f, prefix, "UsrShareWritePaths", c->usr_share_write_paths);
+         strv_dump(f, prefix, "ExecSearchPath", c->exec_search_path);
+
+         FOREACH_ARRAY(mount, c->bind_mounts, c->n_bind_mounts)
+diff --git a/src/core/execute.h b/src/core/execute.h
+index 5a6927a..d84c6db 100644
+--- a/src/core/execute.h
++++ b/src/core/execute.h
+@@ -276,6 +276,7 @@ struct ExecContext {
+         char *smack_process_label;
+
+         char **read_write_paths, **read_only_paths, **inaccessible_paths, **exec_paths, **no_exec_paths;
++        char **usr_share_write_paths;
+         char **exec_search_path;
+         unsigned long mount_propagation_flag;
+         BindMount *bind_mounts;
+diff --git a/src/core/load-fragment-gperf.gperf.in b/src/core/load-fragment-gperf.gperf.in
+index 45f9ab0..79aca6b 100644
+--- a/src/core/load-fragment-gperf.gperf.in
++++ b/src/core/load-fragment-gperf.gperf.in
+@@ -115,6 +115,7 @@
+ {{type}}.InaccessiblePaths,                config_parse_namespace_path_strv,            0,                                  offsetof({{type}}, exec_context.inaccessible_paths)
+ {{type}}.ExecPaths,                        config_parse_namespace_path_strv,            0,                                  offsetof({{type}}, exec_context.exec_paths)
+ {{type}}.NoExecPaths,                      config_parse_namespace_path_strv,            0,                                  offsetof({{type}}, exec_context.no_exec_paths)
++{{type}}.UsrShareWritePaths,               config_parse_namespace_path_strv,          0,                                  offsetof({{type}}, exec_context.usr_share_write_paths)
+ {{type}}.ExecSearchPath,                   config_parse_colon_separated_paths,          0,                                  offsetof({{type}}, exec_context.exec_search_path)
+ {{type}}.BindPaths,                        config_parse_bind_paths,                     0,                                  offsetof({{type}}, exec_context)
+ {{type}}.BindReadOnlyPaths,                config_parse_bind_paths,                     0,                                  offsetof({{type}}, exec_context)
+diff --git a/src/core/namespace.c b/src/core/namespace.c
+index 50d7b05..14b977e 100644
+--- a/src/core/namespace.c
++++ b/src/core/namespace.c
+@@ -396,6 +396,104 @@ static int append_access_mounts(MountList *ml, char **strv, MountMode mode, bool
+         return 0;
+ }
+
++static int find_covering_mount_point(const char *path, char **ret) {
++        /* Find the nearest mount point that covers the given path. If the path itself is a mount point,
++         * return it. Otherwise, walk up the directory tree until we find a mount point.
++         * Returns -ENOENT if no mount point is found (reached the root). */
++
++        _cleanup_free_ char *buf = strdup(path);
++        if (!buf)
++                return -ENOMEM;
++
++        for (;;) {
++                _cleanup_free_ char *parent = NULL;
++                int r;
++
++                r = path_is_mount_point(buf, NULL, 0);
++                if (r < 0)
++                        return r;
++                if (r > 0) {
++                        *ret = TAKE_PTR(buf);
++                        return 0;
++                }
++
++                /* Reached the filesystem root? */
++                if (path_equal(buf, "/"))
++                        return -ENOENT;
++
++                r = path_extract_directory(buf, &parent);
++                if (r < 0)
++                        return r;
++                if (path_equal(parent, buf))
++                        return -ENOENT;
++
++                free_and_replace(buf, parent);
++        }
++}
++
++static int apply_usr_share_write_paths(
++                char **usr_share_write_paths,
++                const char *root,
++                FILE *proc_self_mountinfo) {
++
++        /* UsrShareWritePaths= remounts the covering mount point of each path as read-write.
++         * If the path itself is a mount point, remount it as rw. If not, find the nearest
++         * ancestor mount point; if it is read-only, remount it as rw. If it is already
++         * read-write, skip it. This runs after all other mount operations so it can undo
++         * read-only flags set by ProtectSystem=, ReadOnlyPaths=, etc. */
++
++        assert(root);
++        assert(proc_self_mountinfo);
++
++        STRV_FOREACH(i, usr_share_write_paths) {
++                bool ignore = false;
++                const char *e = *i;
++
++                /* Strip ignore and prefix modifiers, same as append_access_mounts() */
++                if (startswith(e, "-")) {
++                        e++;
++                        ignore = true;
++                }
++                if (startswith(e, "+"))
++                        e++;
++
++                /* Validate: path must be /usr/share or a subdirectory of it */
++                if (!path_startswith(e, "/usr/share")) {
++                        log_warning("UsrShareWritePaths: '%s' is not under /usr/share, ignoring.", e);
++                        continue;
++                }
++
++                _cleanup_free_ char *target = path_join(root, e);
++                if (!target)
++                        return -ENOMEM;
++
++                /* Find the covering mount point (the path itself or nearest ancestor) */
++                _cleanup_free_ char *mount_point = NULL;
++                int r = find_covering_mount_point(target, &mount_point);
++                if (r == -ENOENT) {
++                        if (ignore)
++                                continue;
++                        log_debug("UsrShareWritePaths: '%s' has no covering mount point, skipping.", e);
++                        continue;
++                }
++                if (r < 0)
++                        return log_debug_errno(r, "UsrShareWritePaths: failed to find covering mount point for '%s': %m", e);
++
++                /* Remount as read-write (clear MS_RDONLY).
++                 * bind_remount_one_with_mountinfo() will handle the case where the mount
++                 * is already read-write gracefully (redundant remount is ignored). */
++                r = bind_remount_one_with_mountinfo(mount_point, 0, MS_RDONLY, proc_self_mountinfo);
++                if (r == -ENOENT && ignore)
++                        continue;
++                if (r < 0)
++                        return log_debug_errno(r, "UsrShareWritePaths: failed to remount '%s' as read-write: %m", mount_point);
++
++                log_debug("UsrShareWritePaths: remounted '%s' as read-write (covers '%s').", mount_point, e);
++        }
++
++        return 0;
++}
++
+ static int append_empty_dir_mounts(MountList *ml, char **strv) {
+         assert(ml);
+
+@@ -2030,6 +2128,15 @@ static int apply_mounts(
+                         }
+                 }
+
++        /* Fifth round, apply UsrShareWritePaths= — remount covering mount points as read-write.
++         * This runs after all ro/noexec/nosuid flags are set, so it can undo read-only flags
++         * applied by ProtectSystem=, ReadOnlyPaths=, etc. */
++        if (!strv_isempty(p->usr_share_write_paths)) {
++                r = apply_usr_share_write_paths(p->usr_share_write_paths, root, proc_self_mountinfo);
++                if (r < 0)
++                        return r;
++        }
++
+         return 1;
+ }
+
+diff --git a/src/core/namespace.h b/src/core/namespace.h
+index 921716b..dc29f62 100644
+--- a/src/core/namespace.h
++++ b/src/core/namespace.h
+@@ -93,6 +93,7 @@ struct NamespaceParameters {
+         char **read_write_paths;
+         char **read_only_paths;
+         char **inaccessible_paths;
++        char **usr_share_write_paths;
+
+         char **exec_paths;
+         char **no_exec_paths;
