@@ -1,0 +1,31 @@
+From 5d31694318088a908ccbced2fe95ea4657017b47 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Sun, 7 Jun 2026 19:02:38 +0100
+Subject: [PATCH] journal-importer: cap field size when checking
+
+Originally reported on yeswehack.com as YWH-PGM9780-82
+
+Follow-up for 1e448731f51865184ba988b246d02823a9284d6c
+
+diff --git a/src/shared/journal-importer.c b/src/shared/journal-importer.c
+index 87286a33b2..471ad879a4 100644
+--- a/src/shared/journal-importer.c
++++ b/src/shared/journal-importer.c
+@@ -325,7 +325,7 @@ int journal_importer_process_data(JournalImporter *imp) {
+                         if (!journal_field_valid(line, sep - line, true)) {
+                                 char buf[64], *t;
+ 
+-                                t = strndupa_safe(line, sep - line);
++                                t = strndupa_safe(line, MIN((size_t) (sep - line), sizeof buf));
+                                 log_debug("Ignoring invalid field: \"%s\"",
+                                           cellescape(buf, sizeof buf, t));
+ 
+@@ -344,7 +344,7 @@ int journal_importer_process_data(JournalImporter *imp) {
+                         if (!journal_field_valid(line, n - 1, true)) {
+                                 char buf[64], *t;
+ 
+-                                t = strndupa_safe(line, n - 1);
++                                t = strndupa_safe(line, MIN(n - 1, sizeof buf));
+                                 log_debug("Ignoring invalid field: \"%s\"",
+                                           cellescape(buf, sizeof buf, t));
+ 
