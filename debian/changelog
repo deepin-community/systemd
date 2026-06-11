@@ -1,3 +1,10 @@
+systemd (255.2-4deepin31) unstable; urgency=medium
+
+  * Cap field size in journal-importer to prevent potential DoS via
+    oversized fields (YWH-PGM9780-82)
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 11 Jun 2026 06:54:00 +0800
+
 systemd (255.2-4deepin30) unstable; urgency=medium
 
   * Fix tmpfiles x11 socket age-based cleanup causing unexpected removal
