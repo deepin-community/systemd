@@ -57,3 +57,4 @@ fix-dissect-copy-to-directory-symlinks.patch
 fix-escape-coverity-overflow-check.patch
 fix-resolved-dnssec-limit-signature-validations.patch
 fix-exec-invoke-dont-close-size.patch
+fix-journal-importer-cap-field-size.patch

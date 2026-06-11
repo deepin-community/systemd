@@ -1,3 +1,9 @@
+systemd (255.2-4deepin47) unstable; urgency=medium
+
+  * Cap field size in journal-importer to prevent potential DoS via oversized fields (YWH-PGM9780-82)
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 23 Jul 2026 17:29:22 +0800
+
 systemd (255.2-4deepin46) unstable; urgency=medium
 
   * Fix dont_close[] array size in exec-invoke
