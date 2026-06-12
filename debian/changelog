@@ -1,3 +1,10 @@
+systemd (255.2-4deepin31) unstable; urgency=medium
+
+  * Optimize udev trigger priority and replace full settle with
+  * root-device-only wait.
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 12 Jun 2026 17:31:08 +0800
+
 systemd (255.2-4deepin30) unstable; urgency=medium
 
   * Fix tmpfiles x11 socket age-based cleanup causing unexpected removal
