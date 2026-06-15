@@ -42,5 +42,6 @@ hwdb-reject-oob-fnmatch.patch
 exec-invoke-chdir-after-chroot.patch
 uniontech-skip-clock-restore-for-timesyncd.patch
 fix-tmpfiles-x11-cleanup.patch
-uniontech-fix-hibernation-err-log.patch
-uniontech-fix-byte-order-conversion.patch
+fix-hibernation-err-log.patch
+fix-byte-order-conversion.patch
+update-po-file-about-bo-and-ug.patch

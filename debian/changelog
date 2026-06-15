@@ -1,3 +1,9 @@
+systemd (255.2-4deepin34) unstable; urgency=medium
+
+  * update-ug.po-and-bo.po
+
+ -- dongshengyuan <dongshengyuan@uniontech.com>  Mon, 15 Jun 2026 13:51:50 +0800
+
 systemd (255.2-4deepin33) unstable; urgency=medium
 
   * head_data_offset is declared as le64_t in journal-def.h, so it must be assigned with htole64(p).
