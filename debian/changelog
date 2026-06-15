@@ -1,3 +1,9 @@
+systemd (255.2-4deepin33) unstable; urgency=medium
+
+  * head_data_offset is declared as le64_t in journal-def.h, so it must be assigned with htole64(p).
+
+ -- dongshengyuan <dongshengyuan@uniontech.com>  Mon, 15 Jun 2026 13:09:42 +0800
+
 systemd (255.2-4deepin32) unstable; urgency=medium
 
   * sleep: fix spurious "Failed to lock home directories" error when

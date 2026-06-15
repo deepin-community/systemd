@@ -43,3 +43,4 @@ exec-invoke-chdir-after-chroot.patch
 uniontech-skip-clock-restore-for-timesyncd.patch
 fix-tmpfiles-x11-cleanup.patch
 uniontech-fix-hibernation-err-log.patch
+uniontech-fix-byte-order-conversion.patch
