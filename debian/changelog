@@ -1,3 +1,12 @@
+systemd (255.2-4deepin32) unstable; urgency=medium
+
+  * sleep: fix spurious "Failed to lock home directories" error when
+    systemd-homed is not running by using sd_bus_open_system() instead
+    of bus_connect_system_systemd(), ensuring the call reaches homed
+    on the standard system D-Bus rather than PID1's private bus.
+
+ -- dongshengyuan <dongshengyuan@uniontech.com>  Mon, 15 Jun 2026 10:41:55 +0800
+
 systemd (255.2-4deepin31) unstable; urgency=medium
 
   * Optimize udev trigger priority and replace full settle with
