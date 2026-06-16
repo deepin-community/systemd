@@ -1,3 +1,9 @@
+systemd (255.2-4deepin37) unstable; urgency=medium
+
+  * Follow-ups for hibernate-util: fix duplicate error logging, use blockdev path, and remove unused code
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 16 Jun 2026 11:30:15 +0800
+
 systemd (255.2-4deepin36) unstable; urgency=medium
 
   * fix wrong error variable in log_error_errno()
