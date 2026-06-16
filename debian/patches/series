@@ -45,3 +45,4 @@ fix-tmpfiles-x11-cleanup.patch
 fix-hibernation-err-log.patch
 fix-byte-order-conversion.patch
 update-po-file-about-bo-and-ug.patch
+fix-double-free.patch
