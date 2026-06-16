@@ -51,3 +51,4 @@ fix-sleep-hibernation-device-follow-ups.patch
 feat-swap-improve.patch
 add-numa-policy.patch
 fix-timesyncd-randomize-transmit-timestamp.patch
+fix-socket-util-remove-variable-ensure-nul-termination.patch
