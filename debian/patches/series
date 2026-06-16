@@ -47,6 +47,7 @@ fix-byte-order-conversion.patch
 update-po-file-about-bo-and-ug.patch
 fix-double-free.patch
 fix-wrong-err-log.patch
+fix-sleep-hibernation-device-follow-ups.patch
 feat-swap-improve.patch
 add-numa-policy.patch
 fix-timesyncd-randomize-transmit-timestamp.patch
