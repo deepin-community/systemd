@@ -1,0 +1,108 @@
+From 5d889f3ab87e6b2458e4039d6b9ceb4edb32dbf2 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 20 Dec 2023 00:54:10 +0900
+Subject: [PATCH] signal-util: align table
+
+
+diff --git a/src/basic/signal-util.c b/src/basic/signal-util.c
+index 5d9484626d..f8f4e509ad 100644
+--- a/src/basic/signal-util.c
++++ b/src/basic/signal-util.c
+@@ -120,39 +120,39 @@ int sigprocmask_many(int how, sigset_t *old, ...) {
+ }
+ 
+ static const char *const static_signal_table[] = {
+-        [SIGHUP] = "HUP",
+-        [SIGINT] = "INT",
+-        [SIGQUIT] = "QUIT",
+-        [SIGILL] = "ILL",
+-        [SIGTRAP] = "TRAP",
+-        [SIGABRT] = "ABRT",
+-        [SIGBUS] = "BUS",
+-        [SIGFPE] = "FPE",
+-        [SIGKILL] = "KILL",
+-        [SIGUSR1] = "USR1",
+-        [SIGSEGV] = "SEGV",
+-        [SIGUSR2] = "USR2",
+-        [SIGPIPE] = "PIPE",
+-        [SIGALRM] = "ALRM",
+-        [SIGTERM] = "TERM",
++        [SIGHUP]    = "HUP",
++        [SIGINT]    = "INT",
++        [SIGQUIT]   = "QUIT",
++        [SIGILL]    = "ILL",
++        [SIGTRAP]   = "TRAP",
++        [SIGABRT]   = "ABRT",
++        [SIGBUS]    = "BUS",
++        [SIGFPE]    = "FPE",
++        [SIGKILL]   = "KILL",
++        [SIGUSR1]   = "USR1",
++        [SIGSEGV]   = "SEGV",
++        [SIGUSR2]   = "USR2",
++        [SIGPIPE]   = "PIPE",
++        [SIGALRM]   = "ALRM",
++        [SIGTERM]   = "TERM",
+ #ifdef SIGSTKFLT
+         [SIGSTKFLT] = "STKFLT",  /* Linux on SPARC doesn't know SIGSTKFLT */
+ #endif
+-        [SIGCHLD] = "CHLD",
+-        [SIGCONT] = "CONT",
+-        [SIGSTOP] = "STOP",
+-        [SIGTSTP] = "TSTP",
+-        [SIGTTIN] = "TTIN",
+-        [SIGTTOU] = "TTOU",
+-        [SIGURG] = "URG",
+-        [SIGXCPU] = "XCPU",
+-        [SIGXFSZ] = "XFSZ",
++        [SIGCHLD]   = "CHLD",
++        [SIGCONT]   = "CONT",
++        [SIGSTOP]   = "STOP",
++        [SIGTSTP]   = "TSTP",
++        [SIGTTIN]   = "TTIN",
++        [SIGTTOU]   = "TTOU",
++        [SIGURG]    = "URG",
++        [SIGXCPU]   = "XCPU",
++        [SIGXFSZ]   = "XFSZ",
+         [SIGVTALRM] = "VTALRM",
+-        [SIGPROF] = "PROF",
+-        [SIGWINCH] = "WINCH",
+-        [SIGIO] = "IO",
+-        [SIGPWR] = "PWR",
+-        [SIGSYS] = "SYS"
++        [SIGPROF]   = "PROF",
++        [SIGWINCH]  = "WINCH",
++        [SIGIO]     = "IO",
++        [SIGPWR]    = "PWR",
++        [SIGSYS]    = "SYS"
+ };
+ 
+ DEFINE_PRIVATE_STRING_TABLE_LOOKUP(static_signal, int);
+
+From 97df9fa065767cbedadd144b0e1b193a95e7ffbd Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 20 Dec 2023 00:48:49 +0900
+Subject: [PATCH] time-util: make usleep_safe() return earlier if 0 is passed
+
+
+diff --git a/src/basic/time-util.h b/src/basic/time-util.h
+index ed4c1aabd4..29373477f4 100644
+--- a/src/basic/time-util.h
++++ b/src/basic/time-util.h
+@@ -219,6 +219,9 @@ static inline int usleep_safe(usec_t usec) {
+          * ⚠️ Note we are not using plain nanosleep() here, since that operates on CLOCK_REALTIME, not
+          *    CLOCK_MONOTONIC! */
+ 
++        if (usec == 0)
++                return 0;
++
+         // FIXME: use RET_NERRNO() macro here. Currently, this header cannot include errno-util.h.
+         return clock_nanosleep(CLOCK_MONOTONIC, 0, TIMESPEC_STORE(usec), NULL) < 0 ? -errno : 0;
+ }
+
+From 08542781e27d4a7e3d1aa80e33a442be86681b2f Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Tue, 19 Dec 2023 23:19:25 +0100
+Subject: [PATCH] Merge pull request #30531 from yuwata/trivial-cleanups
+
+Trivial cleanups
+
