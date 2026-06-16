@@ -1,3 +1,9 @@
+systemd (255.2-4deepin37) unstable; urgency=medium
+
+  * Align signal table formatting and make usleep_safe() return early for zero delay
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 16 Jun 2026 05:45:55 +0800
+
 systemd (255.2-4deepin36) unstable; urgency=medium
 
   * fix wrong error variable in log_error_errno()
