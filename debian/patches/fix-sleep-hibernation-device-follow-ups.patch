@@ -1,0 +1,120 @@
+From 9e7cd6bed14a4816680c1d106456827bcc778382 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 28 Dec 2023 04:09:55 +0900
+Subject: [PATCH] Merge pull request #30641 from YHNdnzj/hibernation-device
+
+Follow-ups for hibernate-util
+
+From fe33920c2aee9fcde7c4602633f41b6ce1858870 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Wed, 27 Dec 2023 22:31:57 +0800
+Subject: [PATCH] sleep: don't log duplicate error
+
+write_resume_config() logs error on its own.
+
+diff --git a/src/sleep/sleep.c b/src/sleep/sleep.c
+index deb165ead8..31dca446f2 100644
+--- a/src/sleep/sleep.c
++++ b/src/sleep/sleep.c
+@@ -253,10 +253,8 @@ static int execute(
+                                 return r;
+ 
+                         r = write_resume_config(hibernation_device.devno, hibernation_device.offset, hibernation_device.path);
+-                        if (r < 0) {
+-                                log_error_errno(r, "Failed to write hibernation device to /sys/power/resume or /sys/power/resume_offset: %m");
++                        if (r < 0)
+                                 goto fail;
+-                        }
+                 }
+ 
+                 r = write_mode(sleep_config->modes[operation]);
+
+From 66b9956082f4e458b5fb2d3571088fb73872f6b2 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Wed, 27 Dec 2023 22:19:07 +0800
+Subject: [PATCH] hibernate-util: make sure we use blockdev path for
+ HibernationDevice.path
+
+Before this commit, this field could spuriously contain the path of the
+swapfile.
+
+diff --git a/src/shared/hibernate-util.c b/src/shared/hibernate-util.c
+index 48ed414197..99b37483bd 100644
+--- a/src/shared/hibernate-util.c
++++ b/src/shared/hibernate-util.c
+@@ -388,12 +388,24 @@ int find_suitable_hibernation_device_full(HibernationDevice *ret_device, uint64_
+                 return log_debug_errno(SYNTHETIC_ERRNO(ENOSPC), "Cannot find swap entry corresponding to /sys/power/resume.");
+         }
+ 
+-        if (ret_device)
++        if (ret_device) {
++                char *path;
++
++                if (entry->swapfile) {
++                        r = device_path_make_canonical(S_IFBLK, entry->devno, &path);
++                        if (r < 0)
++                                return log_debug_errno(r,
++                                                       "Failed to format canonical device path for devno '" DEVNUM_FORMAT_STR "': %m",
++                                                       DEVNUM_FORMAT_VAL(entry->devno));
++                } else
++                        path = TAKE_PTR(entry->path);
++
+                 *ret_device = (HibernationDevice) {
+                         .devno = entry->devno,
+                         .offset = entry->offset,
+-                        .path = TAKE_PTR(entry->path),
++                        .path = path,
+                 };
++        }
+ 
+         if (ret_size) {
+                 *ret_size = entry->size;
+
+From 6e819bd2bd86f1e7f6034461eed600e0dd0977fb Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Wed, 27 Dec 2023 22:22:21 +0800
+Subject: [PATCH] hibernate-util: remove unused code
+
+All callers of write_resume_config() pass non-NULL device.
+
+diff --git a/src/shared/hibernate-util.c b/src/shared/hibernate-util.c
+index 99b37483bd..795b3a2d56 100644
+--- a/src/shared/hibernate-util.c
++++ b/src/shared/hibernate-util.c
+@@ -475,30 +475,23 @@ int hibernation_is_safe(void) {
+ 
+ int write_resume_config(dev_t devno, uint64_t offset, const char *device) {
+         char offset_str[DECIMAL_STR_MAX(uint64_t)];
+-        _cleanup_free_ char *path = NULL;
+         const char *devno_str;
+         int r;
+ 
++        assert(devno > 0);
++        assert(device);
++
+         devno_str = FORMAT_DEVNUM(devno);
+         xsprintf(offset_str, "%" PRIu64, offset);
+ 
+-        if (!device) {
+-                r = device_path_make_canonical(S_IFBLK, devno, &path);
+-                if (r < 0)
+-                        return log_error_errno(r,
+-                                               "Failed to format canonical device path for devno '" DEVNUM_FORMAT_STR "': %m",
+-                                               DEVNUM_FORMAT_VAL(devno));
+-                device = path;
+-        }
+-
+         /* We write the offset first since it's safer. Note that this file is only available in 4.17+, so
+          * fail gracefully if it doesn't exist and we're only overwriting it with 0. */
+         r = write_string_file("/sys/power/resume_offset", offset_str, WRITE_STRING_FILE_DISABLE_BUFFER);
+         if (r == -ENOENT) {
+                 if (offset != 0)
+                         return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
+-                                               "Can't configure hibernation offset %" PRIu64 ", kernel does not support /sys/power/resume_offset. Refusing.",
+-                                               offset);
++                                               "Can't configure swap file offset %s, kernel does not support /sys/power/resume_offset. Refusing.",
++                                               offset_str);
+ 
+                 log_warning_errno(r, "/sys/power/resume_offset is unavailable, skipping writing swap file offset.");
+         } else if (r < 0)
+
