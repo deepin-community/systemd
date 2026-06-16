@@ -1,0 +1,63 @@
+From 6280da47462ffef6f9a58c98049b70cd7201fb8b Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 22 Dec 2023 02:30:46 +0900
+Subject: [PATCH] Merge pull request #30563 from poettering/socket-tweaks
+
+two minor tweak to socket-util.c
+
+From fccad7060267176fdb49263672b03fd214c0b628 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Thu, 23 Nov 2023 17:58:15 +0100
+Subject: [PATCH] socket-util: remove unnecessary variable
+
+
+diff --git a/src/basic/socket-util.c b/src/basic/socket-util.c
+index 47d83f3710..4f28d16b5e 100644
+--- a/src/basic/socket-util.c
++++ b/src/basic/socket-util.c
+@@ -872,13 +872,11 @@ bool address_label_valid(const char *p) {
+ int getpeercred(int fd, struct ucred *ucred) {
+         socklen_t n = sizeof(struct ucred);
+         struct ucred u;
+-        int r;
+ 
+         assert(fd >= 0);
+         assert(ucred);
+ 
+-        r = getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &u, &n);
+-        if (r < 0)
++        if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &u, &n) < 0)
+                 return -errno;
+ 
+         if (n != sizeof(struct ucred))
+
+From 989740ebc4c9642494f9d196dc113744ddcabb0f Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Thu, 23 Nov 2023 18:05:04 +0100
+Subject: [PATCH] socket-util: make sure SO_PEERSEC returned string is always
+ NUL terminated
+
+it's not entirely clear to me if the manual NUL termination is
+necessary, but let's better be safe than sorry, since this is apparently
+up to the LSMs, and I am not sure we can trust them all.
+
+A lot of other code (such as dbus-broker) patches in the NUL byte, hence
+let's be rather safe-then-sorry, it's trivial after all.
+
+diff --git a/src/basic/socket-util.c b/src/basic/socket-util.c
+index beb64d8e6c..47d83f3710 100644
+--- a/src/basic/socket-util.c
++++ b/src/basic/socket-util.c
+@@ -907,8 +907,10 @@ int getpeersec(int fd, char **ret) {
+                 if (!s)
+                         return -ENOMEM;
+ 
+-                if (getsockopt(fd, SOL_SOCKET, SO_PEERSEC, s, &n) >= 0)
++                if (getsockopt(fd, SOL_SOCKET, SO_PEERSEC, s, &n) >= 0) {
++                        s[n] = 0;
+                         break;
++                }
+ 
+                 if (errno != ERANGE)
+                         return -errno;
+
