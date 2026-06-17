@@ -1,0 +1,100 @@
+From 9807ee19b077112819e96b62b6835453696362d7 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Fri, 5 Jan 2024 22:37:29 +0100
+Subject: [PATCH] Merge pull request #30791 from
+ poettering/nspawn-restrict-run-host
+
+nspawn: make some files we expose in /run/host/ in nspawn read-only via access mode
+
+From 05794f5c48b806ddf7e932ed9b0a72e39b641971 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Fri, 5 Jan 2024 16:42:46 +0100
+Subject: [PATCH] nspawn: set read-only access mode on two /run/host/ files
+
+The diectory is mounted read-only anyway, hence this doesn't do much,
+but let's lock this down on every level we can.
+
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+index 9e53c51f1a..3ace3520b9 100644
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -3946,11 +3946,11 @@ static int outer_child(
+ 
+         /* The same stuff as the $container env var, but nicely readable for the entire payload */
+         p = prefix_roota(directory, "/run/host/container-manager");
+-        (void) write_string_file(p, arg_container_service_name, WRITE_STRING_FILE_CREATE);
++        (void) write_string_file(p, arg_container_service_name, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_MODE_0444);
+ 
+         /* The same stuff as the $container_uuid env var */
+         p = prefix_roota(directory, "/run/host/container-uuid");
+-        (void) write_string_filef(p, WRITE_STRING_FILE_CREATE, SD_ID128_UUID_FORMAT_STR, SD_ID128_FORMAT_VAL(arg_uuid));
++        (void) write_string_filef(p, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_MODE_0444, SD_ID128_UUID_FORMAT_STR, SD_ID128_FORMAT_VAL(arg_uuid));
+ 
+         if (!arg_use_cgns) {
+                 r = mount_cgroups(
+
+From 2148c669d2fe8352ed3b4c1d42e55d90ecc4b68d Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Fri, 5 Jan 2024 16:31:55 +0100
+Subject: [PATCH] fileio: add new flag WRITE_STRING_FILE_MODE_0444
+
+With this write_string_file() will create the file with 0444 access mode
+(i.e. read-only).
+
+diff --git a/src/basic/fileio.c b/src/basic/fileio.c
+index 752a65646f..f19326b711 100644
+--- a/src/basic/fileio.c
++++ b/src/basic/fileio.c
+@@ -200,6 +200,19 @@ int write_string_stream_ts(
+         return 0;
+ }
+ 
++static mode_t write_string_file_flags_to_mode(WriteStringFileFlags flags) {
++
++        /* We support three different modes, that are the ones that really make sense for text files like this:
++         *
++         *     → 0600 (i.e. root-only)
++         *     → 0444 (i.e. read-only)
++         *     → 0644 (i.e. writable for root, readable for everyone else)
++         */
++
++        return FLAGS_SET(flags, WRITE_STRING_FILE_MODE_0600) ? 0600 :
++                FLAGS_SET(flags, WRITE_STRING_FILE_MODE_0444) ? 0444 : 0644;
++}
++
+ static int write_string_file_atomic_at(
+                 int dir_fd,
+                 const char *fn,
+@@ -225,7 +238,7 @@ static int write_string_file_atomic_at(
+         if (r < 0)
+                 goto fail;
+ 
+-        r = fchmod_umask(fileno(f), FLAGS_SET(flags, WRITE_STRING_FILE_MODE_0600) ? 0600 : 0644);
++        r = fchmod_umask(fileno(f), write_string_file_flags_to_mode(flags));
+         if (r < 0)
+                 goto fail;
+ 
+@@ -288,7 +301,7 @@ int write_string_file_ts_at(
+                     (FLAGS_SET(flags, WRITE_STRING_FILE_CREATE) ? O_CREAT : 0) |
+                     (FLAGS_SET(flags, WRITE_STRING_FILE_TRUNCATE) ? O_TRUNC : 0) |
+                     (FLAGS_SET(flags, WRITE_STRING_FILE_SUPPRESS_REDUNDANT_VIRTUAL) ? O_RDWR : O_WRONLY),
+-                    (FLAGS_SET(flags, WRITE_STRING_FILE_MODE_0600) ? 0600 : 0666));
++                    write_string_file_flags_to_mode(flags));
+         if (fd < 0) {
+                 r = -errno;
+                 goto fail;
+diff --git a/src/basic/fileio.h b/src/basic/fileio.h
+index e0e0a45b2b..5b247bc101 100644
+--- a/src/basic/fileio.h
++++ b/src/basic/fileio.h
+@@ -26,7 +26,8 @@ typedef enum {
+         WRITE_STRING_FILE_NOFOLLOW                   = 1 << 8,
+         WRITE_STRING_FILE_MKDIR_0755                 = 1 << 9,
+         WRITE_STRING_FILE_MODE_0600                  = 1 << 10,
+-        WRITE_STRING_FILE_SUPPRESS_REDUNDANT_VIRTUAL = 1 << 11,
++        WRITE_STRING_FILE_MODE_0444                  = 1 << 11,
++        WRITE_STRING_FILE_SUPPRESS_REDUNDANT_VIRTUAL = 1 << 12,
+ 
+         /* And before you wonder, why write_string_file_atomic_label_ts() is a separate function instead of just one
+            more flag here: it's about linking: we don't want to pull -lselinux into all users of write_string_file()
+
