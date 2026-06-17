@@ -1,0 +1,41 @@
+From 89a18773ebfa67157f0cf51ae122a28f07cf4286 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Thu, 11 Jun 2026 15:14:49 +0800
+Subject: [PATCH] core: fix unit_merge() load state check evaluating after
+ state overwrite
+
+The condition on line 1206 checks other->load_state != UNIT_STUB to
+decide whether to call the vtable done() callback, but the state was
+already overwritten to UNIT_MERGED on line 1198, making the condition
+always true.
+
+Save the original load_state before overwriting it, so that units in
+UNIT_STUB state (which never went through a load attempt) correctly
+skip the done() call.
+
+---
+ src/core/unit.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/unit.c b/src/core/unit.c
+index 35691363e0615..e36b08531b375 100644
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -1195,6 +1195,8 @@ int unit_merge(Unit *u, Unit *other) {
+         if (r < 0)
+                 return r;
+ 
++        UnitLoadState saved_load_state = other->load_state;
++
+         other->load_state = UNIT_MERGED;
+         other->merged_into = u;
+ 
+@@ -1203,7 +1205,7 @@ int unit_merge(Unit *u, Unit *other) {
+ 
+         /* If there is still some data attached to the other node, we
+          * don't need it anymore, and can free it. */
+-        if (other->load_state != UNIT_STUB)
++        if (saved_load_state != UNIT_STUB)
+                 if (UNIT_VTABLE(other)->done)
+                         UNIT_VTABLE(other)->done(other);
+
