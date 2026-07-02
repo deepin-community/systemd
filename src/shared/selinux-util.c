@@ -39,8 +39,6 @@ typedef enum Initialized {
         LAZY_INITIALIZED,
 } Initialized;
 
-static int mac_selinux_reload(int seqno);
-
 static int cached_use = -1;
 static Initialized initialized = UNINITIALIZED;
 static int last_policyload = 0;
@@ -66,7 +64,7 @@ static int mac_selinux_label_pre(int dir_fd, const char *path, mode_t mode) {
         return mac_selinux_create_file_prepare_at(dir_fd, path, mode);
 }
 
-static int mac_selinux_label_post(int dir_fd, const char *path) {
+static int mac_selinux_label_post(int dir_fd, const char *path, bool created) {
         mac_selinux_create_file_clear();
         return 0;
 }
@@ -170,7 +168,7 @@ static int selinux_init(bool force) {
         if (!force && initialized != LAZY_INITIALIZED)
                 return 1;
 
-        r = selinux_status_open(/* netlink fallback */ 1);
+        r = selinux_status_open(/* netlink fallback= */ 1);
         if (r < 0) {
                 if (!ERRNO_IS_PRIVILEGE(errno))
                         return log_enforcing_errno(errno, "Failed to open SELinux status page: %m");
@@ -214,6 +212,16 @@ int mac_selinux_init_lazy(void) {
         return 0;
 }
 
+#if HAVE_SELINUX
+static int mac_selinux_reload(int seqno) {
+        log_debug("SELinux reload %d", seqno);
+
+        (void) open_label_db();
+
+        return 0;
+}
+#endif
+
 void mac_selinux_maybe_reload(void) {
 #if HAVE_SELINUX
         int policyload;
@@ -255,16 +263,6 @@ void mac_selinux_finish(void) {
         initialized = false;
 #endif
 }
-
-#if HAVE_SELINUX
-static int mac_selinux_reload(int seqno) {
-        log_debug("SELinux reload %d", seqno);
-
-        (void) open_label_db();
-
-        return 0;
-}
-#endif
 
 #if HAVE_SELINUX
 static int selinux_fix_fd(
@@ -532,17 +530,6 @@ int mac_selinux_get_child_mls_label(int socket_fd, const char *exe, const char *
 #else
         return -EOPNOTSUPP;
 #endif
-}
-
-char* mac_selinux_free(char *label) {
-
-#if HAVE_SELINUX
-        freecon(label);
-#else
-        assert(!label);
-#endif
-
-        return NULL;
 }
 
 #if HAVE_SELINUX

@@ -67,10 +67,12 @@ static int method_set_runtime_servers(sd_bus_message *message, void *userdata, s
                         return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid NTP server name or address, refusing: %s", *name);
         }
 
-        r = bus_verify_polkit_async(message, CAP_NET_ADMIN,
-                                    "org.freedesktop.timesync1.set-runtime-servers",
-                                    NULL, true, UID_INVALID,
-                                    &m->polkit_registry, error);
+        r = bus_verify_polkit_async(
+                        message,
+                        "org.freedesktop.timesync1.set-runtime-servers",
+                        /* details= */ NULL,
+                        &m->polkit_registry,
+                        error);
         if (r < 0)
                 return r;
         if (r == 0)
@@ -244,9 +246,9 @@ int manager_connect_bus(Manager *m) {
         if (r < 0)
                 return log_error_errno(r, "Failed to connect to bus: %m");
 
-        r = sd_bus_add_object_vtable(m->bus, NULL, "/org/freedesktop/timesync1", "org.freedesktop.timesync1.Manager", manager_vtable, m);
+        r = bus_add_implementation(m->bus, &manager_object, m);
         if (r < 0)
-                return log_error_errno(r, "Failed to add manager object vtable: %m");
+                return r;
 
         r = bus_log_control_api_register(m->bus);
         if (r < 0)
@@ -262,3 +264,9 @@ int manager_connect_bus(Manager *m) {
 
         return 0;
 }
+
+const BusObjectImplementation manager_object = {
+        "/org/freedesktop/timesync1",
+        "org.freedesktop.timesync1.Manager",
+        .vtables = BUS_VTABLES(manager_vtable),
+};

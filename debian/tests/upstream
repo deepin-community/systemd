@@ -1,24 +1,179 @@
 #!/bin/sh
-# run upstream system integration tests
-# Author: Martin Pitt <martin.pitt@ubuntu.com>
+# run upstream system integration tests via mkosi
 set -e
+set -x
 
-DPKGARCH=$(dpkg --print-architecture)
+RELEASE=$(
+    . /etc/os-release;
+    if [ "$ID" = "ubuntu" ]; then
+        echo "$VERSION_CODENAME"
+    elif [ "$ID" = "debian" ]; then
+        if [ -n "$VERSION_ID" ] && [ -n "$VERSION_CODENAME" ]; then
+            echo "$VERSION_CODENAME"
+        else
+            debian_version="$(cat /etc/debian_version)"
+            if [ "${debian_version#*/}" = sid ]; then
+                if [ ! -f /etc/apt/preferences.d/autopkgtest-unstable.pref ] && ( [ "$VERSION_CODENAME" = sid ] || grep -q -r sid /etc/apt/sources.list* || grep -q -r unstable /etc/apt/sources.list* ); then
+                    echo "sid"
+                else
+                    echo "$VERSION_CODENAME"
+                fi
+            fi
+        fi
+    fi
+)
 
-# Because this test is used both by upstream and by Debian, we use different deny-list filenames.
-# For more details see https://salsa.debian.org/systemd-team/systemd/merge_requests/52
-if [ -n "$TEST_UPSTREAM" ]; then
-    denylist="deny-list-ubuntu-ci"
-else
-    denylist="deny-list-upstream-ci"
+cleanup () {
+    if [ -f "${workdir}/btrfs/build/meson-logs/testlog.txt" ]; then
+        cp "${workdir}/btrfs/build/meson-logs/testlog.txt" "$AUTOPKGTEST_ARTIFACTS"
+    fi
+    if [ -d "${workdir}/btrfs/build/test/journal" ]; then
+        cp -r "${workdir}/btrfs/build/test/journal" "$AUTOPKGTEST_ARTIFACTS"
+    fi
+    if [ -n "$workdir" ]; then
+        umount "$workdir/btrfs" || true
+        losetup --detach "$loop" || true
+        rm -rf "$workdir"
+    fi
+}
+
+# apparmor is not compatible with swtpm
+aa-teardown >/dev/null 2>&1 || true
+# we need user namespaces for some tests running in nspawn
+sysctl -we kernel.apparmor_restrict_unprivileged_unconfined=0
+sysctl -we kernel.apparmor_restrict_unprivileged_userns=0
+
+mkdir -p /run/systemd/resolved.conf.d/
+tee /run/systemd/resolved.conf.d/dns.conf <<EOF
+[Resolve]
+DNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com 2606:4700:4700::1111#cloudflare-dns.com 2606:4700:4700::1001#cloudflare-dns.com
+EOF
+systemctl try-reload-or-restart systemd-resolved.service || true
+
+# We need to have a dependency the packages but no need to run them
+systemctl disable --now systemd-homed.service systemd-userdbd.service systemd-userdbd.socket
+
+workdir="$(mktemp --directory --tmpdir=/var/tmp integration-tests.XXXXXXXXXX)"
+trap cleanup EXIT
+
+# We need to make nearly identical copies of large images, so set up a BTRFS volume that
+# can use copy-on-write and compression, as the available disk space is very limited
+truncate --size=100G "$workdir/btrfs.raw"
+mkfs.btrfs "$workdir/btrfs.raw"
+mkdir -p "$workdir/btrfs"
+loop="$(losetup --find --show --direct-io=on "$workdir/btrfs.raw")"
+mount "$loop" "$workdir/btrfs" --options compress=zstd:1,user_subvol_rm_allowed,noatime,discard=async,space_cache=v2
+
+# mkosi will drop privileges and fail if it detects that is ran under sudo,
+# so unset these variables to hide it
+unset SUDO_USER SUDO_UID SUDO_GID
+
+mkosi_tree="${AUTOPKGTEST_TMP}/mkosi"
+git clone https://github.com/systemd/mkosi.git "$mkosi_tree"
+# If we have it, pin the mkosi version to the same one used by Github Actions, to ensure consistency
+if [ -f .github/workflows/mkosi.yml ]; then
+    mkosi_hash="$(grep systemd/mkosi@ .github/workflows/mkosi.yml | sed "s|.*systemd/mkosi@||g")"
+    git -C "$mkosi_tree" checkout "$mkosi_hash"
 fi
 
-export DENY_LIST_MARKERS="$denylist-$DPKGARCH $denylist"
-export ARTIFACT_DIRECTORY=$AUTOPKGTEST_ARTIFACTS
+apt_dir="/etc/apt"
+local_binaries=""
+if [ -d "${AUTOPKGTEST_TMP}/../binaries" ]; then
+    # If locally built binaries are being used, prepare /etc/apt so that
+    # it will not conflict with settings implied by PackageDirectories=
+    # used below.
+    local_binaries="$(realpath "${AUTOPKGTEST_TMP}/../binaries")"
+    apt_dir="$(mktemp -d)/apt"
+    cp -r /etc/apt "$apt_dir"
+
+    if [ -e "${apt_dir}/sources.list" ]; then
+        sed -i "\|${local_binaries}|d" "${apt_dir}/sources.list"
+    fi
+
+    for sources in $(find "${apt_dir}/sources.list.d" -type f -name "*.list"); do
+        sed -i "\|${local_binaries}|d" "$sources"
+    done
+
+    for sources in $(find "${apt_dir}/sources.list.d" -type f -name "*.sources"); do
+        sed -i "\|URIs:.*${local_binaries}|i Enabled: no" $sources
+    done
+fi
+
+# Moved in v258
+mkosi_local_conf="mkosi.local.conf"
+if [ -d mkosi ]; then
+    mkosi_local_conf="mkosi/mkosi.local.conf"
+fi
+
+tee "${mkosi_local_conf}" <<EOF
+[Output]
+Format=disk
+
+[Build]
+WorkspaceDirectory=$workdir
+PackageCacheDirectory=$workdir/cache
+SandboxTrees=${apt_dir}:/etc/apt/
+ToolsTree=
+Environment=NO_BUILD=1 NO_SYNC=1 ARTIFACT_DIRECTORY="$AUTOPKGTEST_ARTIFACTS" TEST_SAVE_JOURNAL=fail TEST_SHOW_JOURNAL=warning
+Incremental=no
+
+[Distribution]
+${RELEASE:+"Release=${RELEASE}"}
+
+[Content]
+${local_binaries:+"PackageDirectories=${local_binaries}"}
+
+[Runtime]
+RuntimeBuildSources=no
+EOF
+
+# mkosi registers a pid with machined before it is assigned to a scope, so machined
+# associates it with the user session, and kills it later when the machine is shut down,
+# disable registration to avoid it. This is a workaround for versions older than 25, where
+# MachinedRegister=no does the same.
+if systemd-analyze compare-versions "$(git -C "$mkosi_tree" describe | tr -d 'v')" lt 25; then
+    sed -i "/  register_machine(/d" "$mkosi_tree/mkosi/qemu.py"
+else
+    tee -a "${mkosi_local_conf}" <<EOF
+[Runtime]
+Register=no
+EOF
+fi
+
+# kernel 6.12 broke mounting btrfs filesystems from loop devices, so switch to ext4
+sed -i "s/Format=btrfs/Format=ext4/" mkosi.repart/10-root.conf || true
+
+# qemu/vsock does not appear to work on ppc64el/s390x, so skip those tests
+# qemu tests time out on arm64, so skip them
+dpkgarch=$(dpkg --print-architecture)
+if [ "$dpkgarch" = ppc64el ] || [ "$dpkgarch" = s390x ] || [ "$dpkgarch" = arm64 ]; then
+    export TEST_NO_QEMU=1
+fi
+
+# If we don't have KVM, the explicitly disable it, as mkosi will fail. But try to load the module first.
+modprobe kvm || true
+if [ ! -e /dev/kvm ]; then
+    export TEST_NO_KVM=1
+fi
+
+export ARTIFACT_DIRECTORY="$AUTOPKGTEST_ARTIFACTS"
+export PATH="${mkosi_tree}/bin:$PATH"
+export TEST_SAVE_JOURNAL=fail
 export TEST_SHOW_JOURNAL=warning
-export TEST_REQUIRE_INSTALL_TESTS=0
-export TEST_PREFER_NSPAWN=1
-export NO_BUILD=1
 export QEMU_TIMEOUT=2400
 export NSPAWN_TIMEOUT=2400
-test/run-integration-tests.sh
+export SYSTEMD_INTEGRATION_TESTS=1
+export NO_BUILD=1
+export NO_SYNC=1
+
+mkosi --debug genkey
+mkosi summary
+meson setup "${workdir}/btrfs/build" -Dintegration-tests=true -Dtests=true
+if [ -f mkosi/mkosi.key ]; then
+    cp mkosi/mkosi.key mkosi/mkosi.crt "${workdir}/btrfs/build"
+else
+    cp mkosi.key mkosi.crt "${workdir}/btrfs/build"
+fi
+ln -sf "${workdir}/btrfs/build" build
+mkosi -f
+meson test -C "${workdir}/btrfs/build" --no-rebuild --suite integration-tests --print-errorlogs --no-stdsplit --num-processes "$(($(nproc) - 1))"

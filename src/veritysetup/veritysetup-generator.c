@@ -252,7 +252,7 @@ static int determine_device(
         if (*data_what && *hash_what)
                 return 0;
 
-        r = unhexmem(hash, strlen(hash), &m, &l);
+        r = unhexmem(hash, &m, &l);
         if (r < 0)
                 return log_error_errno(r, "Failed to parse hash: %s", hash);
         if (l < sizeof(sd_id128_t)) {
@@ -453,7 +453,6 @@ static int add_veritytab_devices(void) {
         for (;;) {
                 _cleanup_free_ char *line = NULL, *name = NULL, *data_device = NULL, *hash_device = NULL,
                                     *roothash = NULL, *options = NULL;
-                char *data_uuid, *hash_uuid;
 
                 r = read_stripped_line(f, LONG_LINE_MAX, &line);
                 if (r < 0)
@@ -471,14 +470,6 @@ static int add_veritytab_devices(void) {
                         log_error("Failed to parse %s:%u, ignoring.", arg_veritytab, veritytab_line);
                         continue;
                 }
-
-                data_uuid = startswith(data_device, "UUID=");
-                if (!data_uuid)
-                        data_uuid = path_startswith(data_device, "/dev/disk/by-uuid/");
-
-                hash_uuid = startswith(hash_device, "UUID=");
-                if (!hash_uuid)
-                        hash_uuid = path_startswith(hash_device, "/dev/disk/by-uuid/");
 
                 r = create_veritytab_device(
                                 name,

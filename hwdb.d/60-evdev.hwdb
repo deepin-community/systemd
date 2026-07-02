@@ -38,12 +38,11 @@
 # where /dev/input/eventXX is the device in question. If in doubt, simply use
 # /dev/input/event* to reload all input rules.
 #
-# If your changes are generally applicable, preferably send them as a pull
-# request to
+# If your changes are generally applicable, send them as a pull request to
 #   https://github.com/systemd/systemd
 # or create a bug report on https://github.com/systemd/systemd/issues and
 # include your new rules, a description of the device, and the output of
-#   udevadm info /dev/input/eventXX.
+#   udevadm info /dev/input/eventXX
 #
 # Allowed properties are:
 #    EVDEV_ABS_<axis>=<min>:<max>:<res>:<fuzz>:<flat>
@@ -75,6 +74,11 @@ evdev:input:b0003v08CAp0010*
 evdev:input:b0003v08CAp0020*
  EVDEV_ABS_00=::20
  EVDEV_ABS_01=::20
+
+# AIPTEK Media Tablet Ultimate (detected as Waltop International Corp. Batteryless Tablet)
+evdev:input:b0003v172Fp0503*
+ EVDEV_ABS_00=::160
+ EVDEV_ABS_01=::160
 
 #########################################
 # Apple
@@ -126,6 +130,13 @@ evdev:input:b0003v05ACp025B*
  EVDEV_ABS_00=::94
  EVDEV_ABS_01=::92
  EVDEV_ABS_35=::94
+ EVDEV_ABS_36=::92
+
+# MacbookPro12,1 (unibody, Early 2015)
+evdev:input:b0003v05ACp0273*
+ EVDEV_ABS_00=::97
+ EVDEV_ABS_01=::92
+ EVDEV_ABS_35=::97
  EVDEV_ABS_36=::92
 
 # MacBook8,1 (2015), MacBook9,1 (2016), MacBook10,1 (2017)
@@ -215,6 +226,13 @@ evdev:name:ELAN1401:00 04F3:30DC Touchpad:dmi:*:svnASUSTeKCOMPUTERINC.:pnZenBook
  EVDEV_ABS_35=:::8
  EVDEV_ABS_36=:::8
 
+# ASUS X1504ZA
+evdev:name:ASUP1301:00 093A:2009 Touchpad:dmi:*:svnASUSTeKCOMPUTERINC.*:pvr1.0*:
+ EVDEV_ABS_00=:::8
+ EVDEV_ABS_01=:::8
+ EVDEV_ABS_35=:::8
+ EVDEV_ABS_36=:::8
+
 #########################################
 # Avita
 #########################################
@@ -238,8 +256,33 @@ evdev:name:SYNA3602:00 0911:5288 Touchpad:dmi:*svnBANGHO:pnCLOUDPRO:*
  EVDEV_ABS_36=45:954:14
 
 #########################################
+# Bosto
+#########################################
+
+# Bosto BT-12HD series
+evdev:input:b0003v0ED1p7821*
+ EVDEV_ABS_00=::2271
+ EVDEV_ABS_01=::5080
+
+#########################################
+# Chuwi
+#########################################
+
+# Chuwi MiniBook X
+evdev:name:XXXX0000:05 0911:5288 Touchpad:dmi:*:pnMiniBookX:*
+ EVDEV_ABS_00=:::8
+ EVDEV_ABS_01=:::8
+
+#########################################
 # Dell
 #########################################
+
+# Dell AlpsPS/2 ALPS DualPoint TouchPad
+evdev:name:AlpsPS/2 ALPS DualPoint TouchPad:dmi:*:svnDellInc.*:pnLatitudeE7440*:
+ EVDEV_ABS_00=:::28
+ EVDEV_ABS_01=:::28
+ EVDEV_ABS_35=:::28
+ EVDEV_ABS_36=:::28
 
 # Dell Vostro 1510
 evdev:name:AlpsPS/2 ALPS GlidePoint*:dmi:bvn*:bvr*:bd*:svnDellInc.:pnVostro1510:*
@@ -355,6 +398,17 @@ evdev:name:AlpsPS/2 ALPS GlidePoint:dmi:bvn*:bvr*:bd*:svnDellInc.:pnXPSM1530:*
 evdev:input:b0003v0430p0530*
  EVDEV_ABS_00=0:4096:16
  EVDEV_ABS_01=0:4096:16
+
+#########################################
+# GAOMON
+#########################################
+
+# GAOMON S620
+evdev:input:b0003v256Cp006F*
+ EVDEV_ABS_00=::210
+ EVDEV_ABS_01=::323
+ EVDEV_ABS_35=::210
+ EVDEV_ABS_36=::323
 
 #########################################
 # Google
@@ -473,10 +527,18 @@ evdev:name:SynPS/2 Synaptics TouchPad:dmi:*svnHP:pnHPENVYx360Convertible15-cn0xx
 # HUION
 #########################################
 
-# HUION Inpiroy H420X
+# HUION Inspiroy H420X and 2 L
 evdev:input:b0003v256Cp0064*
+evdev:input:b0003v256Cp0068*
  EVDEV_ABS_00=::200
  EVDEV_ABS_01=::200
+
+# HUION Kamvas 19 Pro (GT-1902)
+evdev:input:b0003v256Cp006B*
+ EVDEV_ABS_00=::40
+ EVDEV_ABS_01=::42
+ EVDEV_ABS_35=::40
+ EVDEV_ABS_36=::42
 
 #########################################
 # Lenovo
@@ -590,6 +652,13 @@ evdev:name:SynPS/2 Synaptics TouchPad:dmi:*svnLENOVO:*pvrThinkPadL14Gen1**
  EVDEV_ABS_35=::44
  EVDEV_ABS_36=::50
 
+# Lenovo Thinkpad E16 Gen1 (Intel)
+evdev:name:SYNA801A:00 06CB:CEC6 Touchpad:dmi:*svnLENOVO:*pvrThinkPadE16Gen1**
+ EVDEV_ABS_00=::11
+ EVDEV_ABS_01=::11
+ EVDEV_ABS_35=::11
+ EVDEV_ABS_36=::11
+
 # Lenovo T460
 evdev:name:SynPS/2 Synaptics TouchPad:dmi:*svnLENOVO*:pn*ThinkPad*T460:*
  EVDEV_ABS_00=1266:5677:44
@@ -634,6 +703,13 @@ evdev:name:AlpsPS/2 ALPS GlidePoint:dmi:*svnLENOVO:*pvrLenovoideapadY700-14ISK:*
  EVDEV_ABS_01=::29
  EVDEV_ABS_35=::27
  EVDEV_ABS_36=::29
+
+#Lenovo Y50-70
+evdev:name:AlpsPS/2 ALPS GlidePoint:dmi:*svnLENOVO:*pvrLenovoY50-70**
+ EVDEV_ABS_00=164:3918:37
+ EVDEV_ABS_01=120:1935:26
+ EVDEV_ABS_35=164:3918:37
+ EVDEV_ABS_36=120:1935:26
 
 # Lenovo Ideapad 310S-14ISK
 evdev:name:AlpsPS/2 ALPS GlidePoint:dmi:*svnLENOVO:*pvrLenovoideapad310S-14ISK:*
@@ -684,18 +760,23 @@ evdev:name:AlpsPS/2 ALPS GlidePoint:dmi:*svnLENOVO:*pvrLenovoU41-70:*
  EVDEV_ABS_35=117:3958:36
  EVDEV_ABS_36=104:1960:26
 
-# Lenovo Thinkpad T490 and T14/P14s Gen1/2
+# Lenovo Thinkpad T490/T495 and T14/P14s Gen1/2 (identical chassis)
 evdev:name:SynPS/2 Synaptics TouchPad:dmi:*:svnLENOVO:*pvrThinkPadT490:*
+evdev:name:SynPS/2 Synaptics TouchPad:dmi:*:svnLENOVO:*pvrThinkPadT495:*
 evdev:name:SynPS/2 Synaptics TouchPad:dmi:*:svnLENOVO:*pvrThinkPadT14Gen1:*
+evdev:name:SynPS/2 Synaptics TouchPad:dmi:*:svnLENOVO:*pvrThinkPadT14Gen2a:*
+evdev:name:SynPS/2 Synaptics TouchPad:dmi:*:svnLENOVO:*pvrThinkPadT14Gen2i:*
 evdev:name:SynPS/2 Synaptics TouchPad:dmi:*:svnLENOVO:*pvrThinkPadP14sGen1:*
 evdev:name:SynPS/2 Synaptics TouchPad:dmi:*:svnLENOVO:*pvrThinkPadP14sGen2a:*
+evdev:name:SynPS/2 Synaptics TouchPad:dmi:*:svnLENOVO:*pvrThinkPadP14sGen2i:*
  EVDEV_ABS_00=::44
  EVDEV_ABS_01=::52
  EVDEV_ABS_35=::44
  EVDEV_ABS_36=::52
 
-# Lenovo ThinkPad T15g Gen1
+# Lenovo ThinkPad T15g Gen1 And E495
 evdev:name:SynPS/2 Synaptics TouchPad:dmi:*svnLENOVO:*pvrThinkPadT15gGen1**
+evdev:name:SynPS/2 Synaptics TouchPad:dmi:*svnLENOVO:*pvrThinkPadE495**
  EVDEV_ABS_00=::44
  EVDEV_ABS_01=::50
  EVDEV_ABS_35=::44
@@ -714,6 +795,13 @@ evdev:name:ETPS/2 Elantech Touchpad:dmi:*svnLENOVO:*pvrLenovoG580**
  EVDEV_ABS_01=-591:700:25
  EVDEV_ABS_35=-170:2950:24
  EVDEV_ABS_36=-591:700:25
+
+# Lenovo Yoga Slim 7 14ARE05
+evdev:name:ELAN0634:00 04F3:3124 Touchpad:dmi:*svnLENOVO:*pvrYogaSlim714ARE05**
+ EVDEV_ABS_00=::31
+ EVDEV_ABS_01=::30
+ EVDEV_ABS_35=::31
+ EVDEV_ABS_36=::30
 
 #########################################
 # Microsoft
@@ -884,6 +972,12 @@ evdev:input:b0003v2179p0004*
 evdev:input:b0003v172Fp0031*
  EVDEV_ABS_00=0:10000:400
  EVDEV_ABS_01=0:6250:400
+
+# WALTOP International Corp. Slim Tablet Stylus
+evdev:input:b0003v172Fp0034*
+ EVDEV_ABS_00=0:20000:80
+ EVDEV_ABS_01=0:12500:80
+ EVDEV_ABS_24=0:1023:500
 
 # WALTOP International Corp. Graphics Tablet
 evdev:input:b0003v172Fp0047*

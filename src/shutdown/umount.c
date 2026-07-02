@@ -63,7 +63,7 @@ int mount_points_list_get(const char *mountinfo, MountPoint **head) {
                 struct libmnt_fs *fs;
                 const char *path, *fstype;
                 unsigned long remount_flags = 0u;
-                bool try_remount_ro, is_api_vfs;
+                bool try_remount_ro, is_api_vfs, is_network;
                 _cleanup_free_ MountPoint *m = NULL;
 
                 r = mnt_table_next_fs(table, iter, &fs);
@@ -95,9 +95,10 @@ int mount_points_list_get(const char *mountinfo, MountPoint **head) {
                  * we might lack the rights to unmount these things, hence don't bother. */
                 if (mount_point_is_api(path) ||
                     mount_point_ignore(path) ||
-                    PATH_STARTSWITH_SET(path, "/dev", "/sys", "/proc"))
+                    path_below_api_vfs(path))
                         continue;
 
+                is_network = fstype_is_network(fstype);
                 is_api_vfs = fstype_is_api_vfs(fstype);
 
                 /* If we are in a container, don't attempt to read-only mount anything as that brings no real
@@ -108,7 +109,7 @@ int mount_points_list_get(const char *mountinfo, MountPoint **head) {
                  * leave a "dirty fs") and could hang if the network is down.  Note that umount2() is more
                  * careful and will not hang because of the network being down. */
                 try_remount_ro = detect_container() <= 0 &&
-                                 !fstype_is_network(fstype) &&
+                                 !is_network &&
                                  !is_api_vfs &&
                                  !fstype_is_ro(fstype) &&
                                  !fstab_test_yes_no_option(options, "ro\0rw\0");
@@ -152,7 +153,11 @@ int mount_points_list_get(const char *mountinfo, MountPoint **head) {
                         /* Unmount sysfs/procfs/… lazily, since syncing doesn't matter there, and it's OK if
                          * something keeps an fd open to it. */
                         .umount_lazily = is_api_vfs,
-                        .leaf = leaf,
+
+                        /* If a mount point is not a leaf, moving it would invalidate our mount table.
+                         * If a mount point is on the network and the network is down, it can hang and block
+                         * the shutdown. */
+                        .umount_move_if_busy = leaf && !is_network,
                 };
 
                 m->path = strdup(path);
@@ -274,8 +279,7 @@ static int remount_with_timeout(MountPoint *m, bool last_try) {
                                        "Failed to remount '%s' read-only: %m",
                                        m->path);
 
-                (void) write(pfd[1], &r, sizeof(r)); /* try to send errno up */
-                _exit(r < 0 ? EXIT_FAILURE : EXIT_SUCCESS);
+                report_errno_and_exit(pfd[1], r);
         }
 
         pfd[1] = safe_close(pfd[1]);
@@ -337,8 +341,7 @@ static int umount_with_timeout(MountPoint *m, bool last_try) {
                                 log_umount_blockers(m->path);
                 }
 
-                (void) write(pfd[1], &r, sizeof(r)); /* try to send errno up */
-                _exit(r < 0 ? EXIT_FAILURE : EXIT_SUCCESS);
+                report_errno_and_exit(pfd[1], r);
         }
 
         pfd[1] = safe_close(pfd[1]);
@@ -405,10 +408,9 @@ static int mount_points_list_umount(MountPoint **head, bool *changed, bool last_
                         *changed = true;
 
                 /* If a mount is busy, we move it to not keep parent mount points busy.
-                 * If a mount point is not a leaf, moving it would invalidate our mount table.
                  * More moving will occur in next iteration with a fresh mount table.
                  */
-                if (r != -EBUSY || !m->leaf)
+                if (r != -EBUSY || !m->umount_move_if_busy)
                         continue;
 
                 _cleanup_free_ char *dirname = NULL;

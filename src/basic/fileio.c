@@ -18,6 +18,7 @@
 #include "fileio.h"
 #include "fs-util.h"
 #include "hexdecoct.h"
+#include "label.h"
 #include "log.h"
 #include "macro.h"
 #include "mkdir.h"
@@ -28,10 +29,11 @@
 #include "stdio-util.h"
 #include "string-util.h"
 #include "sync-util.h"
+#include "terminal-util.h"
 #include "tmpfile-util.h"
 
 /* The maximum size of the file we'll read in one go in read_full_file() (64M). */
-#define READ_FULL_BYTES_MAX (64U*1024U*1024U - 1U)
+#define READ_FULL_BYTES_MAX (64U * U64_MB - UINT64_C(1))
 /* Used when a size is specified for read_full_file() with READ_FULL_FILE_UNBASE64 or _UNHEX */
 #define READ_FULL_FILE_ENCODED_STRING_AMPLIFICATION_BOUNDARY 3
 
@@ -44,7 +46,7 @@
  * exponentially in a loop. We use a size limit of 4M-2 because 4M-1 is the maximum buffer that /proc/sys/
  * allows us to read() (larger reads will fail with ENOMEM), and we want to read one extra byte so that we
  * can detect EOFs. */
-#define READ_VIRTUAL_BYTES_MAX (4U*1024U*1024U - 2U)
+#define READ_VIRTUAL_BYTES_MAX (4U * U64_MB - UINT64_C(2))
 
 int fdopen_unlocked(int fd, const char *options, FILE **ret) {
         assert(ret);
@@ -117,7 +119,7 @@ FILE* fmemopen_unlocked(void *buf, size_t size, const char *mode) {
         return f;
 }
 
-int write_string_stream_ts(
+int write_string_stream_full(
                 FILE *f,
                 const char *line,
                 WriteStringFileFlags flags,
@@ -199,6 +201,19 @@ int write_string_stream_ts(
         return 0;
 }
 
+static mode_t write_string_file_flags_to_mode(WriteStringFileFlags flags) {
+
+        /* We support three different modes, that are the ones that really make sense for text files like this:
+         *
+         *     → 0600 (i.e. root-only)
+         *     → 0444 (i.e. read-only)
+         *     → 0644 (i.e. writable for root, readable for everyone else)
+         */
+
+        return FLAGS_SET(flags, WRITE_STRING_FILE_MODE_0600) ? 0600 :
+                FLAGS_SET(flags, WRITE_STRING_FILE_MODE_0444) ? 0444 : 0644;
+}
+
 static int write_string_file_atomic_at(
                 int dir_fd,
                 const char *fn,
@@ -216,22 +231,40 @@ static int write_string_file_atomic_at(
         /* Note that we'd really like to use O_TMPFILE here, but can't really, since we want replacement
          * semantics here, and O_TMPFILE can't offer that. i.e. rename() replaces but linkat() doesn't. */
 
+        mode_t mode = write_string_file_flags_to_mode(flags);
+
+        bool call_label_ops_post = false;
+        if (FLAGS_SET(flags, WRITE_STRING_FILE_LABEL)) {
+                r = label_ops_pre(dir_fd, fn, mode);
+                if (r < 0)
+                        return r;
+
+                call_label_ops_post = true;
+        }
+
         r = fopen_temporary_at(dir_fd, fn, &f, &p);
         if (r < 0)
-                return r;
-
-        r = write_string_stream_ts(f, line, flags, ts);
-        if (r < 0)
                 goto fail;
 
-        r = fchmod_umask(fileno(f), FLAGS_SET(flags, WRITE_STRING_FILE_MODE_0600) ? 0600 : 0644);
-        if (r < 0)
-                goto fail;
+        if (call_label_ops_post) {
+                call_label_ops_post = false;
 
-        if (renameat(dir_fd, p, dir_fd, fn) < 0) {
-                r = -errno;
-                goto fail;
+                r = label_ops_post(fileno(f), /* path= */ NULL, /* created= */ true);
+                if (r < 0)
+                        goto fail;
         }
+
+        r = write_string_stream_full(f, line, flags, ts);
+        if (r < 0)
+                goto fail;
+
+        r = fchmod_umask(fileno(f), mode);
+        if (r < 0)
+                goto fail;
+
+        r = RET_NERRNO(renameat(dir_fd, p, dir_fd, fn));
+        if (r < 0)
+                goto fail;
 
         if (FLAGS_SET(flags, WRITE_STRING_FILE_SYNC)) {
                 /* Sync the rename, too */
@@ -243,20 +276,26 @@ static int write_string_file_atomic_at(
         return 0;
 
 fail:
-        (void) unlinkat(dir_fd, p, 0);
+        if (call_label_ops_post)
+                (void) label_ops_post(f ? fileno(f) : dir_fd, f ? NULL : fn, /* created= */ !!f);
+
+        if (f)
+                (void) unlinkat(dir_fd, p, 0);
         return r;
 }
 
-int write_string_file_ts_at(
+int write_string_file_full(
                 int dir_fd,
                 const char *fn,
                 const char *line,
                 WriteStringFileFlags flags,
-                const struct timespec *ts) {
+                const struct timespec *ts,
+                const char *label_fn) {
 
+        bool call_label_ops_post = false, made_file = false;
         _cleanup_fclose_ FILE *f = NULL;
         _cleanup_close_ int fd = -EBADF;
-        int q, r;
+        int r;
 
         assert(fn);
         assert(line);
@@ -278,19 +317,38 @@ int write_string_file_ts_at(
                         goto fail;
 
                 return r;
-        } else
-                assert(!ts);
+        }
+
+        mode_t mode = write_string_file_flags_to_mode(flags);
+
+        if (FLAGS_SET(flags, WRITE_STRING_FILE_LABEL|WRITE_STRING_FILE_CREATE)) {
+                r = label_ops_pre(dir_fd, label_fn ?: fn, mode);
+                if (r < 0)
+                        goto fail;
+
+                call_label_ops_post = true;
+        }
 
         /* We manually build our own version of fopen(..., "we") that works without O_CREAT and with O_NOFOLLOW if needed. */
-        fd = openat(dir_fd, fn, O_CLOEXEC|O_NOCTTY |
-                    (FLAGS_SET(flags, WRITE_STRING_FILE_NOFOLLOW) ? O_NOFOLLOW : 0) |
-                    (FLAGS_SET(flags, WRITE_STRING_FILE_CREATE) ? O_CREAT : 0) |
-                    (FLAGS_SET(flags, WRITE_STRING_FILE_TRUNCATE) ? O_TRUNC : 0) |
-                    (FLAGS_SET(flags, WRITE_STRING_FILE_SUPPRESS_REDUNDANT_VIRTUAL) ? O_RDWR : O_WRONLY),
-                    (FLAGS_SET(flags, WRITE_STRING_FILE_MODE_0600) ? 0600 : 0666));
+        fd = openat_report_new(
+                        dir_fd, fn, O_CLOEXEC | O_NOCTTY |
+                        (FLAGS_SET(flags, WRITE_STRING_FILE_NOFOLLOW) ? O_NOFOLLOW : 0) |
+                        (FLAGS_SET(flags, WRITE_STRING_FILE_CREATE) ? O_CREAT : 0) |
+                        (FLAGS_SET(flags, WRITE_STRING_FILE_TRUNCATE) ? O_TRUNC : 0) |
+                        (FLAGS_SET(flags, WRITE_STRING_FILE_SUPPRESS_REDUNDANT_VIRTUAL) ? O_RDWR : O_WRONLY),
+                        mode,
+                        &made_file);
         if (fd < 0) {
-                r = -errno;
+                r = fd;
                 goto fail;
+        }
+
+        if (call_label_ops_post) {
+                call_label_ops_post = false;
+
+                r = label_ops_post(fd, /* path= */ NULL, made_file);
+                if (r < 0)
+                        goto fail;
         }
 
         r = take_fdopen_unlocked(&fd, "w", &f);
@@ -300,26 +358,31 @@ int write_string_file_ts_at(
         if (flags & WRITE_STRING_FILE_DISABLE_BUFFER)
                 setvbuf(f, NULL, _IONBF, 0);
 
-        r = write_string_stream_ts(f, line, flags, ts);
+        r = write_string_stream_full(f, line, flags, ts);
         if (r < 0)
                 goto fail;
 
         return 0;
 
 fail:
+        if (call_label_ops_post)
+                (void) label_ops_post(fd >= 0 ? fd : dir_fd, fd >= 0 ? NULL : fn, made_file);
+
+        if (made_file)
+                (void) unlinkat(dir_fd, fn, 0);
+
         if (!(flags & WRITE_STRING_FILE_VERIFY_ON_FAILURE))
                 return r;
 
         f = safe_fclose(f);
+        fd = safe_close(fd);
 
-        /* OK, the operation failed, but let's see if the right
-         * contents in place already. If so, eat up the error. */
+        /* OK, the operation failed, but let's see if the right contents in place already. If so, eat up the
+         * error. */
+        if (verify_file(fn, line, !(flags & WRITE_STRING_FILE_AVOID_NEWLINE) || (flags & WRITE_STRING_FILE_VERIFY_IGNORE_NEWLINE)) > 0)
+                return 0;
 
-        q = verify_file(fn, line, !(flags & WRITE_STRING_FILE_AVOID_NEWLINE) || (flags & WRITE_STRING_FILE_VERIFY_IGNORE_NEWLINE));
-        if (q <= 0)
-                return r;
-
-        return 0;
+        return r;
 }
 
 int write_string_filef(
@@ -339,6 +402,22 @@ int write_string_filef(
                 return -ENOMEM;
 
         return write_string_file(fn, p, flags);
+}
+
+int write_base64_file_at(
+                int dir_fd,
+                const char *fn,
+                const struct iovec *data,
+                WriteStringFileFlags flags) {
+
+        _cleanup_free_ char *encoded = NULL;
+        ssize_t n;
+
+        n = base64mem_full(data ? data->iov_base : NULL, data ? data->iov_len : 0, 79, &encoded);
+        if (n < 0)
+                return n;
+
+        return write_string_file_at(dir_fd, fn, encoded, flags);
 }
 
 int read_one_line_file_at(int dir_fd, const char *filename, char **ret) {
@@ -1313,33 +1392,54 @@ int read_timestamp_file(const char *fn, usec_t *ret) {
         return 0;
 }
 
-int fputs_with_space(FILE *f, const char *s, const char *separator, bool *space) {
-        int r;
-
+int fputs_with_separator(FILE *f, const char *s, const char *separator, bool *space) {
         assert(s);
+        assert(space);
 
-        /* Outputs the specified string with fputs(), but optionally prefixes it with a separator. The *space parameter
-         * when specified shall initially point to a boolean variable initialized to false. It is set to true after the
-         * first invocation. This call is supposed to be use in loops, where a separator shall be inserted between each
-         * element, but not before the first one. */
+        /* Outputs the specified string with fputs(), but optionally prefixes it with a separator.
+         * The *space parameter when specified shall initially point to a boolean variable initialized
+         * to false. It is set to true after the first invocation. This call is supposed to be use in loops,
+         * where a separator shall be inserted between each element, but not before the first one. */
 
         if (!f)
                 f = stdout;
 
-        if (space) {
-                if (!separator)
-                        separator = " ";
+        if (!separator)
+                separator = " ";
 
-                if (*space) {
-                        r = fputs(separator, f);
-                        if (r < 0)
-                                return r;
-                }
+        if (*space)
+                if (fputs(separator, f) < 0)
+                        return -EIO;
 
-                *space = true;
-        }
+        *space = true;
 
-        return fputs(s, f);
+        if (fputs(s, f) < 0)
+                return -EIO;
+
+        return 0;
+}
+
+int fputs_with_newline(FILE *f, const char *s) {
+
+        /* This is like fputs() but outputs a trailing newline char, but only if the string isn't empty
+         * and doesn't end in a newline already. Returns 0 in case we didn't append a newline, > 0 otherwise. */
+
+        if (isempty(s))
+                return 0;
+
+        if (!f)
+                f = stdout;
+
+        if (fputs(s, f) < 0)
+                return -EIO;
+
+        if (endswith(s, "\n"))
+                return 0;
+
+        if (fputc('\n', f) < 0)
+                return -EIO;
+
+        return 1;
 }
 
 /* A bitmask of the EOL markers we know */
@@ -1459,7 +1559,7 @@ int read_line_full(FILE *f, size_t limit, ReadLineFlags flags, char **ret) {
                                                      * and don't call isatty() on an invalid fd */
                                                 flags |= READ_LINE_NOT_A_TTY;
                                         else
-                                                flags |= isatty(fd) ? READ_LINE_IS_A_TTY : READ_LINE_NOT_A_TTY;
+                                                flags |= isatty_safe(fd) ? READ_LINE_IS_A_TTY : READ_LINE_NOT_A_TTY;
                                 }
                                 if (FLAGS_SET(flags, READ_LINE_IS_A_TTY))
                                         break;
@@ -1492,7 +1592,7 @@ int read_line_full(FILE *f, size_t limit, ReadLineFlags flags, char **ret) {
 
 int read_stripped_line(FILE *f, size_t limit, char **ret) {
         _cleanup_free_ char *s = NULL;
-        int r;
+        int r, k;
 
         assert(f);
 
@@ -1501,23 +1601,17 @@ int read_stripped_line(FILE *f, size_t limit, char **ret) {
                 return r;
 
         if (ret) {
-                const char *p;
-
-                p = strstrip(s);
+                const char *p = strstrip(s);
                 if (p == s)
                         *ret = TAKE_PTR(s);
                 else {
-                        char *copy;
-
-                        copy = strdup(p);
-                        if (!copy)
-                                return -ENOMEM;
-
-                        *ret = copy;
+                        k = strdup_to(ret, p);
+                        if (k < 0)
+                                return k;
                 }
         }
 
-        return r;
+        return r > 0;          /* Return 1 if something was read. */
 }
 
 int safe_fgetc(FILE *f, char *ret) {

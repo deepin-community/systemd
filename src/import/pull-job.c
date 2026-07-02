@@ -134,14 +134,34 @@ void pull_job_curl_on_finished(CurlGlue *g, CURL *curl, CURLcode result) {
         if (!j || IN_SET(j->state, PULL_JOB_DONE, PULL_JOB_FAILED))
                 return;
 
-        if (result != CURLE_OK) {
-                r = log_error_errno(SYNTHETIC_ERRNO(EIO), "Transfer failed: %s", curl_easy_strerror(result));
-                goto finish;
-        }
-
         code = curl_easy_getinfo(curl, CURLINFO_SCHEME, &scheme);
         if (code != CURLE_OK || !scheme) {
                 r = log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to retrieve URL scheme.");
+                goto finish;
+        }
+
+        if (strcaseeq(scheme, "FILE") && result == CURLE_FILE_COULDNT_READ_FILE && j->on_not_found) {
+                _cleanup_free_ char *new_url = NULL;
+
+                /* This resource wasn't found, but the implementor wants to maybe let us know a new URL, query for it. */
+                r = j->on_not_found(j, &new_url);
+                if (r < 0)
+                        goto finish;
+                if (r > 0) { /* A new url to use */
+                        assert(new_url);
+
+                        r = pull_job_restart(j, new_url);
+                        if (r < 0)
+                                goto finish;
+
+                        return;
+                }
+
+                /* if this didn't work, handle like any other error below */
+        }
+
+        if (result != CURLE_OK) {
+                r = log_error_errno(SYNTHETIC_ERRNO(EIO), "Transfer failed: %s", curl_easy_strerror(result));
                 goto finish;
         }
 
@@ -187,7 +207,7 @@ void pull_job_curl_on_finished(CurlGlue *g, CURL *curl, CURLcode result) {
                                 }
                         }
 
-                        r = log_error_errno(
+                        r = log_notice_errno(
                                         status == 404 ? SYNTHETIC_ERRNO(ENOMEDIUM) : SYNTHETIC_ERRNO(EIO), /* Make the most common error recognizable */
                                         "HTTP request to %s failed with code %li.", j->url, status);
                         goto finish;
@@ -431,7 +451,9 @@ static int pull_job_open_disk(PullJob *j) {
                         return log_error_errno(SYNTHETIC_ERRNO(EIO),
                                                "Failed to initialize hash context.");
 #else
-                initialize_libgcrypt(false);
+                r = initialize_libgcrypt(false);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to load libgcrypt: %m");
 
                 if (gcry_md_open(&j->checksum_ctx, GCRY_MD_SHA256, 0) != 0)
                         return log_error_errno(SYNTHETIC_ERRNO(EIO),
@@ -771,7 +793,7 @@ int pull_job_begin(PullJob *j) {
         if (curl_easy_setopt(j->curl, CURLOPT_XFERINFODATA, j) != CURLE_OK)
                 return -EIO;
 
-        if (curl_easy_setopt(j->curl, CURLOPT_NOPROGRESS, 0) != CURLE_OK)
+        if (curl_easy_setopt(j->curl, CURLOPT_NOPROGRESS, 0L) != CURLE_OK)
                 return -EIO;
 
         r = curl_glue_add(j->glue, j->curl);

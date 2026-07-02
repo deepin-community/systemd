@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <linux/if_arp.h>
 #include <netinet/tcp.h>
 #include <unistd.h>
 
@@ -195,7 +196,7 @@ static int dns_stream_identify(DnsStream *s) {
                 /* Make sure all packets for this connection are sent on the same interface */
                 r = socket_set_unicast_if(s->fd, s->local.sa.sa_family, s->ifindex);
                 if (r < 0)
-                        log_debug_errno(errno, "Failed to invoke IP_UNICAST_IF/IPV6_UNICAST_IF: %m");
+                        log_debug_errno(r, "Failed to invoke IP_UNICAST_IF/IPV6_UNICAST_IF: %m");
         }
 
         s->identified = true;
@@ -205,6 +206,7 @@ static int dns_stream_identify(DnsStream *s) {
 
 ssize_t dns_stream_writev(DnsStream *s, const struct iovec *iov, size_t iovcnt, int flags) {
         ssize_t m;
+        int r;
 
         assert(s);
         assert(iov);
@@ -224,12 +226,14 @@ ssize_t dns_stream_writev(DnsStream *s, const struct iovec *iov, size_t iovcnt, 
 
                 m = sendmsg(s->fd, &hdr, MSG_FASTOPEN);
                 if (m < 0) {
-                        if (errno == EOPNOTSUPP) {
-                                s->tfo_salen = 0;
-                                if (connect(s->fd, &s->tfo_address.sa, s->tfo_salen) < 0)
-                                        return -errno;
+                        if (ERRNO_IS_NOT_SUPPORTED(errno)) {
+                                /* MSG_FASTOPEN not supported? Then try to connect() traditionally */
+                                r = RET_NERRNO(connect(s->fd, &s->tfo_address.sa, s->tfo_salen));
+                                s->tfo_salen = 0; /* connection is made */
+                                if (r < 0 && r != -EINPROGRESS)
+                                        return r;
 
-                                return -EAGAIN;
+                                return -EAGAIN; /* In case of EINPROGRESS, EAGAIN or success: return EAGAIN, so that caller calls us again */
                         }
                         if (errno == EINPROGRESS)
                                 return -EAGAIN;
@@ -322,6 +326,12 @@ static int on_stream_io(sd_event_source *es, int fd, uint32_t revents, void *use
                         return dns_stream_complete(s, -r);
         }
 
+        if (revents & EPOLLERR) {
+                socklen_t errlen = sizeof(r);
+                if (getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &r, &errlen) == 0)
+                        return dns_stream_complete(s, r);
+        }
+
         if ((revents & EPOLLOUT) &&
             s->write_packet &&
             s->n_written < sizeof(s->write_size) + s->write_packet->size) {
@@ -350,7 +360,8 @@ static int on_stream_io(sd_event_source *es, int fd, uint32_t revents, void *use
                 }
         }
 
-        while ((revents & (EPOLLIN|EPOLLHUP|EPOLLRDHUP)) &&
+        while (s->identified && /* Only read data once we identified the peer, because we cannot fill in the DNS packet meta info otherwise */
+               (revents & (EPOLLIN|EPOLLHUP|EPOLLRDHUP)) &&
                (!s->read_packet ||
                 s->n_read < sizeof(s->read_size) + s->read_packet->size)) {
 
@@ -454,7 +465,7 @@ static int on_stream_io(sd_event_source *es, int fd, uint32_t revents, void *use
         if (progressed && s->timeout_event_source) {
                 r = sd_event_source_set_time_relative(s->timeout_event_source, DNS_STREAM_ESTABLISHED_TIMEOUT_USEC);
                 if (r < 0)
-                        log_warning_errno(errno, "Couldn't restart TCP connection timeout, ignoring: %m");
+                        log_warning_errno(r, "Couldn't restart TCP connection timeout, ignoring: %m");
         }
 
         return 0;
@@ -559,7 +570,7 @@ int dns_stream_new(
 
         if (tfo_address) {
                 s->tfo_address = *tfo_address;
-                s->tfo_salen = tfo_address->sa.sa_family == AF_INET6 ? sizeof(tfo_address->in6) : sizeof(tfo_address->in);
+                s->tfo_salen = SOCKADDR_LEN(*tfo_address);
         }
 
         *ret = TAKE_PTR(s);
@@ -592,4 +603,45 @@ void dns_stream_detach(DnsStream *s) {
                 return;
 
         dns_server_unref_stream(s->server);
+}
+
+DEFINE_PRIVATE_HASH_OPS_WITH_KEY_DESTRUCTOR(
+                dns_stream_hash_ops,
+                void,
+                trivial_hash_func,
+                trivial_compare_func,
+                dns_stream_unref);
+
+int dns_stream_disconnect_all(Manager *m) {
+        _cleanup_(set_freep) Set *closed = NULL;
+        int r;
+
+        assert(m);
+
+        /* Terminates all TCP connections (called after system suspend for example, to speed up recovery) */
+
+        log_info("Closing all remaining TCP connections.");
+
+        bool restart;
+        do {
+                restart = false;
+
+                LIST_FOREACH(streams, s, m->dns_streams) {
+                        r = set_ensure_put(&closed, &dns_stream_hash_ops, s);
+                        if (r < 0)
+                                return log_oom();
+                        if (r > 0) {
+                                /* Haven't seen this one before. Close it. */
+                                dns_stream_ref(s);
+                                (void) dns_stream_complete(s, ECONNRESET);
+
+                                /* This might have a ripple effect, let's hence no look at the list further,
+                                 * but scan from the beginning again */
+                                restart = true;
+                                break;
+                        }
+                }
+        } while (restart);
+
+        return 0;
 }

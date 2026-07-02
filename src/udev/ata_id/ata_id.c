@@ -86,14 +86,14 @@ static int disk_scsi_inquiry_command(
                 if (io_hdr.status != 0 ||
                     io_hdr.host_status != 0 ||
                     io_hdr.driver_status != 0)
-                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "ioctl v3 failed");
+                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "ioctl v3 failed.");
 
         } else {
                 /* even if the ioctl succeeds, we need to check the return value */
                 if (io_v4.device_status != 0 ||
                     io_v4.transport_status != 0 ||
                     io_v4.driver_status != 0)
-                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "ioctl v4 failed");
+                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "ioctl v4 failed.");
         }
 
         return 0;
@@ -160,7 +160,7 @@ static int disk_identify_command(
         } else {
                 if (!((sense[0] & 0x7f) == 0x72 && desc[0] == 0x9 && desc[1] == 0x0c) &&
                     !((sense[0] & 0x7f) == 0x70 && sense[12] == 0x00 && sense[13] == 0x1d))
-                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "ioctl v4 failed: %m");
+                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "ioctl v4 failed.");
         }
 
         return 0;
@@ -232,7 +232,7 @@ static int disk_identify_packet_device_command(
                         return log_debug_errno(errno, "ioctl v3 failed: %m");
         } else {
                 if ((sense[0] & 0x7f) != 0x72 || desc[0] != 0x9 || desc[1] != 0x0c)
-                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "ioctl v4 failed: %m");
+                        return log_debug_errno(SYNTHETIC_ERRNO(EIO), "ioctl v4 failed.");
         }
 
         return 0;
@@ -298,7 +298,8 @@ static void disk_identify_fixup_uint16(uint8_t identify[512], unsigned offset_wo
  * non-zero with errno set.
  */
 static int disk_identify(int fd,
-                         uint8_t out_identify[512]) {
+                         uint8_t out_identify[512],
+                         int *ret_peripheral_device_type) {
         uint8_t inquiry_buf[36];
         int peripheral_device_type, r;
 
@@ -358,6 +359,9 @@ static int disk_identify(int fd,
         if (all_nul_bytes)
                 return log_debug_errno(SYNTHETIC_ERRNO(EIO), "IDENTIFY data is all zeroes.");
 
+        if (ret_peripheral_device_type)
+                *ret_peripheral_device_type = peripheral_device_type;
+
         return 0;
 }
 
@@ -407,12 +411,10 @@ static int run(int argc, char *argv[]) {
         char model[41], model_enc[256], serial[21], revision[9];
         _cleanup_close_ int fd = -EBADF;
         uint16_t word;
-        int r;
+        int r, peripheral_device_type = -1;
 
-        log_set_target(LOG_TARGET_AUTO);
-        udev_parse_config();
-        log_parse_environment();
-        log_open();
+        (void) udev_parse_config();
+        log_setup();
 
         r = parse_argv(argc, argv);
         if (r <= 0)
@@ -422,7 +424,7 @@ static int run(int argc, char *argv[]) {
         if (fd < 0)
                 return log_error_errno(errno, "Cannot open %s: %m", arg_device);
 
-        if (disk_identify(fd, identify.byte) >= 0) {
+        if (disk_identify(fd, identify.byte, &peripheral_device_type) >= 0) {
                 /*
                  * fix up only the fields from the IDENTIFY data that we are going to
                  * use and copy it into the hd_driveid struct for convenience
@@ -504,6 +506,10 @@ static int run(int argc, char *argv[]) {
                 if (id.command_set_1 & (1<<5)) {
                         printf("ID_ATA_WRITE_CACHE=1\n");
                         printf("ID_ATA_WRITE_CACHE_ENABLED=%d\n", (id.cfs_enable_1 & (1<<5)) ? 1 : 0);
+                }
+                if (id.command_set_1 & (1<<6)) {
+                        printf("ID_ATA_READ_LOOKAHEAD=1\n");
+                        printf("ID_ATA_READ_LOOKAHEAD_ENABLED=%d\n", (id.cfs_enable_1 & (1<<6)) ? 1 : 0);
                 }
                 if (id.command_set_1 & (1<<10)) {
                         printf("ID_ATA_FEATURE_SET_HPA=1\n");
@@ -615,6 +621,9 @@ static int run(int argc, char *argv[]) {
                 if (IN_SET(identify.wyde[0], 0x848a, 0x844a) ||
                     (identify.wyde[83] & 0xc004) == 0x4004)
                         printf("ID_ATA_CFA=1\n");
+
+                if (peripheral_device_type >= 0)
+                        printf("ID_ATA_PERIPHERAL_DEVICE_TYPE=%d\n", peripheral_device_type);
         } else {
                 if (serial[0] != '\0')
                         printf("%s_%s\n", model, serial);

@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="systemd.netdev" conditional='ENABLE_NETWORKD'
@@ -34,10 +34,16 @@
     for a general description of the syntax.</para>
 
     <para>The main Virtual Network Device file must have the extension <filename>.netdev</filename>;
-    other extensions are ignored. Virtual network devices are created as soon as networkd is
-    started. If a netdev with the specified name already exists, networkd will use that as-is rather
-    than create its own. Note that the settings of the pre-existing netdev will not be changed by
-    networkd.</para>
+    other extensions are ignored. Virtual network devices are created as soon as
+    <command>systemd-networkd</command> is started if possible. If a netdev with the specified name already
+    exists, <command>systemd-networkd</command> will try to update the config if the kind of the existing
+    netdev is equivalent to the requested one, otherwise (e.g. when bridge device <filename>foo</filename>
+    exists but bonding device with the same name is configured in a .netdev file) use the existing netdev
+    as-is rather than replacing with the requested netdev. Note, several settings (e.g. vlan ID) cannot be
+    changed after the netdev is created. To change such settings, it is necessary to first remove the
+    existing netdev, and then run <command>networkctl reload</command> command or restart
+    <command>systemd-networkd</command>. See also
+    <citerefentry><refentrytitle>networkctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>.</para>
 
     <para>The <filename>.netdev</filename> files are read from the files located in the system network
     directory <filename>/usr/lib/systemd/network</filename> and
@@ -440,6 +446,16 @@
           <xi:include href="version-info.xml" xpointer="v243"/>
         </listitem>
       </varlistentry>
+      <varlistentry>
+        <term><varname>FDBMaxLearned=</varname></term>
+        <listitem>
+          <para>Specifies the maximum number of learned Ethernet addresses for the bridge. When the limit is
+          reached, no more addresses are learned. When unset, the kernel's default will be used. 0 disables the limit.
+          </para>
+
+          <xi:include href="version-info.xml" xpointer="v257"/>
+        </listitem>
+      </varlistentry>
     </variablelist>
   </refsect1>
 
@@ -569,6 +585,19 @@
           integer in the range 0…4294967294. Defaults to unset.</para>
 
           <xi:include href="version-info.xml" xpointer="v248"/>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>BroadcastQueueThreshold=</varname></term>
+        <listitem>
+          <para>Controls the threshold for broadcast queueing of the macvlan device. Takes the special value
+          <literal>no</literal>, or an integer in the range 0…2147483647. When <literal>no</literal> is
+          specified, the broadcast queueing is disabled altogether. When an integer is specified, a multicast
+          address will be queued as broadcast if the number of devices using the macvlan is greater than the given
+          value. Defaults to unset, and the kernel default will be used.</para>
+
+          <xi:include href="version-info.xml" xpointer="v256"/>
         </listitem>
       </varlistentry>
     </variablelist>
@@ -805,7 +834,7 @@
           to provide protocol typing, OAM, and versioning capabilities. For details about the VXLAN GPE
           Header, see the <ulink url="https://tools.ietf.org/html/draft-ietf-nvo3-vxlan-gpe-07">
           Generic Protocol Extension for VXLAN </ulink> document. If destination port is not specified and
-          Generic Protocol Extension is set then default port of 4790 is used. Defaults to false.</para>
+          Generic Protocol Extension is set, the default port of 4790 is used. Defaults to false.</para>
 
           <xi:include href="version-info.xml" xpointer="v243"/>
         </listitem>
@@ -813,7 +842,7 @@
       <varlistentry>
         <term><varname>DestinationPort=</varname></term>
         <listitem>
-          <para>Configures the default destination UDP port. If the destination port is not specified then
+          <para>Configures the default destination UDP port. If the destination port is not specified, the
           Linux kernel default will be used. Set to 4789 to get the IANA assigned value.</para>
 
           <xi:include href="version-info.xml" xpointer="v229"/>
@@ -994,6 +1023,17 @@
         <xi:include href="version-info.xml" xpointer="v247"/>
         </listitem>
       </varlistentry>
+
+      <varlistentry>
+        <term><varname>MinSourcePort=</varname></term>
+        <listitem>
+          <para>Specifies the lowest value of the UDP tunnel source port (in range 1…65535).
+          Defaults to unset.</para>
+
+        <xi:include href="version-info.xml" xpointer="v257"/>
+        </listitem>
+      </varlistentry>
+
     </variablelist>
   </refsect1>
 
@@ -1062,7 +1102,7 @@
         <term><varname>UDPSourcePort=</varname></term>
         <listitem>
           <para>Specifies the UDP source port to be used for the tunnel. When UDP encapsulation is selected
-          it's mandatory. Ignored when IP encapsulation is selected.</para>
+          it is mandatory. Ignored when IP encapsulation is selected.</para>
 
           <xi:include href="version-info.xml" xpointer="v242"/>
         </listitem>
@@ -1070,7 +1110,7 @@
       <varlistentry>
         <term><varname>UDPDestinationPort=</varname></term>
         <listitem>
-          <para>Specifies destination port. When UDP encapsulation is selected it's mandatory. Ignored when IP
+          <para>Specifies destination port. When UDP encapsulation is selected it is mandatory. Ignored when IP
           encapsulation is selected.</para>
 
           <xi:include href="version-info.xml" xpointer="v245"/>
@@ -1891,13 +1931,23 @@
       <varlistentry>
         <term><varname>PrivateKey=</varname></term>
         <listitem>
-          <para>The Base64 encoded private key for the interface. It can be
-          generated using the <command>wg genkey</command> command
-          (see <citerefentry project="wireguard"><refentrytitle>wg</refentrytitle><manvolnum>8</manvolnum></citerefentry>).
-          This option or <varname>PrivateKeyFile=</varname> is mandatory to use WireGuard.
-          Note that because this information is secret, you may want to set
-          the permissions of the .netdev file to be owned by <literal>root:systemd-network</literal>
-          with a <literal>0640</literal> file mode.</para>
+          <para>The Base64 encoded private key for the interface. It can be generated using
+          the <command>wg genkey</command> command
+          (see <citerefentry project='man-pages'><refentrytitle>wg</refentrytitle><manvolnum>8</manvolnum></citerefentry>).
+          Specially, if the specified key is prefixed with <literal>@</literal>, it is interpreted as
+          the name of the credential from which the actual key shall be read.
+          <citerefentry><refentrytitle>systemd-networkd.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+          automatically imports credentials matching <literal>network.wireguard.*</literal>. For more details
+          on credentials, refer to
+          <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+          A private key is mandatory to use WireGuard. If not set, the credential
+          <literal>network.wireguard.private.<replaceable>netdev</replaceable></literal> is used if exists.
+          I.e. for <filename>50-foobar.netdev</filename>, <literal>network.wireguard.private.50-foobar</literal>
+          is tried.</para>
+
+          <para>Note that because this information is secret, it is strongly recommended to use an (encrypted)
+          credential. Alternatively, you may want to set the permissions of the .netdev file to be owned
+          by <literal>root:systemd-network</literal> with a <literal>0640</literal> file mode.</para>
 
           <xi:include href="version-info.xml" xpointer="v237"/>
         </listitem>
@@ -1975,25 +2025,39 @@
         <term><varname>PublicKey=</varname></term>
         <listitem>
           <para>Sets a Base64 encoded public key calculated by <command>wg pubkey</command>
-          (see <citerefentry project="wireguard"><refentrytitle>wg</refentrytitle><manvolnum>8</manvolnum></citerefentry>)
-          from a private key, and usually transmitted out of band to the
-          author of the configuration file. This option is mandatory for this
-          section.</para>
+          (see <citerefentry project='man-pages'><refentrytitle>wg</refentrytitle><manvolnum>8</manvolnum></citerefentry>)
+          from a private key, and usually transmitted out of band to the author of the configuration file.
+          This option honors the <literal>@</literal> prefix in the same way as the <option>PrivateKey=</option>
+          setting of the <option>[WireGuard]</option> section. This option is mandatory for this section.</para>
 
         <xi:include href="version-info.xml" xpointer="v237"/>
         </listitem>
       </varlistentry>
       <varlistentry>
+        <term><varname>PublicKeyFile=</varname></term>
+        <listitem>
+          <para>Takes an absolute path to a file which contains the Base64 encoded public key for the peer.
+          When this option is specified, then <varname>PublicKey=</varname> will be ignored. Note that the
+          file must be readable by the user <literal>systemd-network</literal>, so it should be, e.g., owned
+          by <literal>root:systemd-network</literal> with a <literal>0640</literal> file mode. If the path
+          refers to an <constant>AF_UNIX</constant> stream socket in the file system a connection is made to
+          it and the key read from it.</para>
+
+          <xi:include href="version-info.xml" xpointer="v257"/>
+        </listitem>
+      </varlistentry>
+      <varlistentry>
         <term><varname>PresharedKey=</varname></term>
         <listitem>
-          <para>Optional preshared key for the interface. It can be generated
-          by the <command>wg genpsk</command> command. This option adds an
-          additional layer of symmetric-key cryptography to be mixed into the
-          already existing public-key cryptography, for post-quantum
-          resistance.
-          Note that because this information is secret, you may want to set
-          the permissions of the .netdev file to be owned by <literal>root:systemd-network</literal>
-          with a <literal>0640</literal> file mode.</para>
+          <para>Optional preshared key for the interface. It can be generated by the <command>wg genpsk</command>
+          command. This option adds an additional layer of symmetric-key cryptography to be mixed into the
+          already existing public-key cryptography, for post-quantum resistance.
+          This option honors the <literal>@</literal> prefix in the same way as the <option>PrivateKey=</option>
+          setting of the <option>[WireGuard]</option> section.</para>
+
+          <para>Note that because this information is secret, it is strongly recommended to use an (encrypted)
+          credential. Alternatively, you may want to set the permissions of the .netdev file to be owned
+          by <literal>root:systemd-network</literal> with a <literal>0640</literal> file mode.</para>
 
           <xi:include href="version-info.xml" xpointer="v237"/>
         </listitem>
@@ -2026,7 +2090,7 @@
           i.e. the packets that pass through the tunnel itself. To cause packets to be sent via the tunnel in
           the first place, an appropriate route needs to be added as well — either in the
           <literal>[Routes]</literal> section on the <literal>.network</literal> matching the wireguard
-          interface, or externally to <filename>systemd-networkd</filename>.</para>
+          interface, or externally to <command>systemd-networkd</command>.</para>
 
           <xi:include href="version-info.xml" xpointer="v237"/>
         </listitem>
@@ -2034,12 +2098,14 @@
       <varlistentry>
         <term><varname>Endpoint=</varname></term>
         <listitem>
-          <para>Sets an endpoint IP address or hostname, followed by a colon, and then
-          a port number. IPv6 address must be in the square brackets. For example,
-          <literal>111.222.333.444:51820</literal> for IPv4 and <literal>[1111:2222::3333]:51820</literal>
-          for IPv6 address. This endpoint will be updated automatically once to
-          the most recent source IP address and port of correctly
+          <para>Sets an endpoint IP address or hostname, followed by a colon, and then a port number.
+          IPv6 address must be in the square brackets. For example, <literal>111.222.333.444:51820</literal>
+          for IPv4 and <literal>[1111:2222::3333]:51820</literal> for IPv6 address. This endpoint will be
+          updated automatically once to the most recent source IP address and port of correctly
           authenticated packets from the peer at configuration time.</para>
+
+          <para>This option honors the <literal>@</literal> prefix in the same way as the <option>PrivateKey=</option>
+          setting of the <option>[WireGuard]</option> section.</para>
 
           <xi:include href="version-info.xml" xpointer="v237"/>
         </listitem>
@@ -2154,6 +2220,19 @@
           the nearest millisecond. The default value is 0.</para>
 
           <xi:include href="version-info.xml" xpointer="v216"/>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>PeerNotifyDelaySec=</varname></term>
+        <listitem>
+          <para>Specifies the number of seconds the delay between each peer notification
+          (gratuitous ARP and unsolicited IPv6 Neighbor Advertisement) when they are issued
+          after a failover event. This delay should be a multiple of the MII link monitor
+          interval (miimon). The valid range is 0...300s. The default value is 0,
+          which means to match the value of the <varname>MIIMonitorSec=</varname>.</para>
+
+           <xi:include href="version-info.xml" xpointer="v256"/>
         </listitem>
       </varlistentry>
 
@@ -2406,6 +2485,18 @@
           </para>
 
           <xi:include href="version-info.xml" xpointer="v220"/>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>ARPMissedMax=</varname></term>
+        <listitem>
+          <para>Specify the maximum number of arp interval monitor cycle
+          for missed ARP replies. If this number is exceeded, link is reported as
+          down. Defaults to unset.
+          </para>
+
+          <xi:include href="version-info.xml" xpointer="v256"/>
         </listitem>
       </varlistentry>
     </variablelist>
@@ -2720,7 +2811,7 @@ Kind=fou
 [FooOverUDP]
 Port=5555
 Protocol=4
-      </programlisting>
+</programlisting>
     </example>
     <example>
       <title>/etc/systemd/network/25-fou-ipip.netdev</title>
@@ -2734,7 +2825,7 @@ Local=10.65.208.212
 Remote=10.65.208.211
 FooOverUDP=yes
 FOUDestinationPort=5555
-      </programlisting>
+</programlisting>
     </example>
     <example>
       <title>/etc/systemd/network/25-tap.netdev</title>
@@ -2853,7 +2944,7 @@ Table=42</programlisting>
       <programlisting>[NetDev]
 Name=macvtap-test
 Kind=macvtap
-      </programlisting>
+</programlisting>
     </example>
     <example>
       <title>/etc/systemd/network/25-wireguard.netdev</title>
@@ -2884,13 +2975,13 @@ Independent=yes</programlisting>
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-networkd</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.link</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.network</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-network-generator.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-networkd.service</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.link</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.network</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-network-generator.service</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

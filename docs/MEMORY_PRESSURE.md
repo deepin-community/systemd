@@ -16,7 +16,7 @@ it can attempt various things to make more memory available again ("reclaim"):
   pages are the many memory mapped executable files and shared libraries on
   disk, among others.
 
-* The kernel can flush out memory packages not backed by files on disk
+* The kernel can flush out memory pages not backed by files on disk
   ("anonymous" memory, i.e. memory allocated via `malloc()` and similar calls,
   or `tmpfs` file system contents) if there's swap to write it to.
 
@@ -169,7 +169,7 @@ pressure handling:
   setting controls whether to enable the memory pressure protocol for the
   service in question.
 
-* The `MemoryPressureThresholdSec=` setting allows to configure the threshold
+* The `MemoryPressureThresholdSec=` setting allows configuring the threshold
   when to signal memory pressure to the services. It takes a time value
   (usually in the millisecond range) that defines a threshold per 1s time
   window: if memory allocation latencies grow beyond this threshold
@@ -227,12 +227,15 @@ handling, it's typically sufficient to add a line such as:
 
 Other programming environments might have native APIs to watch memory
 pressure/low memory events. Most notable is probably GLib's
-[GMemoryMonitor](https://developer-old.gnome.org/gio/stable/GMemoryMonitor.html). It
-currently uses the per-system Linux PSI interface as the backend, but operates
-differently than the above: memory pressure events are picked up by a system
-service, which then propagates this through D-Bus to the applications. This is
-typically less than ideal, since this means each notification event has to
-traverse three processes before being handled. This traversal creates
+[GMemoryMonitor](https://docs.gtk.org/gio/iface.MemoryMonitor.html). As of GLib
+2.86.0, it uses the per-cgroup PSI kernel file to monitor for memory pressure,
+but does not yet read the environment variables recommended above.
+
+In older versions, it used the per-system Linux PSI interface as the backend, but operated
+differently than the above: memory pressure events were picked up by a system
+service, which then propagated this through D-Bus to the applications. This was
+typically less than ideal, since this means each notification event had to
+traverse three processes before being handled. This traversal created
 additional latencies at a time where the system is already experiencing adverse
-latencies. Moreover, it focusses on system-wide PSI events, even though
+latencies. Moreover, it focused on system-wide PSI events, even though
 service-local ones are generally the better approach.

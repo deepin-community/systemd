@@ -28,8 +28,9 @@ DEFINE_TRIVIAL_CLEANUP_FUNC_FULL(EC_KEY*, EC_KEY_free, NULL);
 /* Permit a maximum clock skew of 1h 10min. This should be enough to deal with DST confusion */
 #define SKEW_MAX (1*USEC_PER_HOUR + 10*USEC_PER_MINUTE)
 
-/* Maximum number of NSEC3 iterations we'll do. RFC5155 says 2500 shall be the maximum useful value */
-#define NSEC3_ITERATIONS_MAX 2500
+/* Maximum number of NSEC3 iterations we'll do. RFC5155 says 2500 shall be the maximum useful value, but
+ * RFC9276 § 3.2 says that we should reduce the acceptable iteration count */
+#define NSEC3_ITERATIONS_MAX 100
 
 /*
  * The DNSSEC Chain of trust:
@@ -889,8 +890,11 @@ static int dnssec_rrset_verify_sig(
         _cleanup_(gcry_md_closep) gcry_md_hd_t md = NULL;
         void *hash;
         size_t hash_size;
+        int r;
 
-        initialize_libgcrypt(false);
+        r = initialize_libgcrypt(false);
+        if (r < 0)
+                return r;
 #endif
 
         switch (rrsig->rrsig.algorithm) {
@@ -1169,6 +1173,7 @@ int dnssec_verify_rrset_search(
                 DnsResourceRecord **ret_rrsig) {
 
         bool found_rrsig = false, found_invalid = false, found_expired_rrsig = false, found_unsupported_algorithm = false;
+        unsigned nvalidations = 0;
         DnsResourceRecord *rrsig;
         int r;
 
@@ -1214,6 +1219,14 @@ int dnssec_verify_rrset_search(
                         if (realtime == USEC_INFINITY)
                                 realtime = now(CLOCK_REALTIME);
 
+                        /* Have we seen an unreasonable number of invalid signatures? */
+                        if (nvalidations > DNSSEC_INVALID_MAX) {
+                                if (ret_rrsig)
+                                        *ret_rrsig = NULL;
+                                *result = DNSSEC_TOO_MANY_VALIDATIONS;
+                                return (int) nvalidations;
+                        }
+
                         /* Yay, we found a matching RRSIG with a matching
                          * DNSKEY, awesome. Now let's verify all entries of
                          * the RRSet against the RRSIG and DNSKEY
@@ -1222,6 +1235,8 @@ int dnssec_verify_rrset_search(
                         r = dnssec_verify_rrset(a, key, rrsig, dnskey, realtime, &one_result);
                         if (r < 0)
                                 return r;
+
+                        nvalidations++;
 
                         switch (one_result) {
 
@@ -1233,7 +1248,7 @@ int dnssec_verify_rrset_search(
                                         *ret_rrsig = rrsig;
 
                                 *result = one_result;
-                                return 0;
+                                return (int) nvalidations;
 
                         case DNSSEC_INVALID:
                                 /* If the signature is invalid, let's try another
@@ -1280,7 +1295,7 @@ int dnssec_verify_rrset_search(
         if (ret_rrsig)
                 *ret_rrsig = NULL;
 
-        return 0;
+        return (int) nvalidations;
 }
 
 int dnssec_has_rrsig(DnsAnswer *a, const DnsResourceKey *key) {
@@ -1322,6 +1337,7 @@ static hash_md_t digest_to_hash_md(uint8_t algorithm) {
 
 int dnssec_verify_dnskey_by_ds(DnsResourceRecord *dnskey, DnsResourceRecord *ds, bool mask_revoke) {
         uint8_t wire_format[DNS_WIRE_FORMAT_HOSTNAME_MAX];
+        size_t encoded_length;
         int r;
 
         assert(dnskey);
@@ -1348,6 +1364,7 @@ int dnssec_verify_dnskey_by_ds(DnsResourceRecord *dnskey, DnsResourceRecord *ds,
         r = dns_name_to_wire_format(dns_resource_key_name(dnskey->key), wire_format, sizeof wire_format, true);
         if (r < 0)
                 return r;
+        encoded_length = r;
 
         hash_md_t md_algorithm = digest_to_hash_md(ds->ds.digest_type);
 
@@ -1371,7 +1388,7 @@ int dnssec_verify_dnskey_by_ds(DnsResourceRecord *dnskey, DnsResourceRecord *ds,
         if (EVP_DigestInit_ex(ctx, md_algorithm, NULL) <= 0)
                 return -EIO;
 
-        if (EVP_DigestUpdate(ctx, wire_format, r) <= 0)
+        if (EVP_DigestUpdate(ctx, wire_format, encoded_length) <= 0)
                 return -EIO;
 
         if (mask_revoke)
@@ -1395,7 +1412,9 @@ int dnssec_verify_dnskey_by_ds(DnsResourceRecord *dnskey, DnsResourceRecord *ds,
         if (md_algorithm < 0)
                 return -EOPNOTSUPP;
 
-        initialize_libgcrypt(false);
+        r = initialize_libgcrypt(false);
+        if (r < 0)
+                return r;
 
         _cleanup_(gcry_md_closep) gcry_md_hd_t md = NULL;
 
@@ -1409,7 +1428,7 @@ int dnssec_verify_dnskey_by_ds(DnsResourceRecord *dnskey, DnsResourceRecord *ds,
         if (gcry_err_code(err) != GPG_ERR_NO_ERROR || !md)
                 return -EIO;
 
-        gcry_md_write(md, wire_format, r);
+        gcry_md_write(md, wire_format, encoded_length);
         if (mask_revoke)
                 md_add_uint16(md, dnskey->dnskey.flags & ~DNSKEY_FLAG_REVOKE);
         else
@@ -1454,7 +1473,7 @@ int dnssec_verify_dnskey_by_ds_search(DnsResourceRecord *dnskey, DnsAnswer *vali
 
                 r = dnssec_verify_dnskey_by_ds(dnskey, ds, false);
                 if (IN_SET(r, -EKEYREJECTED, -EOPNOTSUPP))
-                        return 0; /* The DNSKEY is revoked or otherwise invalid, or we don't support the digest algorithm */
+                        continue; /* The DNSKEY is revoked or otherwise invalid, or we don't support the digest algorithm */
                 if (r < 0)
                         return r;
                 if (r > 0)
@@ -1540,8 +1559,11 @@ int dnssec_nsec3_hash(DnsResourceRecord *nsec3, const char *name, void *ret) {
         if (algorithm < 0)
                 return algorithm;
 
-        initialize_libgcrypt(false);
+        r = initialize_libgcrypt(false);
+        if (r < 0)
+                return r;
 
+        size_t encoded_length;
         unsigned hash_size = gcry_md_get_algo_dlen(algorithm);
         assert(hash_size > 0);
 
@@ -1551,13 +1573,14 @@ int dnssec_nsec3_hash(DnsResourceRecord *nsec3, const char *name, void *ret) {
         r = dns_name_to_wire_format(name, wire_format, sizeof(wire_format), true);
         if (r < 0)
                 return r;
+        encoded_length = r;
 
         _cleanup_(gcry_md_closep) gcry_md_hd_t md = NULL;
         gcry_error_t err = gcry_md_open(&md, algorithm, 0);
         if (gcry_err_code(err) != GPG_ERR_NO_ERROR || !md)
                 return -EIO;
 
-        gcry_md_write(md, wire_format, r);
+        gcry_md_write(md, wire_format, encoded_length);
         gcry_md_write(md, nsec3->nsec3.salt, nsec3->nsec3.salt_size);
 
         void *result = gcry_md_read(md, 0);
@@ -1951,7 +1974,7 @@ found_closest_encloser:
 }
 
 static int dnssec_nsec_wildcard_equal(DnsResourceRecord *rr, const char *name) {
-        char label[DNS_LABEL_MAX];
+        char label[DNS_LABEL_MAX+1];
         const char *n;
         int r;
 
@@ -2564,6 +2587,8 @@ static const char* const dnssec_result_table[_DNSSEC_RESULT_MAX] = {
         [DNSSEC_FAILED_AUXILIARY]      = "failed-auxiliary",
         [DNSSEC_NSEC_MISMATCH]         = "nsec-mismatch",
         [DNSSEC_INCOMPATIBLE_SERVER]   = "incompatible-server",
+        [DNSSEC_UPSTREAM_FAILURE]      = "upstream-failure",
+        [DNSSEC_TOO_MANY_VALIDATIONS]  = "too-many-validations",
 };
 DEFINE_STRING_TABLE_LOOKUP(dnssec_result, DnssecResult);
 

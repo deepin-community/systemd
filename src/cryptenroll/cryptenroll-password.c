@@ -5,6 +5,7 @@
 #include "env-util.h"
 #include "errno-util.h"
 #include "escape.h"
+#include "iovec-util.h"
 #include "memory-util.h"
 #include "password-quality-util.h"
 #include "strv.h"
@@ -38,9 +39,8 @@ int load_volume_key_password(
                         return log_error_errno(r, "Password from environment variable $PASSWORD did not work: %m");
         } else {
                 AskPasswordFlags ask_password_flags = ASK_PASSWORD_PUSH_CACHE|ASK_PASSWORD_ACCEPT_CACHED;
-                _cleanup_free_ char *question = NULL, *disk_path = NULL;
+                _cleanup_free_ char *question = NULL, *id = NULL, *disk_path = NULL;
                 unsigned i = 5;
-                const char *id;
 
                 question = strjoin("Please enter current passphrase for disk ", cd_node, ":");
                 if (!question)
@@ -50,7 +50,17 @@ int load_volume_key_password(
                 if (!disk_path)
                         return log_oom();
 
-                id = strjoina("cryptsetup:", disk_path);
+                id = strjoin("cryptenroll:", disk_path);
+                if (!id)
+                        return log_oom();
+
+                AskPasswordRequest req = {
+                        .message = question,
+                        .icon = "drive-harddisk",
+                        .id = id,
+                        .keyring = "cryptenroll",
+                        .credential = "cryptenroll.passphrase",
+                };
 
                 for (;;) {
                         _cleanup_strv_free_erase_ char **passwords = NULL;
@@ -59,10 +69,7 @@ int load_volume_key_password(
                                 return log_error_errno(SYNTHETIC_ERRNO(ENOKEY),
                                                        "Too many attempts, giving up.");
 
-                        r = ask_password_auto(
-                                        question, "drive-harddisk", id, "cryptenroll", "cryptenroll.passphrase", USEC_INFINITY,
-                                        ask_password_flags,
-                                        &passwords);
+                        r = ask_password_auto(&req, USEC_INFINITY, ask_password_flags, &passwords);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to query password: %m");
 
@@ -91,13 +98,15 @@ int load_volume_key_password(
 
 int enroll_password(
                 struct crypt_device *cd,
-                const void *volume_key,
-                size_t volume_key_size) {
+                const struct iovec *volume_key) {
 
         _cleanup_(erase_and_freep) char *new_password = NULL;
         _cleanup_free_ char *error = NULL;
         const char *node;
         int r, keyslot;
+
+        assert(cd);
+        assert(iovec_is_set(volume_key));
 
         assert_se(node = crypt_get_device_name(cd));
 
@@ -105,9 +114,8 @@ int enroll_password(
         if (r < 0)
                 return log_error_errno(r, "Failed to acquire password from environment: %m");
         if (r == 0) {
-                _cleanup_free_ char *disk_path = NULL;
+                _cleanup_free_ char *disk_path = NULL, *id = NULL;
                 unsigned i = 5;
-                const char *id;
 
                 assert_se(node = crypt_get_device_name(cd));
 
@@ -117,7 +125,16 @@ int enroll_password(
                 if (!disk_path)
                         return log_oom();
 
-                id = strjoina("cryptsetup:", disk_path);
+                id = strjoin("cryptenroll-new:", disk_path);
+                if (!id)
+                        return log_oom();
+
+                AskPasswordRequest req = {
+                        .icon = "drive-harddisk",
+                        .id = id,
+                        .keyring = "cryptenroll",
+                        .credential = "cryptenroll.new-passphrase",
+                };
 
                 for (;;) {
                         _cleanup_strv_free_erase_ char **passwords = NULL, **passwords2 = NULL;
@@ -131,7 +148,9 @@ int enroll_password(
                         if (!question)
                                 return log_oom();
 
-                        r = ask_password_auto(question, "drive-harddisk", id, "cryptenroll", "cryptenroll.new-passphrase", USEC_INFINITY, 0, &passwords);
+                        req.message = question;
+
+                        r = ask_password_auto(&req, USEC_INFINITY, /* flags= */ 0, &passwords);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to query password: %m");
 
@@ -142,7 +161,9 @@ int enroll_password(
                         if (!question)
                                 return log_oom();
 
-                        r = ask_password_auto(question, "drive-harddisk", id, "cryptenroll", "cryptenroll.new-passphrase", USEC_INFINITY, 0, &passwords2);
+                        req.message = question;
+
+                        r = ask_password_auto(&req, USEC_INFINITY, /* flags= */ 0, &passwords2);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to query password: %m");
 
@@ -169,8 +190,8 @@ int enroll_password(
         keyslot = crypt_keyslot_add_by_volume_key(
                         cd,
                         CRYPT_ANY_SLOT,
-                        volume_key,
-                        volume_key_size,
+                        volume_key->iov_base,
+                        volume_key->iov_len,
                         new_password,
                         strlen(new_password));
         if (keyslot < 0)

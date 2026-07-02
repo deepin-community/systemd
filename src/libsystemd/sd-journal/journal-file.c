@@ -20,6 +20,7 @@
 #include "fd-util.h"
 #include "format-util.h"
 #include "fs-util.h"
+#include "gcrypt-util.h"
 #include "id128-util.h"
 #include "journal-authenticate.h"
 #include "journal-def.h"
@@ -46,10 +47,6 @@
 
 #define DEFAULT_COMPRESS_THRESHOLD (512ULL)
 #define MIN_COMPRESS_THRESHOLD (8ULL)
-
-#define U64_KB UINT64_C(1024)
-#define U64_MB (UINT64_C(1024) * U64_KB)
-#define U64_GB (UINT64_C(1024) * U64_MB)
 
 /* This is the minimum journal file size */
 #define JOURNAL_FILE_SIZE_MIN (512 * U64_KB)             /* 512 KiB */
@@ -191,9 +188,13 @@ int journal_file_set_offline_thread_join(JournalFile *f) {
         if (f->offline_state == OFFLINE_JOINED)
                 return 0;
 
+        log_debug("Joining journal offlining thread for %s.", f->path);
+
         r = pthread_join(f->offline_thread, NULL);
         if (r)
                 return -r;
+
+        log_debug("Journal offlining thread for %s joined.", f->path);
 
         f->offline_state = OFFLINE_JOINED;
 
@@ -285,6 +286,8 @@ JournalFile* journal_file_close(JournalFile *f) {
 
         assert(f->newest_boot_id_prioq_idx == PRIOQ_IDX_NULL);
 
+        sd_event_source_disable_unref(f->post_change_timer);
+
         if (f->cache_fd)
                 mmap_cache_fd_free(f->cache_fd);
 
@@ -309,7 +312,7 @@ JournalFile* journal_file_close(JournalFile *f) {
         free(f->fsprg_seed);
 
         if (f->hmac)
-                gcry_md_close(f->hmac);
+                sym_gcry_md_close(f->hmac);
 #endif
 
         return mfree(f);
@@ -639,7 +642,7 @@ static int journal_file_verify_header(JournalFile *f) {
                                 return -ENODATA;
                         if (!VALID_REALTIME(le64toh(f->header->tail_entry_realtime)))
                                 return -ENODATA;
-                        if (!VALID_MONOTONIC(le64toh(f->header->tail_entry_realtime)))
+                        if (!VALID_MONOTONIC(le64toh(f->header->tail_entry_monotonic)))
                                 return -ENODATA;
                 } else {
                         /* Otherwise, the fields must be zero. */
@@ -650,7 +653,7 @@ static int journal_file_verify_header(JournalFile *f) {
                                 return -ENODATA;
                         if (f->header->tail_entry_realtime != 0)
                                 return -ENODATA;
-                        if (f->header->tail_entry_realtime != 0)
+                        if (f->header->tail_entry_monotonic != 0)
                                 return -ENODATA;
                 }
         }
@@ -736,8 +739,9 @@ int journal_file_fstat(JournalFile *f) {
                 return r;
 
         /* Refuse appending to files that are already deleted */
-        if (f->last_stat.st_nlink <= 0)
-                return -EIDRM;
+        r = stat_verify_linked(&f->last_stat);
+        if (r < 0)
+                return r;
 
         return 0;
 }
@@ -1399,7 +1403,7 @@ static int journal_file_link_field(
         assert(offset > 0);
 
         if (o->object.type != OBJECT_FIELD)
-                return -EINVAL;
+                return -EBADMSG;
 
         m = le64toh(READ_NOW(f->header->field_hash_table_size)) / sizeof(HashItem);
         if (m <= 0)
@@ -1444,7 +1448,7 @@ static int journal_file_link_data(
         assert(offset > 0);
 
         if (o->object.type != OBJECT_DATA)
-                return -EINVAL;
+                return -EBADMSG;
 
         m = le64toh(READ_NOW(f->header->data_hash_table_size)) / sizeof(HashItem);
         if (m <= 0)
@@ -1798,17 +1802,27 @@ static int journal_file_append_field(
         return 0;
 }
 
-static int maybe_compress_payload(JournalFile *f, uint8_t *dst, const uint8_t *src, uint64_t size, size_t *rsize) {
+static int maybe_compress_payload(
+                JournalFile *f,
+                uint8_t *dst,
+                const uint8_t *src,
+                uint64_t size,
+                size_t *rsize,
+                Compression *ret_compression) {
+
         assert(f);
         assert(f->header);
+        assert(ret_compression);
 
 #if HAVE_COMPRESSION
         Compression c;
         int r;
 
         c = JOURNAL_FILE_COMPRESSION(f);
-        if (c == COMPRESSION_NONE || size < f->compress_threshold_bytes)
+        if (c == COMPRESSION_NONE || size < f->compress_threshold_bytes) {
+                *ret_compression = COMPRESSION_NONE;
                 return 0;
+        }
 
         r = compress_blob(c, src, size, dst, size - 1, rsize);
         if (r < 0)
@@ -1816,8 +1830,10 @@ static int maybe_compress_payload(JournalFile *f, uint8_t *dst, const uint8_t *s
 
         log_debug("Compressed data object %"PRIu64" -> %zu using %s", size, *rsize, compression_to_string(c));
 
+        *ret_compression = c;
         return 1; /* compressed */
 #else
+        *ret_compression = COMPRESSION_NONE;
         return 0;
 #endif
 }
@@ -1837,8 +1853,11 @@ static int journal_file_append_data(
 
         assert(f);
 
+        /* Return a recognizable error for data that is submitted for *writing*. Note that we leave EBADMSG
+         * for bad messages we *read*. And EINVAL is too generic an error (which might be triggered by all
+         * kinds of other places). Hence use a separate EUCLEAN here. */
         if (!data || size == 0)
-                return -EINVAL;
+                return -EUCLEAN;
 
         hash = journal_file_hash_data(f, data, size);
 
@@ -1850,7 +1869,7 @@ static int journal_file_append_data(
 
         eq = memchr(data, '=', size);
         if (!eq)
-                return -EINVAL;
+                return -EUCLEAN;
 
         osize = journal_file_data_payload_offset(f) + size;
         r = journal_file_append_object(f, OBJECT_DATA, osize, &o, &p);
@@ -1859,13 +1878,12 @@ static int journal_file_append_data(
 
         o->data.hash = htole64(hash);
 
-        r = maybe_compress_payload(f, journal_file_data_payload_field(f, o), data, size, &rsize);
+        Compression c;
+        r = maybe_compress_payload(f, journal_file_data_payload_field(f, o), data, size, &rsize, &c);
         if (r <= 0)
                 /* We don't really care failures, let's continue without compression */
                 memcpy_safe(journal_file_data_payload_field(f, o), data, size);
         else {
-                Compression c = JOURNAL_FILE_COMPRESSION(f);
-
                 assert(c >= 0 && c < _COMPRESSION_MAX && c != COMPRESSION_NONE);
 
                 o->object.size = htole64(journal_file_data_payload_offset(f) + rsize);
@@ -2212,7 +2230,7 @@ static int journal_file_link_entry_item(JournalFile *f, uint64_t offset, uint64_
 
 static int journal_file_link_entry(
                 JournalFile *f,
-                Object *o,
+                const Object *o,
                 uint64_t offset,
                 const EntryItem items[],
                 size_t n_items) {
@@ -2225,7 +2243,7 @@ static int journal_file_link_entry(
         assert(offset > 0);
 
         if (o->object.type != OBJECT_ENTRY)
-                return -EINVAL;
+                return -EBADMSG;
 
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
 
@@ -2248,7 +2266,6 @@ static int journal_file_link_entry(
         f->header->tail_entry_monotonic = o->entry.monotonic;
         if (JOURNAL_HEADER_CONTAINS(f->header, tail_entry_offset))
                 f->header->tail_entry_offset = htole64(offset);
-        f->newest_mtime = 0; /* we have a new tail entry now, explicitly invalidate newest boot id/timestamp info */
 
         /* Link up the items */
         for (uint64_t i = 0; i < n_items; i++) {
@@ -2464,6 +2481,11 @@ int journal_file_enable_post_change_timer(JournalFile *f, sd_event *e, usec_t t)
         assert(e);
         assert(t);
 
+        /* If we are already going down, we cannot install the timer.
+         * In such case, the caller needs to call journal_file_post_change() explicitly. */
+        if (IN_SET(sd_event_get_state(e), SD_EVENT_EXITING, SD_EVENT_FINISHED))
+                return 0;
+
         r = sd_event_add_time(e, &timer, CLOCK_MONOTONIC, 0, 0, post_change_thunk, f);
         if (r < 0)
                 return r;
@@ -2475,7 +2497,7 @@ int journal_file_enable_post_change_timer(JournalFile *f, sd_event *e, usec_t t)
         f->post_change_timer = TAKE_PTR(timer);
         f->post_change_timer_period = t;
 
-        return r;
+        return 1;
 }
 
 static int entry_item_cmp(const EntryItem *a, const EntryItem *b) {
@@ -2527,7 +2549,7 @@ int journal_file_append_entry(
                                                ts->realtime);
                 if (!VALID_MONOTONIC(ts->monotonic))
                         return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
-                                               "Invalid monotomic timestamp %" PRIu64 ", refusing entry.",
+                                               "Invalid monotonic timestamp %" PRIu64 ", refusing entry.",
                                                ts->monotonic);
         } else {
                 dual_timestamp_now(&_ts);
@@ -2717,7 +2739,9 @@ static int bump_entry_array(
 
         if (direction == DIRECTION_DOWN) {
                 assert(o);
-                assert(o->object.type == OBJECT_ENTRY_ARRAY);
+
+                if (o->object.type != OBJECT_ENTRY_ARRAY)
+                        return -EBADMSG;
 
                 *ret = le64toh(o->entry_array.next_entry_array_offset);
         } else {
@@ -2756,7 +2780,7 @@ static int generic_array_get(
                 Object **ret_object,    /* The found object. */
                 uint64_t *ret_offset) { /* The offset of the found object. */
 
-        uint64_t a, t = 0, k;
+        uint64_t a, t = 0, k = 0; /* Explicit initialization of k to appease gcc */
         ChainCacheItem *ci;
         Object *o = NULL;
         int r;
@@ -3046,7 +3070,7 @@ static int generic_array_bisect(
                 left = 0;
                 right = m - 1;
 
-                if (direction == DIRECTION_UP) {
+                if (direction == DIRECTION_UP && left < right) {
                         /* If we're going upwards, the last entry of the previous array may pass the test,
                          * and the first entry of the current array may not pass. In that case, the last
                          * entry of the previous array must be returned. Hence, we need to test the first
@@ -3161,10 +3185,21 @@ previous:
         if (direction == DIRECTION_DOWN)
                 return 0;
 
-        /* Indicate to go to the previous array later. Note, do not move to the previous array here,
-         * as that may invalidate the current array object in the mmap cache and
-         * journal_file_entry_array_item() below may read invalid address. */
-        i = UINT64_MAX;
+        /* Get the last entry of the previous array. */
+        r = bump_entry_array(f, NULL, a, first, DIRECTION_UP, &a);
+        if (r <= 0)
+                return r;
+
+        r = journal_file_move_to_object(f, OBJECT_ENTRY_ARRAY, a, &array);
+        if (r < 0)
+                return r;
+
+        p = journal_file_entry_array_n_items(f, array);
+        if (p == 0 || t < p)
+                return -EBADMSG;
+
+        t -= p;
+        i = p - 1;
 
 found:
         p = journal_file_entry_array_item(f, array, 0);
@@ -3173,27 +3208,6 @@ found:
 
         /* Let's cache this item for the next invocation */
         chain_cache_put(f->chain_cache, ci, first, a, p, t, i);
-
-        if (i == UINT64_MAX) {
-                uint64_t m;
-
-                /* Get the last entry of the previous array. */
-
-                r = bump_entry_array(f, NULL, a, first, DIRECTION_UP, &a);
-                if (r <= 0)
-                        return r;
-
-                r = journal_file_move_to_object(f, OBJECT_ENTRY_ARRAY, a, &array);
-                if (r < 0)
-                        return r;
-
-                m = journal_file_entry_array_n_items(f, array);
-                if (m == 0 || t < m)
-                        return -EBADMSG;
-
-                t -= m;
-                i = m - 1;
-        }
 
         p = journal_file_entry_array_item(f, array, i);
         if (p == 0)
@@ -3228,8 +3242,10 @@ static int generic_array_bisect_for_data(
 
         assert(f);
         assert(d);
-        assert(d->object.type == OBJECT_DATA);
         assert(test_object);
+
+        if (d->object.type != OBJECT_DATA)
+                return -EBADMSG;
 
         n = le64toh(d->data.n_entries);
         if (n <= 0)
@@ -3261,7 +3277,7 @@ static int generic_array_bisect_for_data(
 
         } else {
                 /* If we are going upwards, then we need to return the last object that passes the test.
-                 * When there is no object that passes the test, we need to return the the last object that
+                 * When there is no object that passes the test, we need to return the last object that
                  * test_object() returns TEST_LEFT for. */
                 if (r == TEST_RIGHT)
                         return 0; /* Not only the 'extra' object, but also all objects in the chained arrays
@@ -3299,7 +3315,9 @@ use_extra:
 
 static int test_object_offset(JournalFile *f, uint64_t p, uint64_t needle) {
         assert(f);
-        assert(p > 0);
+
+        if (p <= 0)
+                return -EBADMSG;
 
         if (p == needle)
                 return TEST_FOUND;
@@ -3335,7 +3353,6 @@ static int test_object_seqnum(JournalFile *f, uint64_t p, uint64_t needle) {
         int r;
 
         assert(f);
-        assert(p > 0);
 
         r = journal_file_move_to_object(f, OBJECT_ENTRY, p, &o);
         if (r < 0)
@@ -3376,7 +3393,6 @@ static int test_object_realtime(JournalFile *f, uint64_t p, uint64_t needle) {
         int r;
 
         assert(f);
-        assert(p > 0);
 
         r = journal_file_move_to_object(f, OBJECT_ENTRY, p, &o);
         if (r < 0)
@@ -3417,7 +3433,6 @@ static int test_object_monotonic(JournalFile *f, uint64_t p, uint64_t needle) {
         int r;
 
         assert(f);
-        assert(p > 0);
 
         r = journal_file_move_to_object(f, OBJECT_ENTRY, p, &o);
         if (r < 0)
@@ -3548,7 +3563,8 @@ int journal_file_next_entry(
                                  p,
                                  test_object_offset,
                                  direction,
-                                 ret_object ? &o : NULL, &q, &i);
+                                 NULL, &q, &i); /* Here, do not read entry object, as the result object
+                                                 * may not be the one we want, and it may be broken. */
         if (r <= 0)
                 return r;
 
@@ -3558,12 +3574,11 @@ int journal_file_next_entry(
          * the same offset, and the index needs to be shifted. Otherwise, use the found object as is,
          * as it is the nearest entry object from the input offset 'p'. */
 
-        if (p != q)
-                goto found;
-
-        r = bump_array_index(&i, direction, n);
-        if (r <= 0)
-                return r;
+        if (p == q) {
+                r = bump_array_index(&i, direction, n);
+                if (r <= 0)
+                        return r;
+        }
 
         /* And jump to it */
         r = generic_array_get(f, le64toh(f->header->entry_array_offset), i, direction, ret_object ? &o : NULL, &q);
@@ -3575,7 +3590,7 @@ int journal_file_next_entry(
                 return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
                                        "%s: entry array not properly ordered at entry index %" PRIu64,
                                        f->path, i);
-found:
+
         if (ret_object)
                 *ret_object = o;
         if (ret_offset)
@@ -3596,8 +3611,10 @@ int journal_file_move_to_entry_for_data(
 
         assert(f);
         assert(d);
-        assert(d->object.type == OBJECT_DATA);
         assert(IN_SET(direction, DIRECTION_DOWN, DIRECTION_UP));
+
+        if (d->object.type != OBJECT_DATA)
+                return -EBADMSG;
 
         /* FIXME: fix return value assignment. */
 
@@ -3658,7 +3675,9 @@ int journal_file_move_to_entry_by_offset_for_data(
 
         assert(f);
         assert(d);
-        assert(d->object.type == OBJECT_DATA);
+
+        if (d->object.type != OBJECT_DATA)
+                return -EBADMSG;
 
         return generic_array_bisect_for_data(
                         f,
@@ -3684,7 +3703,9 @@ int journal_file_move_to_entry_by_monotonic_for_data(
 
         assert(f);
         assert(d);
-        assert(d->object.type == OBJECT_DATA);
+
+        if (d->object.type != OBJECT_DATA)
+                return -EBADMSG;
 
         /* First, pin the given data object, before reading the _BOOT_ID= data object below. */
         r = journal_file_pin_object(f, d);
@@ -3750,7 +3771,9 @@ int journal_file_move_to_entry_by_seqnum_for_data(
 
         assert(f);
         assert(d);
-        assert(d->object.type == OBJECT_DATA);
+
+        if (d->object.type != OBJECT_DATA)
+                return -EBADMSG;
 
         return generic_array_bisect_for_data(
                         f,
@@ -3770,7 +3793,9 @@ int journal_file_move_to_entry_by_realtime_for_data(
 
         assert(f);
         assert(d);
-        assert(d->object.type == OBJECT_DATA);
+
+        if (d->object.type != OBJECT_DATA)
+                return -EBADMSG;
 
         return generic_array_bisect_for_data(
                         f,
@@ -3807,35 +3832,35 @@ void journal_file_dump(JournalFile *f) {
                 case OBJECT_ENTRY:
                         assert(s);
 
-                        printf("Type: %s seqnum=%"PRIu64" monotonic=%"PRIu64" realtime=%"PRIu64"\n",
-                               s,
-                               le64toh(o->entry.seqnum),
-                               le64toh(o->entry.monotonic),
-                               le64toh(o->entry.realtime));
+                        log_info("Type: %s seqnum=%"PRIu64" monotonic=%"PRIu64" realtime=%"PRIu64"\n",
+                                 s,
+                                 le64toh(o->entry.seqnum),
+                                 le64toh(o->entry.monotonic),
+                                 le64toh(o->entry.realtime));
                         break;
 
                 case OBJECT_TAG:
                         assert(s);
 
-                        printf("Type: %s seqnum=%"PRIu64" epoch=%"PRIu64"\n",
-                               s,
-                               le64toh(o->tag.seqnum),
-                               le64toh(o->tag.epoch));
+                        log_info("Type: %s seqnum=%"PRIu64" epoch=%"PRIu64"\n",
+                                 s,
+                                 le64toh(o->tag.seqnum),
+                                 le64toh(o->tag.epoch));
                         break;
 
                 default:
                         if (s)
-                                printf("Type: %s \n", s);
+                                log_info("Type: %s \n", s);
                         else
-                                printf("Type: unknown (%i)", o->object.type);
+                                log_info("Type: unknown (%i)", o->object.type);
 
                         break;
                 }
 
                 c = COMPRESSION_FROM_OBJECT(o);
                 if (c > COMPRESSION_NONE)
-                        printf("Flags: %s\n",
-                               compression_to_string(c));
+                        log_info("Flags: %s\n",
+                                 compression_to_string(c));
 
                 if (p == le64toh(f->header->tail_object_offset))
                         p = 0;
@@ -4368,11 +4393,9 @@ int journal_file_archive(JournalFile *f, char **ret_previous_path) {
         (void) fsync_directory_of_file(f->fd);
 
         if (ret_previous_path)
-                *ret_previous_path = f->path;
-        else
-                free(f->path);
+                *ret_previous_path = TAKE_PTR(f->path);
 
-        f->path = TAKE_PTR(p);
+        free_and_replace(f->path, p);
 
         /* Set as archive so offlining commits w/state=STATE_ARCHIVED. Previously we would set old_file->header->state
          * to STATE_ARCHIVED directly here, but journal_file_set_offline() short-circuits when state != STATE_ONLINE,
@@ -4468,10 +4491,11 @@ int journal_file_copy_entry(
                         return r;
                 assert(r > 0);
 
-                if (l == 0)
-                        return -EBADMSG;
-
                 r = journal_file_append_data(to, data, l, &u, &h);
+                if (r == -EUCLEAN) {
+                        log_debug_errno(r, "Entry item %"PRIu64" invalid, skipping over it: %m", i);
+                        continue;
+                }
                 if (r < 0)
                         return r;
 

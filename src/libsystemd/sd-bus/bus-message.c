@@ -373,6 +373,7 @@ static int message_from_header(
         if (!m)
                 return -ENOMEM;
 
+        m->creds = (sd_bus_creds) { SD_BUS_CREDS_INIT_FIELDS };
         m->sealed = true;
         m->header = buffer;
 
@@ -469,6 +470,7 @@ _public_ int sd_bus_message_new(
                 return -ENOMEM;
 
         t->n_ref = 1;
+        t->creds = (sd_bus_creds) { SD_BUS_CREDS_INIT_FIELDS };
         t->bus = sd_bus_ref(bus);
         t->header = (struct bus_header*) ((uint8_t*) t + ALIGN(sizeof(struct sd_bus_message)));
         t->header->endian = BUS_NATIVE_ENDIAN;
@@ -627,7 +629,7 @@ static int message_new_reply(
                         return r;
         }
 
-        t->dont_send = !!(call->header->flags & BUS_MESSAGE_NO_REPLY_EXPECTED);
+        t->dont_send = FLAGS_SET(call->header->flags, BUS_MESSAGE_NO_REPLY_EXPECTED);
         t->enforced_reply_signature = call->enforced_reply_signature;
 
         /* let's copy the sensitive flag over. Let's do that as a safety precaution to keep a transaction
@@ -1274,7 +1276,7 @@ static void *message_extend_body(
 }
 
 static int message_push_fd(sd_bus_message *m, int fd) {
-        int *f, copy;
+        int copy;
 
         assert(m);
 
@@ -1288,15 +1290,13 @@ static int message_push_fd(sd_bus_message *m, int fd) {
         if (copy < 0)
                 return -errno;
 
-        f = reallocarray(m->fds, sizeof(int), m->n_fds + 1);
-        if (!f) {
+        if (!GREEDY_REALLOC(m->fds, m->n_fds + 1)) {
                 m->poisoned = true;
                 safe_close(copy);
                 return -ENOMEM;
         }
 
-        m->fds = f;
-        m->fds[m->n_fds] = copy;
+        m->fds[m->n_fds] = copy; /* m->n_fds will be incremented by the caller later */
         m->free_fds = true;
 
         return copy;
@@ -4155,7 +4155,6 @@ static int message_parse_fields(sd_bus_message *m) {
 
                         if (m->reply_cookie != 0)
                                 return -EBADMSG;
-
 
                         if (!streq(signature, "u"))
                                 return -EBADMSG;

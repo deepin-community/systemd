@@ -46,7 +46,7 @@ typedef enum LocationType {
 
         /* We should seek to the precise location specified, and
          * return it, as we haven't read it yet. */
-        LOCATION_SEEK
+        LOCATION_SEEK,
 } LocationType;
 
 typedef enum OfflineState {
@@ -56,7 +56,7 @@ typedef enum OfflineState {
         OFFLINE_CANCEL,
         OFFLINE_AGAIN_FROM_SYNCING,
         OFFLINE_AGAIN_FROM_OFFLINING,
-        OFFLINE_DONE
+        OFFLINE_DONE,
 } OfflineState;
 
 typedef struct JournalFile {
@@ -129,7 +129,8 @@ typedef struct JournalFile {
         uint64_t newest_monotonic_usec;
         uint64_t newest_realtime_usec;
         unsigned newest_boot_id_prioq_idx;
-        usec_t newest_mtime;
+        uint64_t newest_entry_offset;
+        uint8_t newest_state;
 } JournalFile;
 
 typedef enum JournalFileFlags {
@@ -309,7 +310,6 @@ void journal_file_print_header(JournalFile *f);
 
 int journal_file_archive(JournalFile *f, char **ret_previous_path);
 int journal_file_parse_uid_from_filename(const char *path, uid_t *uid);
-JournalFile* journal_initiate_close(JournalFile *f, Set *deferred_closes);
 
 int journal_file_dispose(int dir_fd, const char *fname);
 

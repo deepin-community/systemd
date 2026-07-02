@@ -82,6 +82,22 @@ static int no_quit_on_interrupt(int exe_name_fd, const char *less_opts) {
         return r;
 }
 
+static bool running_with_escalated_privileges(void) {
+        int r;
+
+        if (getenv("SUDO_UID"))
+                return true;
+
+        uid_t uid;
+        r = sd_pid_get_owner_uid(0, &uid);
+        if (r < 0) {
+                log_debug_errno(r, "sd_pid_get_owner_uid() failed, enabling pager secure mode: %m");
+                return true;
+        }
+
+        return uid != geteuid();
+}
+
 void pager_open(PagerFlags flags) {
         _cleanup_close_pair_ int fd[2] = EBADF_PAIR, exe_name_pipe[2] = EBADF_PAIR;
         _cleanup_strv_free_ char **pager_args = NULL;
@@ -175,18 +191,11 @@ void pager_open(PagerFlags flags) {
                  * pager. If they didn't, use secure mode when under euid is changed. If $SYSTEMD_PAGERSECURE
                  * wasn't explicitly set, and we autodetect the need for secure mode, only use the pager we
                  * know to be good. */
-                int use_secure_mode = getenv_bool_secure("SYSTEMD_PAGERSECURE");
+                int use_secure_mode = secure_getenv_bool("SYSTEMD_PAGERSECURE");
                 bool trust_pager = use_secure_mode >= 0;
-                if (use_secure_mode == -ENXIO) {
-                        uid_t uid;
-
-                        r = sd_pid_get_owner_uid(0, &uid);
-                        if (r < 0)
-                                log_debug_errno(r, "sd_pid_get_owner_uid() failed, enabling pager secure mode: %m");
-
-                        use_secure_mode = r < 0 || uid != geteuid();
-
-                } else if (use_secure_mode < 0) {
+                if (use_secure_mode == -ENXIO)
+                        use_secure_mode = running_with_escalated_privileges();
+                else if (use_secure_mode < 0) {
                         log_warning_errno(use_secure_mode, "Unable to parse $SYSTEMD_PAGERSECURE, assuming true: %m");
                         use_secure_mode = true;
                 }
@@ -295,7 +304,7 @@ bool pager_have(void) {
 
 int show_man_page(const char *desc, bool null_stdio) {
         const char *args[4] = { "man", NULL, NULL, NULL };
-        char *e = NULL;
+        const char *e = NULL;
         pid_t pid;
         size_t k;
         int r;

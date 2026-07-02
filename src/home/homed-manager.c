@@ -42,6 +42,7 @@
 #include "quota-util.h"
 #include "random-util.h"
 #include "resize-fs.h"
+#include "rm-rf.h"
 #include "socket-util.h"
 #include "sort-util.h"
 #include "stat-util.h"
@@ -54,6 +55,7 @@
 #include "user-record.h"
 #include "user-util.h"
 #include "varlink-io.systemd.UserDatabase.h"
+#include "varlink-util.h"
 
 /* Where to look for private/public keys that are used to sign the user records. We are not using
  * CONF_PATHS_NULSTR() here since we want to insert /var/lib/systemd/home/ in the middle. And we insert that
@@ -79,6 +81,7 @@ DEFINE_PRIVATE_HASH_OPS_WITH_VALUE_DESTRUCTOR(homes_by_sysfs_hash_ops, char, pat
 
 static int on_home_inotify(sd_event_source *s, const struct inotify_event *event, void *userdata);
 static int manager_gc_images(Manager *m);
+static int manager_gc_blob(Manager *m);
 static int manager_enumerate_images(Manager *m);
 static int manager_assess_image(Manager *m, int dir_fd, const char *dir_path, const char *dentry_name);
 static void manager_revalidate_image(Manager *m, Home *h);
@@ -220,20 +223,16 @@ int manager_new(Manager **ret) {
         if (r < 0)
                 return r;
 
-        r = sd_event_add_signal(m->event, NULL, SIGINT, NULL, NULL);
+        r = sd_event_set_signal_exit(m->event, true);
         if (r < 0)
                 return r;
 
-        r = sd_event_add_signal(m->event, NULL, SIGTERM, NULL, NULL);
-        if (r < 0)
-                return r;
-
-        r = sd_event_add_memory_pressure(m->event, NULL, NULL, NULL);
+        r = sd_event_add_memory_pressure(m->event, /* ret_event_source= */ NULL, /* callback= */ NULL, /* userdata= */ NULL);
         if (r < 0)
                 log_full_errno(ERRNO_IS_NOT_SUPPORTED(r) || ERRNO_IS_PRIVILEGE(r) || (r == -EHOSTDOWN) ? LOG_DEBUG : LOG_WARNING, r,
                                "Failed to allocate memory pressure watch, ignoring: %m");
 
-        r = sd_event_add_signal(m->event, NULL, SIGRTMIN+18, sigrtmin18_handler, NULL);
+        r = sd_event_add_signal(m->event, /* ret_event_source= */ NULL, (SIGRTMIN+18)|SD_EVENT_SIGNAL_PROCMASK, sigrtmin18_handler, /* userdata = */ NULL);
         if (r < 0)
                 return r;
 
@@ -268,7 +267,7 @@ Manager* manager_free(Manager *m) {
                 (void) home_wait_for_worker(h);
 
         m->bus = sd_bus_flush_close_unref(m->bus);
-        m->polkit_registry = bus_verify_polkit_async_registry_free(m->polkit_registry);
+        m->polkit_registry = hashmap_free(m->polkit_registry);
 
         m->device_monitor = sd_device_monitor_unref(m->device_monitor);
 
@@ -291,7 +290,7 @@ Manager* manager_free(Manager *m) {
 
         hashmap_free(m->public_keys);
 
-        varlink_server_unref(m->varlink_server);
+        sd_varlink_server_unref(m->varlink_server);
         free(m->userdb_service);
 
         free(m->default_file_system_type);
@@ -358,7 +357,7 @@ static int manager_add_home_by_record(
                 int dir_fd,
                 const char *fname) {
 
-        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
         _cleanup_(user_record_unrefp) UserRecord *hr = NULL;
         unsigned line, column;
         int r, is_signed;
@@ -380,11 +379,11 @@ static int manager_add_home_by_record(
         if (st.st_size == 0)
                 goto unlink_this_file;
 
-        r = json_parse_file_at(NULL, dir_fd, fname, JSON_PARSE_SENSITIVE, &v, &line, &column);
+        r = sd_json_parse_file_at(NULL, dir_fd, fname, SD_JSON_PARSE_SENSITIVE, &v, &line, &column);
         if (r < 0)
                 return log_error_errno(r, "Failed to parse identity record at %s:%u%u: %m", fname, line, column);
 
-        if (json_variant_is_blank_object(v))
+        if (sd_json_variant_is_blank_object(v))
                 goto unlink_this_file;
 
         hr = user_record_new();
@@ -555,7 +554,7 @@ static int search_quota(uid_t uid, const char *exclude_quota_path) {
 
                 if ((FLAGS_SET(req.dqb_valid, QIF_SPACE) && req.dqb_curspace > 0) ||
                     (FLAGS_SET(req.dqb_valid, QIF_INODES) && req.dqb_curinodes > 0)) {
-                        log_debug_errno(errno, "Quota reports UID " UID_FMT " occupies disk space on %s.", uid, where);
+                        log_debug("Quota reports UID " UID_FMT " occupies disk space on %s.", uid, where);
                         return 1;
                 }
         }
@@ -588,8 +587,8 @@ static int manager_acquire_uid(
         assert(ret);
 
         for (;;) {
-                struct passwd *pw;
-                struct group *gr;
+                _cleanup_free_ struct passwd *pw = NULL;
+                _cleanup_free_ struct group *gr = NULL;
                 uid_t candidate;
                 Home *other;
 
@@ -632,17 +631,25 @@ static int manager_acquire_uid(
                         continue;
                 }
 
-                pw = getpwuid(candidate);
-                if (pw) {
+                r = getpwuid_malloc(candidate, &pw);
+                if (r >= 0) {
                         log_debug("Candidate UID " UID_FMT " already registered by another user in NSS (%s), let's try another.",
                                   candidate, pw->pw_name);
                         continue;
                 }
+                if (r != -ESRCH) {
+                        log_debug_errno(r, "Failed to check if an NSS user is already registered for candidate UID " UID_FMT ", assuming there might be: %m", candidate);
+                        continue;
+                }
 
-                gr = getgrgid((gid_t) candidate);
-                if (gr) {
+                r = getgrgid_malloc((gid_t) candidate, &gr);
+                if (r >= 0) {
                         log_debug("Candidate UID " UID_FMT " already registered by another group in NSS (%s), let's try another.",
                                   candidate, gr->gr_name);
+                        continue;
+                }
+                if (r != -ESRCH) {
+                        log_debug_errno(r, "Failed to check if an NSS group is already registered for candidate UID " UID_FMT ", assuming there might be: %m", candidate);
                         continue;
                 }
 
@@ -715,7 +722,7 @@ static int manager_add_home_by_image(
                 }
         } else {
                 /* Check NSS, in case there's another user or group by this name */
-                if (getpwnam(user_name) || getgrnam(user_name)) {
+                if (getpwnam_malloc(user_name, /* ret= */ NULL) >= 0 || getgrnam_malloc(user_name, /* ret= */ NULL) >= 0) {
                         log_debug("Found an existing user or group by name '%s', ignoring image '%s'.", user_name, image_path);
                         return 0;
                 }
@@ -819,7 +826,7 @@ static int manager_assess_image(
                 const char *dir_path,
                 const char *dentry_name) {
 
-        char *luks_suffix, *directory_suffix;
+        const char *luks_suffix, *directory_suffix;
         _cleanup_free_ char *path = NULL;
         struct stat st;
         int r;
@@ -903,7 +910,7 @@ static int manager_assess_image(
 
                 r = btrfs_is_subvol_fd(fd);
                 if (r < 0)
-                        return log_warning_errno(errno, "Failed to determine whether %s is a btrfs subvolume: %m", path);
+                        return log_warning_errno(r, "Failed to determine whether %s is a btrfs subvolume: %m", path);
                 if (r > 0)
                         storage = USER_SUBVOLUME;
                 else {
@@ -981,7 +988,7 @@ static int manager_connect_bus(Manager *m) {
         if (r < 0)
                 return log_error_errno(r, "Failed to request name: %m");
 
-        r = sd_bus_attach_event(m->bus, m->event, 0);
+        r = sd_bus_attach_event(m->bus, m->event, SD_EVENT_PRIORITY_NORMAL);
         if (r < 0)
                 return log_error_errno(r, "Failed to attach bus to event loop: %m");
 
@@ -998,17 +1005,18 @@ static int manager_bind_varlink(Manager *m) {
         assert(m);
         assert(!m->varlink_server);
 
-        r = varlink_server_new(&m->varlink_server, VARLINK_SERVER_ACCOUNT_UID|VARLINK_SERVER_INHERIT_USERDATA);
+        r = varlink_server_new(
+                        &m->varlink_server,
+                        SD_VARLINK_SERVER_ACCOUNT_UID|SD_VARLINK_SERVER_INHERIT_USERDATA|SD_VARLINK_SERVER_INPUT_SENSITIVE,
+                        m);
         if (r < 0)
-                return log_error_errno(r, "Failed to allocate varlink server object: %m");
+                return log_error_errno(r, "Failed to allocate varlink server: %m");
 
-        varlink_server_set_userdata(m->varlink_server, m);
-
-        r = varlink_server_add_interface(m->varlink_server, &vl_interface_io_systemd_UserDatabase);
+        r = sd_varlink_server_add_interface(m->varlink_server, &vl_interface_io_systemd_UserDatabase);
         if (r < 0)
                 return log_error_errno(r, "Failed to add UserDatabase interface to varlink server: %m");
 
-        r = varlink_server_bind_method_many(
+        r = sd_varlink_server_bind_method_many(
                         m->varlink_server,
                         "io.systemd.UserDatabase.GetUserRecord",  vl_method_get_user_record,
                         "io.systemd.UserDatabase.GetGroupRecord", vl_method_get_group_record,
@@ -1029,22 +1037,22 @@ static int manager_bind_varlink(Manager *m) {
         } else
                 socket_path = "/run/systemd/userdb/io.systemd.Home";
 
-        r = varlink_server_listen_address(m->varlink_server, socket_path, 0666);
+        r = sd_varlink_server_listen_address(m->varlink_server, socket_path, 0666);
         if (r < 0)
                 return log_error_errno(r, "Failed to bind to varlink socket: %m");
 
-        r = varlink_server_attach_event(m->varlink_server, m->event, SD_EVENT_PRIORITY_NORMAL);
+        r = sd_varlink_server_attach_event(m->varlink_server, m->event, SD_EVENT_PRIORITY_NORMAL);
         if (r < 0)
                 return log_error_errno(r, "Failed to attach varlink connection to event loop: %m");
 
         assert(!m->userdb_service);
         r = path_extract_filename(socket_path, &m->userdb_service);
         if (r < 0)
-                return log_error_errno(r, "Failed to extra filename from socket path '%s': %m", socket_path);
+                return log_error_errno(r, "Failed to extract filename from socket path '%s': %m", socket_path);
 
         /* Avoid recursion */
         if (setenv("SYSTEMD_BYPASS_USERDB", m->userdb_service, 1) < 0)
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to set $SYSTEMD_BYPASS_USERDB: %m");
+                return log_error_errno(errno, "Failed to set $SYSTEMD_BYPASS_USERDB: %m");
 
         return 0;
 }
@@ -1355,8 +1363,11 @@ static int manager_enumerate_devices(Manager *m) {
         if (r < 0)
                 return r;
 
-        FOREACH_DEVICE(e, d)
+        FOREACH_DEVICE(e, d) {
+                if (device_is_processed(d) <= 0)
+                        continue;
                 (void) manager_add_device(m, d);
+        }
 
         return 0;
 }
@@ -1428,7 +1439,7 @@ static int manager_generate_key_pair(Manager *m) {
         /* Write out public key (note that we only do that as a help to the user, we don't make use of this ever */
         r = fopen_temporary("/var/lib/systemd/home/local.public", &fpublic, &temp_public);
         if (r < 0)
-                return log_error_errno(errno, "Failed to open key file for writing: %m");
+                return log_error_errno(r, "Failed to open key file for writing: %m");
 
         if (PEM_write_PUBKEY(fpublic, m->private_key) <= 0)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to write public key.");
@@ -1442,7 +1453,7 @@ static int manager_generate_key_pair(Manager *m) {
         /* Write out the private key (this actually writes out both private and public, OpenSSL is confusing) */
         r = fopen_temporary("/var/lib/systemd/home/local.private", &fprivate, &temp_private);
         if (r < 0)
-                return log_error_errno(errno, "Failed to open key file for writing: %m");
+                return log_error_errno(r, "Failed to open key file for writing: %m");
 
         if (PEM_write_PrivateKey(fprivate, m->private_key, NULL, NULL, 0, NULL, 0) <= 0)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to write private key pair.");
@@ -1619,6 +1630,9 @@ int manager_startup(Manager *m) {
         /* Let's clean up home directories whose devices got removed while we were not running */
         (void) manager_enqueue_gc(m, NULL);
 
+        /* Let's clean up blob directories for home dirs that no longer exist */
+        (void) manager_gc_blob(m);
+
         return 0;
 }
 
@@ -1703,6 +1717,29 @@ int manager_gc_images(Manager *m) {
                 HASHMAP_FOREACH(h, m->homes_by_name)
                         manager_revalidate_image(m, h);
         }
+
+        return 0;
+}
+
+static int manager_gc_blob(Manager *m) {
+        _cleanup_closedir_ DIR *d = NULL;
+        int r;
+
+        assert(m);
+
+        d = opendir(home_system_blob_dir());
+        if (!d) {
+                if (errno == ENOENT)
+                        return 0;
+                return log_error_errno(errno, "Failed to open %s: %m", home_system_blob_dir());
+        }
+
+        FOREACH_DIRENT(de, d, return log_error_errno(errno, "Failed to read system blob directory: %m"))
+                if (!hashmap_contains(m->homes_by_name, de->d_name)) {
+                        r = rm_rf_at(dirfd(d), de->d_name, REMOVE_ROOT|REMOVE_PHYSICAL|REMOVE_SUBVOLUME);
+                        if (r < 0)
+                                log_warning_errno(r, "Failed to delete blob dir for missing user '%s', ignoring: %m", de->d_name);
+                }
 
         return 0;
 }
@@ -1963,7 +2000,6 @@ static int manager_rebalance_calculate(Manager *m) {
                                                     1 * USEC_PER_MINUTE,
                                                     15 * USEC_PER_MINUTE);
 
-
         log_debug("Rebalancing interval set to %s.", FORMAT_TIMESPAN(m->rebalance_interval_usec, USEC_PER_MSEC));
 
         /* Let's suppress small resizes, growing/shrinking file systems isn't free after all */
@@ -1989,7 +2025,7 @@ static int manager_rebalance_apply(Manager *m) {
 
                 h->rebalance_pending = false;
 
-                r = home_resize(h, h->rebalance_goal, /* secret= */ NULL, /* automatic= */ true, &error);
+                r = home_resize(h, h->rebalance_goal, /* secret= */ NULL, &error);
                 if (r < 0)
                         log_warning_errno(r, "Failed to resize home '%s' for rebalancing, ignoring: %s",
                                           h->user_name, bus_error_message(&error, r));

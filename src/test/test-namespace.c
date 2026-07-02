@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <fcntl.h>
+#include <sysexits.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 
@@ -84,6 +85,7 @@ TEST(tmpdir) {
 
 static void test_shareable_ns(unsigned long nsflag) {
         _cleanup_close_pair_ int s[2] = EBADF_PAIR;
+        bool permission_denied = false;
         pid_t pid1, pid2, pid3;
         int r, n = 0;
         siginfo_t si;
@@ -93,15 +95,15 @@ static void test_shareable_ns(unsigned long nsflag) {
                 return;
         }
 
-        assert_se(socketpair(AF_UNIX, SOCK_DGRAM, 0, s) >= 0);
+        assert_se(socketpair(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0, s) >= 0);
 
         pid1 = fork();
         assert_se(pid1 >= 0);
 
         if (pid1 == 0) {
                 r = setup_shareable_ns(s, nsflag);
-                assert_se(r >= 0);
-                _exit(r);
+                assert_se(r >= 0 || ERRNO_IS_NEG_PRIVILEGE(r));
+                _exit(r >= 0 ? r : EX_NOPERM);
         }
 
         pid2 = fork();
@@ -109,8 +111,8 @@ static void test_shareable_ns(unsigned long nsflag) {
 
         if (pid2 == 0) {
                 r = setup_shareable_ns(s, nsflag);
-                assert_se(r >= 0);
-                exit(r);
+                assert_se(r >= 0 || ERRNO_IS_NEG_PRIVILEGE(r));
+                _exit(r >= 0 ? r : EX_NOPERM);
         }
 
         pid3 = fork();
@@ -118,24 +120,38 @@ static void test_shareable_ns(unsigned long nsflag) {
 
         if (pid3 == 0) {
                 r = setup_shareable_ns(s, nsflag);
-                assert_se(r >= 0);
-                exit(r);
+                assert_se(r >= 0 || ERRNO_IS_NEG_PRIVILEGE(r));
+                _exit(r >= 0 ? r : EX_NOPERM);
         }
 
         r = wait_for_terminate(pid1, &si);
         assert_se(r >= 0);
         assert_se(si.si_code == CLD_EXITED);
-        n += si.si_status;
+        if (si.si_status == EX_NOPERM)
+                permission_denied = true;
+        else
+                n += si.si_status;
 
         r = wait_for_terminate(pid2, &si);
         assert_se(r >= 0);
         assert_se(si.si_code == CLD_EXITED);
-        n += si.si_status;
+        if (si.si_status == EX_NOPERM)
+                permission_denied = true;
+        else
+                n += si.si_status;
 
         r = wait_for_terminate(pid3, &si);
         assert_se(r >= 0);
         assert_se(si.si_code == CLD_EXITED);
-        n += si.si_status;
+        if (si.si_status == EX_NOPERM)
+                permission_denied = true;
+        else
+                n += si.si_status;
+
+        /* LSMs can cause setup_shareable_ns() to fail with permission denied, do not fail the test in that
+         * case (e.g.: LXC with AppArmor on kernel < v6.2). */
+        if (permission_denied)
+                return (void) log_tests_skipped("insufficient privileges");
 
         assert_se(n == 1);
 }
@@ -189,9 +205,54 @@ TEST(protect_kernel_logs) {
         assert_se(wait_for_terminate_and_check("ns-kernellogs", pid, WAIT_LOG) == EXIT_SUCCESS);
 }
 
+TEST(idmapping_supported) {
+        assert_se(is_idmapping_supported("/run") >= 0);
+        assert_se(is_idmapping_supported("/var/lib") >= 0);
+        assert_se(is_idmapping_supported("/var/cache") >= 0);
+        assert_se(is_idmapping_supported("/var/log") >= 0);
+        assert_se(is_idmapping_supported("/etc") >= 0);
+}
+
+TEST(namespace_is_init) {
+        int r;
+
+        for (NamespaceType t = 0; t < _NAMESPACE_TYPE_MAX; t++) {
+                r = namespace_is_init(t);
+                if (r == -EBADR)
+                        log_info_errno(r, "In root namespace of type '%s': don't know", namespace_info[t].proc_name);
+                else {
+                        ASSERT_OK(r);
+                        log_info("In root namespace of type '%s': %s", namespace_info[t].proc_name, yes_no(r));
+                }
+        }
+}
+
+TEST(detach_mount_namespace_harder) {
+        _cleanup_(pidref_done) PidRef pid = PIDREF_NULL;
+        _cleanup_close_pair_ int p[2] = EBADF_PAIR;
+        char x = 0;
+        int r;
+
+        ASSERT_OK_ERRNO(pipe2(p, O_CLOEXEC));
+
+        ASSERT_OK(r = pidref_safe_fork("(child)", FORK_RESET_SIGNALS|FORK_DEATHSIG_SIGKILL|FORK_LOG, &pid));
+        if (r == 0) {
+                p[0] = safe_close(p[0]);
+
+                ASSERT_OK(detach_mount_namespace_harder(0, 0));
+
+                ASSERT_OK_EQ_ERRNO(write(p[1], &(const char[]) { 'x' }, 1), 1);
+                freeze();
+        }
+
+        p[1] = safe_close(p[1]);
+        ASSERT_OK_EQ_ERRNO(read(p[0], &x, 1), 1);
+        ASSERT_EQ(x, 'x');
+}
+
 static int intro(void) {
         if (!have_namespaces())
-                return log_tests_skipped("Don't have namespace support");
+                return log_tests_skipped("Don't have namespace support or lacking privileges");
 
         return EXIT_SUCCESS;
 }

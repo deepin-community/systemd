@@ -134,11 +134,8 @@ int bus_seat_method_terminate(sd_bus_message *message, void *userdata, sd_bus_er
 
         r = bus_verify_polkit_async(
                         message,
-                        CAP_KILL,
                         "org.freedesktop.login1.manage",
-                        NULL,
-                        false,
-                        UID_INVALID,
+                        /* details= */ NULL,
                         &s->manager->polkit_registry,
                         error);
         if (r < 0)
@@ -285,7 +282,7 @@ static int seat_object_find(sd_bus *bus, const char *path, const char *interface
         return 1;
 }
 
-char *seat_bus_path(Seat *s) {
+char* seat_bus_path(Seat *s) {
         _cleanup_free_ char *t = NULL;
 
         assert(s);

@@ -9,22 +9,17 @@
 #if HAVE_XKBCOMMON
 static void *xkbcommon_dl = NULL;
 
-struct xkb_context* (*sym_xkb_context_new)(enum xkb_context_flags flags);
-void (*sym_xkb_context_unref)(struct xkb_context *context);
-void (*sym_xkb_context_set_log_fn)(
-                struct xkb_context *context,
-                void (*log_fn)(
-                        struct xkb_context *context,
-                        enum xkb_log_level level,
-                        const char *format,
-                        va_list args));
-struct xkb_keymap* (*sym_xkb_keymap_new_from_names)(
-                struct xkb_context *context,
-                const struct xkb_rule_names *names,
-                enum xkb_keymap_compile_flags flags);
-void (*sym_xkb_keymap_unref)(struct xkb_keymap *keymap);
+DLSYM_PROTOTYPE(xkb_context_new) = NULL;
+DLSYM_PROTOTYPE(xkb_context_unref) = NULL;
+DLSYM_PROTOTYPE(xkb_context_set_log_fn) = NULL;
+DLSYM_PROTOTYPE(xkb_keymap_new_from_names) = NULL;
+DLSYM_PROTOTYPE(xkb_keymap_unref) = NULL;
 
 static int dlopen_xkbcommon(void) {
+        ELF_NOTE_DLOPEN("xkbcommon",
+                        "Support for keyboard locale descriptions",
+                        ELF_NOTE_DLOPEN_PRIORITY_SUGGESTED, "libxkbcommon.so.0");
+
         return dlopen_many_sym_or_warn(
                         &xkbcommon_dl, "libxkbcommon.so.0", LOG_DEBUG,
                         DLSYM_ARG(xkb_context_new),

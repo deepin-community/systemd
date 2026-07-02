@@ -11,7 +11,7 @@
 static int get_pcr_alg(const char **ret) {
         assert(ret);
 
-        FOREACH_STRING(alg, "sha256", "sha1") {
+        FOREACH_STRING(alg, "sha256", "sha384", "sha1") {
                 _cleanup_free_ char *p = NULL;
 
                 if (asprintf(&p, "/sys/class/tpm/tpm0/pcr-%s/0", alg) < 0)
@@ -48,7 +48,7 @@ static int get_current_pcr(const char *alg, uint32_t pcr, void **ret, size_t *re
         if (r < 0)
                 return log_error_errno(r, "Failed to read '%s': %m", p);
 
-        r = unhexmem(s, ss, &buf, &bufsize);
+        r = unhexmem_full(s, ss, /* secure = */ false, &buf, &bufsize);
         if (r < 0)
                 return log_error_errno(r, "Failed to decode hex PCR data '%s': %m", s);
 
@@ -96,7 +96,7 @@ int verb_pcrs(int argc, char *argv[], void *userdata) {
         const char *alg = NULL;
         int r;
 
-        if (tpm2_support() != TPM2_SUPPORT_FULL)
+        if (!tpm2_is_fully_supported())
                 log_notice("System lacks full TPM2 support, not showing PCR state.");
         else {
                 r = get_pcr_alg(&alg);
@@ -138,7 +138,7 @@ int verb_pcrs(int argc, char *argv[], void *userdata) {
 
         r = table_print_with_pager(table, arg_json_format_flags, arg_pager_flags, /* show_header= */true);
         if (r < 0)
-                return log_error_errno(r, "Failed to output table: %m");
+                return r;
 
         return EXIT_SUCCESS;
 }

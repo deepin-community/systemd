@@ -26,9 +26,9 @@
 #include "parse-argument.h"
 #include "parse-util.h"
 #include "path-util.h"
+#include "polkit-agent.h"
 #include "portable.h"
 #include "pretty-print.h"
-#include "spawn-polkit-agent.h"
 #include "string-util.h"
 #include "strv.h"
 #include "terminal-util.h"
@@ -50,6 +50,7 @@ static bool arg_now = false;
 static bool arg_no_block = false;
 static char **arg_extension_images = NULL;
 static bool arg_force = false;
+static bool arg_clean = false;
 
 STATIC_DESTRUCTOR_REGISTER(arg_extension_images, strv_freep);
 
@@ -68,7 +69,7 @@ static int determine_image(const char *image, bool permit_non_existing, char **r
         if (image_name_is_valid(image)) {
                 char *c;
 
-                if (!arg_quiet && laccess(image, F_OK) >= 0)
+                if (!arg_quiet && access_nofollow(image, F_OK) >= 0)
                         log_warning("Ambiguous invocation: current working directory contains file matching non-path argument '%s', ignoring. "
                                     "Prefix argument with './' to force reference to file in current working directory.", image);
 
@@ -143,7 +144,7 @@ static int extract_prefix(const char *path, char **ret) {
         else {
                 const char *e;
 
-                e = endswith(bn, ".raw");
+                e = ENDSWITH_SET(bn, ".raw.v", ".raw", ".v");
                 if (!e)
                         e = strchr(bn, 0);
 
@@ -228,7 +229,7 @@ static int acquire_bus(sd_bus **bus) {
 
         r = bus_connect_transport(arg_transport, arg_host, RUNTIME_SCOPE_SYSTEM, bus);
         if (r < 0)
-                return bus_log_connect_error(r, arg_transport);
+                return bus_log_connect_error(r, arg_transport, RUNTIME_SCOPE_SYSTEM);
 
         (void) sd_bus_set_allow_interactive_authorization(*bus, arg_ask_password);
 
@@ -769,13 +770,49 @@ static int maybe_stop_enable_restart(sd_bus *bus, sd_bus_message *reply) {
         return 0;
 }
 
-static int maybe_stop_disable(sd_bus *bus, char *image, char *argv[]) {
-        _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *wait = NULL;
-        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
-        _cleanup_strv_free_ char **matches = NULL;
+static int maybe_clean_units(sd_bus *bus, char **units) {
         int r;
 
-        if (!arg_enable && !arg_now)
+        assert(bus);
+
+        if (!arg_clean)
+                return 0;
+
+        STRV_FOREACH(name, units) {
+                _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+                _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
+
+                r = bus_message_new_method_call(bus, &m, bus_systemd_mgr, "CleanUnit");
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_message_append(m, "s", *name);
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_message_append_strv(m, STRV_MAKE("all", "fdstore"));
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_call(bus, m, 0, &error, NULL);
+                if (r < 0)
+                        return log_error_errno(
+                                        r,
+                                        "Failed to call CleanUnit on portable service %s: %s",
+                                        *name,
+                                        bus_error_message(&error, r));
+        }
+
+        return 0;
+}
+
+static int maybe_stop_disable_clean(sd_bus *bus, char *image, char *argv[]) {
+        _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *wait = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_strv_free_ char **matches = NULL, **units = NULL;
+        int r;
+
+        if (!arg_enable && !arg_now && !arg_clean)
                 return 0;
 
         r = determine_matches(argv[1], argv + 2, true, &matches);
@@ -829,6 +866,10 @@ static int maybe_stop_disable(sd_bus *bus, char *image, char *argv[]) {
 
                 (void) maybe_start_stop_restart(bus, name, "StopUnit", wait);
                 (void) maybe_enable_disable(bus, name, false);
+
+                r = strv_extend(&units, name);
+                if (r < 0)
+                        return log_oom();
         }
 
         r = sd_bus_message_exit_container(reply);
@@ -839,6 +880,9 @@ static int maybe_stop_disable(sd_bus *bus, char *image, char *argv[]) {
         r = bus_wait_for_jobs(wait, arg_quiet, NULL);
         if (r < 0)
                 return r;
+
+        /* Need to ensure all units are stopped before calling CleanUnit, as files might be in use. */
+        (void) maybe_clean_units(bus, units);
 
         return 0;
 }
@@ -942,7 +986,7 @@ static int detach_image(int argc, char *argv[], void *userdata) {
 
         (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
-        (void) maybe_stop_disable(bus, image, argv);
+        (void) maybe_stop_disable_clean(bus, image, argv);
 
         method = strv_isempty(arg_extension_images) && !arg_force ? "DetachImage" : "DetachImageWithExtensions";
 
@@ -1030,7 +1074,7 @@ static int list_images(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        if (table_get_rows(table) > 1) {
+        if (!table_isempty(table)) {
                 r = table_set_sort(table, (size_t) 0);
                 if (r < 0)
                         return table_log_sort_error(r);
@@ -1043,10 +1087,10 @@ static int list_images(int argc, char *argv[], void *userdata) {
         }
 
         if (arg_legend) {
-                if (table_get_rows(table) > 1)
-                        printf("\n%zu images listed.\n", table_get_rows(table) - 1);
-                else
+                if (table_isempty(table))
                         printf("No images.\n");
+                else
+                        printf("\n%zu images listed.\n", table_get_rows(table) - 1);
         }
 
         return 0;
@@ -1171,7 +1215,7 @@ static int is_image_attached(int argc, char *argv[], void *userdata) {
                 return r;
 
         if (!strv_isempty(arg_extension_images)) {
-                r = sd_bus_message_append(m, "t", 0);
+                r = sd_bus_message_append(m, "t", UINT64_C(0));
                 if (r < 0)
                         return bus_log_create_error(r);
         }
@@ -1251,7 +1295,8 @@ static int help(int argc, char *argv[], void *userdata) {
                "  -M --machine=CONTAINER      Operate on local container\n"
                "  -q --quiet                  Suppress informational messages\n"
                "  -p --profile=PROFILE        Pick security profile for portable service\n"
-               "     --copy=copy|auto|symlink Prefer copying or symlinks if possible\n"
+               "     --copy=copy|auto|symlink|mixed\n"
+               "                              Pick copying or symlinking of resources\n"
                "     --runtime                Attach portable service until next reboot only\n"
                "     --no-reload              Don't reload the system and service manager\n"
                "     --cat                    When inspecting include unit and os-release file\n"
@@ -1264,6 +1309,9 @@ static int help(int argc, char *argv[], void *userdata) {
                "     --extension=PATH         Extend the image with an overlay\n"
                "     --force                  Skip 'already active' check when attaching or\n"
                "                              detaching an image (with extensions)\n"
+               "     --clean                  When detaching, also remove configuration, state,\n"
+               "                              cache, logs or runtime data of the portable\n"
+               "                              service(s)\n"
                "\nSee the %s for details.\n",
                program_invocation_short_name,
                ansi_highlight(),
@@ -1290,6 +1338,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_NO_BLOCK,
                 ARG_EXTENSION,
                 ARG_FORCE,
+                ARG_CLEAN,
         };
 
         static const struct option options[] = {
@@ -1311,6 +1360,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "no-block",        no_argument,       NULL, ARG_NO_BLOCK        },
                 { "extension",       required_argument, NULL, ARG_EXTENSION       },
                 { "force",           no_argument,       NULL, ARG_FORCE           },
+                { "clean",           no_argument,       NULL, ARG_CLEAN           },
                 {}
         };
 
@@ -1372,12 +1422,13 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_COPY:
                         if (streq(optarg, "auto"))
                                 arg_copy_mode = NULL;
-                        else if (STR_IN_SET(optarg, "copy", "symlink"))
+                        else if (STR_IN_SET(optarg, "copy", "symlink", "mixed"))
                                 arg_copy_mode = optarg;
                         else if (streq(optarg, "help")) {
                                 puts("auto\n"
                                      "copy\n"
-                                     "symlink");
+                                     "symlink\n"
+                                     "mixed\n");
                                 return 0;
                         } else
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
@@ -1417,6 +1468,10 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case ARG_FORCE:
                         arg_force = true;
+                        break;
+
+                case ARG_CLEAN:
+                        arg_clean = true;
                         break;
 
                 case '?':

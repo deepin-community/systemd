@@ -4,6 +4,7 @@
 #include "bus-error.h"
 
 #define BUS_ERROR_NO_SUCH_UNIT                 "org.freedesktop.systemd1.NoSuchUnit"
+#define BUS_ERROR_NO_SUCH_PROCESS              "org.freedesktop.systemd1.NoSuchProcess"
 #define BUS_ERROR_NO_UNIT_FOR_PID              "org.freedesktop.systemd1.NoUnitForPID"
 #define BUS_ERROR_NO_UNIT_FOR_INVOCATION_ID    "org.freedesktop.systemd1.NoUnitForInvocationID"
 #define BUS_ERROR_UNIT_EXISTS                  "org.freedesktop.systemd1.UnitExists"
@@ -34,6 +35,7 @@
 #define BUS_ERROR_FREEZE_CANCELLED             "org.freedesktop.systemd1.FreezeCancelled"
 #define BUS_ERROR_FILE_DESCRIPTOR_STORE_DISABLED        \
                                                "org.freedesktop.systemd1.FileDescriptorStoreDisabled"
+#define BUS_ERROR_FROZEN_BY_PARENT             "org.freedesktop.systemd1.FrozenByParent"
 
 #define BUS_ERROR_NO_SUCH_MACHINE              "org.freedesktop.machine1.NoSuchMachine"
 #define BUS_ERROR_NO_SUCH_IMAGE                "org.freedesktop.machine1.NoSuchImage"
@@ -59,11 +61,11 @@
 #define BUS_ERROR_SLEEP_VERB_NOT_SUPPORTED     "org.freedesktop.login1.SleepVerbNotSupported"
 #define BUS_ERROR_SESSION_BUSY                 "org.freedesktop.login1.SessionBusy"
 #define BUS_ERROR_NOT_YOUR_DEVICE              "org.freedesktop.login1.NotYourDevice"
+#define BUS_ERROR_DESIGNATED_MAINTENANCE_TIME_NOT_SCHEDULED \
+                                               "org.freedesktop.login1.DesignatedMaintenanceTimeNotScheduled"
 
 #define BUS_ERROR_AUTOMATIC_TIME_SYNC_ENABLED  "org.freedesktop.timedate1.AutomaticTimeSyncEnabled"
 #define BUS_ERROR_NO_NTP_SUPPORT               "org.freedesktop.timedate1.NoNTPSupport"
-
-#define BUS_ERROR_NO_SUCH_PROCESS              "org.freedesktop.systemd1.NoSuchProcess"
 
 #define BUS_ERROR_NO_NAME_SERVERS              "org.freedesktop.resolve1.NoNameServers"
 #define BUS_ERROR_INVALID_REPLY                "org.freedesktop.resolve1.InvalidReply"
@@ -71,6 +73,7 @@
 #define BUS_ERROR_CNAME_LOOP                   "org.freedesktop.resolve1.CNameLoop"
 #define BUS_ERROR_ABORTED                      "org.freedesktop.resolve1.Aborted"
 #define BUS_ERROR_NO_SUCH_SERVICE              "org.freedesktop.resolve1.NoSuchService"
+#define BUS_ERROR_INCONSISTENT_SERVICE_RECORDS "org.freedesktop.resolve1.InconsistentServiceRecords"
 #define BUS_ERROR_DNSSEC_FAILED                "org.freedesktop.resolve1.DnssecFailed"
 #define BUS_ERROR_NO_TRUST_ANCHOR              "org.freedesktop.resolve1.NoTrustAnchor"
 #define BUS_ERROR_RR_TYPE_UNSUPPORTED          "org.freedesktop.resolve1.ResourceRecordTypeUnsupported"
@@ -106,11 +109,13 @@
 #define BUS_ERROR_TRANSFER_IN_PROGRESS         "org.freedesktop.import1.TransferInProgress"
 
 #define BUS_ERROR_NO_PRODUCT_UUID              "org.freedesktop.hostname1.NoProductUUID"
+#define BUS_ERROR_NO_HARDWARE_SERIAL           "org.freedesktop.hostname1.NoHardwareSerial"
 #define BUS_ERROR_FILE_IS_PROTECTED            "org.freedesktop.hostname1.FileIsProtected"
 #define BUS_ERROR_READ_ONLY_FILESYSTEM         "org.freedesktop.hostname1.ReadOnlyFilesystem"
 
 #define BUS_ERROR_SPEED_METER_INACTIVE         "org.freedesktop.network1.SpeedMeterInactive"
 #define BUS_ERROR_UNMANAGED_INTERFACE          "org.freedesktop.network1.UnmanagedInterface"
+#define BUS_ERROR_NETWORK_ALREADY_RELOADING    "org.freedesktop.network1.AlreadyReloading"
 
 #define BUS_ERROR_NO_SUCH_HOME                 "org.freedesktop.home1.NoSuchHome"
 #define BUS_ERROR_UID_IN_USE                   "org.freedesktop.home1.UIDInUse"
@@ -151,5 +156,8 @@
 #define BUS_ERROR_HOME_CANT_AUTHENTICATE       "org.freedesktop.home1.HomeCantAuthenticate"
 #define BUS_ERROR_HOME_IN_USE                  "org.freedesktop.home1.HomeInUse"
 #define BUS_ERROR_REBALANCE_NOT_NEEDED         "org.freedesktop.home1.RebalanceNotNeeded"
+#define BUS_ERROR_HOME_NOT_REFERENCED          "org.freedesktop.home1.HomeNotReferenced"
+
+#define BUS_ERROR_NO_UPDATE_CANDIDATE          "org.freedesktop.sysupdate1.NoCandidate"
 
 BUS_ERROR_MAP_ELF_USE(bus_common_errors);

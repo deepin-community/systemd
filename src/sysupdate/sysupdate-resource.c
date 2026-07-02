@@ -6,6 +6,7 @@
 
 #include "alloc-util.h"
 #include "blockdev-util.h"
+#include "build-path.h"
 #include "chase.h"
 #include "device-util.h"
 #include "devnum-util.h"
@@ -300,7 +301,7 @@ static int download_manifest(
                 /* Child */
 
                 const char *cmdline[] = {
-                        "systemd-pull",
+                        SYSTEMD_PULL_PATH,
                         "raw",
                         "--direct",                        /* just download the specified URL, don't download anything else */
                         "--verify", verify_signature ? "signature" : "no", /* verify the manifest file */
@@ -309,8 +310,8 @@ static int download_manifest(
                         NULL
                 };
 
-                execv(pull_binary_path(), (char *const*) cmdline);
-                log_error_errno(errno, "Failed to execute %s tool: %m", pull_binary_path());
+                r = invoke_callout_binary(SYSTEMD_PULL_PATH, (char *const*) cmdline);
+                log_error_errno(r, "Failed to execute %s tool: %m", SYSTEMD_PULL_PATH);
                 _exit(EXIT_FAILURE);
         };
 
@@ -398,7 +399,7 @@ static int resource_load_from_web(
                 if (p[0] == '\\')
                         return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "File names with escapes not supported in manifest at line %zu, refusing.", line_nr);
 
-                r = unhexmem(p, 64, &h, &hlen);
+                r = unhexmem_full(p, 64, /* secure = */ false, &h, &hlen);
                 if (r < 0)
                         return log_error_errno(r, "Failed to parse digest at manifest line %zu, refusing.", line_nr);
 
@@ -526,13 +527,25 @@ int resource_load_instances(Resource *rr, bool verify, Hashmap **web_cache) {
         return 0;
 }
 
+static int instance_version_match(Instance *const*a, Instance *const*b) {
+        assert(a);
+        assert(b);
+        assert(*a);
+        assert(*b);
+        assert((*a)->metadata.version);
+        assert((*b)->metadata.version);
+
+        /* List is sorted newest-to-oldest */
+        return -strverscmp_improved((*a)->metadata.version, (*b)->metadata.version);
+}
+
 Instance* resource_find_instance(Resource *rr, const char *version) {
         Instance key = {
                 .metadata.version = (char*) version,
         }, *k = &key;
 
         Instance **found;
-        found = typesafe_bsearch(&k, rr->instances, rr->n_instances, instance_cmp);
+        found = typesafe_bsearch(&k, rr->instances, rr->n_instances, instance_version_match);
         if (!found)
                 return NULL;
 
@@ -542,6 +555,7 @@ Instance* resource_find_instance(Resource *rr, const char *version) {
 int resource_resolve_path(
                 Resource *rr,
                 const char *root,
+                const char *relative_to_directory,
                 const char *node) {
 
         _cleanup_free_ char *p = NULL;
@@ -633,9 +647,15 @@ int resource_resolve_path(
 
         } else if (RESOURCE_IS_FILESYSTEM(rr->type)) {
                 _cleanup_free_ char *resolved = NULL, *relative_to = NULL;
-                ChaseFlags chase_flags = CHASE_PREFIX_ROOT;
+                ChaseFlags chase_flags = CHASE_NONEXISTENT | CHASE_PREFIX_ROOT;
 
-                if (rr->path_relative_to == PATH_RELATIVE_TO_ROOT) {
+                if (rr->path_relative_to == PATH_RELATIVE_TO_EXPLICIT) {
+                        assert(relative_to_directory);
+
+                        relative_to = strdup(relative_to_directory);
+                        if (!relative_to)
+                                return log_oom();
+                } else if (rr->path_relative_to == PATH_RELATIVE_TO_ROOT) {
                         relative_to = strdup(empty_to_root(root));
                         if (!relative_to)
                                 return log_oom();
@@ -702,6 +722,7 @@ static const char *path_relative_to_table[_PATH_RELATIVE_TO_MAX] = {
         [PATH_RELATIVE_TO_ESP]      = "esp",
         [PATH_RELATIVE_TO_XBOOTLDR] = "xbootldr",
         [PATH_RELATIVE_TO_BOOT]     = "boot",
+        [PATH_RELATIVE_TO_EXPLICIT] = "explicit",
 };
 
 DEFINE_STRING_TABLE_LOOKUP(path_relative_to, PathRelativeTo);

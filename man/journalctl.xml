@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="journalctl"
@@ -77,7 +77,7 @@
     <emphasis>are</emphasis> being shown.</para>
 
     <para>The set of journal files which will be used can be modified using the <option>--user</option>,
-    <option>--system</option>, <option>--directory</option>, and <option>--file</option> options, see
+    <option>--system</option>, <option>--directory=</option>, and <option>--file=</option> options, see
     below.</para>
 
     <para>All users are granted access to their private per-user journals. However, by default, only root and
@@ -160,6 +160,7 @@
       </varlistentry>
 
       <varlistentry>
+        <term><option>-i <replaceable>GLOB</replaceable></option></term>
         <term><option>--file=<replaceable>GLOB</replaceable></option></term>
 
         <listitem><para>Takes a file glob as an argument. If specified, journalctl will operate on the
@@ -205,8 +206,8 @@
       <varlistentry>
         <term><option>--namespace=<replaceable>NAMESPACE</replaceable></option></term>
 
-        <listitem><para>Takes a journal namespace identifier string as argument. If not specified the data
-        collected by the default namespace is shown. If specified shows the log data of the specified
+        <listitem><para>Takes a journal namespace identifier string as argument. If not specified, the data
+        collected by the default namespace is shown. If specified, shows the log data of the specified
         namespace instead. If the namespace is specified as <literal>*</literal> data from all namespaces is
         shown, interleaved. If the namespace identifier is prefixed with <literal>+</literal> data from the
         specified namespace and the default namespace is shown, interleaved, but no other. For details about
@@ -271,7 +272,7 @@
         <term><option>--cursor-file=<replaceable>FILE</replaceable></option></term>
 
         <listitem><para>If <replaceable>FILE</replaceable> exists and contains a cursor, start showing
-        entries <emphasis>after</emphasis> this location.  Otherwise show entries according to the other
+        entries <emphasis>after</emphasis> this location. Otherwise, show entries according to the other
         given options. At the end, write the cursor of the last entry to
         <replaceable>FILE</replaceable>. Use this option to continually read the journal by sequentially
         calling <command>journalctl</command>.</para>
@@ -295,7 +296,7 @@
         <constant>2</constant> the second and so on; while <constant>-0</constant> is the last boot,
         <constant>-1</constant> the boot before last, and so on. An empty <replaceable>offset</replaceable>
         is equivalent to specifying <constant>-0</constant>, except when the current boot is not the last
-        boot (e.g. because <option>--directory</option> was specified to look at logs from a different
+        boot (e.g. because <option>--directory=</option> was specified to look at logs from a different
         machine).</para>
 
         <para>If the 32-character <replaceable>ID</replaceable> is specified, it may optionally be followed
@@ -350,6 +351,42 @@
       </varlistentry>
 
       <varlistentry>
+        <term><option>-I</option></term>
+        <term><option>--invocation=<replaceable>ID</replaceable><optional><replaceable>±offset</replaceable></optional>|<replaceable>offset</replaceable></option></term>
+
+        <listitem>
+          <para>Show messages from a specific invocation of unit. This will add a match for
+          <literal>_SYSTEMD_INVOCATION_ID=</literal>, <literal>OBJECT_SYSTEMD_INVOCATION_ID=</literal>,
+          <literal>INVOCATION_ID=</literal>, <literal>USER_INVOCATION_ID=</literal>.</para>
+
+          <para>A positive <replaceable>offset</replaceable> will look up the invocations of a systemd unit
+          from the beginning of the journal, and zero or a negative offset will look up invocations starting
+          from the end of the journal. Thus, <constant>1</constant> means the first invocation found in the
+          journal in chronological order, <constant>2</constant> the second and so on; while
+          <constant>0</constant> is the latest invocation, <constant>-1</constant> the invocation before the
+          latest, and so on.</para>
+
+          <para>If the 32-character <replaceable>ID</replaceable> is specified, it may optionally be followed
+          by <replaceable>±offset</replaceable> which identifies the invocation relative to the one given by
+          invocation <replaceable>ID</replaceable>. Negative values mean earlier invocations and positive
+          values mean later invocations. If <replaceable>±offset</replaceable> is not specified, a value of
+          zero is assumed, and the logs for the invocation given by <replaceable>ID</replaceable> will be
+          shown.</para>
+
+          <para><option>-I</option> is equivalent to <option>--invocation=0</option>, and logs for the latest
+          invocation will be shown.</para>
+
+          <para>When an offset is specified, a unit name must be specified with <option>-u/--unit=</option>
+          or <option>--user-unit=</option> option.</para>
+
+          <para>When specified with <option>-b/--boot=</option>, then invocations are searched within the
+          specified boot.</para>
+
+          <xi:include href="version-info.xml" xpointer="v257"/>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><option>-t</option></term>
         <term><option>--identifier=<replaceable>SYSLOG_IDENTIFIER</replaceable></option></term>
 
@@ -359,6 +396,18 @@
         <para>This parameter can be specified multiple times.</para>
 
         <xi:include href="version-info.xml" xpointer="v217"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>-T</option></term>
+        <term><option>--exclude-identifier=<replaceable>SYSLOG_IDENTIFIER</replaceable></option></term>
+
+        <listitem><para>Exclude messages for the specified syslog identifier
+        <replaceable>SYSLOG_IDENTIFIER</replaceable>.</para>
+
+        <para>This parameter can be specified multiple times.</para>
+
+        <xi:include href="version-info.xml" xpointer="v256"/></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -677,8 +726,7 @@
         will explain the context of an error or log event, possible solutions, as well as pointers to support
         forums, developer documentation, and any other relevant manuals. Note that help texts are not
         available for all messages, but only for selected ones. For more information on the message catalog,
-        please refer to the <ulink url="https://www.freedesktop.org/wiki/Software/systemd/catalog">Message
-        Catalog Developer Documentation</ulink>.</para>
+        see <ulink url="https://systemd.io/CATALOG">Journal Message Catalogs</ulink>.</para>
 
         <para>Note: when attaching <command>journalctl</command> output to bug reports, please do
         <emphasis>not</emphasis> use <option>-x</option>.</para>
@@ -689,8 +737,8 @@
       <varlistentry>
         <term><option>--no-hostname</option></term>
 
-        <listitem><para>Don't show the hostname field of log messages originating from the local host. This
-        switch has an effect only on the <option>short</option> family of output modes (see above).</para>
+        <listitem><para>Do not show the hostname field of log messages. This switch has an effect only on the
+        <option>short</option> family of output modes (see above).</para>
 
         <para>Note: this option does not remove occurrences of the hostname from log entries themselves, so
         it does not prevent the hostname from being visible in the logs.</para>
@@ -813,7 +861,7 @@
   <refsect1>
     <title>Commands</title>
 
-    <para>The following commands are understood. If none is specified the default is to display journal records.</para>
+    <para>The following commands are understood. If none is specified the default is to display journal records:</para>
 
     <variablelist>
       <varlistentry>
@@ -838,10 +886,33 @@
       <varlistentry>
         <term><option>--list-boots</option></term>
 
-        <listitem><para>Show a tabular list of boot numbers (relative to the current boot), their IDs, and
-        the timestamps of the first and last message pertaining to the boot.</para>
+        <listitem>
+          <para>Show a tabular list of boot numbers (relative to the current boot), their IDs, and the
+          timestamps of the first and last message pertaining to the boot. When specified with
+          <option>-n/--lines=<optional>+</optional><replaceable>N</replaceable></option> option, only the
+          first (when the number prefixed with <literal>+</literal>) or the last (without prefix)
+          <replaceable>N</replaceable> entries will be shown. When specified with
+          <option>-r/--reverse</option>, the list will be shown in the reverse order.</para>
 
-        <xi:include href="version-info.xml" xpointer="v209"/></listitem>
+          <xi:include href="version-info.xml" xpointer="v209"/>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--list-invocations</option></term>
+
+        <listitem>
+          <para>List invocation IDs of a unit. Requires a unit name with <option>-u/--unit=</option> or
+          <option>--user-unit=</option>. Show a tabular list of invocation numbers (relative to the current
+          or latest invocation), their IDs, and the timestamps of the first and last message pertaining to
+          the invocation. When <option>-b/-boot</option> is specified, invocations in the boot will be shown.
+          When specified with <option>-n/--lines=<optional>+</optional><replaceable>N</replaceable></option>
+          option, only the first (when the number prefixed with <literal>+</literal>) or the last (without
+          prefix) <replaceable>N</replaceable> entries will be shown. When specified with
+          <option>-r/--reverse</option>, the list will be shown in the reverse order.</para>
+
+          <xi:include href="version-info.xml" xpointer="v257"/>
+        </listitem>
       </varlistentry>
 
       <varlistentry>
@@ -1096,17 +1167,17 @@ journalctl _SYSTEMD_CGROUP=/user.slice/user-42.slice/session-c1.scope</programli
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-cat</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-journald.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>coredumpctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.journal-fields</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>journald.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-journal-remote.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-journal-upload.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-cat</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-journald.service</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>coredumpctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.journal-fields</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>journald.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-journal-remote.service</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-journal-upload.service</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 </refentry>

@@ -211,15 +211,9 @@ static inline int __coverity_check_and_return__(int condition) {
 #define PTR_TO_UINT64(p) ((uint64_t) ((uintptr_t) (p)))
 #define UINT64_TO_PTR(u) ((void *) ((uintptr_t) (u)))
 
-#define PTR_TO_SIZE(p) ((size_t) ((uintptr_t) (p)))
-#define SIZE_TO_PTR(u) ((void *) ((uintptr_t) (u)))
-
 #define CHAR_TO_STR(x) ((char[2]) { x, 0 })
 
 #define char_array_0(x) x[sizeof(x)-1] = 0;
-
-#define sizeof_field(struct_type, member) sizeof(((struct_type *) 0)->member)
-#define endoffsetof_field(struct_type, member) (offsetof(struct_type, member) + sizeof_field(struct_type, member))
 
 /* Maximum buffer size needed for formatting an unsigned integer type as hex, including space for '0x'
  * prefix and trailing NUL suffix. */
@@ -265,21 +259,6 @@ static inline int __coverity_check_and_return__(int condition) {
 
 /* Pointers range from NULL to POINTER_MAX */
 #define POINTER_MAX ((void*) UINTPTR_MAX)
-
-/* Iterates through a specified list of pointers. Accepts NULL pointers, but uses POINTER_MAX as internal marker for EOL. */
-#define FOREACH_POINTER(p, x, ...)                                                       \
-        for (typeof(p) *_l = (typeof(p)[]) { ({ p = x; }), ##__VA_ARGS__, POINTER_MAX }; \
-             p != (typeof(p)) POINTER_MAX;                                               \
-             p = *(++_l))
-
-#define _FOREACH_ARRAY(i, array, num, m, end)                           \
-        for (typeof(array[0]) *i = (array), *end = ({                   \
-                                typeof(num) m = (num);                  \
-                                (i && m > 0) ? i + m : NULL;            \
-                        }); end && i < end; i++)
-
-#define FOREACH_ARRAY(i, array, num)                                    \
-        _FOREACH_ARRAY(i, array, num, UNIQ_T(m, UNIQ), UNIQ_T(end, UNIQ))
 
 #define _DEFINE_TRIVIAL_REF_FUNC(type, name, scope)             \
         scope type *name##_ref(type *p) {                       \
@@ -380,13 +359,13 @@ assert_cc(sizeof(dummy_t) == 0);
                 _q && _q > (base) ? &_q[-1] : NULL;      \
         })
 
-/* Iterate through each variadic arg. All must be the same type as 'entry' or must be implicitly
+/* Iterate through each argument passed. All must be the same type as 'entry' or must be implicitly
  * convertible. The iteration variable 'entry' must already be defined. */
-#define VA_ARGS_FOREACH(entry, ...)                                     \
-        _VA_ARGS_FOREACH(entry, UNIQ_T(_entries_, UNIQ), UNIQ_T(_current_, UNIQ), ##__VA_ARGS__)
-#define _VA_ARGS_FOREACH(entry, _entries_, _current_, ...)         \
-        for (typeof(entry) _entries_[] = { __VA_ARGS__ }, *_current_ = _entries_; \
-             ((long)(_current_ - _entries_) < (long)ELEMENTSOF(_entries_)) && ({ entry = *_current_; true; }); \
+#define FOREACH_ARGUMENT(entry, ...)                                     \
+        _FOREACH_ARGUMENT(entry, UNIQ_T(_entries_, UNIQ), UNIQ_T(_current_, UNIQ), UNIQ_T(_va_sentinel_, UNIQ), ##__VA_ARGS__)
+#define _FOREACH_ARGUMENT(entry, _entries_, _current_, _va_sentinel_, ...)      \
+        for (typeof(entry) _va_sentinel_[1] = {}, _entries_[] = { __VA_ARGS__ __VA_OPT__(,) _va_sentinel_[0] }, *_current_ = _entries_; \
+             ((long)(_current_ - _entries_) < (long)(ELEMENTSOF(_entries_) - 1)) && ({ entry = *_current_; true; }); \
              _current_++)
 
 #include "log.h"

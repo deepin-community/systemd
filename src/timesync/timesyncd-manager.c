@@ -15,6 +15,7 @@
 
 #include "alloc-util.h"
 #include "bus-polkit.h"
+#include "clock-util.h"
 #include "common-signal.h"
 #include "dns-domain.h"
 #include "event-util.h"
@@ -27,6 +28,7 @@
 #include "network-util.h"
 #include "ratelimit.h"
 #include "resolve-private.h"
+#include "random-util.h"
 #include "socket-util.h"
 #include "string-util.h"
 #include "strv.h"
@@ -78,13 +80,6 @@ static double ts_to_d(const struct timespec *ts) {
         return ts->tv_sec + (1.0e-9 * ts->tv_nsec);
 }
 
-static uint32_t graceful_add_offset_1900_1970(time_t t) {
-        /* Adds OFFSET_1900_1970 to t and returns it as 32-bit value. This is handles overflows
-         * gracefully in a deterministic and well-defined way by cutting off the top bits. */
-        uint64_t a = (uint64_t) t + OFFSET_1900_1970;
-        return (uint32_t) (a & UINT64_C(0xFFFFFFFF));
-}
-
 static int manager_timeout(sd_event_source *source, usec_t usec, void *userdata) {
         _cleanup_free_ char *pretty = NULL;
         Manager *m = ASSERT_PTR(userdata);
@@ -126,19 +121,21 @@ static int manager_send_request(Manager *m) {
         }
 
         /*
-         * Set transmit timestamp, remember it; the server will send that back
-         * as the origin timestamp and we have an indication that this is the
-         * matching answer to our request.
-         *
-         * The actual value does not matter, We do not care about the correct
-         * NTP UINT_MAX fraction; we just pass the plain nanosecond value.
+         * Generate a random number as transmit timestamp, to ensure we get
+         * a full 64 bits of entropy to make it hard for off-path attackers
+         * to inject random time to us.
+         */
+        random_bytes(&m->request_nonce, sizeof(m->request_nonce));
+        ntpmsg.trans_time = m->request_nonce;
+
+        server_address_pretty(m->current_server_address, &pretty);
+
+        /*
+         * Record the transmit timestamp. This should be as close as possible to
+         * the send-to to ensure the timestamp is reasonably accurate
          */
         assert_se(clock_gettime(CLOCK_BOOTTIME, &m->trans_time_mon) >= 0);
         assert_se(clock_gettime(CLOCK_REALTIME, &m->trans_time) >= 0);
-        ntpmsg.trans_time.sec = htobe32(graceful_add_offset_1900_1970(m->trans_time.tv_sec));
-        ntpmsg.trans_time.frac = htobe32(m->trans_time.tv_nsec);
-
-        server_address_pretty(m->current_server_address, &pretty);
 
         len = sendto(m->server_socket, &ntpmsg, sizeof(ntpmsg), MSG_DONTWAIT, &m->current_server_address->sockaddr.sa, m->current_server_address->socklen);
         if (len == sizeof(ntpmsg)) {
@@ -338,8 +335,8 @@ static bool manager_sample_spike_detection(Manager *m, double offset, double del
                         idx_min = i;
 
         j = 0;
-        for (i = 0; i < ELEMENTSOF(m->samples); i++)
-                j += pow(m->samples[i].offset - m->samples[idx_min].offset, 2);
+        FOREACH_ELEMENT(sample, m->samples)
+                j += pow(sample->offset - m->samples[idx_min].offset, 2);
         m->samples_jitter = sqrt(j / (ELEMENTSOF(m->samples) - 1));
 
         /* ignore samples when resyncing */
@@ -426,15 +423,18 @@ static int manager_receive_response(sd_event_source *source, int fd, uint32_t re
         }
 
         len = recvmsg_safe(fd, &msghdr, MSG_DONTWAIT);
-        if (len == -EAGAIN)
+        if (ERRNO_IS_NEG_TRANSIENT(len))
                 return 0;
         if (len < 0) {
-                log_warning_errno(len, "Error receiving message, disconnecting: %m");
+                log_warning_errno(len, "Error receiving message, disconnecting: %s",
+                                  len == -ECHRNG ? "got truncated control data" :
+                                  len == -EXFULL ? "got truncated payload data" :
+                                  STRERROR((int) len));
                 return manager_connect(m);
         }
 
-        /* Too short or too long packet? */
-        if (iov.iov_len < sizeof(struct ntp_msg) || (msghdr.msg_flags & MSG_TRUNC)) {
+        /* Too short packet? */
+        if (iov.iov_len < sizeof(struct ntp_msg)) {
                 log_warning("Invalid response from server. Disconnecting.");
                 return manager_connect(m);
         }
@@ -457,9 +457,8 @@ static int manager_receive_response(sd_event_source *source, int fd, uint32_t re
 
         m->missed_replies = 0;
 
-        /* check our "time cookie" (we just stored nanoseconds in the fraction field) */
-        if (be32toh(ntpmsg.origin_time.sec) != graceful_add_offset_1900_1970(m->trans_time.tv_sec) ||
-            be32toh(ntpmsg.origin_time.frac) != (unsigned long) m->trans_time.tv_nsec) {
+        /* check the transmit request nonce was properly returned in the origin_time field */
+        if (ntpmsg.origin_time.sec != m->request_nonce.sec || ntpmsg.origin_time.frac != m->request_nonce.frac) {
                 log_debug("Invalid reply; not our transmit time. Ignoring.");
                 return 0;
         }
@@ -658,8 +657,7 @@ static int manager_listen_setup(Manager *m) {
         if (r < 0)
                 return r;
 
-        if (addr.sa.sa_family == AF_INET)
-                (void) setsockopt_int(m->server_socket, IPPROTO_IP, IP_TOS, IPTOS_LOWDELAY);
+        (void) socket_set_option(m->server_socket, addr.sa.sa_family, IP_TOS, IPV6_TCLASS, IPTOS_DSCP_EF);
 
         return sd_event_add_io(m->event, &m->event_receive, m->server_socket, EPOLLIN, manager_receive_response, m);
 }
@@ -962,7 +960,7 @@ Manager* manager_free(Manager *m) {
 
         sd_bus_flush_close_unref(m->bus);
 
-        bus_verify_polkit_async_registry_free(m->polkit_registry);
+        hashmap_free(m->polkit_registry);
 
         return mfree(m);
 }
@@ -1029,7 +1027,7 @@ clear:
         return r;
 }
 
-bool manager_is_connected(Manager *m) {
+static bool manager_is_connected(Manager *m) {
         assert(m);
 
         /* Return true when the manager is sending a request, resolving a server name, or
@@ -1054,11 +1052,15 @@ static int manager_network_event_handler(sd_event_source *s, int fd, uint32_t re
         connected = manager_is_connected(m);
 
         if (connected && !online) {
-                log_info("No network connectivity, watching for changes.");
+                /* When m->talking is false, we have not received any responses from the server,
+                 * and it is not necessary to log about disconnection. */
+                log_full(m->talking ? LOG_INFO : LOG_DEBUG,
+                         "No network connectivity, watching for changes.");
                 manager_disconnect(m);
 
         } else if ((!connected || changed) && online) {
-                log_info("Network configuration changed, trying to establish connection.");
+                log_full(connected ? LOG_DEBUG : LOG_INFO,
+                         "Network configuration changed, trying to establish connection.");
 
                 if (m->current_server_address)
                         r = manager_begin(m);
@@ -1130,15 +1132,21 @@ int manager_new(Manager **ret) {
         if (r < 0)
                 return r;
 
-        (void) sd_event_add_signal(m->event, NULL, SIGTERM, NULL,  NULL);
-        (void) sd_event_add_signal(m->event, NULL, SIGINT, NULL, NULL);
-        (void) sd_event_add_signal(m->event, NULL, SIGRTMIN+18, sigrtmin18_handler, NULL);
+        r = sd_event_set_signal_exit(m->event, true);
+        if (r < 0)
+                return r;
+
+        r = sd_event_add_signal(m->event, /* ret_event_source= */ NULL, (SIGRTMIN+18)|SD_EVENT_SIGNAL_PROCMASK, sigrtmin18_handler, /* userdata= */ NULL);
+        if (r < 0)
+                log_debug_errno(r, "Failed to install SIGRTMIN+18 signal handler, ignoring: %m");
 
         r = sd_event_add_memory_pressure(m->event, NULL, NULL, NULL);
         if (r < 0)
                 log_debug_errno(r, "Failed allocate memory pressure event source, ignoring: %m");
 
-        (void) sd_event_set_watchdog(m->event, true);
+        r = sd_event_set_watchdog(m->event, true);
+        if (r < 0)
+                log_debug_errno(r, "Failed to enable watchdog handling, ignoring: %m");
 
         /* Load previous synchronization state */
         r = access("/run/systemd/timesync/synchronized", F_OK);
@@ -1205,9 +1213,9 @@ static int manager_save_time_and_rearm(Manager *m, usec_t t) {
          * clock, but otherwise uses the specified timestamp. Note that whenever we acquire an NTP sync the
          * specified timestamp value might be more accurate than the system clock, since the latter is
          * subject to slow adjustments. */
-        r = touch_file(CLOCK_FILE, false, t, UID_INVALID, GID_INVALID, MODE_INVALID);
+        r = touch_file(TIMESYNCD_CLOCK_FILE, false, t, UID_INVALID, GID_INVALID, MODE_INVALID);
         if (r < 0)
-                log_debug_errno(r, "Failed to update " CLOCK_FILE ", ignoring: %m");
+                log_debug_errno(r, "Failed to update "TIMESYNCD_CLOCK_FILE", ignoring: %m");
 
         m->save_on_exit = true;
 

@@ -23,6 +23,7 @@
 #include "journal-upload.h"
 #include "journal-util.h"
 #include "log.h"
+#include "logs-show.h"
 #include "main-func.h"
 #include "mkdir.h"
 #include "parse-argument.h"
@@ -30,7 +31,6 @@
 #include "pretty-print.h"
 #include "process-util.h"
 #include "rlimit-util.h"
-#include "sigbus.h"
 #include "signal-util.h"
 #include "string-util.h"
 #include "strv.h"
@@ -58,6 +58,8 @@ static bool arg_merge = false;
 static int arg_follow = -1;
 static const char *arg_save_state = NULL;
 static usec_t arg_network_timeout_usec = USEC_INFINITY;
+
+STATIC_DESTRUCTOR_REGISTER(arg_file, strv_freep);
 
 static void close_fd_input(Uploader *u);
 
@@ -259,7 +261,7 @@ int start_upload(Uploader *u,
                 }
 
                 if (STRPTR_IN_SET(arg_trust, "-", "all"))
-                        easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0,
+                        easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L,
                                     LOG_ERR, return -EUCLEAN);
                 else if (arg_trust || startswith(u->url, "https://"))
                         easy_setopt(curl, CURLOPT_CAINFO, arg_trust ?: TRUST_FILE,
@@ -364,7 +366,7 @@ static int open_file_for_upload(Uploader *u, const char *filename) {
         u->input = fd;
 
         if (arg_follow != 0) {
-                r = sd_event_add_io(u->events, &u->input_event,
+                r = sd_event_add_io(u->event, &u->input_event,
                                     fd, EPOLLIN, dispatch_fd_input, u);
                 if (r < 0) {
                         if (r != -EPERM || arg_follow > 0)
@@ -376,38 +378,6 @@ static int open_file_for_upload(Uploader *u, const char *filename) {
         }
 
         return r;
-}
-
-static int dispatch_sigterm(sd_event_source *event,
-                            const struct signalfd_siginfo *si,
-                            void *userdata) {
-        Uploader *u = ASSERT_PTR(userdata);
-
-        log_received_signal(LOG_INFO, si);
-
-        close_fd_input(u);
-        close_journal_input(u);
-
-        sd_event_exit(u->events, 0);
-        return 0;
-}
-
-static int setup_signals(Uploader *u) {
-        int r;
-
-        assert(u);
-
-        assert_se(sigprocmask_many(SIG_SETMASK, NULL, SIGINT, SIGTERM, -1) >= 0);
-
-        r = sd_event_add_signal(u->events, &u->sigterm_event, SIGTERM, dispatch_sigterm, u);
-        if (r < 0)
-                return r;
-
-        r = sd_event_add_signal(u->events, &u->sigint_event, SIGINT, dispatch_sigterm, u);
-        if (r < 0)
-                return r;
-
-        return 0;
 }
 
 static int setup_uploader(Uploader *u, const char *url, const char *state_file) {
@@ -445,13 +415,13 @@ static int setup_uploader(Uploader *u, const char *url, const char *state_file) 
 
         u->state_file = state_file;
 
-        r = sd_event_default(&u->events);
+        r = sd_event_default(&u->event);
         if (r < 0)
                 return log_error_errno(r, "sd_event_default failed: %m");
 
-        r = setup_signals(u);
+        r = sd_event_set_signal_exit(u->event, true);
         if (r < 0)
-                return log_error_errno(r, "Failed to set up signals: %m");
+                return log_error_errno(r, "Failed to install SIGINT/SIGTERM handlers: %m");
 
         (void) sd_watchdog_enabled(false, &u->watchdog_usec);
 
@@ -475,9 +445,7 @@ static void destroy_uploader(Uploader *u) {
         close_fd_input(u);
         close_journal_input(u);
 
-        sd_event_source_unref(u->sigterm_event);
-        sd_event_source_unref(u->sigint_event);
-        sd_event_unref(u->events);
+        sd_event_unref(u->event);
 }
 
 static int perform_upload(Uploader *u) {
@@ -531,9 +499,12 @@ static int parse_config(void) {
                 {}
         };
 
-        return config_parse_config_file("journal-upload.conf", "Upload\0",
-                                        config_item_table_lookup, items,
-                                        CONFIG_PARSE_WARN, NULL);
+        return config_parse_standard_file_with_dropins(
+                        "systemd/journal-upload.conf",
+                        "Upload\0",
+                        config_item_table_lookup, items,
+                        CONFIG_PARSE_WARN,
+                        /* userdata= */ NULL);
 }
 
 static int help(void) {
@@ -616,8 +587,6 @@ static int parse_argv(int argc, char *argv[]) {
 
         assert(argc >= 0);
         assert(argv);
-
-        opterr = 0;
 
         while ((c = getopt_long(argc, argv, "hu:mM:D:", options, NULL)) >= 0)
                 switch (c) {
@@ -739,14 +708,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case '?':
-                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                               "Unknown option %s.",
-                                               argv[optind - 1]);
-
-                case ':':
-                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                               "Missing argument to %s.",
-                                               argv[optind - 1]);
+                        return -EINVAL;
 
                 default:
                         assert_not_reached();
@@ -777,7 +739,7 @@ static int open_journal(sd_journal **j) {
         else if (arg_file)
                 r = sd_journal_open_files(j, (const char**) arg_file, 0);
         else if (arg_machine)
-                r = journal_open_machine(j, arg_machine);
+                r = journal_open_machine(j, arg_machine, 0);
         else
                 r = sd_journal_open_namespace(j, arg_namespace,
                                               (arg_merge ? 0 : SD_JOURNAL_LOCAL_ONLY) | arg_namespace_flags | arg_journal_type);
@@ -793,11 +755,7 @@ static int run(int argc, char **argv) {
         bool use_journal;
         int r;
 
-        log_show_color(true);
-        log_parse_environment();
-
-        /* The journal merging logic potentially needs a lot of fds. */
-        (void) rlimit_nofile_bump(HIGH_RLIMIT_NOFILE);
+        log_setup();
 
         r = parse_config();
         if (r < 0)
@@ -807,13 +765,13 @@ static int run(int argc, char **argv) {
         if (r <= 0)
                 return r;
 
-        sigbus_install();
+        journal_browse_prepare();
 
         r = setup_uploader(&u, arg_url, arg_save_state);
         if (r < 0)
                 return r;
 
-        sd_event_set_watchdog(u.events, true);
+        sd_event_set_watchdog(u.event, true);
 
         r = check_cursor_updating(&u);
         if (r < 0)
@@ -841,7 +799,7 @@ static int run(int argc, char **argv) {
                                       NOTIFY_STOPPING);
 
         for (;;) {
-                r = sd_event_get_state(u.events);
+                r = sd_event_get_state(u.event);
                 if (r < 0)
                         return r;
                 if (r == SD_EVENT_FINISHED)
@@ -868,7 +826,7 @@ static int run(int argc, char **argv) {
                                 return r;
                 }
 
-                r = sd_event_run(u.events, u.timeout);
+                r = sd_event_run(u.event, u.timeout);
                 if (r < 0)
                         return log_error_errno(r, "Failed to run event loop: %m");
         }

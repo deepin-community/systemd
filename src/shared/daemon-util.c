@@ -4,8 +4,9 @@
 #include "fd-util.h"
 #include "log.h"
 #include "string-util.h"
+#include "time-util.h"
 
-static int notify_remove_fd_warn(const char *name) {
+static int notify_remove_fd_full(int log_level, const char *name) {
         int r;
 
         assert(name);
@@ -14,11 +15,20 @@ static int notify_remove_fd_warn(const char *name) {
                        "FDSTOREREMOVE=1\n"
                        "FDNAME=%s", name);
         if (r < 0)
-                return log_warning_errno(r,
-                                         "Failed to remove file descriptor \"%s\" from the store, ignoring: %m",
-                                         name);
+                return log_full_errno(
+                                log_level, r,
+                                "Failed to remove file descriptor \"%s\" from the store, ignoring: %m",
+                                name);
 
         return 0;
+}
+
+int notify_remove_fd(const char *name) {
+        return notify_remove_fd_full(LOG_DEBUG, name);
+}
+
+int notify_remove_fd_warn(const char *name) {
+        return notify_remove_fd_full(LOG_WARNING, name);
 }
 
 int notify_remove_fd_warnf(const char *format, ...) {
@@ -44,7 +54,7 @@ int close_and_notify_warn(int fd, const char *name) {
         return safe_close(fd);
 }
 
-static int notify_push_fd(int fd, const char *name) {
+int notify_push_fd(int fd, const char *name) {
         _cleanup_free_ char *state = NULL;
 
         assert(fd >= 0);
@@ -73,4 +83,19 @@ int notify_push_fdf(int fd, const char *format, ...) {
                 return -ENOMEM;
 
         return notify_push_fd(fd, name);
+}
+
+int notify_reloading_full(const char *status) {
+        int r;
+
+        r = sd_notifyf(/* unset_environment = */ false,
+                       "RELOADING=1\n"
+                       "MONOTONIC_USEC=" USEC_FMT
+                       "%s%s",
+                       now(CLOCK_MONOTONIC),
+                       status ? "\nSTATUS=" : "", strempty(status));
+        if (r < 0)
+                return log_debug_errno(r, "Failed to notify service manager for reloading status: %m");
+
+        return 0;
 }

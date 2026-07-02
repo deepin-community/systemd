@@ -7,6 +7,7 @@
 #include "dns-type.h"
 #include "escape.h"
 #include "hexdecoct.h"
+#include "json-util.h"
 #include "memory-util.h"
 #include "resolved-dns-dnssec.h"
 #include "resolved-dns-packet.h"
@@ -15,6 +16,7 @@
 #include "string-util.h"
 #include "strv.h"
 #include "terminal-util.h"
+#include "unaligned.h"
 
 DnsResourceKey* dns_resource_key_new(uint16_t class, uint16_t type, const char *name) {
         DnsResourceKey *k;
@@ -181,6 +183,23 @@ bool dns_resource_key_is_dnssd_ptr(const DnsResourceKey *key) {
                 dns_name_endswith(dns_resource_key_name(key), "_udp.local");
 }
 
+bool dns_resource_key_is_dnssd_two_label_ptr(const DnsResourceKey *key) {
+        assert(key);
+
+        /* Check if this is a PTR resource key used in Service Instance
+         * Enumeration as described in RFC6763 § 4.1, excluding selective
+         * service names described in RFC6763 § 7.1. */
+
+        if (key->type != DNS_TYPE_PTR)
+                return false;
+
+        const char *name = dns_resource_key_name(key);
+        if (dns_name_parent(&name) <= 0)
+                return false;
+
+        return dns_name_equal(name, "_tcp.local") > 0 || dns_name_equal(name, "_udp.local") > 0;
+}
+
 int dns_resource_key_equal(const DnsResourceKey *a, const DnsResourceKey *b) {
         int r;
 
@@ -293,8 +312,8 @@ static void dns_resource_key_hash_func(const DnsResourceKey *k, struct siphash *
         assert(k);
 
         dns_name_hash_func(dns_resource_key_name(k), state);
-        siphash24_compress(&k->class, sizeof(k->class), state);
-        siphash24_compress(&k->type, sizeof(k->type), state);
+        siphash24_compress_typesafe(k->class, state);
+        siphash24_compress_typesafe(k->type, state);
 }
 
 static int dns_resource_key_compare_func(const DnsResourceKey *x, const DnsResourceKey *y) {
@@ -469,9 +488,22 @@ static DnsResourceRecord* dns_resource_record_free(DnsResourceRecord *rr) {
                         free(rr->tlsa.data);
                         break;
 
+                case DNS_TYPE_SVCB:
+                case DNS_TYPE_HTTPS:
+                        free(rr->svcb.target_name);
+                        dns_svc_param_free_all(rr->svcb.params);
+                        break;
+
                 case DNS_TYPE_CAA:
                         free(rr->caa.tag);
                         free(rr->caa.value);
+                        break;
+
+                case DNS_TYPE_NAPTR:
+                        free(rr->naptr.flags);
+                        free(rr->naptr.services);
+                        free(rr->naptr.regexp);
+                        free(rr->naptr.replacement);
                         break;
 
                 case DNS_TYPE_OPENPGPKEY:
@@ -648,19 +680,24 @@ int dns_resource_record_payload_equal(const DnsResourceRecord *a, const DnsResou
 
         case DNS_TYPE_RRSIG:
                 /* do the fast comparisons first */
-                return a->rrsig.type_covered == b->rrsig.type_covered &&
-                       a->rrsig.algorithm == b->rrsig.algorithm &&
-                       a->rrsig.labels == b->rrsig.labels &&
-                       a->rrsig.original_ttl == b->rrsig.original_ttl &&
-                       a->rrsig.expiration == b->rrsig.expiration &&
-                       a->rrsig.inception == b->rrsig.inception &&
-                       a->rrsig.key_tag == b->rrsig.key_tag &&
-                       FIELD_EQUAL(a->rrsig, b->rrsig, signature) &&
-                       dns_name_equal(a->rrsig.signer, b->rrsig.signer);
+                if (!(a->rrsig.type_covered == b->rrsig.type_covered &&
+                      a->rrsig.algorithm == b->rrsig.algorithm &&
+                      a->rrsig.labels == b->rrsig.labels &&
+                      a->rrsig.original_ttl == b->rrsig.original_ttl &&
+                      a->rrsig.expiration == b->rrsig.expiration &&
+                      a->rrsig.inception == b->rrsig.inception &&
+                      a->rrsig.key_tag == b->rrsig.key_tag &&
+                      FIELD_EQUAL(a->rrsig, b->rrsig, signature)))
+                        return false;
+
+                return dns_name_equal(a->rrsig.signer, b->rrsig.signer);
 
         case DNS_TYPE_NSEC:
-                return dns_name_equal(a->nsec.next_domain_name, b->nsec.next_domain_name) &&
-                       bitmap_equal(a->nsec.types, b->nsec.types);
+                r = dns_name_equal(a->nsec.next_domain_name, b->nsec.next_domain_name);
+                if (r <= 0)
+                        return r;
+
+                return bitmap_equal(a->nsec.types, b->nsec.types);
 
         case DNS_TYPE_NSEC3:
                 return a->nsec3.algorithm == b->nsec3.algorithm &&
@@ -676,10 +713,30 @@ int dns_resource_record_payload_equal(const DnsResourceRecord *a, const DnsResou
                        a->tlsa.matching_type == b->tlsa.matching_type &&
                        FIELD_EQUAL(a->tlsa, b->tlsa, data);
 
+        case DNS_TYPE_SVCB:
+        case DNS_TYPE_HTTPS:
+
+                if (!(a->svcb.priority == b->svcb.priority &&
+                      dns_svc_params_equal(a->svcb.params, b->svcb.params)))
+                        return false;
+
+                return dns_name_equal(a->svcb.target_name, b->svcb.target_name);
+
         case DNS_TYPE_CAA:
                 return a->caa.flags == b->caa.flags &&
                        streq(a->caa.tag, b->caa.tag) &&
                        FIELD_EQUAL(a->caa, b->caa, value);
+
+        case DNS_TYPE_NAPTR:
+                r = dns_name_equal(a->naptr.replacement, b->naptr.replacement);
+                if (r <= 0)
+                        return r;
+
+                return a->naptr.order == b->naptr.order &&
+                        a->naptr.preference == b->naptr.preference &&
+                        streq(a->naptr.flags, b->naptr.flags) &&
+                        streq(a->naptr.services, b->naptr.services) &&
+                        streq(a->naptr.regexp, b->naptr.regexp);
 
         case DNS_TYPE_OPENPGPKEY:
         default:
@@ -736,12 +793,14 @@ static char* format_location(uint32_t latitude, uint32_t longitude, uint32_t alt
 
 static int format_timestamp_dns(char *buf, size_t l, time_t sec) {
         struct tm tm;
+        int r;
 
         assert(buf);
         assert(l > STRLEN("YYYYMMDDHHmmSS"));
 
-        if (!gmtime_r(&sec, &tm))
-                return -EINVAL;
+        r = localtime_or_gmtime_usec(sec * USEC_PER_SEC, /* utc= */ true, &tm);
+        if (r < 0)
+                return r;
 
         if (strftime(buf, l, "%Y%m%d%H%M%S", &tm) <= 0)
                 return -EINVAL;
@@ -814,7 +873,108 @@ static char *format_txt(DnsTxtItem *first) {
         return s;
 }
 
-const char *dns_resource_record_to_string(DnsResourceRecord *rr) {
+static char *format_svc_param_value(DnsSvcParam *i) {
+        _cleanup_free_ char *value = NULL;
+
+        assert(i);
+
+        switch (i->key) {
+        case DNS_SVC_PARAM_KEY_ALPN: {
+                size_t offset = 0;
+                _cleanup_strv_free_ char **values_strv = NULL;
+                while (offset < i->length) {
+                        size_t sz = (uint8_t) i->value[offset++];
+
+                        char *alpn = cescape_length((char *)&i->value[offset], sz);
+                        if (!alpn)
+                                return NULL;
+
+                        if (strv_push(&values_strv, alpn) < 0)
+                                return NULL;
+
+                        offset += sz;
+                }
+                value = strv_join(values_strv, ",");
+                if (!value)
+                        return NULL;
+                break;
+
+        }
+        case DNS_SVC_PARAM_KEY_PORT: {
+                uint16_t port = unaligned_read_be16(i->value);
+                if (asprintf(&value, "%" PRIu16, port) < 0)
+                        return NULL;
+                return TAKE_PTR(value);
+        }
+        case DNS_SVC_PARAM_KEY_IPV4HINT: {
+                const struct in_addr *addrs = i->value_in_addr;
+                _cleanup_strv_free_ char **values_strv = NULL;
+                for (size_t n = 0; n < i->length / sizeof (struct in_addr); n++) {
+                        char *addr;
+                        if (in_addr_to_string(AF_INET, (const union in_addr_union*) &addrs[n], &addr) < 0)
+                                return NULL;
+                        if (strv_push(&values_strv, addr) < 0)
+                                return NULL;
+                }
+                return strv_join(values_strv, ",");
+        }
+        case DNS_SVC_PARAM_KEY_IPV6HINT: {
+                const struct in6_addr *addrs = i->value_in6_addr;
+                _cleanup_strv_free_ char **values_strv = NULL;
+                for (size_t n = 0; n < i->length / sizeof (struct in6_addr); n++) {
+                        char *addr;
+                        if (in_addr_to_string(AF_INET6, (const union in_addr_union*) &addrs[n], &addr) < 0)
+                                return NULL;
+                        if (strv_push(&values_strv, addr) < 0)
+                                return NULL;
+                }
+                return strv_join(values_strv, ",");
+        }
+        default: {
+                value = decescape((char *)&i->value, " ,", i->length);
+                if (!value)
+                        return NULL;
+                break;
+        }
+        }
+
+        char *qvalue;
+        if (asprintf(&qvalue, "\"%s\"", value) < 0)
+                return NULL;
+        return qvalue;
+}
+
+static char *format_svc_param(DnsSvcParam *i) {
+        const char *key = FORMAT_DNS_SVC_PARAM_KEY(i->key);
+        _cleanup_free_ char *value = NULL;
+
+        assert(i);
+
+        if (i->length == 0)
+                return strdup(key);
+
+        value = format_svc_param_value(i);
+        if (!value)
+                return NULL;
+
+        return strjoin(key, "=", value);
+}
+
+static char *format_svc_params(DnsSvcParam *first) {
+        _cleanup_strv_free_ char **params = NULL;
+
+        LIST_FOREACH(params, i, first) {
+                char *param = format_svc_param(i);
+                if (!param)
+                        return NULL;
+                if (strv_push(&params, param) < 0)
+                        return NULL;
+        }
+
+        return strv_join(params, " ");
+}
+
+const char* dns_resource_record_to_string(DnsResourceRecord *rr) {
         _cleanup_free_ char *s = NULL, *t = NULL;
         char k[DNS_RESOURCE_KEY_STRING_MAX];
         int r;
@@ -1124,6 +1284,19 @@ const char *dns_resource_record_to_string(DnsResourceRecord *rr) {
 
                 break;
 
+        case DNS_TYPE_SVCB:
+        case DNS_TYPE_HTTPS:
+                t = format_svc_params(rr->svcb.params);
+                if (!t)
+                        return NULL;
+                r = asprintf(&s, "%s %d %s %s", k, rr->svcb.priority,
+                             isempty(rr->svcb.target_name) ? "." : rr->svcb.target_name,
+                             t);
+                if (r < 0)
+                        return NULL;
+
+                break;
+
         case DNS_TYPE_OPENPGPKEY:
                 r = asprintf(&s, "%s", k);
                 if (r < 0)
@@ -1136,6 +1309,31 @@ const char *dns_resource_record_to_string(DnsResourceRecord *rr) {
                         return NULL;
                 break;
 
+        case DNS_TYPE_NAPTR: {
+                _cleanup_free_ char *tt = NULL, *ttt = NULL;
+
+                t = octescape(rr->naptr.flags, SIZE_MAX);
+                if (!t)
+                        return NULL;
+
+                tt = octescape(rr->naptr.services, SIZE_MAX);
+                if (!tt)
+                        return NULL;
+
+                ttt = octescape(rr->naptr.regexp, SIZE_MAX);
+                if (!ttt)
+                        return NULL;
+
+                if (asprintf(&s, "%" PRIu16 " %" PRIu16 " \"%s\" \"%s\" \"%s\" %s.",
+                             rr->naptr.order,
+                             rr->naptr.preference,
+                             t,
+                             tt,
+                             ttt,
+                             rr->naptr.replacement) < 0)
+                        return NULL;
+                break;
+        }
         default:
                 /* Format as documented in RFC 3597, Section 5 */
                 if (rr->generic.data_size == 0)
@@ -1155,9 +1353,9 @@ const char *dns_resource_record_to_string(DnsResourceRecord *rr) {
         return TAKE_PTR(s);
 }
 
-ssize_t dns_resource_record_payload(DnsResourceRecord *rr, void **out) {
+ssize_t dns_resource_record_payload(DnsResourceRecord *rr, const void **ret) {
         assert(rr);
-        assert(out);
+        assert(ret);
 
         switch (rr->unparsable ? _DNS_TYPE_INVALID : rr->key->type) {
         case DNS_TYPE_SRV:
@@ -1168,8 +1366,6 @@ ssize_t dns_resource_record_payload(DnsResourceRecord *rr, void **out) {
         case DNS_TYPE_HINFO:
         case DNS_TYPE_SPF:
         case DNS_TYPE_TXT:
-        case DNS_TYPE_A:
-        case DNS_TYPE_AAAA:
         case DNS_TYPE_SOA:
         case DNS_TYPE_MX:
         case DNS_TYPE_LOC:
@@ -1180,17 +1376,25 @@ ssize_t dns_resource_record_payload(DnsResourceRecord *rr, void **out) {
         case DNS_TYPE_NSEC3:
                 return -EINVAL;
 
+        case DNS_TYPE_A:
+                *ret = &rr->a.in_addr;
+                return sizeof(rr->a.in_addr);
+
+        case DNS_TYPE_AAAA:
+                *ret = &rr->aaaa.in6_addr;
+                return sizeof(rr->aaaa.in6_addr);
+
         case DNS_TYPE_SSHFP:
-                *out = rr->sshfp.fingerprint;
+                *ret = rr->sshfp.fingerprint;
                 return rr->sshfp.fingerprint_size;
 
         case DNS_TYPE_TLSA:
-                *out = rr->tlsa.data;
+                *ret = rr->tlsa.data;
                 return rr->tlsa.data_size;
 
         case DNS_TYPE_OPENPGPKEY:
         default:
-                *out = rr->generic.data;
+                *ret = rr->generic.data;
                 return rr->generic.data_size;
         }
 }
@@ -1327,9 +1531,9 @@ void dns_resource_record_hash_func(const DnsResourceRecord *rr, struct siphash *
         switch (rr->unparsable ? _DNS_TYPE_INVALID : rr->key->type) {
 
         case DNS_TYPE_SRV:
-                siphash24_compress(&rr->srv.priority, sizeof(rr->srv.priority), state);
-                siphash24_compress(&rr->srv.weight, sizeof(rr->srv.weight), state);
-                siphash24_compress(&rr->srv.port, sizeof(rr->srv.port), state);
+                siphash24_compress_typesafe(rr->srv.priority, state);
+                siphash24_compress_typesafe(rr->srv.weight, state);
+                siphash24_compress_typesafe(rr->srv.port, state);
                 dns_name_hash_func(rr->srv.name, state);
                 break;
 
@@ -1358,59 +1562,59 @@ void dns_resource_record_hash_func(const DnsResourceRecord *rr, struct siphash *
         }
 
         case DNS_TYPE_A:
-                siphash24_compress(&rr->a.in_addr, sizeof(rr->a.in_addr), state);
+                siphash24_compress_typesafe(rr->a.in_addr, state);
                 break;
 
         case DNS_TYPE_AAAA:
-                siphash24_compress(&rr->aaaa.in6_addr, sizeof(rr->aaaa.in6_addr), state);
+                siphash24_compress_typesafe(rr->aaaa.in6_addr, state);
                 break;
 
         case DNS_TYPE_SOA:
                 dns_name_hash_func(rr->soa.mname, state);
                 dns_name_hash_func(rr->soa.rname, state);
-                siphash24_compress(&rr->soa.serial, sizeof(rr->soa.serial), state);
-                siphash24_compress(&rr->soa.refresh, sizeof(rr->soa.refresh), state);
-                siphash24_compress(&rr->soa.retry, sizeof(rr->soa.retry), state);
-                siphash24_compress(&rr->soa.expire, sizeof(rr->soa.expire), state);
-                siphash24_compress(&rr->soa.minimum, sizeof(rr->soa.minimum), state);
+                siphash24_compress_typesafe(rr->soa.serial, state);
+                siphash24_compress_typesafe(rr->soa.refresh, state);
+                siphash24_compress_typesafe(rr->soa.retry, state);
+                siphash24_compress_typesafe(rr->soa.expire, state);
+                siphash24_compress_typesafe(rr->soa.minimum, state);
                 break;
 
         case DNS_TYPE_MX:
-                siphash24_compress(&rr->mx.priority, sizeof(rr->mx.priority), state);
+                siphash24_compress_typesafe(rr->mx.priority, state);
                 dns_name_hash_func(rr->mx.exchange, state);
                 break;
 
         case DNS_TYPE_LOC:
-                siphash24_compress(&rr->loc.version, sizeof(rr->loc.version), state);
-                siphash24_compress(&rr->loc.size, sizeof(rr->loc.size), state);
-                siphash24_compress(&rr->loc.horiz_pre, sizeof(rr->loc.horiz_pre), state);
-                siphash24_compress(&rr->loc.vert_pre, sizeof(rr->loc.vert_pre), state);
-                siphash24_compress(&rr->loc.latitude, sizeof(rr->loc.latitude), state);
-                siphash24_compress(&rr->loc.longitude, sizeof(rr->loc.longitude), state);
-                siphash24_compress(&rr->loc.altitude, sizeof(rr->loc.altitude), state);
+                siphash24_compress_typesafe(rr->loc.version, state);
+                siphash24_compress_typesafe(rr->loc.size, state);
+                siphash24_compress_typesafe(rr->loc.horiz_pre, state);
+                siphash24_compress_typesafe(rr->loc.vert_pre, state);
+                siphash24_compress_typesafe(rr->loc.latitude, state);
+                siphash24_compress_typesafe(rr->loc.longitude, state);
+                siphash24_compress_typesafe(rr->loc.altitude, state);
                 break;
 
         case DNS_TYPE_SSHFP:
-                siphash24_compress(&rr->sshfp.algorithm, sizeof(rr->sshfp.algorithm), state);
-                siphash24_compress(&rr->sshfp.fptype, sizeof(rr->sshfp.fptype), state);
+                siphash24_compress_typesafe(rr->sshfp.algorithm, state);
+                siphash24_compress_typesafe(rr->sshfp.fptype, state);
                 siphash24_compress_safe(rr->sshfp.fingerprint, rr->sshfp.fingerprint_size, state);
                 break;
 
         case DNS_TYPE_DNSKEY:
-                siphash24_compress(&rr->dnskey.flags, sizeof(rr->dnskey.flags), state);
-                siphash24_compress(&rr->dnskey.protocol, sizeof(rr->dnskey.protocol), state);
-                siphash24_compress(&rr->dnskey.algorithm, sizeof(rr->dnskey.algorithm), state);
+                siphash24_compress_typesafe(rr->dnskey.flags, state);
+                siphash24_compress_typesafe(rr->dnskey.protocol, state);
+                siphash24_compress_typesafe(rr->dnskey.algorithm, state);
                 siphash24_compress_safe(rr->dnskey.key, rr->dnskey.key_size, state);
                 break;
 
         case DNS_TYPE_RRSIG:
-                siphash24_compress(&rr->rrsig.type_covered, sizeof(rr->rrsig.type_covered), state);
-                siphash24_compress(&rr->rrsig.algorithm, sizeof(rr->rrsig.algorithm), state);
-                siphash24_compress(&rr->rrsig.labels, sizeof(rr->rrsig.labels), state);
-                siphash24_compress(&rr->rrsig.original_ttl, sizeof(rr->rrsig.original_ttl), state);
-                siphash24_compress(&rr->rrsig.expiration, sizeof(rr->rrsig.expiration), state);
-                siphash24_compress(&rr->rrsig.inception, sizeof(rr->rrsig.inception), state);
-                siphash24_compress(&rr->rrsig.key_tag, sizeof(rr->rrsig.key_tag), state);
+                siphash24_compress_typesafe(rr->rrsig.type_covered, state);
+                siphash24_compress_typesafe(rr->rrsig.algorithm, state);
+                siphash24_compress_typesafe(rr->rrsig.labels, state);
+                siphash24_compress_typesafe(rr->rrsig.original_ttl, state);
+                siphash24_compress_typesafe(rr->rrsig.expiration, state);
+                siphash24_compress_typesafe(rr->rrsig.inception, state);
+                siphash24_compress_typesafe(rr->rrsig.key_tag, state);
                 dns_name_hash_func(rr->rrsig.signer, state);
                 siphash24_compress_safe(rr->rrsig.signature, rr->rrsig.signature_size, state);
                 break;
@@ -1423,32 +1627,51 @@ void dns_resource_record_hash_func(const DnsResourceRecord *rr, struct siphash *
                 break;
 
         case DNS_TYPE_DS:
-                siphash24_compress(&rr->ds.key_tag, sizeof(rr->ds.key_tag), state);
-                siphash24_compress(&rr->ds.algorithm, sizeof(rr->ds.algorithm), state);
-                siphash24_compress(&rr->ds.digest_type, sizeof(rr->ds.digest_type), state);
+                siphash24_compress_typesafe(rr->ds.key_tag, state);
+                siphash24_compress_typesafe(rr->ds.algorithm, state);
+                siphash24_compress_typesafe(rr->ds.digest_type, state);
                 siphash24_compress_safe(rr->ds.digest, rr->ds.digest_size, state);
                 break;
 
         case DNS_TYPE_NSEC3:
-                siphash24_compress(&rr->nsec3.algorithm, sizeof(rr->nsec3.algorithm), state);
-                siphash24_compress(&rr->nsec3.flags, sizeof(rr->nsec3.flags), state);
-                siphash24_compress(&rr->nsec3.iterations, sizeof(rr->nsec3.iterations), state);
+                siphash24_compress_typesafe(rr->nsec3.algorithm, state);
+                siphash24_compress_typesafe(rr->nsec3.flags, state);
+                siphash24_compress_typesafe(rr->nsec3.iterations, state);
                 siphash24_compress_safe(rr->nsec3.salt, rr->nsec3.salt_size, state);
                 siphash24_compress_safe(rr->nsec3.next_hashed_name, rr->nsec3.next_hashed_name_size, state);
                 /* FIXME: We leave the bitmaps out */
                 break;
 
         case DNS_TYPE_TLSA:
-                siphash24_compress(&rr->tlsa.cert_usage, sizeof(rr->tlsa.cert_usage), state);
-                siphash24_compress(&rr->tlsa.selector, sizeof(rr->tlsa.selector), state);
-                siphash24_compress(&rr->tlsa.matching_type, sizeof(rr->tlsa.matching_type), state);
+                siphash24_compress_typesafe(rr->tlsa.cert_usage, state);
+                siphash24_compress_typesafe(rr->tlsa.selector, state);
+                siphash24_compress_typesafe(rr->tlsa.matching_type, state);
                 siphash24_compress_safe(rr->tlsa.data, rr->tlsa.data_size, state);
                 break;
 
+        case DNS_TYPE_SVCB:
+        case DNS_TYPE_HTTPS:
+                dns_name_hash_func(rr->svcb.target_name, state);
+                siphash24_compress_typesafe(rr->svcb.priority, state);
+                LIST_FOREACH(params, j, rr->svcb.params) {
+                        siphash24_compress_typesafe(j->key, state);
+                        siphash24_compress_safe(j->value, j->length, state);
+                }
+                break;
+
         case DNS_TYPE_CAA:
-                siphash24_compress(&rr->caa.flags, sizeof(rr->caa.flags), state);
+                siphash24_compress_typesafe(rr->caa.flags, state);
                 string_hash_func(rr->caa.tag, state);
                 siphash24_compress_safe(rr->caa.value, rr->caa.value_size, state);
+                break;
+
+        case DNS_TYPE_NAPTR:
+                siphash24_compress_typesafe(rr->naptr.order, state);
+                siphash24_compress_typesafe(rr->naptr.preference, state);
+                string_hash_func(rr->naptr.flags, state);
+                string_hash_func(rr->naptr.services, state);
+                string_hash_func(rr->naptr.regexp, state);
+                dns_name_hash_func(rr->naptr.replacement, state);
                 break;
 
         case DNS_TYPE_OPENPGPKEY:
@@ -1658,6 +1881,34 @@ DnsResourceRecord *dns_resource_record_copy(DnsResourceRecord *rr) {
                 copy->caa.value_size = rr->caa.value_size;
                 break;
 
+        case DNS_TYPE_SVCB:
+        case DNS_TYPE_HTTPS:
+                copy->svcb.priority = rr->svcb.priority;
+                copy->svcb.target_name = strdup(rr->svcb.target_name);
+                if (!copy->svcb.target_name)
+                        return NULL;
+                copy->svcb.params = dns_svc_params_copy(rr->svcb.params);
+                if (rr->svcb.params && !copy->svcb.params)
+                        return NULL;
+                break;
+
+        case DNS_TYPE_NAPTR:
+                copy->naptr.order = rr->naptr.order;
+                copy->naptr.preference = rr->naptr.preference;
+                copy->naptr.flags = strdup(rr->naptr.flags);
+                if (!copy->naptr.flags)
+                        return NULL;
+                copy->naptr.services = strdup(rr->naptr.services);
+                if (!copy->naptr.services)
+                        return NULL;
+                copy->naptr.regexp = strdup(rr->naptr.regexp);
+                if (!copy->naptr.regexp)
+                        return NULL;
+                copy->naptr.replacement = strdup(rr->naptr.replacement);
+                if (!copy->naptr.replacement)
+                        return NULL;
+                break;
+
         case DNS_TYPE_OPT:
         default:
                 copy->generic.data = memdup(rr->generic.data, rr->generic.data_size);
@@ -1772,6 +2023,13 @@ DnsTxtItem *dns_txt_item_free_all(DnsTxtItem *first) {
         return NULL;
 }
 
+DnsSvcParam *dns_svc_param_free_all(DnsSvcParam *first) {
+        LIST_FOREACH(params, i, first)
+                free(i);
+
+        return NULL;
+}
+
 bool dns_txt_item_equal(DnsTxtItem *a, DnsTxtItem *b) {
         DnsTxtItem *bb = b;
 
@@ -1802,6 +2060,45 @@ DnsTxtItem *dns_txt_item_copy(DnsTxtItem *first) {
                         return dns_txt_item_free_all(copy);
 
                 LIST_INSERT_AFTER(items, copy, end, j);
+                end = j;
+        }
+
+        return copy;
+}
+
+bool dns_svc_params_equal(DnsSvcParam *a, DnsSvcParam *b) {
+        DnsSvcParam *bb = b;
+
+        if (a == b)
+                return true;
+
+        LIST_FOREACH(params, aa, a) {
+                if (!bb)
+                        return false;
+
+                if (aa->key != bb->key)
+                        return false;
+
+                if (memcmp_nn(aa->value, aa->length, bb->value, bb->length) != 0)
+                        return false;
+
+                bb = bb->params_next;
+        }
+
+        return !bb;
+}
+
+DnsSvcParam *dns_svc_params_copy(DnsSvcParam *first) {
+        DnsSvcParam *copy = NULL, *end = NULL;
+
+        LIST_FOREACH(params, i, first) {
+                DnsSvcParam *j;
+
+                j = memdup(i, offsetof(DnsSvcParam, value) + i->length);
+                if (!j)
+                        return dns_svc_param_free_all(copy);
+
+                LIST_INSERT_AFTER(params, copy, end, j);
                 end = j;
         }
 
@@ -1842,38 +2139,43 @@ int dns_resource_record_new_from_raw(DnsResourceRecord **ret, const void *data, 
         return dns_packet_read_rr(p, ret, NULL, NULL);
 }
 
-int dns_resource_key_to_json(DnsResourceKey *key, JsonVariant **ret) {
+int dns_resource_key_to_json(DnsResourceKey *key, sd_json_variant **ret) {
         assert(key);
         assert(ret);
 
-        return json_build(ret,
-                          JSON_BUILD_OBJECT(
-                                          JSON_BUILD_PAIR("class", JSON_BUILD_INTEGER(key->class)),
-                                          JSON_BUILD_PAIR("type", JSON_BUILD_INTEGER(key->type)),
-                                          JSON_BUILD_PAIR("name", JSON_BUILD_STRING(dns_resource_key_name(key)))));
+        return sd_json_buildo(
+                        ret,
+                        SD_JSON_BUILD_PAIR("class", SD_JSON_BUILD_INTEGER(key->class)),
+                        SD_JSON_BUILD_PAIR("type", SD_JSON_BUILD_INTEGER(key->type)),
+                        SD_JSON_BUILD_PAIR("name", SD_JSON_BUILD_STRING(dns_resource_key_name(key))));
 }
 
-int dns_resource_key_from_json(JsonVariant *v, DnsResourceKey **ret) {
-        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *key = NULL;
-        uint16_t type = 0, class = 0;
-        const char *name = NULL;
-        int r;
+int dns_resource_key_from_json(sd_json_variant *v, DnsResourceKey **ret) {
+        struct params {
+                uint16_t type;
+                uint16_t class;
+                const char *name;
+        };
 
-        JsonDispatch dispatch_table[] = {
-                { "class", _JSON_VARIANT_TYPE_INVALID, json_dispatch_uint16,       PTR_TO_SIZE(&class), JSON_MANDATORY },
-                { "type",  _JSON_VARIANT_TYPE_INVALID, json_dispatch_uint16,       PTR_TO_SIZE(&type),  JSON_MANDATORY },
-                { "name",  JSON_VARIANT_STRING,        json_dispatch_const_string, PTR_TO_SIZE(&name),  JSON_MANDATORY },
+        static const sd_json_dispatch_field dispatch_table[] = {
+                { "class", _SD_JSON_VARIANT_TYPE_INVALID, sd_json_dispatch_uint16,       offsetof(struct params, class), SD_JSON_MANDATORY },
+                { "type",  _SD_JSON_VARIANT_TYPE_INVALID, sd_json_dispatch_uint16,       offsetof(struct params, type),  SD_JSON_MANDATORY },
+                { "name",  SD_JSON_VARIANT_STRING,        sd_json_dispatch_const_string, offsetof(struct params, name),  SD_JSON_MANDATORY },
                 {}
         };
+
+        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *key = NULL;
+        struct params p;
+        int r;
 
         assert(v);
         assert(ret);
 
-        r = json_dispatch(v, dispatch_table, 0, NULL);
+        r = sd_json_dispatch(v, dispatch_table, 0, &p);
         if (r < 0)
                 return r;
 
-        key = dns_resource_key_new(class, type, name);
+        key = dns_resource_key_new(p.class, p.type, p.name);
         if (!key)
                 return -ENOMEM;
 
@@ -1881,34 +2183,34 @@ int dns_resource_key_from_json(JsonVariant *v, DnsResourceKey **ret) {
         return 0;
 }
 
-static int type_bitmap_to_json(Bitmap *b, JsonVariant **ret) {
-        _cleanup_(json_variant_unrefp) JsonVariant *l = NULL;
+static int type_bitmap_to_json(Bitmap *b, sd_json_variant **ret) {
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *l = NULL;
         unsigned t;
         int r;
 
         assert(ret);
 
         BITMAP_FOREACH(t, b) {
-                _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
 
-                r = json_variant_new_unsigned(&v, t);
+                r = sd_json_variant_new_unsigned(&v, t);
                 if (r < 0)
                         return r;
 
-                r = json_variant_append_array(&l, v);
+                r = sd_json_variant_append_array(&l, v);
                 if (r < 0)
                         return r;
         }
 
         if (!l)
-                return json_variant_new_array(ret, NULL, 0);
+                return sd_json_variant_new_array(ret, NULL, 0);
 
         *ret = TAKE_PTR(l);
         return 0;
 }
 
-static int txt_to_json(DnsTxtItem *items, JsonVariant **ret) {
-        JsonVariant **elements = NULL;
+static int txt_to_json(DnsTxtItem *items, sd_json_variant **ret) {
+        sd_json_variant **elements = NULL;
         size_t n = 0;
         int r;
 
@@ -1920,25 +2222,43 @@ static int txt_to_json(DnsTxtItem *items, JsonVariant **ret) {
                         goto finalize;
                 }
 
-                r = json_variant_new_octescape(elements + n, i->data, i->length);
+                r = sd_json_variant_new_octescape(elements + n, i->data, i->length);
                 if (r < 0)
                         goto finalize;
 
                 n++;
         }
 
-        r = json_variant_new_array(ret, elements, n);
+        r = sd_json_variant_new_array(ret, elements, n);
 
 finalize:
-        for (size_t i = 0; i < n; i++)
-                json_variant_unref(elements[i]);
-
-        free(elements);
+        sd_json_variant_unref_many(elements, n);
         return r;
 }
 
-int dns_resource_record_to_json(DnsResourceRecord *rr, JsonVariant **ret) {
-        _cleanup_(json_variant_unrefp) JsonVariant *k = NULL;
+static int svc_params_to_json(DnsSvcParam *params, sd_json_variant **ret) {
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *w = NULL;
+        int r;
+
+        assert(ret);
+
+        LIST_FOREACH(params, i, params) {
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
+                r = sd_json_variant_new_base64(&v, i->value, i->length);
+                if (r < 0)
+                        return r;
+
+                r = sd_json_variant_set_field(&w, FORMAT_DNS_SVC_PARAM_KEY(i->key), v);
+                if (r < 0)
+                        return r;
+        }
+
+        *ret = TAKE_PTR(w);
+        return 0;
+}
+
+int dns_resource_record_to_json(DnsResourceRecord *rr, sd_json_variant **ret) {
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *k = NULL;
         int r;
 
         assert(rr);
@@ -1951,174 +2271,200 @@ int dns_resource_record_to_json(DnsResourceRecord *rr, JsonVariant **ret) {
         switch (rr->unparsable ? _DNS_TYPE_INVALID : rr->key->type) {
 
         case DNS_TYPE_SRV:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("priority", JSON_BUILD_UNSIGNED(rr->srv.priority)),
-                                                  JSON_BUILD_PAIR("weight", JSON_BUILD_UNSIGNED(rr->srv.weight)),
-                                                  JSON_BUILD_PAIR("port", JSON_BUILD_UNSIGNED(rr->srv.port)),
-                                                  JSON_BUILD_PAIR("name", JSON_BUILD_STRING(rr->srv.name))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("priority", SD_JSON_BUILD_UNSIGNED(rr->srv.priority)),
+                                SD_JSON_BUILD_PAIR("weight", SD_JSON_BUILD_UNSIGNED(rr->srv.weight)),
+                                SD_JSON_BUILD_PAIR("port", SD_JSON_BUILD_UNSIGNED(rr->srv.port)),
+                                SD_JSON_BUILD_PAIR("name", SD_JSON_BUILD_STRING(rr->srv.name)));
 
         case DNS_TYPE_PTR:
         case DNS_TYPE_NS:
         case DNS_TYPE_CNAME:
         case DNS_TYPE_DNAME:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("name", JSON_BUILD_STRING(rr->ptr.name))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("name", SD_JSON_BUILD_STRING(rr->ptr.name)));
 
         case DNS_TYPE_HINFO:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("cpu", JSON_BUILD_STRING(rr->hinfo.cpu)),
-                                                  JSON_BUILD_PAIR("os", JSON_BUILD_STRING(rr->hinfo.os))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("cpu", SD_JSON_BUILD_STRING(rr->hinfo.cpu)),
+                                SD_JSON_BUILD_PAIR("os", SD_JSON_BUILD_STRING(rr->hinfo.os)));
 
         case DNS_TYPE_SPF:
         case DNS_TYPE_TXT: {
-                _cleanup_(json_variant_unrefp) JsonVariant *l = NULL;
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *l = NULL;
 
                 r = txt_to_json(rr->txt.items, &l);
                 if (r < 0)
                         return r;
 
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("items", JSON_BUILD_VARIANT(l))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("items", SD_JSON_BUILD_VARIANT(l)));
         }
 
         case DNS_TYPE_A:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("address", JSON_BUILD_IN4_ADDR(&rr->a.in_addr))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("address", JSON_BUILD_IN4_ADDR(&rr->a.in_addr)));
 
         case DNS_TYPE_AAAA:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("address", JSON_BUILD_IN6_ADDR(&rr->aaaa.in6_addr))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("address", JSON_BUILD_IN6_ADDR(&rr->aaaa.in6_addr)));
 
         case DNS_TYPE_SOA:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("mname", JSON_BUILD_STRING(rr->soa.mname)),
-                                                  JSON_BUILD_PAIR("rname", JSON_BUILD_STRING(rr->soa.rname)),
-                                                  JSON_BUILD_PAIR("serial", JSON_BUILD_UNSIGNED(rr->soa.serial)),
-                                                  JSON_BUILD_PAIR("refresh", JSON_BUILD_UNSIGNED(rr->soa.refresh)),
-                                                  JSON_BUILD_PAIR("expire", JSON_BUILD_UNSIGNED(rr->soa.retry)),
-                                                  JSON_BUILD_PAIR("minimum", JSON_BUILD_UNSIGNED(rr->soa.minimum))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("mname", SD_JSON_BUILD_STRING(rr->soa.mname)),
+                                SD_JSON_BUILD_PAIR("rname", SD_JSON_BUILD_STRING(rr->soa.rname)),
+                                SD_JSON_BUILD_PAIR("serial", SD_JSON_BUILD_UNSIGNED(rr->soa.serial)),
+                                SD_JSON_BUILD_PAIR("refresh", SD_JSON_BUILD_UNSIGNED(rr->soa.refresh)),
+                                SD_JSON_BUILD_PAIR("expire", SD_JSON_BUILD_UNSIGNED(rr->soa.retry)),
+                                SD_JSON_BUILD_PAIR("minimum", SD_JSON_BUILD_UNSIGNED(rr->soa.minimum)));
 
         case DNS_TYPE_MX:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("priority", JSON_BUILD_UNSIGNED(rr->mx.priority)),
-                                                  JSON_BUILD_PAIR("exchange", JSON_BUILD_STRING(rr->mx.exchange))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("priority", SD_JSON_BUILD_UNSIGNED(rr->mx.priority)),
+                                SD_JSON_BUILD_PAIR("exchange", SD_JSON_BUILD_STRING(rr->mx.exchange)));
         case DNS_TYPE_LOC:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("version", JSON_BUILD_UNSIGNED(rr->loc.version)),
-                                                  JSON_BUILD_PAIR("size", JSON_BUILD_UNSIGNED(rr->loc.size)),
-                                                  JSON_BUILD_PAIR("horiz_pre", JSON_BUILD_UNSIGNED(rr->loc.horiz_pre)),
-                                                  JSON_BUILD_PAIR("vert_pre", JSON_BUILD_UNSIGNED(rr->loc.vert_pre)),
-                                                  JSON_BUILD_PAIR("latitude", JSON_BUILD_UNSIGNED(rr->loc.latitude)),
-                                                  JSON_BUILD_PAIR("longitude", JSON_BUILD_UNSIGNED(rr->loc.longitude)),
-                                                  JSON_BUILD_PAIR("altitude", JSON_BUILD_UNSIGNED(rr->loc.altitude))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("version", SD_JSON_BUILD_UNSIGNED(rr->loc.version)),
+                                SD_JSON_BUILD_PAIR("size", SD_JSON_BUILD_UNSIGNED(rr->loc.size)),
+                                SD_JSON_BUILD_PAIR("horiz_pre", SD_JSON_BUILD_UNSIGNED(rr->loc.horiz_pre)),
+                                SD_JSON_BUILD_PAIR("vert_pre", SD_JSON_BUILD_UNSIGNED(rr->loc.vert_pre)),
+                                SD_JSON_BUILD_PAIR("latitude", SD_JSON_BUILD_UNSIGNED(rr->loc.latitude)),
+                                SD_JSON_BUILD_PAIR("longitude", SD_JSON_BUILD_UNSIGNED(rr->loc.longitude)),
+                                SD_JSON_BUILD_PAIR("altitude", SD_JSON_BUILD_UNSIGNED(rr->loc.altitude)));
 
         case DNS_TYPE_DS:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("keyTag", JSON_BUILD_UNSIGNED(rr->ds.key_tag)),
-                                                  JSON_BUILD_PAIR("algorithm", JSON_BUILD_UNSIGNED(rr->ds.algorithm)),
-                                                  JSON_BUILD_PAIR("digestType", JSON_BUILD_UNSIGNED(rr->ds.digest_type)),
-                                                  JSON_BUILD_PAIR("digest", JSON_BUILD_HEX(rr->ds.digest, rr->ds.digest_size))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("keyTag", SD_JSON_BUILD_UNSIGNED(rr->ds.key_tag)),
+                                SD_JSON_BUILD_PAIR("algorithm", SD_JSON_BUILD_UNSIGNED(rr->ds.algorithm)),
+                                SD_JSON_BUILD_PAIR("digestType", SD_JSON_BUILD_UNSIGNED(rr->ds.digest_type)),
+                                SD_JSON_BUILD_PAIR("digest", SD_JSON_BUILD_HEX(rr->ds.digest, rr->ds.digest_size)));
 
         case DNS_TYPE_SSHFP:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("algorithm", JSON_BUILD_UNSIGNED(rr->sshfp.algorithm)),
-                                                  JSON_BUILD_PAIR("fptype", JSON_BUILD_UNSIGNED(rr->sshfp.fptype)),
-                                                  JSON_BUILD_PAIR("fingerprint", JSON_BUILD_HEX(rr->sshfp.fingerprint, rr->sshfp.fingerprint_size))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("algorithm", SD_JSON_BUILD_UNSIGNED(rr->sshfp.algorithm)),
+                                SD_JSON_BUILD_PAIR("fptype", SD_JSON_BUILD_UNSIGNED(rr->sshfp.fptype)),
+                                SD_JSON_BUILD_PAIR("fingerprint", SD_JSON_BUILD_HEX(rr->sshfp.fingerprint, rr->sshfp.fingerprint_size)));
 
         case DNS_TYPE_DNSKEY:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("flags", JSON_BUILD_UNSIGNED(rr->dnskey.flags)),
-                                                  JSON_BUILD_PAIR("protocol", JSON_BUILD_UNSIGNED(rr->dnskey.protocol)),
-                                                  JSON_BUILD_PAIR("algorithm", JSON_BUILD_UNSIGNED(rr->dnskey.algorithm)),
-                                                  JSON_BUILD_PAIR("dnskey", JSON_BUILD_BASE64(rr->dnskey.key, rr->dnskey.key_size))));
-
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("flags", SD_JSON_BUILD_UNSIGNED(rr->dnskey.flags)),
+                                SD_JSON_BUILD_PAIR("protocol", SD_JSON_BUILD_UNSIGNED(rr->dnskey.protocol)),
+                                SD_JSON_BUILD_PAIR("algorithm", SD_JSON_BUILD_UNSIGNED(rr->dnskey.algorithm)),
+                                SD_JSON_BUILD_PAIR("dnskey", SD_JSON_BUILD_BASE64(rr->dnskey.key, rr->dnskey.key_size)));
 
         case DNS_TYPE_RRSIG:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("signer", JSON_BUILD_STRING(rr->rrsig.signer)),
-                                                  JSON_BUILD_PAIR("typeCovered", JSON_BUILD_UNSIGNED(rr->rrsig.type_covered)),
-                                                  JSON_BUILD_PAIR("algorithm", JSON_BUILD_UNSIGNED(rr->rrsig.algorithm)),
-                                                  JSON_BUILD_PAIR("labels", JSON_BUILD_UNSIGNED(rr->rrsig.labels)),
-                                                  JSON_BUILD_PAIR("originalTtl", JSON_BUILD_UNSIGNED(rr->rrsig.original_ttl)),
-                                                  JSON_BUILD_PAIR("expiration", JSON_BUILD_UNSIGNED(rr->rrsig.expiration)),
-                                                  JSON_BUILD_PAIR("inception", JSON_BUILD_UNSIGNED(rr->rrsig.inception)),
-                                                  JSON_BUILD_PAIR("keyTag", JSON_BUILD_UNSIGNED(rr->rrsig.key_tag)),
-                                                  JSON_BUILD_PAIR("signature", JSON_BUILD_BASE64(rr->rrsig.signature, rr->rrsig.signature_size))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("signer", SD_JSON_BUILD_STRING(rr->rrsig.signer)),
+                                SD_JSON_BUILD_PAIR("typeCovered", SD_JSON_BUILD_UNSIGNED(rr->rrsig.type_covered)),
+                                SD_JSON_BUILD_PAIR("algorithm", SD_JSON_BUILD_UNSIGNED(rr->rrsig.algorithm)),
+                                SD_JSON_BUILD_PAIR("labels", SD_JSON_BUILD_UNSIGNED(rr->rrsig.labels)),
+                                SD_JSON_BUILD_PAIR("originalTtl", SD_JSON_BUILD_UNSIGNED(rr->rrsig.original_ttl)),
+                                SD_JSON_BUILD_PAIR("expiration", SD_JSON_BUILD_UNSIGNED(rr->rrsig.expiration)),
+                                SD_JSON_BUILD_PAIR("inception", SD_JSON_BUILD_UNSIGNED(rr->rrsig.inception)),
+                                SD_JSON_BUILD_PAIR("keyTag", SD_JSON_BUILD_UNSIGNED(rr->rrsig.key_tag)),
+                                SD_JSON_BUILD_PAIR("signature", SD_JSON_BUILD_BASE64(rr->rrsig.signature, rr->rrsig.signature_size)));
 
         case DNS_TYPE_NSEC: {
-                _cleanup_(json_variant_unrefp) JsonVariant *bm = NULL;
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *bm = NULL;
 
                 r = type_bitmap_to_json(rr->nsec.types, &bm);
                 if (r < 0)
                         return r;
 
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("nextDomain", JSON_BUILD_STRING(rr->nsec.next_domain_name)),
-                                                  JSON_BUILD_PAIR("types", JSON_BUILD_VARIANT(bm))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("nextDomain", SD_JSON_BUILD_STRING(rr->nsec.next_domain_name)),
+                                SD_JSON_BUILD_PAIR("types", SD_JSON_BUILD_VARIANT(bm)));
         }
 
         case DNS_TYPE_NSEC3: {
-                _cleanup_(json_variant_unrefp) JsonVariant *bm = NULL;
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *bm = NULL;
 
                 r = type_bitmap_to_json(rr->nsec3.types, &bm);
                 if (r < 0)
                         return r;
 
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("algorithm", JSON_BUILD_UNSIGNED(rr->nsec3.algorithm)),
-                                                  JSON_BUILD_PAIR("flags", JSON_BUILD_UNSIGNED(rr->nsec3.flags)),
-                                                  JSON_BUILD_PAIR("iterations", JSON_BUILD_UNSIGNED(rr->nsec3.iterations)),
-                                                  JSON_BUILD_PAIR("salt", JSON_BUILD_HEX(rr->nsec3.salt, rr->nsec3.salt_size)),
-                                                  JSON_BUILD_PAIR("hash", JSON_BUILD_BASE32HEX(rr->nsec3.next_hashed_name, rr->nsec3.next_hashed_name_size)),
-                                                  JSON_BUILD_PAIR("types", JSON_BUILD_VARIANT(bm))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("algorithm", SD_JSON_BUILD_UNSIGNED(rr->nsec3.algorithm)),
+                                SD_JSON_BUILD_PAIR("flags", SD_JSON_BUILD_UNSIGNED(rr->nsec3.flags)),
+                                SD_JSON_BUILD_PAIR("iterations", SD_JSON_BUILD_UNSIGNED(rr->nsec3.iterations)),
+                                SD_JSON_BUILD_PAIR("salt", SD_JSON_BUILD_HEX(rr->nsec3.salt, rr->nsec3.salt_size)),
+                                SD_JSON_BUILD_PAIR("hash", SD_JSON_BUILD_BASE32HEX(rr->nsec3.next_hashed_name, rr->nsec3.next_hashed_name_size)),
+                                SD_JSON_BUILD_PAIR("types", SD_JSON_BUILD_VARIANT(bm)));
         }
 
         case DNS_TYPE_TLSA:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("certUsage", JSON_BUILD_UNSIGNED(rr->tlsa.cert_usage)),
-                                                  JSON_BUILD_PAIR("selector", JSON_BUILD_UNSIGNED(rr->tlsa.selector)),
-                                                  JSON_BUILD_PAIR("matchingType", JSON_BUILD_UNSIGNED(rr->tlsa.matching_type)),
-                                                  JSON_BUILD_PAIR("data", JSON_BUILD_HEX(rr->tlsa.data, rr->tlsa.data_size))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("certUsage", SD_JSON_BUILD_UNSIGNED(rr->tlsa.cert_usage)),
+                                SD_JSON_BUILD_PAIR("selector", SD_JSON_BUILD_UNSIGNED(rr->tlsa.selector)),
+                                SD_JSON_BUILD_PAIR("matchingType", SD_JSON_BUILD_UNSIGNED(rr->tlsa.matching_type)),
+                                SD_JSON_BUILD_PAIR("data", SD_JSON_BUILD_HEX(rr->tlsa.data, rr->tlsa.data_size)));
+
+        case DNS_TYPE_SVCB:
+        case DNS_TYPE_HTTPS: {
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *p = NULL;
+                r = svc_params_to_json(rr->svcb.params, &p);
+                if (r < 0)
+                        return r;
+
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("priority", SD_JSON_BUILD_UNSIGNED(rr->svcb.priority)),
+                                SD_JSON_BUILD_PAIR("target", SD_JSON_BUILD_STRING(rr->svcb.target_name)),
+                                SD_JSON_BUILD_PAIR("svcparams", SD_JSON_BUILD_VARIANT(p)));
+        }
 
         case DNS_TYPE_CAA:
-                return json_build(ret,
-                                  JSON_BUILD_OBJECT(
-                                                  JSON_BUILD_PAIR("key", JSON_BUILD_VARIANT(k)),
-                                                  JSON_BUILD_PAIR("flags", JSON_BUILD_UNSIGNED(rr->caa.flags)),
-                                                  JSON_BUILD_PAIR("tag", JSON_BUILD_STRING(rr->caa.tag)),
-                                                  JSON_BUILD_PAIR("value", JSON_BUILD_OCTESCAPE(rr->caa.value, rr->caa.value_size))));
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("flags", SD_JSON_BUILD_UNSIGNED(rr->caa.flags)),
+                                SD_JSON_BUILD_PAIR("tag", SD_JSON_BUILD_STRING(rr->caa.tag)),
+                                SD_JSON_BUILD_PAIR("value", SD_JSON_BUILD_OCTESCAPE(rr->caa.value, rr->caa.value_size)));
+
+        case DNS_TYPE_NAPTR:
+                return sd_json_buildo(
+                                ret,
+                                SD_JSON_BUILD_PAIR("key", SD_JSON_BUILD_VARIANT(k)),
+                                SD_JSON_BUILD_PAIR("order", SD_JSON_BUILD_UNSIGNED(rr->naptr.order)),
+                                SD_JSON_BUILD_PAIR("preference", SD_JSON_BUILD_UNSIGNED(rr->naptr.preference)),
+                                /* NB: we name this flags field here naptrFlags, because there's already another "flags" field (for example in CAA) which has a different type */
+                                SD_JSON_BUILD_PAIR("naptrFlags", SD_JSON_BUILD_STRING(rr->naptr.flags)),
+                                SD_JSON_BUILD_PAIR("services", SD_JSON_BUILD_STRING(rr->naptr.services)),
+                                SD_JSON_BUILD_PAIR("regexp", SD_JSON_BUILD_STRING(rr->naptr.regexp)),
+                                SD_JSON_BUILD_PAIR("replacement", SD_JSON_BUILD_STRING(rr->naptr.replacement)));
 
         default:
                 /* Can't provide broken-down format */

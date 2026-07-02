@@ -71,13 +71,13 @@ int proc_cmdline_filter_pid1_args(char **argv, char ***ret) {
                         }
 
                         /* long option, e.g. --foo */
-                        for (size_t i = 0; i < ELEMENTSOF(options); i++) {
-                                const char *q = startswith(a + 2, options[i].name);
+                        FOREACH_ELEMENT(option, options) {
+                                const char *q = startswith(a + 2, option->name);
                                 if (!q || !IN_SET(q[0], '=', '\0'))
                                         continue;
 
                                 /* Found matching option, updating the state if necessary. */
-                                if (q[0] == '\0' && options[i].has_arg == required_argument)
+                                if (q[0] == '\0' && option->has_arg == required_argument)
                                         state = required_argument;
 
                                 break;
@@ -116,16 +116,8 @@ int proc_cmdline(char **ret) {
 
         /* For testing purposes it is sometimes useful to be able to override what we consider /proc/cmdline to be */
         e = secure_getenv("SYSTEMD_PROC_CMDLINE");
-        if (e) {
-                char *m;
-
-                m = strdup(e);
-                if (!m)
-                        return -ENOMEM;
-
-                *ret = m;
-                return 0;
-        }
+        if (e)
+                return strdup_to(ret, e);
 
         if (detect_container() > 0)
                 return pid_get_cmdline(1, SIZE_MAX, 0, ret);
@@ -173,9 +165,7 @@ int proc_cmdline_strv(char ***ret) {
 }
 
 static char *mangle_word(const char *word, ProcCmdlineFlags flags) {
-        char *c;
-
-        c = startswith(word, "rd.");
+        char *c = (char*) startswith(word, "rd.");
         if (c) {
                 /* Filter out arguments that are intended only for the initrd */
 
@@ -191,6 +181,8 @@ static char *mangle_word(const char *word, ProcCmdlineFlags flags) {
 
         return (char*) word;
 }
+
+#define mangle_word(word, flags) const_generic(word, mangle_word(word, flags))
 
 static int proc_cmdline_parse_strv(char **args, proc_cmdline_parse_t parse_item, void *data, ProcCmdlineFlags flags) {
         int r;
@@ -261,7 +253,7 @@ static bool relaxed_equal_char(char a, char b) {
                 (a == '-' && b == '_');
 }
 
-char *proc_cmdline_key_startswith(const char *s, const char *prefix) {
+char* proc_cmdline_key_startswith(const char *s, const char *prefix) {
         assert(s);
         assert(prefix);
 

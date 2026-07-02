@@ -12,14 +12,19 @@
 
 static void *passwdqc_dl = NULL;
 
-void (*sym_passwdqc_params_reset)(passwdqc_params_t *params);
-int (*sym_passwdqc_params_load)(passwdqc_params_t *params, char **reason, const char *pathname);
-int (*sym_passwdqc_params_parse)(passwdqc_params_t *params, char **reason, int argc, const char *const *argv);
-void (*sym_passwdqc_params_free)(passwdqc_params_t *params);
-const char *(*sym_passwdqc_check)(const passwdqc_params_qc_t *params, const char *newpass, const char *oldpass, const struct passwd *pw);
-char *(*sym_passwdqc_random)(const passwdqc_params_qc_t *params);
+DLSYM_PROTOTYPE(passwdqc_params_reset) = NULL;
+DLSYM_PROTOTYPE(passwdqc_params_load) = NULL;
+DLSYM_PROTOTYPE(passwdqc_params_parse) = NULL;
+DLSYM_PROTOTYPE(passwdqc_params_free) = NULL;
+DLSYM_PROTOTYPE(passwdqc_check) = NULL;
+DLSYM_PROTOTYPE(passwdqc_random) = NULL;
 
 int dlopen_passwdqc(void) {
+        ELF_NOTE_DLOPEN("passwdqc",
+                        "Support for password quality checks",
+                        ELF_NOTE_DLOPEN_PRIORITY_SUGGESTED,
+                        "libpasswdqc.so.1");
+
         return dlopen_many_sym_or_warn(
                         &passwdqc_dl, "libpasswdqc.so.1", LOG_DEBUG,
                         DLSYM_ARG(passwdqc_params_reset),

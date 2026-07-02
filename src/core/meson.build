@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 libcore_sources = files(
-        'apparmor-setup.c',
         'audit-fd.c',
         'automount.c',
         'bpf-devices.c',
         'bpf-firewall.c',
         'bpf-foreign.c',
-        'bpf-lsm.c',
+        'bpf-restrict-fs.c',
+        'bpf-restrict-ifaces.c',
         'bpf-socket-bind.c',
         'cgroup.c',
         'core-varlink.c',
@@ -38,11 +38,9 @@ libcore_sources = files(
         'execute.c',
         'execute-serialize.c',
         'generator-setup.c',
-        'ima-setup.c',
         'import-creds.c',
         'job.c',
         'kill.c',
-        'kmod-setup.c',
         'load-dropin.c',
         'load-fragment.c',
         'manager-dump.c',
@@ -51,16 +49,14 @@ libcore_sources = files(
         'mount.c',
         'namespace.c',
         'path.c',
-        'restrict-ifaces.c',
         'scope.c',
         'selinux-access.c',
-        'selinux-setup.c',
         'service.c',
         'show-status.c',
         'slice.c',
-        'smack-setup.c',
         'socket.c',
         'swap.c',
+        'taint.c',
         'target.c',
         'timer.c',
         'transaction.c',
@@ -88,20 +84,17 @@ if conf.get('BPF_FRAMEWORK') == 1
 endif
 
 load_fragment_gperf_gperf = custom_target(
-        'load-fragment-gperf.gperf',
         input : 'load-fragment-gperf.gperf.in',
         output: 'load-fragment-gperf.gperf',
         command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'])
 
 load_fragment_gperf_c = custom_target(
-        'load-fragment-gperf.c',
         input : load_fragment_gperf_gperf,
         output : 'load-fragment-gperf.c',
         command : [gperf, '@INPUT@', '--output-file', '@OUTPUT@'])
 
 awkscript = 'load-fragment-gperf-nulstr.awk'
 load_fragment_gperf_nulstr_c = custom_target(
-        'load-fragment-gperf-nulstr.c',
         input : [awkscript, load_fragment_gperf_gperf],
         output : 'load-fragment-gperf-nulstr.c',
         command : [awk, '-f', '@INPUT0@', '@INPUT1@'],
@@ -109,23 +102,17 @@ load_fragment_gperf_nulstr_c = custom_target(
 
 libcore_name = 'systemd-core-@0@'.format(shared_lib_tag)
 
-libcore = shared_library(
+libcore_static = static_library(
         libcore_name,
         libcore_sources,
         load_fragment_gperf_c,
         load_fragment_gperf_nulstr_c,
         include_directories : includes,
         c_args : ['-fvisibility=default'],
-        link_args : ['-shared',
-                     '-Wl,--version-script=' + libshared_sym_path],
-        link_depends : libshared_sym_path,
-        link_with : libshared,
         dependencies : [libacl,
-                        libapparmor,
                         libaudit,
                         libblkid,
                         libdl,
-                        libkmod,
                         libm,
                         libmount,
                         libpam,
@@ -134,6 +121,16 @@ libcore = shared_library(
                         libselinux,
                         threads,
                         userspace],
+        build_by_default : false)
+
+libcore = shared_library(
+        libcore_name,
+        c_args : ['-fvisibility=default'],
+        link_args : ['-shared',
+                     '-Wl,--version-script=' + libshared_sym_path],
+        link_depends : libshared_sym_path,
+        link_whole: libcore_static,
+        link_with : libshared,
         install : true,
         install_dir : pkglibdir)
 
@@ -142,12 +139,30 @@ core_includes = [includes, include_directories('.')]
 systemd_sources = files(
         'main.c',
         'crash-handler.c',
+        'clock-warp.c',
+        'kmod-setup.c',
+        'apparmor-setup.c',
+        'ima-setup.c',
+        'ipe-setup.c',
+        'selinux-setup.c',
+        'smack-setup.c',
 )
 
 systemd_executor_sources = files(
         'executor.c',
         'exec-invoke.c',
 )
+
+executor_libs = get_option('link-executor-shared') ? \
+        [
+                libcore,
+                libshared,
+        ] : [
+                libcore_static,
+                libshared_static,
+                libbasic_static,
+                libsystemd_static,
+        ]
 
 executables += [
         libexec_template + {
@@ -159,17 +174,19 @@ executables += [
                         libcore,
                         libshared,
                 ],
-                'dependencies' : libseccomp,
+                'dependencies' : [
+                        libapparmor,
+                        libkmod_cflags,
+                        libseccomp,
+                        libselinux,
+                ],
         },
         libexec_template + {
                 'name' : 'systemd-executor',
                 'public' : true,
                 'sources' : systemd_executor_sources,
                 'include_directories' : core_includes,
-                'link_with' : [
-                        libcore,
-                        libshared,
-                ],
+                'link_with' : executor_libs,
                 'dependencies' : [
                         libapparmor,
                         libpam,
@@ -210,7 +227,6 @@ foreach item : in_files
         dir = item[1]
 
         custom_target(
-                file,
                 input : file + '.in',
                 output: file,
                 command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
@@ -219,7 +235,6 @@ foreach item : in_files
 endforeach
 
 systemd_pc = custom_target(
-        'systemd.pc',
         input : 'systemd.pc.in',
         output : 'systemd.pc',
         command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
@@ -232,9 +247,11 @@ install_data('org.freedesktop.systemd1.conf',
 install_data('org.freedesktop.systemd1.service',
              install_dir : dbussystemservicedir)
 
+install_emptydir(systemenvgeneratordir)
 install_emptydir(systemshutdowndir)
 install_emptydir(systemsleepdir)
 install_emptydir(systemgeneratordir)
+install_emptydir(userenvgeneratordir)
 install_emptydir(usergeneratordir)
 
 if install_sysconfdir

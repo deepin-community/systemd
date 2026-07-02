@@ -138,7 +138,6 @@ int bpf_program_new_from_bpffs_path(const char *path, BPFProgram **ret) {
         return 0;
 }
 
-
 int bpf_program_add_instructions(BPFProgram *p, const struct bpf_insn *instructions, size_t count) {
 
         assert(p);
@@ -321,7 +320,7 @@ int bpf_map_new(
         /* The map name is primarily informational for debugging purposes, and typically too short
          * to carry the full unit name, hence we employ a trivial lossy escaping to make it fit
          * (truncation + only alphanumerical, "." and "_" are allowed as per
-         * https://www.kernel.org/doc/html/next/bpf/maps.html#usage-notes) */
+         * https://docs.kernel.org/bpf/maps.html#usage-notes) */
         for (size_t i = 0; i < sizeof(attr.map_name) - 1 && *n; i++, n++)
                 attr.map_name[i] = strchr(ALPHANUMERICAL ".", *n) ? *n : '_';
 

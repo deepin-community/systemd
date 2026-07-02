@@ -1,65 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-if install_tests
-        foreach subdir : [
-                'auxv',
-                'journal-data',
-                'units',
-                'test-execute',
-                'test-fstab-generator',
-                'test-path',
-                'test-path-util',
-                'test-umount',
-                'test-network',
-                'test-network-generator-conversion',
-                'testsuite-03.units',
-                'testsuite-04.units',
-                'testsuite-06.units',
-                'testsuite-07.units',
-                'testsuite-16.units',
-                'testsuite-23.units',
-                'testsuite-30.units',
-                'testsuite-52.units',
-                'testsuite-63.units',
-                'testsuite-80.units',
-        ]
-                # install_subdir() does not handle symlinks correctly which causes a very ugly warning when
-                # installing, so if rsync is available we use that instead. TODO: switch to the new option
-                # 'follow_symlinks' once we require Meson 1.3.0 or greater, see:
-                # https://github.com/mesonbuild/meson/commit/0af126fec798d6dbb0d1ad52168cc1f3f1758acd
-                if rsync.found()
-                        rsync_r = rsync.full_path() + ' -rlpt --exclude .gitattributes -- "@0@" "${DESTDIR:-}@1@"'
-                        meson.add_install_script(sh, '-c',
-                                                 rsync_r.format(meson.current_source_dir() / subdir, testdata_dir))
-                else
-                        install_subdir(subdir,
-                                       exclude_files : '.gitattributes',
-                                       install_dir : testdata_dir)
-                endif
-        endforeach
-
-        install_data(kbd_model_map,
-                     install_dir : testdata_dir + '/test-keymap-util')
-
-        if conf.get('HAVE_ZSTD') == 1 and efi_arch != ''
-                install_subdir('test-bcd',
-                               exclude_files : '.gitattributes',
-                               install_dir : testdata_dir)
-        endif
-        if conf.get('ENABLE_RESOLVE') == 1
-                install_subdir('test-resolve',
-                               exclude_files : '.gitattributes',
-                               install_dir : testdata_dir)
-        endif
-
-        # The unit tests implemented as shell scripts expect to find testdata/
-        # in the directory where they are stored.
-        meson.add_install_script(sh, '-c', ln_s.format(testdata_dir,
-                                                       unittestsdir / 'testdata'))
-endif
-
-############################################################
-
 if conf.get('ENABLE_SYSUSERS') == 1
         test_sysusers_sh = configure_file(
                 input : 'test-sysusers.sh.in',
@@ -205,6 +145,10 @@ if install_tests
         install_data('run-unit-tests.py',
                      install_mode : 'rwxr-xr-x',
                      install_dir : testsdir)
+
+        install_data('integration-test-setup.sh',
+                     install_mode : 'rwxr-xr-x',
+                     install_dir : testdata_dir)
 endif
 
 ############################################################
@@ -276,7 +220,8 @@ if rpm.found() and rpmspec.found()
                 test('test-rpm-macros',
                      test_rpm_macros,
                      suite : 'dist',
-                     args : [project_build_root])
+                     args : [meson.project_build_root()],
+                     depends : rpm_depends)
         endif
 else
       message('Skipping test-rpm-macros since rpm and/or rpmspec are not available')
@@ -288,20 +233,20 @@ if want_tests != 'false' and conf.get('HAVE_DMI') == 1
         udev_dmi_memory_id_test = find_program('udev-dmi-memory-id-test.sh')
         exe = executables_by_name.get('dmi_memory_id')
 
-        if git.found() and fs.is_dir(project_source_root / '.git')
+        if git.found() and fs.is_dir(meson.project_source_root() / '.git')
                 out = run_command(
                         env, '-u', 'GIT_WORK_TREE',
-                        git, '--git-dir=@0@/.git'.format(project_source_root),
+                        git, '--git-dir=@0@/.git'.format(meson.project_source_root()),
                         'ls-files', ':/test/dmidecode-dumps/*.bin',
                         check: true)
         else
                 out = run_command(
-                        sh, '-c', 'cd "$1"; echo test/dmidecode-dumps/*.bin', '_', project_source_root,
+                        sh, '-c', 'cd "$1"; echo test/dmidecode-dumps/*.bin', '_', meson.project_source_root(),
                         check: true)
         endif
 
         foreach p : out.stdout().split()
-                source = project_source_root / p
+                source = meson.project_source_root() / p
                 test('dmidecode_' + fs.stem(p),
                      udev_dmi_memory_id_test,
                      suite : 'udev',
@@ -329,4 +274,110 @@ if want_tests != 'false' and conf.get('ENABLE_KERNEL_INSTALL') == 1
              args : args,
              depends : deps,
              suite : 'kernel-install')
+endif
+
+############################################################
+
+if want_tests != 'false'
+        subdir('integration-tests')
+endif
+
+if install_tests
+        foreach integration_test : integration_tests
+                integration_test_unit_env = []
+                integration_test_extra_unit_properties = []
+                integration_test_extra_service_properties = []
+
+                foreach key, value : integration_test['configuration']['env']
+                        integration_test_unit_env += [f'@key@=@value@']
+                endforeach
+
+                foreach key, value : integration_test['configuration']['unit']
+                        integration_test_extra_unit_properties += [f'@key@=@value@']
+                endforeach
+
+                foreach key, value : integration_test['configuration']['service']
+                        integration_test_extra_service_properties += [f'@key@=@value@']
+                endforeach
+
+                integration_test_unit = configure_file(
+                        input : 'test.service.in',
+                        output : '@0@.service'.format(integration_test['name']),
+                        configuration : integration_test['configuration'] + {
+                                'env' : ' '.join(integration_test_unit_env),
+                                'unit' : '\n'.join(integration_test_extra_unit_properties),
+                                'service' : '\n'.join(integration_test_extra_service_properties),
+                        },
+                )
+
+                install_data(integration_test_unit, install_dir : testdata_dir / 'units')
+        endforeach
+
+        testdata_subdirs = [
+                'auxv',
+                'journal-data',
+                'knot-data',
+                'test-journals',
+                'units',
+                'test-execute',
+                'test-fstab-generator',
+                'test-path',
+                'test-path-util',
+                'test-umount',
+                'test-network',
+                'test-network-generator-conversion',
+                'integration-tests/TEST-07-PID1/TEST-07-PID1.units',
+                'integration-tests/TEST-03-JOBS/TEST-03-JOBS.units',
+                'integration-tests/TEST-04-JOURNAL/TEST-04-JOURNAL.units',
+                'integration-tests/TEST-06-SELINUX/TEST-06-SELINUX.units',
+                'integration-tests/TEST-16-EXTEND-TIMEOUT/TEST-16-EXTEND-TIMEOUT.units',
+                'integration-tests/TEST-23-UNIT-FILE/TEST-23-UNIT-FILE.units',
+                'integration-tests/TEST-30-ONCLOCKCHANGE/TEST-30-ONCLOCKCHANGE.units',
+                'integration-tests/TEST-52-HONORFIRSTSHUTDOWN/TEST-52-HONORFIRSTSHUTDOWN.units',
+                'integration-tests/TEST-63-PATH/TEST-63-PATH.units',
+                'integration-tests/TEST-80-NOTIFYACCESS/TEST-80-NOTIFYACCESS.units',
+        ]
+
+        foreach subdir : testdata_subdirs
+                # install_subdir() before meson 1.3.0 does not handle symlinks correctly (it follows them
+                # instead of copying the symlink) so we use rsync instead.
+                if meson.version().version_compare('<1.3.0')
+                        if not rsync.found()
+                                error('rsync is required to install the integration test data')
+                        endif
+
+                        rsync_r = rsync.full_path() + ' -rlpt --exclude .gitattributes --exclude 25-default.link -- "@0@" "${DESTDIR:-}@1@"'
+                        meson.add_install_script(sh, '-c',
+                                                 rsync_r.format(meson.current_source_dir() / subdir, testdata_dir))
+                else
+                        install_subdir(subdir,
+                                       exclude_files : ['.gitattributes', '25-default.link'],
+                                       install_dir : testdata_dir,
+                                       follow_symlinks : false)
+                endif
+        endforeach
+
+        # test-network/conf/25-default.link is a local symlink that becomes dangling when installed, so we
+        # exclude it and create the correct symlink here.
+        meson.add_install_script(sh, '-c', ln_s.format(networkdir / '99-default.link',
+                                                       testdata_dir / 'test-network/conf/25-default.link'))
+
+        install_data(kbd_model_map,
+                     install_dir : testdata_dir + '/test-keymap-util')
+
+        if conf.get('HAVE_ZSTD') == 1 and efi_arch != ''
+                install_subdir('test-bcd',
+                               exclude_files : '.gitattributes',
+                               install_dir : testdata_dir)
+        endif
+        if conf.get('ENABLE_RESOLVE') == 1
+                install_subdir('test-resolve',
+                               exclude_files : '.gitattributes',
+                               install_dir : testdata_dir)
+        endif
+
+        # The unit tests implemented as shell scripts expect to find testdata/
+        # in the directory where they are stored.
+        meson.add_install_script(sh, '-c', ln_s.format(testdata_dir,
+                                                       unittestsdir / 'testdata'))
 endif

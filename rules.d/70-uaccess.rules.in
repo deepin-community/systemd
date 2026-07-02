@@ -34,6 +34,8 @@ SUBSYSTEM=="sound", TAG+="uaccess", \
 SUBSYSTEM=="video4linux", TAG+="uaccess"
 SUBSYSTEM=="dvb", TAG+="uaccess"
 SUBSYSTEM=="media", TAG+="uaccess"
+# libcamera software ISP used with some cams requires udmabuf access
+KERNEL=="udmabuf", TAG+="uaccess"
 
 # industrial cameras, some webcams, camcorders, set-top boxes, TV sets, audio devices, and more
 SUBSYSTEM=="firewire", TEST=="units", ENV{IEEE1394_UNIT_FUNCTION_MIDI}=="1", TAG+="uaccess"
@@ -75,6 +77,20 @@ ENV{DDC_DEVICE}=="?*", TAG+="uaccess"
 # media player raw devices (for user-mode drivers, Android SDK, etc.)
 SUBSYSTEM=="usb", ENV{ID_MEDIA_PLAYER}=="?*", TAG+="uaccess"
 
+# Android devices (ADB DbC, ADB, Fastboot)
+# Used to interact with devices over Android Debug Bridge and Fastboot protocols, see:
+# * https://developer.android.com/tools/adb
+# * https://source.android.com/docs/setup/test/running
+# * https://source.android.com/docs/setup/test/flash
+#
+# The bInterfaceClass and bInterfaceSubClass used are documented in source code here:
+# * https://android.googlesource.com/platform/packages/modules/adb/+/d0db47dcdf941673f405e1095e6ffb5e565902e5/adb.h#199
+# * https://android.googlesource.com/platform/system/core/+/7199051aaf0ddfa2849650933119307327d8669c/fastboot/fastboot.cpp#244
+#
+# Since it's using a generic vendor specific interface class, this can potentially result
+# in a rare case where non-ADB/Fastboot device ends up with an ID_DEBUG_APPLIANCE="android".
+SUBSYSTEM=="usb", ENV{ID_USB_INTERFACES}=="*:dc0201:*|*:ff4201:*|*:ff4203:*", ENV{ID_DEBUG_APPLIANCE}="android"
+
 # software-defined radio communication devices
 ENV{ID_SOFTWARE_RADIO}=="?*", TAG+="uaccess"
 
@@ -96,5 +112,20 @@ SUBSYSTEM=="hidraw", ENV{ID_AV_PRODUCTION_CONTROLLER}=="1", TAG+="uaccess"
 # Other devices transfer graphics to screens on the device through USB Bulk endpoints.
 # This also allows accessing HID devices with the libusb backend of hidapi.
 SUBSYSTEM=="usb", ENV{ID_AV_PRODUCTION_CONTROLLER}=="1", TAG+="uaccess"
+
+# USB and Bluetooth controllable lights
+SUBSYSTEM=="hidraw", ENV{ID_AV_LIGHTS}=="1", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{ID_AV_LIGHTS}=="1", TAG+="uaccess"
+
+# Hardware wallets
+SUBSYSTEM=="usb", ENV{ID_HARDWARE_WALLET}=="1", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ENV{ID_HARDWARE_WALLET}=="1", TAG+="uaccess"
+
+# 3D mice
+# As defined in https://en.wikipedia.org/wiki/3Dconnexion
+SUBSYSTEM=="hidraw", ENV{ID_INPUT_3D_MOUSE}=="1", TAG+="uaccess"
+
+# Debug interfaces (e.g. Android Debug Bridge)
+ENV{ID_DEBUG_APPLIANCE}=="?*", TAG+="uaccess"
 
 LABEL="uaccess_end"

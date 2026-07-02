@@ -13,6 +13,7 @@
 #include "hmac.h"
 #include "id128-util.h"
 #include "io-util.h"
+#include "keyring-util.h"
 #include "macro.h"
 #include "missing_syscall.h"
 #include "missing_threads.h"
@@ -170,14 +171,24 @@ int id128_get_machine(const char *root, sd_id128_t *ret) {
         return id128_read_fd(fd, ID128_FORMAT_PLAIN | ID128_REFUSE_NULL, ret);
 }
 
+int id128_get_boot(sd_id128_t *ret) {
+        int r;
+
+        assert(ret);
+
+        r = id128_read("/proc/sys/kernel/random/boot_id", ID128_FORMAT_UUID | ID128_REFUSE_NULL, ret);
+        if (r == -ENOENT && proc_mounted() == 0)
+                return -ENOSYS;
+
+        return r;
+}
+
 _public_ int sd_id128_get_boot(sd_id128_t *ret) {
         static thread_local sd_id128_t saved_boot_id = {};
         int r;
 
         if (sd_id128_is_null(saved_boot_id)) {
-                r = id128_read("/proc/sys/kernel/random/boot_id", ID128_FORMAT_UUID | ID128_REFUSE_NULL, &saved_boot_id);
-                if (r == -ENOENT && proc_mounted() == 0)
-                        return -ENOSYS;
+                r = id128_get_boot(&saved_boot_id);
                 if (r < 0)
                         return r;
         }
@@ -192,7 +203,6 @@ static int get_invocation_from_keyring(sd_id128_t *ret) {
         char *d, *p, *g, *u, *e;
         unsigned long perms;
         key_serial_t key;
-        size_t sz = 256;
         uid_t uid;
         gid_t gid;
         int r, c;
@@ -204,31 +214,18 @@ static int get_invocation_from_keyring(sd_id128_t *ret) {
 
         key = request_key("user", "invocation_id", NULL, 0);
         if (key == -1) {
-                /* Keyring support not available? No invocation key stored? */
-                if (IN_SET(errno, ENOSYS, ENOKEY))
+                /* Keyring support not available? Keyring access locked down? No invocation key stored? */
+                if (ERRNO_IS_NOT_SUPPORTED(errno) ||
+                    ERRNO_IS_PRIVILEGE(errno) ||
+                    errno == ENOKEY)
                         return -ENXIO;
 
                 return -errno;
         }
 
-        for (;;) {
-                description = new(char, sz);
-                if (!description)
-                        return -ENOMEM;
-
-                c = keyctl(KEYCTL_DESCRIBE, key, (unsigned long) description, sz, 0);
-                if (c < 0)
-                        return -errno;
-
-                if ((size_t) c <= sz)
-                        break;
-
-                sz = c;
-                free(description);
-        }
-
-        /* The kernel returns a final NUL in the string, verify that. */
-        assert(description[c-1] == 0);
+        r = keyring_describe(key, &description);
+        if (r < 0)
+                return r;
 
         /* Chop off the final description string */
         d = strrchr(description, ';');
@@ -375,6 +372,19 @@ _public_ int sd_id128_get_boot_app_specific(sd_id128_t app_id, sd_id128_t *ret) 
         assert_return(ret, -EINVAL);
 
         r = sd_id128_get_boot(&id);
+        if (r < 0)
+                return r;
+
+        return sd_id128_get_app_specific(id, app_id, ret);
+}
+
+_public_ int sd_id128_get_invocation_app_specific(sd_id128_t app_id, sd_id128_t *ret) {
+        sd_id128_t id;
+        int r;
+
+        assert_return(ret, -EINVAL);
+
+        r = sd_id128_get_invocation(&id);
         if (r < 0)
                 return r;
 

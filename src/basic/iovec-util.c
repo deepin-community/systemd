@@ -3,6 +3,18 @@
 #include "iovec-util.h"
 #include "string-util.h"
 
+static const uint8_t nul_byte = 0;
+
+const struct iovec iovec_nul_byte = {
+        .iov_base = (void*) &nul_byte,
+        .iov_len = 1,
+};
+
+const struct iovec iovec_empty = {
+        .iov_base = (void*) &nul_byte,
+        .iov_len = 0,
+};
+
 size_t iovec_total_size(const struct iovec *iovec, size_t n) {
         size_t sum = 0;
 
@@ -62,9 +74,23 @@ char* set_iovec_string_field_free(struct iovec *iovec, size_t *n_iovec, const ch
         return x;
 }
 
-void iovec_array_free(struct iovec *iovec, size_t n) {
-        FOREACH_ARRAY(i, iovec, n)
+void iovec_array_free(struct iovec *iovec, size_t n_iovec) {
+        assert(iovec || n_iovec == 0);
+
+        FOREACH_ARRAY(i, iovec, n_iovec)
                 free(i->iov_base);
 
         free(iovec);
+}
+
+struct iovec* iovec_append(struct iovec *iovec, const struct iovec *append) {
+        assert(iovec_is_valid(iovec));
+
+        if (!iovec_is_set(append))
+                return iovec;
+
+        if (!greedy_realloc_append(&iovec->iov_base, &iovec->iov_len, append->iov_base, append->iov_len, 1))
+                return NULL;
+
+        return iovec;
 }

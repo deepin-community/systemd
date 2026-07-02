@@ -16,6 +16,7 @@ atomic_barrier
 atomic_cmpxchg_32
 bind	22
 bpf	341
+breakpoint
 brk	45
 cachectl
 cacheflush	356
@@ -83,6 +84,8 @@ fcntl	55
 fcntl64	202
 fdatasync	148
 fgetxattr	243
+file_getattr	468
+file_setattr	469
 finit_module	333
 flistxattr	246
 flock	143
@@ -111,6 +114,7 @@ futimesat	279
 get_mempolicy	261
 get_robust_list	290
 get_thread_area
+get_tls
 getcpu	296
 getcwd	110
 getdents	141
@@ -149,6 +153,7 @@ gettimeofday	78
 getuid	24
 getuid32
 getxattr	241
+getxattrat	464
 getxgid
 getxpid
 getxuid
@@ -188,12 +193,18 @@ lgetxattr	242
 link	9
 linkat	283
 listen	32
+listmount	458
 listxattr	244
+listxattrat	465
 llistxattr	245
+llseek
 lookup_dcookie	223
 lremovexattr	248
 lseek	19
 lsetxattr	239
+lsm_get_self_attr	459
+lsm_list_modules	461
+lsm_set_self_attr	460
 lstat	84
 lstat64	198
 madvise	119
@@ -229,6 +240,7 @@ mq_timedsend	231
 mq_timedsend_time64	418
 mq_unlink	230
 mremap	163
+mseal	462
 msgctl	191
 msgget	190
 msgrcv	189
@@ -335,6 +347,7 @@ recvmmsg_time64	417
 recvmsg	184
 remap_file_pages	227
 removexattr	247
+removexattrat	466
 rename	38
 renameat	282
 renameat2	337
@@ -392,6 +405,7 @@ set_mempolicy_home_node	450
 set_robust_list	289
 set_thread_area
 set_tid_address	237
+set_tls
 setdomainname	121
 setfsgid	139
 setfsgid32
@@ -423,6 +437,7 @@ settimeofday	79
 setuid	23
 setuid32
 setxattr	238
+setxattrat	463
 sgetmask	68
 shmat	192
 shmctl	195
@@ -449,6 +464,7 @@ stat	18
 stat64	101
 statfs	99
 statfs64	298
+statmount	457
 statx	349
 stime	25
 subpage_prot
@@ -496,7 +512,10 @@ uname	59
 unlink	10
 unlinkat	281
 unshare	288
+uretprobe
 userfaultfd	344
+usr26
+usr32
 ustat	62
 utime	30
 utimensat	301

@@ -41,7 +41,12 @@
 #include "user-util.h"
 #include "xattr-util.h"
 
-#define COPY_BUFFER_SIZE (16U*1024U)
+/* If we copy via a userspace buffer, size it to 64K */
+#define COPY_BUFFER_SIZE (64U*U64_KB)
+
+/* If a byte progress function is specified during copying, never try to copy more than 1M, so that we can
+ * reasonably call the progress function still */
+#define PROGRESS_STEP_SIZE (1U*U64_MB)
 
 /* A safety net for descending recursively into file system trees to copy. On Linux PATH_MAX is 4096, which means the
  * deepest valid path one can build is around 2048, which we hence use as a safety net here, to not spin endlessly in
@@ -162,21 +167,22 @@ int copy_bytes_full(
                 void *userdata) {
 
         _cleanup_close_ int fdf_opened = -EBADF, fdt_opened = -EBADF;
-        bool try_cfr = true, try_sendfile = true, try_splice = true, copied_something = false;
+        bool try_cfr = true, try_sendfile = true, try_splice = true;
+        uint64_t copied_total = 0;
         int r, nonblock_pipe = -1;
-        size_t m = SSIZE_MAX; /* that is the maximum that sendfile and c_f_r accept */
 
         assert(fdf >= 0);
         assert(fdt >= 0);
         assert(!FLAGS_SET(copy_flags, COPY_LOCK_BSD));
 
-        /* Tries to copy bytes from the file descriptor 'fdf' to 'fdt' in the smartest possible way. Copies a maximum
-         * of 'max_bytes', which may be specified as UINT64_MAX, in which no maximum is applied. Returns negative on
-         * error, zero if EOF is hit before the bytes limit is hit and positive otherwise. If the copy fails for some
-         * reason but we read but didn't yet write some data an ret_remains/ret_remains_size is not NULL, then it will
-         * be initialized with an allocated buffer containing this "remaining" data. Note that these two parameters are
-         * initialized with a valid buffer only on failure and only if there's actually data already read. Otherwise
-         * these parameters if non-NULL are set to NULL. */
+        /* Tries to copy bytes from the file descriptor 'fdf' to 'fdt' in the smartest possible way. Copies a
+         * maximum of 'max_bytes', which may be specified as UINT64_MAX, in which no maximum is applied.
+         * Returns negative on error, zero if EOF is hit before the bytes limit is hit and positive
+         * otherwise. If the copy fails for some reason but we read but didn't yet write some data and
+         * ret_remains/ret_remains_size is not NULL, then it will be initialized with an allocated buffer
+         * containing this "remaining" data. Note that these two parameters are initialized with a valid
+         * buffer only on failure and only if there's actually data already read. Otherwise these parameters
+         * if non-NULL are set to NULL. */
 
         if (ret_remains)
                 *ret_remains = NULL;
@@ -208,6 +214,7 @@ int copy_bytes_full(
                                         r = reflink_range(fdf, foffset, fdt, toffset, max_bytes == UINT64_MAX ? 0 : max_bytes); /* partial reflink */
                                 if (r >= 0) {
                                         off_t t;
+                                        int ret;
 
                                         /* This worked, yay! Now — to be fully correct — let's adjust the file pointers */
                                         if (max_bytes == UINT64_MAX) {
@@ -226,7 +233,14 @@ int copy_bytes_full(
                                                 if (t < 0)
                                                         return -errno;
 
-                                                return 0; /* we copied the whole thing, hence hit EOF, return 0 */
+                                                if (FLAGS_SET(copy_flags, COPY_VERIFY_LINKED)) {
+                                                        r = fd_verify_linked(fdf);
+                                                        if (r < 0)
+                                                                return r;
+                                                }
+
+                                                /* We copied the whole thing, hence hit EOF, return 0. */
+                                                ret = 0;
                                         } else {
                                                 t = lseek(fdf, foffset + max_bytes, SEEK_SET);
                                                 if (t < 0)
@@ -236,8 +250,18 @@ int copy_bytes_full(
                                                 if (t < 0)
                                                         return -errno;
 
-                                                return 1; /* we copied only some number of bytes, which worked, but this means we didn't hit EOF, return 1 */
+                                                /* We copied only some number of bytes, which worked, but
+                                                 * this means we didn't hit EOF, return 1. */
+                                                ret = 1;
                                         }
+
+                                        if (FLAGS_SET(copy_flags, COPY_VERIFY_LINKED)) {
+                                                r = fd_verify_linked(fdf);
+                                                if (r < 0)
+                                                        return r;
+                                        }
+
+                                        return ret;
                                 }
                         }
                 }
@@ -245,6 +269,7 @@ int copy_bytes_full(
 
         for (;;) {
                 ssize_t n;
+                size_t m;
 
                 if (max_bytes <= 0)
                         break;
@@ -253,8 +278,19 @@ int copy_bytes_full(
                 if (r < 0)
                         return r;
 
+                /* sendfile() accepts at most SSIZE_MAX-offset bytes to copy, hence let's subtract how much
+                 * copied so far from SSIZE_MAX as maximum of what we want to copy. */
+                if (try_sendfile) {
+                        assert(copied_total < SSIZE_MAX);
+                        m = (uint64_t) SSIZE_MAX - copied_total;
+                } else
+                        m = SSIZE_MAX;
+
                 if (max_bytes != UINT64_MAX && m > max_bytes)
                         m = max_bytes;
+
+                if (progress && m > PROGRESS_STEP_SIZE)
+                        m = PROGRESS_STEP_SIZE;
 
                 if (copy_flags & COPY_HOLES) {
                         off_t c, e;
@@ -310,20 +346,22 @@ int copy_bytes_full(
 
                         /* Make sure we're not copying more than the current data segment. */
                         m = MIN(m, (size_t) e - c);
+                        if (m <= 0)
+                                continue;
                 }
 
                 /* First try copy_file_range(), unless we already tried */
                 if (try_cfr) {
                         n = try_copy_file_range(fdf, NULL, fdt, NULL, m, 0u);
                         if (n < 0) {
-                                if (!IN_SET(n, -EINVAL, -ENOSYS, -EXDEV, -EBADF))
+                                if (!IN_SET(n, -EINVAL, -ENOSYS, -EXDEV, -EBADF, -EOPNOTSUPP))
                                         return n;
 
                                 try_cfr = false;
                                 /* use fallback below */
                         } else if (n == 0) { /* likely EOF */
 
-                                if (copied_something)
+                                if (copied_total > 0)
                                         break;
 
                                 /* So, we hit EOF immediately, without having copied a single byte. This
@@ -350,7 +388,7 @@ int copy_bytes_full(
                                 /* use fallback below */
                         } else if (n == 0) { /* likely EOF */
 
-                                if (copied_something)
+                                if (copied_total > 0)
                                         break;
 
                                 try_sendfile = try_splice = false; /* same logic as above for copy_file_range() */
@@ -413,7 +451,7 @@ int copy_bytes_full(
                                 /* use fallback below */
                         } else if (n == 0) { /* likely EOF */
 
-                                if (copied_something)
+                                if (copied_total > 0)
                                         break;
 
                                 try_splice = false; /* same logic as above for copy_file_range() + sendfile() */
@@ -464,6 +502,12 @@ int copy_bytes_full(
                 }
 
         next:
+                copied_total += n;
+
+                /* Disable sendfile() in case we are getting too close to it's SSIZE_MAX-offset limit */
+                if (copied_total > SSIZE_MAX - COPY_BUFFER_SIZE)
+                        try_sendfile = false;
+
                 if (progress) {
                         r = progress(n, userdata);
                         if (r < 0)
@@ -474,13 +518,12 @@ int copy_bytes_full(
                         assert(max_bytes >= (uint64_t) n);
                         max_bytes -= n;
                 }
+        }
 
-                /* sendfile accepts at most SSIZE_MAX-offset bytes to copy, so reduce our maximum by the
-                 * amount we already copied, but don't go below our copy buffer size, unless we are close the
-                 * limit of bytes we are allowed to copy. */
-                m = MAX(MIN(COPY_BUFFER_SIZE, max_bytes), m - n);
-
-                copied_something = true;
+        if (FLAGS_SET(copy_flags, COPY_VERIFY_LINKED)) {
+                r = fd_verify_linked(fdf);
+                if (r < 0)
+                        return r;
         }
 
         if (copy_flags & COPY_TRUNCATE) {
@@ -508,7 +551,6 @@ static int fd_copy_symlink(
         _cleanup_free_ char *target = NULL;
         int r;
 
-        assert(from);
         assert(st);
         assert(to);
 
@@ -526,7 +568,10 @@ static int fd_copy_symlink(
                 mac_selinux_create_file_clear();
         if (r < 0) {
                 if (FLAGS_SET(copy_flags, COPY_GRACEFUL_WARN) && (ERRNO_IS_PRIVILEGE(r) || ERRNO_IS_NOT_SUPPORTED(r))) {
-                        log_notice_errno(r, "Failed to copy symlink '%s', ignoring: %m", from);
+                        log_notice_errno(r, "Failed to copy symlink%s%s%s, ignoring: %m",
+                                         isempty(from) ? "" : " '",
+                                         strempty(from),
+                                         isempty(from) ? "" : "'");
                         return 0;
                 }
 
@@ -722,6 +767,35 @@ static int memorize_hardlink(
         return 1;
 }
 
+static int prepare_nocow(int fdf, const char *from, int fdt, unsigned *chattr_mask, unsigned *chattr_flags) {
+        unsigned attrs = 0;
+        int r;
+
+        assert(fdf >= 0 || fdf == AT_FDCWD);
+        assert(fdt >= 0);
+        assert(!!chattr_mask == !!chattr_flags);
+
+        /* If caller explicitly requested NOCOW to be set or unset, let's not interfere. */
+        if (chattr_mask && FLAGS_SET(*chattr_mask, FS_NOCOW_FL))
+                return 0;
+
+        r = read_attr_at(fdf, from, &attrs);
+        if (r < 0 && !ERRNO_IS_NOT_SUPPORTED(r) && r != -ELOOP) /* If the source is a symlink we get ELOOP */
+                return r;
+
+        if (FLAGS_SET(attrs, FS_NOCOW_FL)) {
+                if (chattr_mask && chattr_flags) {
+                        *chattr_mask |= FS_NOCOW_FL;
+                        *chattr_flags |= FS_NOCOW_FL;
+                } else
+                        /* If the NOCOW flag is set on the source, make the copy NOCOW as well. If the source
+                         * is not NOCOW, don't do anything in particular with the copy. */
+                        (void) chattr_fd(fdt, FS_NOCOW_FL, FS_NOCOW_FL, /*previous=*/ NULL);
+        }
+
+        return 0;
+}
+
 static int fd_copy_tree_generic(
                 int df,
                 const char *from,
@@ -757,7 +831,6 @@ static int fd_copy_regular(
         _cleanup_close_ int fdf = -EBADF, fdt = -EBADF;
         int r, q;
 
-        assert(from);
         assert(st);
         assert(to);
 
@@ -767,9 +840,9 @@ static int fd_copy_regular(
         if (r > 0) /* worked! */
                 return 0;
 
-        fdf = openat(df, from, O_RDONLY|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW);
+        fdf = xopenat(df, from, O_RDONLY|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW);
         if (fdf < 0)
-                return -errno;
+                return fdf;
 
         if (copy_flags & COPY_MAC_CREATE) {
                 r = mac_selinux_create_file_prepare_at(dt, to, S_IFREG);
@@ -781,6 +854,10 @@ static int fd_copy_regular(
                 mac_selinux_create_file_clear();
         if (fdt < 0)
                 return -errno;
+
+        r = prepare_nocow(fdf, /*from=*/ NULL, fdt, /*chattr_mask=*/ NULL, /*chattr_flags=*/ NULL);
+        if (r < 0)
+                return r;
 
         r = copy_bytes_full(fdf, fdt, UINT64_MAX, copy_flags, NULL, NULL, progress, userdata);
         if (r < 0)
@@ -796,6 +873,12 @@ static int fd_copy_regular(
 
         (void) futimens(fdt, (struct timespec[]) { st->st_atim, st->st_mtim });
         (void) copy_xattr(fdf, NULL, fdt, NULL, copy_flags);
+
+        if (FLAGS_SET(copy_flags, COPY_VERIFY_LINKED)) {
+                r = fd_verify_linked(fdf);
+                if (r < 0)
+                        return r;
+        }
 
         if (copy_flags & COPY_FSYNC) {
                 if (fsync(fdt) < 0) {
@@ -830,7 +913,6 @@ static int fd_copy_fifo(
                 HardlinkContext *hardlink_context) {
         int r;
 
-        assert(from);
         assert(st);
         assert(to);
 
@@ -849,7 +931,10 @@ static int fd_copy_fifo(
         if (copy_flags & COPY_MAC_CREATE)
                 mac_selinux_create_file_clear();
         if (FLAGS_SET(copy_flags, COPY_GRACEFUL_WARN) && (ERRNO_IS_NEG_PRIVILEGE(r) || ERRNO_IS_NEG_NOT_SUPPORTED(r))) {
-                log_notice_errno(r, "Failed to copy fifo '%s', ignoring: %m", from);
+                log_notice_errno(r, "Failed to copy fifo%s%s%s, ignoring: %m",
+                                 isempty(from) ? "" : " '",
+                                 strempty(from),
+                                 isempty(from) ? "" : "'");
                 return 0;
         } else if (r < 0)
                 return r;
@@ -881,7 +966,6 @@ static int fd_copy_node(
                 HardlinkContext *hardlink_context) {
         int r;
 
-        assert(from);
         assert(st);
         assert(to);
 
@@ -900,7 +984,10 @@ static int fd_copy_node(
         if (copy_flags & COPY_MAC_CREATE)
                 mac_selinux_create_file_clear();
         if (FLAGS_SET(copy_flags, COPY_GRACEFUL_WARN) && (ERRNO_IS_NEG_PRIVILEGE(r) || ERRNO_IS_NEG_NOT_SUPPORTED(r))) {
-                log_notice_errno(r, "Failed to copy node '%s', ignoring: %m", from);
+                log_notice_errno(r, "Failed to copy node%s%s%s, ignoring: %m",
+                                 isempty(from) ? "" : " '",
+                                 strempty(from),
+                                 isempty(from) ? "" : "'");
                 return 0;
         } else if (r < 0)
                 return r;
@@ -946,6 +1033,7 @@ static int fd_copy_directory(
 
         _cleanup_close_ int fdf = -EBADF, fdt = -EBADF;
         _cleanup_closedir_ DIR *d = NULL;
+        struct stat dt_st;
         bool exists;
         int r;
 
@@ -955,12 +1043,9 @@ static int fd_copy_directory(
         if (depth_left == 0)
                 return -ENAMETOOLONG;
 
-        if (from)
-                fdf = openat(df, from, O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW);
-        else
-                fdf = fcntl(df, F_DUPFD_CLOEXEC, 3);
+        fdf = xopenat(df, from, O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW);
         if (fdf < 0)
-                return -errno;
+                return fdf;
 
         if (!hardlink_context) {
                 /* If recreating hardlinks is requested let's set up a context for that now. */
@@ -984,19 +1069,22 @@ static int fd_copy_directory(
 
         exists = r >= 0;
 
-        fdt = xopenat_lock(dt, to,
-                           O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW|(exists ? 0 : O_CREAT|O_EXCL),
-                           (copy_flags & COPY_MAC_CREATE ? XO_LABEL : 0)|(set_contains(subvolumes, st) ? XO_SUBVOLUME : 0),
-                           st->st_mode & 07777,
-                           copy_flags & COPY_LOCK_BSD ? LOCK_BSD : LOCK_NONE,
-                           LOCK_EX);
+        fdt = xopenat_lock_full(dt, to,
+                                O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW|(exists ? 0 : O_CREAT|O_EXCL),
+                                (copy_flags & COPY_MAC_CREATE ? XO_LABEL : 0)|(set_contains(subvolumes, st) ? XO_SUBVOLUME : 0),
+                                st->st_mode & 07777,
+                                copy_flags & COPY_LOCK_BSD ? LOCK_BSD : LOCK_NONE,
+                                LOCK_EX);
         if (fdt < 0)
                 return fdt;
+
+        if (exists && FLAGS_SET(copy_flags, COPY_RESTORE_DIRECTORY_TIMESTAMPS) && fstat(fdt, &dt_st) < 0)
+                return -errno;
 
         r = 0;
 
         if (PTR_TO_INT(hashmap_get(denylist, st)) == DENY_CONTENTS) {
-                log_debug("%s is in the denylist, not recursing", from);
+                log_debug("%s is in the denylist, not recursing", from ?: "file to copy");
                 goto finish;
         }
 
@@ -1030,7 +1118,8 @@ static int fd_copy_directory(
                 }
 
                 if (PTR_TO_INT(hashmap_get(denylist, &buf)) == DENY_INODE) {
-                        log_debug("%s/%s is in the denylist, ignoring", from, de->d_name);
+                        log_debug("%s%s%s is in the denylist, ignoring",
+                                  strempty(from), isempty(from) ? "" : "/", de->d_name);
                         continue;
                 }
 
@@ -1089,8 +1178,15 @@ finish:
                 if (fchmod(fdt, st->st_mode & 07777) < 0)
                         r = -errno;
 
+                /* Run hardlink context cleanup now because it potentially changes timestamps */
+                hardlink_context_destroy(&our_hardlink_context);
                 (void) copy_xattr(dirfd(d), NULL, fdt, NULL, copy_flags);
                 (void) futimens(fdt, (struct timespec[]) { st->st_atim, st->st_mtim });
+        } else if (FLAGS_SET(copy_flags, COPY_RESTORE_DIRECTORY_TIMESTAMPS)) {
+                /* Run hardlink context cleanup now because it potentially changes timestamps */
+                hardlink_context_destroy(&our_hardlink_context);
+                /* If the directory already exists, make sure the timestamps stay the same as before. */
+                (void) futimens(fdt, (struct timespec[]) { dt_st.st_atim, dt_st.st_mtim });
         }
 
         if (copy_flags & COPY_FSYNC_FULL) {
@@ -1163,10 +1259,10 @@ static int fd_copy_tree_generic(
 
         DenyType t = PTR_TO_INT(hashmap_get(denylist, st));
         if (t == DENY_INODE) {
-                log_debug("%s is in the denylist, ignoring", from);
+                log_debug("%s is in the denylist, ignoring", from ?: "file to copy");
                 return 0;
         } else if (t == DENY_CONTENTS)
-                log_debug("%s is configured to have its contents excluded, but is not a directory", from);
+                log_debug("%s is configured to have its contents excluded, but is not a directory", from ?: "file to copy");
 
         r = fd_copy_leaf(df, from, st, dt, to, override_uid, override_gid, copy_flags, hardlink_context, display_path, progress_bytes, userdata);
         /* We just tried to copy a leaf node of the tree. If it failed because the node already exists *and* the COPY_REPLACE flag has been provided, we should unlink the node and re-copy. */
@@ -1198,11 +1294,10 @@ int copy_tree_at_full(
         struct stat st;
         int r;
 
-        assert(from);
         assert(to);
         assert(!FLAGS_SET(copy_flags, COPY_LOCK_BSD));
 
-        if (fstatat(fdf, from, &st, AT_SYMLINK_NOFOLLOW) < 0)
+        if (fstatat(fdf, strempty(from), &st, AT_SYMLINK_NOFOLLOW | (isempty(from) ? AT_EMPTY_PATH : 0)) < 0)
                 return -errno;
 
         r = fd_copy_tree_generic(fdf, from, &st, fdt, to, st.st_dev, COPY_DEPTH_MAX, override_uid,
@@ -1305,13 +1400,12 @@ int copy_file_fd_at_full(
         int r;
 
         assert(dir_fdf >= 0 || dir_fdf == AT_FDCWD);
-        assert(from);
         assert(fdt >= 0);
         assert(!FLAGS_SET(copy_flags, COPY_LOCK_BSD));
 
-        fdf = openat(dir_fdf, from, O_RDONLY|O_CLOEXEC|O_NOCTTY);
+        fdf = xopenat(dir_fdf, from, O_RDONLY|O_CLOEXEC|O_NOCTTY);
         if (fdf < 0)
-                return -errno;
+                return fdf;
 
         r = fd_verify_regular(fdf);
         if (r < 0)
@@ -1330,6 +1424,12 @@ int copy_file_fd_at_full(
         if (S_ISREG(st.st_mode)) {
                 (void) copy_times(fdf, fdt, copy_flags);
                 (void) copy_xattr(fdf, NULL, fdt, NULL, copy_flags);
+        }
+
+        if (FLAGS_SET(copy_flags, COPY_VERIFY_LINKED)) {
+                r = fd_verify_linked(fdf);
+                if (r < 0)
+                        return r;
         }
 
         if (copy_flags & COPY_FSYNC_FULL) {
@@ -1363,12 +1463,11 @@ int copy_file_at_full(
 
         assert(dir_fdf >= 0 || dir_fdf == AT_FDCWD);
         assert(dir_fdt >= 0 || dir_fdt == AT_FDCWD);
-        assert(from);
         assert(to);
 
-        fdf = openat(dir_fdf, from, O_RDONLY|O_CLOEXEC|O_NOCTTY);
+        fdf = xopenat(dir_fdf, from, O_RDONLY|O_CLOEXEC|O_NOCTTY);
         if (fdf < 0)
-                return -errno;
+                return fdf;
 
         if (fstat(fdf, &st) < 0)
                 return -errno;
@@ -1378,11 +1477,11 @@ int copy_file_at_full(
                 return r;
 
         WITH_UMASK(0000) {
-                fdt = xopenat_lock(dir_fdt, to,
-                                   flags|O_WRONLY|O_CREAT|O_CLOEXEC|O_NOCTTY,
-                                   (copy_flags & COPY_MAC_CREATE ? XO_LABEL : 0),
-                                   mode != MODE_INVALID ? mode : st.st_mode,
-                                   copy_flags & COPY_LOCK_BSD ? LOCK_BSD : LOCK_NONE, LOCK_EX);
+                fdt = xopenat_lock_full(dir_fdt, to,
+                                        flags|O_WRONLY|O_CREAT|O_CLOEXEC|O_NOCTTY,
+                                        (copy_flags & COPY_MAC_CREATE ? XO_LABEL : 0),
+                                        mode != MODE_INVALID ? mode : st.st_mode,
+                                        copy_flags & COPY_LOCK_BSD ? LOCK_BSD : LOCK_NONE, LOCK_EX);
                 if (fdt < 0)
                         return fdt;
         }
@@ -1392,6 +1491,10 @@ int copy_file_at_full(
                 if (r < 0)
                         goto fail;
         }
+
+        r = prepare_nocow(fdf, /*from=*/ NULL, fdt, &chattr_mask, &chattr_flags);
+        if (r < 0)
+                return r;
 
         if (chattr_mask != 0)
                 (void) chattr_fd(fdt, chattr_flags, chattr_mask & CHATTR_EARLY_FL, NULL);
@@ -1403,8 +1506,15 @@ int copy_file_at_full(
         (void) copy_times(fdf, fdt, copy_flags);
         (void) copy_xattr(fdf, NULL, fdt, NULL, copy_flags);
 
-        if (chattr_mask != 0)
-                (void) chattr_fd(fdt, chattr_flags, chattr_mask & ~CHATTR_EARLY_FL, NULL);
+        if (FLAGS_SET(copy_flags, COPY_VERIFY_LINKED)) {
+                r = fd_verify_linked(fdf);
+                if (r < 0)
+                        goto fail;
+        }
+
+        unsigned nocow = FLAGS_SET(copy_flags, COPY_NOCOW_AFTER) ? FS_NOCOW_FL : 0;
+        if ((chattr_mask | nocow) != 0)
+                (void) chattr_fd(fdt, chattr_flags | nocow, (chattr_mask & ~CHATTR_EARLY_FL) | nocow, NULL);
 
         if (copy_flags & (COPY_FSYNC|COPY_FSYNC_FULL)) {
                 if (fsync(fdt) < 0) {
@@ -1451,7 +1561,6 @@ int copy_file_atomic_at_full(
         _cleanup_close_ int fdt = -EBADF;
         int r;
 
-        assert(from);
         assert(to);
         assert(!FLAGS_SET(copy_flags, COPY_LOCK_BSD));
 
@@ -1465,6 +1574,10 @@ int copy_file_atomic_at_full(
                 mac_selinux_create_file_clear();
         if (fdt < 0)
                 return fdt;
+
+        r = prepare_nocow(dir_fdf, from, fdt, &chattr_mask, &chattr_flags);
+        if (r < 0)
+                return r;
 
         if (chattr_mask != 0)
                 (void) chattr_fd(fdt, chattr_flags, chattr_mask & CHATTR_EARLY_FL, NULL);
@@ -1488,8 +1601,9 @@ int copy_file_atomic_at_full(
 
         t = mfree(t);
 
-        if (chattr_mask != 0)
-                (void) chattr_fd(fdt, chattr_flags, chattr_mask & ~CHATTR_EARLY_FL, NULL);
+        unsigned nocow = FLAGS_SET(copy_flags, COPY_NOCOW_AFTER) ? FS_NOCOW_FL : 0;
+        if ((chattr_mask | nocow) != 0)
+                (void) chattr_fd(fdt, chattr_flags | nocow, (chattr_mask & ~CHATTR_EARLY_FL) | nocow, NULL);
 
         r = close_nointr(TAKE_FD(fdt)); /* even if this fails, the fd is now invalidated */
         if (r < 0)

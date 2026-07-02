@@ -55,6 +55,8 @@ static void test_oomd_cgroup_kill(void) {
          * by the test so that pid1 doesn't delete it before we can read the xattrs. */
         cgroup = path_join(cgroup_root, "oomdkilltest");
         assert_se(cgroup);
+        /* Always start clean, in case of repeated runs and failures */
+        assert_se(cg_trim(SYSTEMD_CGROUP_CONTROLLER, cgroup, /* delete_root */ true) >= 0);
         assert_se(cg_create(SYSTEMD_CGROUP_CONTROLLER, cgroup) >= 0);
 
         /* If we don't have permissions to set xattrs we're likely in a userns or missing capabilities */
@@ -88,6 +90,8 @@ static void test_oomd_cgroup_kill(void) {
                 assert_se(cg_get_xattr_malloc(cgroup, "user.oomd_kill", &v) >= 0);
                 assert_se(streq(v, i == 0 ? "2" : "4"));
         }
+
+        assert_se(cg_trim(SYSTEMD_CGROUP_CONTROLLER, cgroup, /* delete_root */ true) >= 0);
 }
 
 static void test_oomd_cgroup_context_acquire_and_insert(void) {
@@ -138,6 +142,7 @@ static void test_oomd_cgroup_context_acquire_and_insert(void) {
         c1->pgscan = UINT64_MAX;
         c1->mem_pressure_limit = 6789;
         c1->mem_pressure_limit_hit_start = 42;
+        c1->mem_pressure_duration_usec = 1234;
         c1->last_had_mem_reclaim = 888;
         assert_se(h2 = hashmap_new(&oomd_cgroup_ctx_hash_ops));
         assert_se(oomd_insert_cgroup_context(h1, h2, cgroup) == 0);
@@ -149,6 +154,7 @@ static void test_oomd_cgroup_context_acquire_and_insert(void) {
         assert_se(c2->last_pgscan == UINT64_MAX);
         assert_se(c2->mem_pressure_limit == 6789);
         assert_se(c2->mem_pressure_limit_hit_start == 42);
+        assert_se(c2->mem_pressure_duration_usec == 1234);
         assert_se(c2->last_had_mem_reclaim == 888); /* assumes the live pgscan is less than UINT64_MAX */
 }
 
@@ -162,11 +168,13 @@ static void test_oomd_update_cgroup_contexts_between_hashmaps(void) {
                 { .path = paths[0],
                   .mem_pressure_limit = 5,
                   .mem_pressure_limit_hit_start = 777,
+                  .mem_pressure_duration_usec = 111,
                   .last_had_mem_reclaim = 888,
                   .pgscan = 57 },
                 { .path = paths[1],
                   .mem_pressure_limit = 6,
                   .mem_pressure_limit_hit_start = 888,
+                  .mem_pressure_duration_usec = 222,
                   .last_had_mem_reclaim = 888,
                   .pgscan = 42 },
         };
@@ -193,6 +201,7 @@ static void test_oomd_update_cgroup_contexts_between_hashmaps(void) {
         assert_se(c_old->pgscan == c_new->last_pgscan);
         assert_se(c_old->mem_pressure_limit == c_new->mem_pressure_limit);
         assert_se(c_old->mem_pressure_limit_hit_start == c_new->mem_pressure_limit_hit_start);
+        assert_se(c_old->mem_pressure_duration_usec == c_new->mem_pressure_duration_usec);
         assert_se(c_old->last_had_mem_reclaim == c_new->last_had_mem_reclaim);
 
         assert_se(c_old = hashmap_get(h_old, "/1.slice"));
@@ -200,6 +209,7 @@ static void test_oomd_update_cgroup_contexts_between_hashmaps(void) {
         assert_se(c_old->pgscan == c_new->last_pgscan);
         assert_se(c_old->mem_pressure_limit == c_new->mem_pressure_limit);
         assert_se(c_old->mem_pressure_limit_hit_start == c_new->mem_pressure_limit_hit_start);
+        assert_se(c_old->mem_pressure_duration_usec == c_new->mem_pressure_duration_usec);
         assert_se(c_new->last_had_mem_reclaim > c_old->last_had_mem_reclaim);
 }
 
@@ -255,17 +265,21 @@ static void test_oomd_pressure_above(void) {
         assert_se(store_loadavg_fixed_point(99, 99, &(ctx[0].memory_pressure.avg60)) == 0);
         assert_se(store_loadavg_fixed_point(99, 99, &(ctx[0].memory_pressure.avg300)) == 0);
         ctx[0].mem_pressure_limit = threshold;
+        /* Set memory pressure duration to 0 since we use the real system monotonic clock
+         * in oomd_pressure_above() and we want to avoid this test depending on timing. */
+        ctx[0].mem_pressure_duration_usec = 0;
 
         /* /derp.slice */
         assert_se(store_loadavg_fixed_point(1, 11, &(ctx[1].memory_pressure.avg10)) == 0);
         assert_se(store_loadavg_fixed_point(1, 11, &(ctx[1].memory_pressure.avg60)) == 0);
         assert_se(store_loadavg_fixed_point(1, 11, &(ctx[1].memory_pressure.avg300)) == 0);
         ctx[1].mem_pressure_limit = threshold;
+        ctx[1].mem_pressure_duration_usec = 0;
 
         /* High memory pressure */
         assert_se(h1 = hashmap_new(&string_hash_ops));
         assert_se(hashmap_put(h1, "/herp.slice", &ctx[0]) >= 0);
-        assert_se(oomd_pressure_above(h1, 0 /* duration */, &t1) == 1);
+        assert_se(oomd_pressure_above(h1, &t1) == 1);
         assert_se(set_contains(t1, &ctx[0]));
         assert_se(c = hashmap_get(h1, "/herp.slice"));
         assert_se(c->mem_pressure_limit_hit_start > 0);
@@ -273,14 +287,14 @@ static void test_oomd_pressure_above(void) {
         /* Low memory pressure */
         assert_se(h2 = hashmap_new(&string_hash_ops));
         assert_se(hashmap_put(h2, "/derp.slice", &ctx[1]) >= 0);
-        assert_se(oomd_pressure_above(h2, 0 /* duration */, &t2) == 0);
+        assert_se(oomd_pressure_above(h2, &t2) == 0);
         assert_se(!t2);
         assert_se(c = hashmap_get(h2, "/derp.slice"));
         assert_se(c->mem_pressure_limit_hit_start == 0);
 
         /* High memory pressure w/ multiple cgroups */
         assert_se(hashmap_put(h1, "/derp.slice", &ctx[1]) >= 0);
-        assert_se(oomd_pressure_above(h1, 0 /* duration */, &t3) == 1);
+        assert_se(oomd_pressure_above(h1, &t3) == 1);
         assert_se(set_contains(t3, &ctx[0]));
         assert_se(set_size(t3) == 1);
         assert_se(c = hashmap_get(h1, "/herp.slice"));

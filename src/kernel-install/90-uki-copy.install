@@ -26,8 +26,6 @@ KERNEL_VERSION="${2:?}"
 ENTRY_DIR_ABS="$3"
 KERNEL_IMAGE="$4"
 
-[ "$KERNEL_INSTALL_LAYOUT" = "uki" ] || exit 0
-
 ENTRY_TOKEN="$KERNEL_INSTALL_ENTRY_TOKEN"
 BOOT_ROOT="$KERNEL_INSTALL_BOOT_ROOT"
 
@@ -36,9 +34,10 @@ UKI_DIR="$BOOT_ROOT/EFI/Linux"
 case "$COMMAND" in
     remove)
         [ "$KERNEL_INSTALL_VERBOSE" -gt 0 ] && \
-            echo "Removing $UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION*.efi"
-        exec rm -f \
+            echo "Removing $UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION*.efi and extras"
+        exec rm -rf \
             "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi" \
+            "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi.extra.d/" \
             "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION+"*".efi"
         ;;
     add)
@@ -47,6 +46,8 @@ case "$COMMAND" in
         exit 0
         ;;
 esac
+
+[ "$KERNEL_INSTALL_LAYOUT" = "uki" ] || exit 0
 
 if ! [ -d "$UKI_DIR" ]; then
     [ "$KERNEL_INSTALL_VERBOSE" -gt 0 ] && echo "creating $UKI_DIR"
@@ -61,6 +62,18 @@ if [ -f "$TRIES_FILE" ]; then
         echo "$TRIES_FILE does not contain an integer." >&2
         exit 1
     fi
+    if [ -f "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi" ]; then
+        [ "$KERNEL_INSTALL_VERBOSE" -gt 0 ] && \
+            echo "Removing previous UKI '$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi' without boot counting." >&2
+        rm -f "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi"
+    fi
+    for uki in "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION+"*.efi; do
+        [ "$uki" = "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION+*.efi" ] && break
+        [ "$KERNEL_INSTALL_VERBOSE" -gt 0 ] && \
+            echo "Removing previous UKI '$uki' that has not yet booted successfully." >&2
+        rm -f "$uki"
+    done
+
     UKI_FILE="$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION+$TRIES.efi"
 else
     UKI_FILE="$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi"

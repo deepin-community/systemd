@@ -17,7 +17,7 @@
 #include "sd-event.h"
 
 #include "alloc-util.h"
-#include "dhcp-identifier.h"
+#include "dhcp-duid-internal.h"
 #include "dhcp-network.h"
 #include "dhcp-option.h"
 #include "dhcp-packet.h"
@@ -46,7 +46,7 @@ static void test_request_basic(sd_event *e) {
         sd_dhcp_client *client;
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         /* Initialize client without Anonymize settings. */
         r = sd_dhcp_client_new(&client, false);
@@ -57,14 +57,14 @@ static void test_request_basic(sd_event *e) {
         r = sd_dhcp_client_attach_event(client, e, 0);
         assert_se(r >= 0);
 
-        assert_se(sd_dhcp_client_set_request_option(NULL, 0) == -EINVAL);
-        assert_se(sd_dhcp_client_set_request_address(NULL, NULL) == -EINVAL);
-        assert_se(sd_dhcp_client_set_ifindex(NULL, 0) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_request_option(NULL, 0) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_request_address(NULL, NULL) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_ifindex(NULL, 0) == -EINVAL);
 
         assert_se(sd_dhcp_client_set_ifindex(client, 15) == 0);
-        assert_se(sd_dhcp_client_set_ifindex(client, -42) == -EINVAL);
-        assert_se(sd_dhcp_client_set_ifindex(client, -1) == -EINVAL);
-        assert_se(sd_dhcp_client_set_ifindex(client, 0) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_ifindex(client, -42) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_ifindex(client, -1) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_ifindex(client, 0) == -EINVAL);
         assert_se(sd_dhcp_client_set_ifindex(client, 1) == 0);
 
         assert_se(sd_dhcp_client_set_hostname(client, "host") == 1);
@@ -106,7 +106,7 @@ static void test_request_anonymize(sd_event *e) {
         sd_dhcp_client *client;
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         /* Initialize client with Anonymize settings. */
         r = sd_dhcp_client_new(&client, true);
@@ -138,7 +138,7 @@ static void test_checksum(void) {
         };
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         assert_se(dhcp_packet_checksum((uint8_t*)&buf, 20) == be16toh(0x78ae));
 }
@@ -165,19 +165,18 @@ static int check_options(uint8_t code, uint8_t len, const void *option, void *us
         switch (code) {
         case SD_DHCP_OPTION_CLIENT_IDENTIFIER:
         {
+                sd_dhcp_duid duid;
                 uint32_t iaid;
-                struct duid duid;
-                size_t duid_len;
 
-                assert_se(dhcp_identifier_set_duid_en(&duid, &duid_len) >= 0);
+                assert_se(sd_dhcp_duid_set_en(&duid) >= 0);
                 assert_se(dhcp_identifier_set_iaid(NULL, &hw_addr, /* legacy = */ true, &iaid) >= 0);
 
-                assert_se(len == sizeof(uint8_t) + sizeof(uint32_t) + duid_len);
+                assert_se(len == sizeof(uint8_t) + sizeof(uint32_t) + duid.size);
                 assert_se(len == 19);
                 assert_se(((uint8_t*) option)[0] == 0xff);
 
                 assert_se(memcmp((uint8_t*) option + 1, &iaid, sizeof(iaid)) == 0);
-                assert_se(memcmp((uint8_t*) option + 5, &duid, duid_len) == 0);
+                assert_se(memcmp((uint8_t*) option + 5, &duid.duid, duid.size) == 0);
                 break;
         }
 
@@ -271,7 +270,7 @@ static int test_discover_message_verify(size_t size, struct DHCPMessage *dhcp) {
         assert_se(res == DHCP_DISCOVER);
 
         if (verbose)
-                printf("  recv DHCP Discover 0x%08x\n", be32toh(dhcp->xid));
+                log_info("  recv DHCP Discover 0x%08x", be32toh(dhcp->xid));
 
         return 0;
 }
@@ -281,7 +280,7 @@ static void test_discover_message(sd_event *e) {
         int res, r;
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         r = sd_dhcp_client_new(&client, false);
         assert_se(r >= 0);
@@ -425,7 +424,7 @@ static int test_addr_acq_acquired(sd_dhcp_client *client, int event,
                          sizeof(addrs[0].s_addr)) == 0);
 
         if (verbose)
-                printf("  DHCP address acquired\n");
+                log_info("  DHCP address acquired");
 
         sd_event_exit(e, 0);
 
@@ -444,7 +443,7 @@ static int test_addr_acq_recv_request(size_t size, DHCPMessage *request) {
         assert_se(msg_bytes[size - 1] == SD_DHCP_OPTION_END);
 
         if (verbose)
-                printf("  recv DHCP Request  0x%08x\n", be32toh(xid));
+                log_info("  recv DHCP Request  0x%08x", be32toh(xid));
 
         memcpy(&test_addr_acq_ack[26], &udp_check, sizeof(udp_check));
         memcpy(&test_addr_acq_ack[32], &xid, sizeof(xid));
@@ -457,7 +456,7 @@ static int test_addr_acq_recv_request(size_t size, DHCPMessage *request) {
         assert_se(res == sizeof(test_addr_acq_ack));
 
         if (verbose)
-                printf("  send DHCP Ack\n");
+                log_info("  send DHCP Ack");
 
         return 0;
 };
@@ -475,7 +474,7 @@ static int test_addr_acq_recv_discover(size_t size, DHCPMessage *discover) {
         xid = discover->xid;
 
         if (verbose)
-                printf("  recv DHCP Discover 0x%08x\n", be32toh(xid));
+                log_info("  recv DHCP Discover 0x%08x", be32toh(xid));
 
         memcpy(&test_addr_acq_offer[26], &udp_check, sizeof(udp_check));
         memcpy(&test_addr_acq_offer[32], &xid, sizeof(xid));
@@ -488,7 +487,7 @@ static int test_addr_acq_recv_discover(size_t size, DHCPMessage *discover) {
         assert_se(res == sizeof(test_addr_acq_offer));
 
         if (verbose)
-                printf("  sent DHCP Offer\n");
+                log_info("  sent DHCP Offer");
 
         return 0;
 }
@@ -498,7 +497,7 @@ static void test_addr_acq(sd_event *e) {
         int res, r;
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         r = sd_dhcp_client_new(&client, false);
         assert_se(r >= 0);
@@ -515,7 +514,7 @@ static void test_addr_acq(sd_event *e) {
         callback_recv = test_addr_acq_recv_discover;
 
         assert_se(sd_event_add_time_relative(e, NULL, CLOCK_BOOTTIME,
-                                             2 * USEC_PER_SEC, 0,
+                                             30 * USEC_PER_SEC, 0,
                                              NULL, INT_TO_PTR(-ETIMEDOUT)) >= 0);
 
         res = sd_dhcp_client_start(client);

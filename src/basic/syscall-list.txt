@@ -16,6 +16,7 @@ atomic_barrier
 atomic_cmpxchg_32
 bind
 bpf
+breakpoint
 brk
 cachectl
 cacheflush
@@ -83,6 +84,8 @@ fcntl
 fcntl64
 fdatasync
 fgetxattr
+file_getattr
+file_setattr
 finit_module
 flistxattr
 flock
@@ -111,6 +114,7 @@ futimesat
 get_mempolicy
 get_robust_list
 get_thread_area
+get_tls
 getcpu
 getcwd
 getdents
@@ -149,6 +153,7 @@ gettimeofday
 getuid
 getuid32
 getxattr
+getxattrat
 getxgid
 getxpid
 getxuid
@@ -188,12 +193,18 @@ lgetxattr
 link
 linkat
 listen
+listmount
 listxattr
+listxattrat
 llistxattr
+llseek
 lookup_dcookie
 lremovexattr
 lseek
 lsetxattr
+lsm_get_self_attr
+lsm_list_modules
+lsm_set_self_attr
 lstat
 lstat64
 madvise
@@ -229,6 +240,7 @@ mq_timedsend
 mq_timedsend_time64
 mq_unlink
 mremap
+mseal
 msgctl
 msgget
 msgrcv
@@ -335,6 +347,7 @@ recvmmsg_time64
 recvmsg
 remap_file_pages
 removexattr
+removexattrat
 rename
 renameat
 renameat2
@@ -392,6 +405,7 @@ set_mempolicy_home_node
 set_robust_list
 set_thread_area
 set_tid_address
+set_tls
 setdomainname
 setfsgid
 setfsgid32
@@ -423,6 +437,7 @@ settimeofday
 setuid
 setuid32
 setxattr
+setxattrat
 sgetmask
 shmat
 shmctl
@@ -449,6 +464,7 @@ stat
 stat64
 statfs
 statfs64
+statmount
 statx
 stime
 subpage_prot
@@ -496,7 +512,10 @@ uname
 unlink
 unlinkat
 unshare
+uretprobe
 userfaultfd
+usr26
+usr32
 ustat
 utime
 utimensat

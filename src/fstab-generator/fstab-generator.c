@@ -46,6 +46,7 @@ typedef enum MountPointFlags {
         MOUNT_GROWFS    = 1 << 4,
         MOUNT_RW_ONLY   = 1 << 5,
         MOUNT_PCRFS     = 1 << 6,
+        MOUNT_QUOTA     = 1 << 7,
 } MountPointFlags;
 
 typedef struct Mount {
@@ -108,15 +109,15 @@ static int mount_array_add_internal(
                 char *in_what,
                 char *in_where,
                 const char *in_fstype,
-                const char *in_options) {
+                char *in_options) {
 
         _cleanup_free_ char *what = NULL, *where = NULL, *fstype = NULL, *options = NULL;
-        int r;
 
         /* This takes what and where. */
 
         what = ASSERT_PTR(in_what);
         where = in_where;
+        options = in_options;
 
         fstype = strdup(isempty(in_fstype) ? "auto" : in_fstype);
         if (!fstype)
@@ -124,19 +125,6 @@ static int mount_array_add_internal(
 
         if (streq(fstype, "swap"))
                 where = mfree(where);
-
-        if (!isempty(in_options)) {
-                _cleanup_strv_free_ char **options_strv = NULL;
-
-                r = strv_split_full(&options_strv, in_options, ",", 0);
-                if (r < 0)
-                        return r;
-
-                r = strv_make_nulstr(options_strv, &options, NULL);
-        } else
-                r = strv_make_nulstr(STRV_MAKE("defaults"), &options, NULL);
-        if (r < 0)
-                return r;
 
         if (!GREEDY_REALLOC(arg_mounts, arg_n_mounts + 1))
                 return -ENOMEM;
@@ -159,7 +147,7 @@ static int mount_array_add(bool for_initrd, const char *str) {
         assert(str);
 
         r = extract_many_words(&str, ":", EXTRACT_CUNESCAPE | EXTRACT_DONT_COALESCE_SEPARATORS,
-                               &what, &where, &fstype, &options, NULL);
+                               &what, &where, &fstype, &options);
         if (r < 0)
                 return r;
         if (r < 2)
@@ -167,7 +155,7 @@ static int mount_array_add(bool for_initrd, const char *str) {
         if (!isempty(str))
                 return -EINVAL;
 
-        return mount_array_add_internal(for_initrd, TAKE_PTR(what), TAKE_PTR(where), fstype, options);
+        return mount_array_add_internal(for_initrd, TAKE_PTR(what), TAKE_PTR(where), fstype, TAKE_PTR(options));
 }
 
 static int mount_array_add_swap(bool for_initrd, const char *str) {
@@ -177,7 +165,7 @@ static int mount_array_add_swap(bool for_initrd, const char *str) {
         assert(str);
 
         r = extract_many_words(&str, ":", EXTRACT_CUNESCAPE | EXTRACT_DONT_COALESCE_SEPARATORS,
-                               &what, &options, NULL);
+                               &what, &options);
         if (r < 0)
                 return r;
         if (r < 1)
@@ -185,11 +173,13 @@ static int mount_array_add_swap(bool for_initrd, const char *str) {
         if (!isempty(str))
                 return -EINVAL;
 
-        return mount_array_add_internal(for_initrd, TAKE_PTR(what), NULL, "swap", options);
+        return mount_array_add_internal(for_initrd, TAKE_PTR(what), NULL, "swap", TAKE_PTR(options));
 }
 
 static int write_options(FILE *f, const char *options) {
         _cleanup_free_ char *o = NULL;
+
+        assert(f);
 
         if (isempty(options))
                 return 0;
@@ -207,6 +197,9 @@ static int write_options(FILE *f, const char *options) {
 
 static int write_what(FILE *f, const char *what) {
         _cleanup_free_ char *w = NULL;
+
+        assert(f);
+        assert(what);
 
         w = specifier_escape(what);
         if (!w)
@@ -324,25 +317,30 @@ static int write_timeout(
                 const char *where,
                 const char *opts,
                 const char *filter,
-                const char *variable) {
+                const char *unit_setting) {
 
         _cleanup_free_ char *timeout = NULL;
         usec_t u;
         int r;
 
+        assert(f);
+        assert(where);
+        assert(filter);
+        assert(unit_setting);
+
         r = fstab_filter_options(opts, filter, NULL, &timeout, NULL, NULL);
         if (r < 0)
-                return log_warning_errno(r, "Failed to parse options: %m");
+                return log_error_errno(r, "Failed to parse options for '%s': %m", where);
         if (r == 0)
                 return 0;
 
         r = parse_sec_fix_0(timeout, &u);
         if (r < 0) {
-                log_warning("Failed to parse timeout for %s, ignoring: %s", where, timeout);
+                log_warning_errno(r, "Failed to parse timeout '%s' for '%s', ignoring: %m", timeout, where);
                 return 0;
         }
 
-        fprintf(f, "%s=%s\n", variable, FORMAT_TIMESPAN(u, 0));
+        fprintf(f, "%s=%s\n", unit_setting, FORMAT_TIMESPAN(u, 0));
 
         return 0;
 }
@@ -359,109 +357,127 @@ static int write_mount_timeout(FILE *f, const char *where, const char *opts) {
 
 static int write_dependency(
                 FILE *f,
+                const char *where,
                 const char *opts,
                 const char *filter,
-                const char *format) {
+                const char* const *unit_settings) {
 
-        _cleanup_strv_free_ char **names = NULL, **units = NULL;
-        _cleanup_free_ char *res = NULL;
+        _cleanup_strv_free_ char **unit_names = NULL;
+        _cleanup_free_ char *units = NULL;
         int r;
 
         assert(f);
-        assert(opts);
+        assert(filter);
+        assert(unit_settings);
 
-        r = fstab_filter_options(opts, filter, NULL, NULL, &names, NULL);
+        r = fstab_filter_options(opts, filter, NULL, NULL, &unit_names, NULL);
         if (r < 0)
-                return log_warning_errno(r, "Failed to parse options: %m");
+                return log_error_errno(r, "Failed to parse options for '%s': %m", where);
         if (r == 0)
                 return 0;
 
-        STRV_FOREACH(s, names) {
-                char *x;
+        STRV_FOREACH(s, unit_names) {
+                _cleanup_free_ char *mangled = NULL;
 
-                r = unit_name_mangle_with_suffix(*s, "as dependency", 0, ".mount", &x);
+                r = unit_name_mangle_with_suffix(*s, "as dependency", 0, ".mount", &mangled);
                 if (r < 0)
-                        return log_error_errno(r, "Failed to generate unit name: %m");
+                        return log_error_errno(r, "Failed to generate dependency unit name for '%s': %m", where);
 
-                r = strv_consume(&units, x);
-                if (r < 0)
+                if (!strextend_with_separator(&units, " ", mangled))
                         return log_oom();
         }
 
-        if (units) {
-                res = strv_join(units, " ");
-                if (!res)
-                        return log_oom();
-
-                DISABLE_WARNING_FORMAT_NONLITERAL;
-                fprintf(f, format, res);
-                REENABLE_WARNING;
-        }
+        STRV_FOREACH(setting, unit_settings)
+                fprintf(f, "%s=%s\n", *setting, units);
 
         return 0;
 }
 
-static int write_after(FILE *f, const char *opts) {
-        return write_dependency(f, opts,
-                                "x-systemd.after\0", "After=%1$s\n");
+static int write_after(FILE *f, const char *where, const char *opts) {
+        return write_dependency(f, where, opts,
+                                "x-systemd.after\0", STRV_MAKE_CONST("After"));
 }
 
-static int write_requires_after(FILE *f, const char *opts) {
-        return write_dependency(f, opts,
-                                "x-systemd.requires\0", "After=%1$s\nRequires=%1$s\n");
+static int write_requires_after(FILE *f, const char *where, const char *opts) {
+        return write_dependency(f, where, opts,
+                                "x-systemd.requires\0", STRV_MAKE_CONST("Requires", "After"));
 }
 
-static int write_before(FILE *f, const char *opts) {
-        return write_dependency(f, opts,
-                                "x-systemd.before\0", "Before=%1$s\n");
+static int write_wants_after(FILE *f, const char *where, const char *opts) {
+        return write_dependency(f, where, opts,
+                                "x-systemd.wants\0", STRV_MAKE_CONST("Wants", "After"));
 }
 
-static int write_requires_mounts_for(FILE *f, const char *opts) {
+static int write_before(FILE *f, const char *where, const char *opts) {
+        return write_dependency(f, where, opts,
+                                "x-systemd.before\0", STRV_MAKE_CONST("Before"));
+}
+
+static int write_mounts_for(
+                FILE *f,
+                const char *where,
+                const char *opts,
+                const char *filter,
+                const char *unit_setting) {
+
         _cleanup_strv_free_ char **paths = NULL, **paths_escaped = NULL;
-        _cleanup_free_ char *res = NULL;
         int r;
 
         assert(f);
-        assert(opts);
+        assert(where);
+        assert(filter);
+        assert(unit_setting);
 
-        r = fstab_filter_options(opts, "x-systemd.requires-mounts-for\0", NULL, NULL, &paths, NULL);
+        r = fstab_filter_options(opts, filter, NULL, NULL, &paths, NULL);
         if (r < 0)
-                return log_warning_errno(r, "Failed to parse options: %m");
+                return log_error_errno(r, "Failed to parse options for '%s': %m", where);
         if (r == 0)
                 return 0;
 
         r = specifier_escape_strv(paths, &paths_escaped);
         if (r < 0)
-                return log_error_errno(r, "Failed to escape paths: %m");
+                return log_error_errno(r, "Failed to escape paths for '%s': %m", where);
 
-        res = strv_join(paths_escaped, " ");
-        if (!res)
-                return log_oom();
-
-        fprintf(f, "RequiresMountsFor=%s\n", res);
+        fprintf(f, "%s=", unit_setting);
+        fputstrv(f, paths_escaped, NULL, NULL);
+        fputc('\n', f);
 
         return 0;
 }
 
-static int write_extra_dependencies(FILE *f, const char *opts) {
+static int write_extra_dependencies(FILE *f, const char *where, const char *opts) {
         int r;
 
         assert(f);
 
-        if (opts) {
-                r = write_after(f, opts);
-                if (r < 0)
-                        return r;
-                r = write_requires_after(f, opts);
-                if (r < 0)
-                        return r;
-                r = write_before(f, opts);
-                if (r < 0)
-                        return r;
-                r = write_requires_mounts_for(f, opts);
-                if (r < 0)
-                        return r;
-        }
+        if (isempty(opts))
+                return 0;
+
+        r = write_after(f, where, opts);
+        if (r < 0)
+                return r;
+
+        r = write_requires_after(f, where, opts);
+        if (r < 0)
+                return r;
+
+        r = write_wants_after(f, where, opts);
+        if (r < 0)
+                return r;
+
+        r = write_before(f, where, opts);
+        if (r < 0)
+                return r;
+
+        r = write_mounts_for(f, where, opts,
+                             "x-systemd.requires-mounts-for\0", "RequiresMountsFor");
+        if (r < 0)
+                return r;
+
+        r = write_mounts_for(f, where, opts,
+                             "x-systemd.wants-mounts-for\0", "WantsMountsFor");
+        if (r < 0)
+                return r;
 
         return 0;
 }
@@ -476,19 +492,10 @@ static int mandatory_mount_drop_unapplicable_options(
 
         assert(flags);
         assert(where);
-        assert(options);
         assert(ret_options);
 
-        if (!(*flags & (MOUNT_NOAUTO|MOUNT_NOFAIL|MOUNT_AUTOMOUNT))) {
-                _cleanup_free_ char *opts = NULL;
-
-                opts = strdup(options);
-                if (!opts)
-                        return -ENOMEM;
-
-                *ret_options = TAKE_PTR(opts);
-                return 0;
-        }
+        if (!(*flags & (MOUNT_NOAUTO|MOUNT_NOFAIL|MOUNT_AUTOMOUNT)))
+                return strdup_to(ret_options, options);
 
         log_debug("Mount '%s' is mandatory, ignoring 'noauto', 'nofail', and 'x-systemd.automount' options.",
                   where);
@@ -522,7 +529,6 @@ static int add_mount(
 
         assert(what);
         assert(where);
-        assert(opts);
         assert(target_unit);
         assert(source);
 
@@ -551,16 +557,16 @@ static int add_mount(
         if (r < 0)
                 return r;
 
-        if (path_equal(where, "/")) {
+        if (PATH_IN_SET(where, "/", "/usr")) {
                 r = mandatory_mount_drop_unapplicable_options(&flags, where, opts, &opts_root_filtered);
                 if (r < 0)
                         return r;
                 opts = opts_root_filtered;
 
                 if (!strv_isempty(wanted_by))
-                        log_debug("Ignoring 'x-systemd.wanted-by=' option for root device.");
+                        log_debug("Ignoring 'x-systemd.wanted-by=' option for root/usr device.");
                 if (!strv_isempty(required_by))
-                        log_debug("Ignoring 'x-systemd.required-by=' option for root device.");
+                        log_debug("Ignoring 'x-systemd.required-by=' option for root/usr device.");
 
                 required_by = strv_free(required_by);
                 wanted_by = strv_free(wanted_by);
@@ -594,13 +600,25 @@ static int add_mount(
                 SET_FLAG(flags, MOUNT_NOFAIL, true);
         }
 
-        r = write_extra_dependencies(f, opts);
+        if (!strv_isempty(wanted_by) || !strv_isempty(required_by)) {
+                /* If x-systemd.{wanted,required}-by= is specified, target_unit is not used */
+                target_unit = NULL;
+
+                /* Don't set default ordering dependencies on local-fs.target or remote-fs.target, but we
+                 * still need to conflict with umount.target. */
+                fputs("DefaultDependencies=no\n"
+                      "Conflicts=umount.target\n"
+                      "Before=umount.target\n",
+                      f);
+        }
+
+        r = write_extra_dependencies(f, where, opts);
         if (r < 0)
                 return r;
 
         /* Order the mount unit we generate relative to target_unit, so that DefaultDependencies= on the
          * target unit won't affect us. */
-        if (!FLAGS_SET(flags, MOUNT_NOFAIL))
+        if (target_unit && !FLAGS_SET(flags, MOUNT_NOFAIL))
                 fprintf(f, "Before=%s\n", target_unit);
 
         if (passno != 0) {
@@ -691,26 +709,19 @@ static int add_mount(
                 }
         }
 
-        if (!FLAGS_SET(flags, MOUNT_AUTOMOUNT)) {
-                if (!FLAGS_SET(flags, MOUNT_NOAUTO) && strv_isempty(wanted_by) && strv_isempty(required_by)) {
-                        r = generator_add_symlink(dest, target_unit,
-                                                  (flags & MOUNT_NOFAIL) ? "wants" : "requires", name);
-                        if (r < 0)
+        if (flags & MOUNT_QUOTA) {
+                r = generator_hook_up_quotacheck(dest, what, where, target_unit, fstype);
+                if (r < 0) {
+                        if (r != -EOPNOTSUPP)
                                 return r;
                 } else {
-                        STRV_FOREACH(s, wanted_by) {
-                                r = generator_add_symlink(dest, *s, "wants", name);
-                                if (r < 0)
-                                        return r;
-                        }
-
-                        STRV_FOREACH(s, required_by) {
-                                r = generator_add_symlink(dest, *s, "requires", name);
-                                if (r < 0)
-                                        return r;
-                        }
+                        r = generator_hook_up_quotaon(dest, where, target_unit);
+                        if (r < 0)
+                                return r;
                 }
-        } else {
+        }
+
+        if (FLAGS_SET(flags, MOUNT_AUTOMOUNT)) {
                 r = unit_name_from_path(where, ".automount", &automount_name);
                 if (r < 0)
                         return log_error_errno(r, "Failed to generate unit name: %m");
@@ -740,11 +751,37 @@ static int add_mount(
                 r = fflush_and_check(f);
                 if (r < 0)
                         return log_error_errno(r, "Failed to write unit file %s: %m", automount_name);
+        }
 
-                r = generator_add_symlink(dest, target_unit,
-                                          (flags & MOUNT_NOFAIL) ? "wants" : "requires", automount_name);
-                if (r < 0)
-                        return r;
+        if (target_unit) {
+                assert(strv_isempty(wanted_by));
+                assert(strv_isempty(required_by));
+
+                /* noauto has no effect if x-systemd.automount is used */
+                if (!FLAGS_SET(flags, MOUNT_NOAUTO) || automount_name) {
+                        r = generator_add_symlink(dest, target_unit,
+                                                  FLAGS_SET(flags, MOUNT_NOFAIL) ? "wants" : "requires",
+                                                  automount_name ?: name);
+                        if (r < 0)
+                                return r;
+                }
+        } else {
+                const char *unit_name = automount_name ?: name;
+
+                STRV_FOREACH(s, wanted_by) {
+                        r = generator_add_symlink(dest, *s, "wants", unit_name);
+                        if (r < 0)
+                                return r;
+                }
+
+                STRV_FOREACH(s, required_by) {
+                        r = generator_add_symlink(dest, *s, "requires", unit_name);
+                        if (r < 0)
+                                return r;
+                }
+
+                if ((flags & (MOUNT_NOAUTO|MOUNT_NOFAIL)) != 0)
+                        log_warning("x-systemd.wanted-by= and/or x-systemd.required-by= specified, 'noauto' and 'nofail' have no effect.");
         }
 
         return true;
@@ -791,7 +828,7 @@ static bool sysfs_check(void) {
         int r;
 
         if (cached < 0) {
-                r = getenv_bool_secure("SYSTEMD_SYSFS_CHECK");
+                r = secure_getenv_bool("SYSTEMD_SYSFS_CHECK");
                 if (r < 0 && r != -ENXIO)
                         log_debug_errno(r, "Failed to parse $SYSTEMD_SYSFS_CHECK, ignoring: %m");
                 cached = r != 0;
@@ -816,12 +853,17 @@ static int add_sysusr_sysroot_usr_bind_mount(const char *source) {
 static MountPointFlags fstab_options_to_flags(const char *options, bool is_swap) {
         MountPointFlags flags = 0;
 
+        if (isempty(options))
+                return 0;
+
         if (fstab_test_option(options, "x-systemd.makefs\0"))
                 flags |= MOUNT_MAKEFS;
         if (fstab_test_option(options, "x-systemd.growfs\0"))
                 flags |= MOUNT_GROWFS;
         if (fstab_test_option(options, "x-systemd.pcrfs\0"))
                 flags |= MOUNT_PCRFS;
+        if (fstab_test_option(options, "usrquota\0" "grpquota\0" "quota\0" "usrjquota\0" "grpjquota\0" "prjquota\0"))
+                flags |= MOUNT_QUOTA;
         if (fstab_test_yes_no_option(options, "noauto\0" "auto\0"))
                 flags |= MOUNT_NOAUTO;
         if (fstab_test_yes_no_option(options, "nofail\0" "fail\0"))
@@ -891,7 +933,6 @@ static int parse_fstab_one(
 
         assert(what_original);
         assert(fstype);
-        assert(options);
 
         if (prefix_sysroot && !mount_in_initrd(where_original, options, accept_root))
                 return 0;
@@ -1089,7 +1130,7 @@ static int sysroot_is_nfsroot(void) {
 
 static int add_sysroot_mount(void) {
         _cleanup_free_ char *what = NULL;
-        const char *opts, *fstype;
+        const char *extra_opts = NULL, *fstype;
         bool default_rw, makefs;
         MountPointFlags flags;
         int r;
@@ -1143,6 +1184,9 @@ static int add_sysroot_mount(void) {
                 fstype = arg_root_fstype ?: "tmpfs"; /* tmpfs, unless overridden */
 
                 default_rw = true; /* writable, unless overridden */;
+
+                if (streq(fstype, "tmpfs") && !fstab_test_option(arg_root_options, "mode\0"))
+                        extra_opts = "mode=0755"; /* root directory should not be world/group writable, unless overridden */
         } else {
 
                 what = fstab_node_to_udev_node(arg_root_what);
@@ -1154,17 +1198,21 @@ static int add_sysroot_mount(void) {
                 default_rw = false; /* read-only, unless overridden */
         }
 
-        if (!arg_root_options)
-                opts = arg_root_rw > 0 || (arg_root_rw < 0 && default_rw) ? "rw" : "ro";
-        else if (arg_root_rw >= 0 ||
-                 !fstab_test_option(arg_root_options, "ro\0" "rw\0"))
-                opts = strjoina(arg_root_options, ",", arg_root_rw > 0 ? "rw" : "ro");
-        else
-                opts = arg_root_options;
+        _cleanup_free_ char *combined_options = NULL;
+        if (strdup_to(&combined_options, arg_root_options) < 0)
+                return log_oom();
 
-        log_debug("Found entry what=%s where=/sysroot type=%s opts=%s", what, strna(arg_root_fstype), strempty(opts));
+        if (arg_root_rw >= 0 || !fstab_test_option(combined_options, "ro\0" "rw\0"))
+                if (!strextend_with_separator(&combined_options, ",", arg_root_rw > 0 || (arg_root_rw < 0 && default_rw) ? "rw" : "ro"))
+                        return log_oom();
 
-        makefs = fstab_test_option(opts, "x-systemd.makefs\0");
+        if (extra_opts)
+                if (!strextend_with_separator(&combined_options, ",", extra_opts))
+                        return log_oom();
+
+        log_debug("Found entry what=%s where=/sysroot type=%s opts=%s", what, strna(fstype), strempty(combined_options));
+
+        makefs = fstab_test_option(combined_options, "x-systemd.makefs\0");
         flags = makefs * MOUNT_MAKEFS;
 
         return add_mount("/proc/cmdline",
@@ -1173,9 +1221,9 @@ static int add_sysroot_mount(void) {
                          "/sysroot",
                          NULL,
                          fstype,
-                         opts,
+                         combined_options,
                          is_device_path(what) ? 1 : 0, /* passno */
-                         flags,                        /* makefs off, pcrfs off, noauto off, nofail off, automount off */
+                         flags,                        /* makefs off, pcrfs off, quota off, noauto off, nofail off, automount off */
                          SPECIAL_INITRD_ROOT_FS_TARGET);
 }
 
@@ -1563,7 +1611,7 @@ static int determine_usr(void) {
  * with /sysroot/etc/fstab available, and then we can write additional units based
  * on that file. */
 static int run_generator(void) {
-        int r = 0;
+        int r;
 
         r = proc_cmdline_parse(parse_proc_cmdline_item, NULL, 0);
         if (r < 0)

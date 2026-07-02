@@ -15,6 +15,7 @@
 #include "format-util.h"
 #include "macro.h"
 #include "namespace-util.h"
+#include "pidref.h"
 #include "time-util.h"
 
 #define procfs_file_alloca(pid, field)                                  \
@@ -54,6 +55,8 @@ int get_process_cwd(pid_t pid, char **ret);
 int get_process_root(pid_t pid, char **ret);
 int get_process_environ(pid_t pid, char **ret);
 int get_process_ppid(pid_t pid, pid_t *ret);
+int pid_get_start_time(pid_t pid, usec_t *ret);
+int pidref_get_start_time(const PidRef* pid, usec_t *ret);
 int get_process_umask(pid_t pid, mode_t *ret);
 
 int container_get_leader(const char *machine, pid_t *pid);
@@ -99,19 +102,24 @@ bool is_main_thread(void);
 bool oom_score_adjust_is_valid(int oa);
 
 #ifndef PERSONALITY_INVALID
-/* personality(7) documents that 0xffffffffUL is used for querying the
+/* personality(2) documents that 0xFFFFFFFFUL is used for querying the
  * current personality, hence let's use that here as error
  * indicator. */
-#define PERSONALITY_INVALID 0xffffffffLU
+#define PERSONALITY_INVALID 0xFFFFFFFFUL
 #endif
 
+/* The personality() syscall returns a 32-bit value where the top three bytes are reserved for flags that
+ * emulate historical or architectural quirks, and only the least significant byte reflects the actual
+ * personality we're interested in. */
+#define OPINIONATED_PERSONALITY_MASK 0xFFUL
+
 unsigned long personality_from_string(const char *p);
-const char *personality_to_string(unsigned long);
+const char* personality_to_string(unsigned long);
 
 int safe_personality(unsigned long p);
 int opinionated_personality(unsigned long *ret);
 
-const char *sigchld_code_to_string(int i) _const_;
+const char* sigchld_code_to_string(int i) _const_;
 int sigchld_code_from_string(const char *s) _pure_;
 
 int sched_policy_to_string_alloc(int i, char **s);
@@ -141,8 +149,14 @@ static inline bool sched_priority_is_valid(int i) {
         return i >= 0 && i <= sched_get_priority_max(SCHED_RR);
 }
 
+#define PID_AUTOMATIC ((pid_t) INT_MIN) /* special value indicating "acquire pid from connection peer" */
+
 static inline bool pid_is_valid(pid_t p) {
         return p > 0;
+}
+
+static inline bool pid_is_automatic(pid_t p) {
+        return p == PID_AUTOMATIC;
 }
 
 pid_t getpid_cached(void);
@@ -152,11 +166,11 @@ int must_be_root(void);
 
 pid_t clone_with_nested_stack(int (*fn)(void *), int flags, void *userdata);
 
-/* 💣 Note that FORK_NEW_USERNS + FORK_NEW_MOUNTNS should not be called in threaded programs, because they
- * cause us to use raw_clone() which does not synchronize the glibc malloc() locks, and thus will cause
- * deadlocks if the parent uses threads and the child does memory allocations. Hence: if the parent is
- * threaded these flags may not be used. These flags cannot be used if the parent uses threads or the child
- * uses malloc(). 💣 */
+/* 💣 Note that FORK_NEW_USERNS, FORK_NEW_MOUNTNS, FORK_NEW_NETNS or FORK_NEW_PIDNS should not be called in threaded
+ * programs, because they cause us to use raw_clone() which does not synchronize the glibc malloc() locks,
+ * and thus will cause deadlocks if the parent uses threads and the child does memory allocations. Hence: if
+ * the parent is threaded these flags may not be used. These flags cannot be used if the parent uses threads
+ * or the child uses malloc(). 💣 */
 typedef enum ForkFlags {
         FORK_RESET_SIGNALS      = 1 <<  0, /* Reset all signal handlers and signal mask */
         FORK_CLOSE_ALL_FDS      = 1 <<  1, /* Close all open file descriptors in the child, except for 0,1,2 */
@@ -167,22 +181,25 @@ typedef enum ForkFlags {
         FORK_REOPEN_LOG         = 1 <<  6, /* Reopen log connection */
         FORK_LOG                = 1 <<  7, /* Log above LOG_DEBUG log level about failures */
         FORK_WAIT               = 1 <<  8, /* Wait until child exited */
-        FORK_NEW_MOUNTNS        = 1 <<  9, /* Run child in its own mount namespace                               💣 DO NOT USE IN THREADED PROGRAMS! 💣 */
-        FORK_MOUNTNS_SLAVE      = 1 << 10, /* Make child's mount namespace MS_SLAVE */
-        FORK_PRIVATE_TMP        = 1 << 11, /* Mount new /tmp/ in the child (combine with FORK_NEW_MOUNTNS!) */
-        FORK_RLIMIT_NOFILE_SAFE = 1 << 12, /* Set RLIMIT_NOFILE soft limit to 1K for select() compat */
-        FORK_STDOUT_TO_STDERR   = 1 << 13, /* Make stdout a copy of stderr */
-        FORK_FLUSH_STDIO        = 1 << 14, /* fflush() stdout (and stderr) before forking */
-        FORK_NEW_USERNS         = 1 << 15, /* Run child in its own user namespace                                💣 DO NOT USE IN THREADED PROGRAMS! 💣 */
-        FORK_CLOEXEC_OFF        = 1 << 16, /* In the child: turn off O_CLOEXEC on all fds in except_fds[] */
-        FORK_KEEP_NOTIFY_SOCKET = 1 << 17, /* Unless this specified, $NOTIFY_SOCKET will be unset. */
-        FORK_DETACH             = 1 << 18, /* Double fork if needed to ensure PID1/subreaper is parent */
+        FORK_MOUNTNS_SLAVE      = 1 <<  9, /* Make child's mount namespace MS_SLAVE */
+        FORK_PRIVATE_TMP        = 1 << 10, /* Mount new /tmp/ in the child (combine with FORK_NEW_MOUNTNS!) */
+        FORK_RLIMIT_NOFILE_SAFE = 1 << 11, /* Set RLIMIT_NOFILE soft limit to 1K for select() compat */
+        FORK_STDOUT_TO_STDERR   = 1 << 12, /* Make stdout a copy of stderr */
+        FORK_FLUSH_STDIO        = 1 << 13, /* fflush() stdout (and stderr) before forking */
+        FORK_CLOEXEC_OFF        = 1 << 14, /* In the child: turn off O_CLOEXEC on all fds in except_fds[] */
+        FORK_KEEP_NOTIFY_SOCKET = 1 << 15, /* Unless this specified, $NOTIFY_SOCKET will be unset. */
+        FORK_DETACH             = 1 << 16, /* Double fork if needed to ensure PID1/subreaper is parent */
+        FORK_PACK_FDS           = 1 << 17, /* Rearrange the passed FDs to be FD 3,4,5,etc. Updates the array in place (combine with FORK_CLOSE_ALL_FDS!) */
+        FORK_NEW_MOUNTNS        = 1 << 18, /* Run child in its own mount namespace                               💣 DO NOT USE IN THREADED PROGRAMS! 💣 */
+        FORK_NEW_USERNS         = 1 << 19, /* Run child in its own user namespace                                💣 DO NOT USE IN THREADED PROGRAMS! 💣 */
+        FORK_NEW_NETNS          = 1 << 20, /* Run child in its own network namespace                             💣 DO NOT USE IN THREADED PROGRAMS! 💣 */
+        FORK_NEW_PIDNS          = 1 << 21, /* Run child in its own PID namespace                                 💣 DO NOT USE IN THREADED PROGRAMS! 💣 */
 } ForkFlags;
 
 int safe_fork_full(
                 const char *name,
                 const int stdio_fds[3],
-                const int except_fds[],
+                int except_fds[],
                 size_t n_except_fds,
                 ForkFlags flags,
                 pid_t *ret_pid);
@@ -191,7 +208,30 @@ static inline int safe_fork(const char *name, ForkFlags flags, pid_t *ret_pid) {
         return safe_fork_full(name, NULL, NULL, 0, flags, ret_pid);
 }
 
-int namespace_fork(const char *outer_name, const char *inner_name, const int except_fds[], size_t n_except_fds, ForkFlags flags, int pidns_fd, int mntns_fd, int netns_fd, int userns_fd, int root_fd, pid_t *ret_pid);
+int pidref_safe_fork_full(
+                const char *name,
+                const int stdio_fds[3],
+                int except_fds[],
+                size_t n_except_fds,
+                ForkFlags flags,
+                PidRef *ret_pid);
+
+static inline int pidref_safe_fork(const char *name, ForkFlags flags, PidRef *ret_pid) {
+        return pidref_safe_fork_full(name, NULL, NULL, 0, flags, ret_pid);
+}
+
+int namespace_fork(
+                const char *outer_name,
+                const char *inner_name,
+                int except_fds[],
+                size_t n_except_fds,
+                ForkFlags flags,
+                int pidns_fd,
+                int mntns_fd,
+                int netns_fd,
+                int userns_fd,
+                int root_fd,
+                pid_t *ret_pid);
 
 int set_oom_score_adjust(int value);
 int get_oom_score_adjust(int *ret);
@@ -223,8 +263,15 @@ int get_process_threads(pid_t pid);
 int is_reaper_process(void);
 int make_reaper_process(bool b);
 
-int posix_spawn_wrapper(const char *path, char *const *argv, char *const *envp, pid_t *ret_pid);
+int posix_spawn_wrapper(
+                const char *path,
+                char * const *argv,
+                char * const *envp,
+                const char *cgroup,
+                PidRef *ret_pidref);
 
 int proc_dir_open(DIR **ret);
 int proc_dir_read(DIR *d, pid_t *ret);
 int proc_dir_read_pidref(DIR *d, PidRef *ret);
+
+_noreturn_ void report_errno_and_exit(int errno_fd, int error);

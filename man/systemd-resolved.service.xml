@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="systemd-resolved.service" conditional='ENABLE_RESOLVE'
@@ -36,7 +36,7 @@
     via three interfaces:</para>
 
     <itemizedlist>
-      <listitem><para>The native, fully-featured API <command>systemd-resolved</command> exposes on the bus,
+      <listitem><para>The native, fully-featured API <command>systemd-resolved</command> exposes via D-Bus,
       see
       <citerefentry><refentrytitle>org.freedesktop.resolve1</refentrytitle><manvolnum>5</manvolnum></citerefentry>
       and
@@ -44,6 +44,11 @@
       for details. Usage of this API is generally recommended to clients as it is asynchronous and fully
       featured (for example, properly returns DNSSEC validation status and interface scope for addresses as
       necessary for supporting link-local networking).</para></listitem>
+
+      <listitem><para>The native API <command>systemd-resolved</command> exposes via Varlink on the
+      <filename>/run/systemd/resolve/io.systemd.Resolve</filename> AF_UNIX socket. This provides similar
+      functionality as the D-Bus interface, but is available during the entire runtime, without requiring a
+      running D-Bus system bus broker service.</para></listitem>
 
       <listitem><para>The glibc
       <citerefentry project='man-pages'><refentrytitle>getaddrinfo</refentrytitle><manvolnum>3</manvolnum></citerefentry>
@@ -113,11 +118,12 @@
       useful for referencing it independently of the current network configuration state.</para></listitem>
 
       <listitem><para>The hostname <literal>_outbound</literal> is resolved to the local IPv4 and IPv6
-      addresses that are most likely used for communication with other hosts. This is determined by
-      requesting a routing decision to the configured default gateways from the kernel and then using the
-      local IP addresses selected by this decision. This hostname is only available if there is at least one
-      local default gateway configured. This assigns a stable hostname to the local outbound IP addresses,
-      useful for referencing them independently of the current network configuration state.</para></listitem>
+      addresses that are most likely used for communication with other hosts. This is the preferred source
+      addresses of default gateways if specified, or determined by requesting a routing decision to the
+      configured default gateways from the kernel and then using the local IP addresses selected by this
+      decision. This hostname is only available if there is at least one local default gateway configured.
+      This assigns a stable hostname to the local outbound IP addresses, useful for referencing them
+      independently of the current network configuration state.</para></listitem>
 
       <listitem><para>The hostname <literal>_localdnsstub</literal> is resolved to the IP address 127.0.0.53,
       i.e. the address the local DNS stub (see above) is listening on.</para></listitem>
@@ -172,7 +178,7 @@
       DNS servers, unless the domain is specified explicitly as routing or search domain for the DNS server
       and interface. This means that on networks where the <literal>.local</literal> domain is defined in a
       site-specific DNS server, explicit search or routing domains need to be configured to make lookups work
-      within this DNS domain. Note that these days, it's generally recommended to avoid defining
+      within this DNS domain. Note that these days, it is generally recommended to avoid defining
       <literal>.local</literal> in a DNS server, as <ulink
       url="https://tools.ietf.org/html/rfc6762">RFC6762</ulink> reserves this domain for exclusive
       MulticastDNS use.</para></listitem>
@@ -207,38 +213,39 @@
 
       <para>In case of single-label names, when search domains are defined, the same logic applies, except
       that the name is first suffixed by each of the search domains in turn. Note that this search logic
-      doesn't apply to any names with at least one dot. Also see the discussion about compatibility with
+      does not apply to any names with at least one dot. Also see the discussion about compatibility with
       the traditional glibc resolver below.</para></listitem>
 
       <listitem><para>If a query does not match any configured routing domain (either per-link or global), it
-      is sent to all DNS servers that are configured on links with the <varname>DefaultRoute=</varname>
-      option set, as well as the globally configured DNS server.</para></listitem>
+      is sent to all DNS servers that are configured on links configured as the default route, as well as the
+      globally configured DNS server.</para></listitem>
 
-      <listitem><para>If there is no link configured as <varname>DefaultRoute=</varname> and no global DNS
-      server configured, one of the compiled-in fallback DNS servers is used.</para></listitem>
+      <listitem><para>If there are no DNS servers configured on any link also configured as the default route
+      and no global DNS server configured, one of the compiled-in fallback DNS servers is used.</para>
+      </listitem>
 
-      <listitem><para>Otherwise the unicast DNS query fails, as no suitable DNS servers can be determined.
+      <listitem><para>Otherwise, the unicast DNS query fails, as no suitable DNS servers can be determined.
       </para></listitem>
     </itemizedlist>
 
-    <para>The <varname>DefaultRoute=</varname> option is a boolean setting configurable with
-    <command>resolvectl</command> or in <filename>.network</filename> files. If not set, it is implicitly
-    determined based on the configured DNS domains for a link: if there's a route-only domain other than
-    <literal>~.</literal>, it defaults to false, otherwise to true.</para>
+    <para>Whether a link is the default route or not can be configured with
+    <command>resolvectl default-route</command> command or <varname>DNSDefaultRoute=</varname> setting in
+    <filename>.network</filename> files. If not configured explicitly, it is implicitly determined based on
+    the configured DNS domains for a link: if there's a route-only domain other than <literal>~.</literal>,
+    it defaults to false, otherwise to true.</para>
 
     <para>Effectively this means: in order to support single-label non-synthesized names, define appropriate
     search domains. In order to preferably route all DNS queries not explicitly matched by routing domain
     configuration to a specific link, configure a <literal>~.</literal> route-only domain on it. This will
     ensure that other links will not be considered for these queries (unless they too carry such a routing
     domain). In order to route all such DNS queries to a specific link only if no other link is preferred,
-    set the <varname>DefaultRoute=</varname> option for the link to true and do not configure a
-    <literal>~.</literal> route-only domain on it. Finally, in order to ensure that a specific link never
-    receives any DNS traffic not matching any of its configured routing domains, set the
-    <varname>DefaultRoute=</varname> option for it to false.</para>
+    configure the link as the default route and do not configure a <literal>~.</literal> route-only domain on
+    it. Finally, in order to avoid a specific link receiving any DNS traffic not matching any of its
+    configured routing domains, do not make it a default route.</para>
 
     <para>See
     <citerefentry><refentrytitle>org.freedesktop.resolve1</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-    for information about the D-Bus APIs <filename>systemd-resolved</filename> provides.</para>
+    for information about the D-Bus APIs <command>systemd-resolved</command> provides.</para>
   </refsect1>
 
   <refsect1>
@@ -258,7 +265,7 @@
       send them out over the network using the usual rules for multi-label name routing <footnote><para>For
       example, if <filename>/etc/resolv.conf</filename> has <programlisting>nameserver 127.0.0.53
 search foobar.com barbar.com
-      </programlisting>and we look up <literal>localhost</literal>, <filename>nss-dns</filename> will send
+</programlisting>and we look up <literal>localhost</literal>, <filename>nss-dns</filename> will send
       the following queries to <filename>systemd-resolved</filename> listening on 127.0.0.53:53: first
       <literal>localhost.foobar.com</literal>, then <literal>localhost.barbar.com</literal>, and finally
       <literal>localhost</literal>. If (hopefully) the first two queries fail,
@@ -313,15 +320,15 @@ search foobar.com barbar.com
       <listitem><para>The <filename>nss-dns</filename> resolver maintains little state between subsequent DNS
       queries, and for each query always talks to the first listed DNS server from
       <filename>/etc/resolv.conf</filename> first, and on failure continues with the next until reaching the
-      end of the list which is when the query fails. The resolver in
-      <filename>systemd-resolved.service</filename> however maintains state, and will continuously talk to
-      the same server for all queries on a particular lookup scope until some form of error is seen at which
-      point it switches to the next, and then continuously stays with it for all queries on the scope until
-      the next failure, and so on, eventually returning to the first configured server. This is done to
-      optimize lookup times, in particular given that the resolver typically must first probe server feature
-      sets when talking to a server, which is time consuming. This different behaviour implies that listed
-      DNS servers per lookup scope must be equivalent in the zones they serve, so that sending a query to one
-      of them will yield the same results as sending it to another configured DNS server.</para></listitem>
+      end of the list which is when the query fails. The resolver in <command>systemd-resolved</command>
+      however maintains state, and will continuously talk to the same server for all queries in a particular
+      lookup scope until some form of error is seen at which point it will switch to the next server, and
+      then stay with it for all queries on the scope until the next failure, and so on, eventually returning
+      to the first configured server. This is done to optimize lookup times, in particular given that the
+      resolver typically must first probe server feature sets when talking to a server, which takes time.
+      This different behaviour implies that listed DNS servers per lookup scope must be equivalent in the
+      zones they serve, so that sending a query to one of them will yield the same results as sending it to
+      another configured DNS server.</para></listitem>
     </itemizedlist>
   </refsect1>
 
@@ -336,10 +343,10 @@ search foobar.com barbar.com
       <listitem><para><command>systemd-resolved</command> maintains the
       <filename>/run/systemd/resolve/stub-resolv.conf</filename> file for compatibility with traditional
       Linux programs. This file lists the 127.0.0.53 DNS stub (see above) as the only DNS server. It also
-      contains a list of search domains that are in use by systemd-resolved. The list of search domains is
-      always kept up-to-date. Note that <filename>/run/systemd/resolve/stub-resolv.conf</filename> should not
-      be used directly by applications, but only through a symlink from
-      <filename>/etc/resolv.conf</filename>. This file may be symlinked from
+      contains a list of search domains that are in use by <command>systemd-resolved</command>. The list of
+      search domains is always kept up-to-date. Note that
+      <filename>/run/systemd/resolve/stub-resolv.conf</filename> should not be used directly by applications,
+      but only through a symlink from <filename>/etc/resolv.conf</filename>. This file may be symlinked from
       <filename>/etc/resolv.conf</filename> in order to connect all local clients that bypass local DNS APIs
       to <command>systemd-resolved</command> with correct search domains settings. This mode of operation is
       recommended.</para></listitem>
@@ -416,6 +423,16 @@ search foobar.com barbar.com
 
         <xi:include href="version-info.xml" xpointer="v235"/></listitem>
       </varlistentry>
+
+      <varlistentry>
+        <term><constant>SIGHUP</constant></term>
+
+        <listitem><para>Upon reception of the <constant>SIGHUP</constant> process signal
+        <command>systemd-resolved</command> will flush all caches it maintains, drop all open TCP
+        connections (if any), and reload its configuration files.</para>
+
+        <xi:include href="version-info.xml" xpointer="v256"/></listitem>
+      </varlistentry>
     </variablelist>
   </refsect1>
 
@@ -424,7 +441,7 @@ search foobar.com barbar.com
 
     <para><command>systemd-resolved</command> supports the service credentials logic as implemented by
     <varname>ImportCredential=</varname>/<varname>LoadCredential=</varname>/<varname>SetCredential=</varname>
-    (see <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>1</manvolnum></citerefentry> for
+    (see <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry> for
     details). The following credentials are used when passed in:</para>
 
     <variablelist class='system-credentials'>
@@ -489,17 +506,18 @@ search foobar.com barbar.com
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>resolved.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>dnssec-trust-anchors.d</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>nss-resolve</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>resolvectl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>resolv.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>hosts</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.network</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-networkd.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>resolved.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>dnssec-trust-anchors.d</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>nss-resolve</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>resolvectl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>resolv.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>hosts</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.network</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-networkd.service</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>org.freedesktop.resolve1</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

@@ -310,7 +310,7 @@ static int stdout_stream_log(
         syslog_priority[STRLEN("PRIORITY=")] = '0' + LOG_PRI(priority);
         iovec[n++] = IOVEC_MAKE_STRING(syslog_priority);
 
-        if (priority & LOG_FACMASK) {
+        if (LOG_FAC(priority) != 0) {
                 xsprintf(syslog_facility, "SYSLOG_FACILITY=%i", LOG_FAC(priority));
                 iovec[n++] = IOVEC_MAKE_STRING(syslog_facility);
         }
@@ -507,7 +507,6 @@ static int stdout_stream_scan(
 
         assert(s);
         assert(p);
-
 
         for (;;) {
                 LineBreak line_break;

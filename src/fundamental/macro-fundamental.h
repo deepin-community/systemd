@@ -32,6 +32,10 @@
         _Pragma("GCC diagnostic push");                                 \
         _Pragma("GCC diagnostic ignored \"-Wshadow\"")
 
+#define DISABLE_WARNING_STRINGOP_OVERREAD                               \
+        _Pragma("GCC diagnostic push");                                 \
+        _Pragma("GCC diagnostic ignored \"-Wstringop-overread\"")
+
 #define DISABLE_WARNING_INCOMPATIBLE_POINTER_TYPES                      \
         _Pragma("GCC diagnostic push");                                 \
         _Pragma("GCC diagnostic ignored \"-Wincompatible-pointer-types\"")
@@ -147,16 +151,20 @@
 #define UNIQ_T(x, uniq) CONCATENATE(__unique_prefix_, CONCATENATE(x, uniq))
 #define UNIQ __COUNTER__
 
-/* Note that this works differently from pthread_once(): this macro does
- * not synchronize code execution, i.e. code that is run conditionalized
- * on this macro will run concurrently to all other code conditionalized
- * the same way, there's no ordering or completion enforced. */
+/* The macro is true when the code block is called first time, and is false for the second and later times.
+ * Note that this works differently from pthread_once(): this macro does not synchronize code execution, i.e.
+ * code that is run conditionalized on this macro will run concurrently to all other code conditionalized the
+ * same way, there's no ordering or completion enforced. */
 #define ONCE __ONCE(UNIQ_T(_once_, UNIQ))
-#define __ONCE(o)                                                  \
-        ({                                                         \
-                static bool (o) = false;                           \
-                __atomic_exchange_n(&(o), true, __ATOMIC_SEQ_CST); \
+#define __ONCE(o)                                                       \
+        ({                                                              \
+                static bool (o) = false;                                \
+                !__atomic_exchange_n(&(o), true, __ATOMIC_SEQ_CST);     \
         })
+
+#define U64_KB UINT64_C(1024)
+#define U64_MB (UINT64_C(1024) * U64_KB)
+#define U64_GB (UINT64_C(1024) * U64_MB)
 
 #undef MAX
 #define MAX(a, b) __MAX(UNIQ, (a), UNIQ, (b))
@@ -245,6 +253,30 @@
                         CONST_ISPOWEROF2(_x);                          \
                 }))
 
+#define ADD_SAFE(ret, a, b) (!__builtin_add_overflow(a, b, ret))
+#define INC_SAFE(a, b) __INC_SAFE(UNIQ, a, b)
+#define __INC_SAFE(q, a, b)                                     \
+        ({                                                      \
+                const typeof(a) UNIQ_T(A, q) = (a);             \
+                ADD_SAFE(UNIQ_T(A, q), *UNIQ_T(A, q), b);       \
+        })
+
+#define SUB_SAFE(ret, a, b) (!__builtin_sub_overflow(a, b, ret))
+#define DEC_SAFE(a, b) __DEC_SAFE(UNIQ, a, b)
+#define __DEC_SAFE(q, a, b)                                     \
+        ({                                                      \
+                const typeof(a) UNIQ_T(A, q) = (a);             \
+                SUB_SAFE(UNIQ_T(A, q), *UNIQ_T(A, q), b);       \
+        })
+
+#define MUL_SAFE(ret, a, b) (!__builtin_mul_overflow(a, b, ret))
+#define MUL_ASSIGN_SAFE(a, b) __MUL_ASSIGN_SAFE(UNIQ, a, b)
+#define __MUL_ASSIGN_SAFE(q, a, b)                              \
+        ({                                                      \
+                const typeof(a) UNIQ_T(A, q) = (a);             \
+                MUL_SAFE(UNIQ_T(A, q), *UNIQ_T(A, q), b);       \
+        })
+
 #define LESS_BY(a, b) __LESS_BY(UNIQ, (a), UNIQ, (b))
 #define __LESS_BY(aq, a, bq, b)                         \
         ({                                              \
@@ -294,7 +326,7 @@
                 const typeof(y) UNIQ_T(A, q) = (y);                     \
                 const typeof(x) UNIQ_T(B, q) = DIV_ROUND_UP((x), UNIQ_T(A, q)); \
                 typeof(x) UNIQ_T(C, q);                                 \
-                __builtin_mul_overflow(UNIQ_T(B, q), UNIQ_T(A, q), &UNIQ_T(C, q)) ? (typeof(x)) -1 : UNIQ_T(C, q); \
+                MUL_SAFE(&UNIQ_T(C, q), UNIQ_T(B, q), UNIQ_T(A, q)) ? UNIQ_T(C, q) : (typeof(x)) -1; \
         })
 #define ROUND_UP(x, y) __ROUND_UP(UNIQ, (x), (y))
 
@@ -489,6 +521,10 @@ static inline uint64_t ALIGN_OFFSET_U64(uint64_t l, uint64_t ali) {
                 }                                                       \
         }
 
+/* Restriction/bug (see below) was fixed in GCC 15 and clang 19. */
+#if __GNUC__ >= 15 || (defined(__clang__) && __clang_major__ >= 19)
+#define DECLARE_FLEX_ARRAY(type, name) type name[]
+#else
 /* Declare a flexible array usable in a union.
  * This is essentially a work-around for a pointless constraint in C99
  * and might go away in some future version of the standard.
@@ -500,12 +536,12 @@ static inline uint64_t ALIGN_OFFSET_U64(uint64_t l, uint64_t ali) {
                 dummy_t __empty__ ## name;             \
                 type name[];                           \
         }
+#endif
 
 /* Declares an ELF read-only string section that does not occupy memory at runtime. */
 #define DECLARE_NOALLOC_SECTION(name, text)   \
         asm(".pushsection " name ",\"S\"\n\t" \
             ".ascii " STRINGIFY(text) "\n\t"  \
-            ".zero 1\n\t"                     \
             ".popsection\n")
 
 #ifdef SBAT_DISTRO
@@ -513,3 +549,29 @@ static inline uint64_t ALIGN_OFFSET_U64(uint64_t l, uint64_t ali) {
 #else
         #define DECLARE_SBAT(text)
 #endif
+
+#define sizeof_field(struct_type, member) sizeof(((struct_type *) 0)->member)
+#define endoffsetof_field(struct_type, member) (offsetof(struct_type, member) + sizeof_field(struct_type, member))
+#define voffsetof(v, member) offsetof(typeof(v), member)
+
+#define _FOREACH_ARRAY(i, array, num, m, end)                           \
+        for (typeof(array[0]) *i = (array), *end = ({                   \
+                                typeof(num) m = (num);                  \
+                                (i && m > 0) ? i + m : NULL;            \
+                        }); end && i < end; i++)
+
+#define FOREACH_ARRAY(i, array, num)                                    \
+        _FOREACH_ARRAY(i, array, num, UNIQ_T(m, UNIQ), UNIQ_T(end, UNIQ))
+
+#define FOREACH_ELEMENT(i, array)                                 \
+        FOREACH_ARRAY(i, array, ELEMENTSOF(array))
+
+#define PTR_TO_SIZE(p) ((size_t) ((uintptr_t) (p)))
+#define SIZE_TO_PTR(u) ((void *) ((uintptr_t) (u)))
+
+/* This macro is used to have a const-returning and non-const returning version of a function based on
+ * whether its first argument is const or not (e.g. strstr()). */
+#define const_generic(ptr, call)                              \
+        _Generic(0 ? (ptr) : (void*) 1,                       \
+                 const void*: (const typeof(*call)*) (call),  \
+                 void*: (call))

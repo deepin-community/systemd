@@ -90,12 +90,11 @@ Note that interfaces brought up/down will *not* run hooks in
 /etc/network/if-*.d/.
 
 It is recommended to use networkd together with systemd-resolved(8) to
-dynamically manage /etc/resolv.conf:
+dynamically manage /etc/resolv.conf by installing the systemd-resolved package.
 
-  systemctl enable systemd-resolved
-  ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
-
-Debian's networkd has been modified to also work with the resolvconf package.
+Note that changes to physical network device configurations are commonly made
+using /etc/systemd/network/*.link files. Please see the important note in
+udev.README.Debian regarding changes to .link files on Debian.
 
 KillUserProcesses behavior in Debian
 ====================================

@@ -27,7 +27,8 @@ typedef enum PortableFlags {
         PORTABLE_FORCE_EXTENSION = 1 << 2, /* Public API via DBUS, do not change */
         PORTABLE_PREFER_COPY     = 1 << 3,
         PORTABLE_PREFER_SYMLINK  = 1 << 4,
-        PORTABLE_REATTACH        = 1 << 5,
+        PORTABLE_MIXED_COPY_LINK = 1 << 5,
+        PORTABLE_REATTACH        = 1 << 6,
         _PORTABLE_MASK_PUBLIC    = PORTABLE_RUNTIME | PORTABLE_FORCE_ATTACH | PORTABLE_FORCE_EXTENSION,
         _PORTABLE_TYPE_MAX,
         _PORTABLE_TYPE_INVALID   = -EINVAL,
@@ -79,8 +80,8 @@ int portable_get_profiles(char ***ret);
 
 void portable_changes_free(PortableChange *changes, size_t n_changes);
 
-const char *portable_change_type_to_string(int t) _const_;
+const char* portable_change_type_to_string(int t) _const_;
 int portable_change_type_from_string(const char *t) _pure_;
 
-const char *portable_state_to_string(PortableState t) _const_;
+const char* portable_state_to_string(PortableState t) _const_;
 PortableState portable_state_from_string(const char *t) _pure_;

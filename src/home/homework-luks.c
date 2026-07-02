@@ -33,9 +33,11 @@
 #include "glyph-util.h"
 #include "gpt.h"
 #include "home-util.h"
+#include "homework-blob.h"
 #include "homework-luks.h"
 #include "homework-mount.h"
 #include "io-util.h"
+#include "json-util.h"
 #include "keyring-util.h"
 #include "memory-util.h"
 #include "missing_magic.h"
@@ -125,7 +127,6 @@ static int probe_file_system_by_fd(
                 sd_id128_t *ret_uuid) {
 
         _cleanup_(blkid_free_probep) blkid_probe b = NULL;
-        _cleanup_free_ char *s = NULL;
         const char *fstype = NULL, *uuid = NULL;
         sd_id128_t id;
         int r;
@@ -167,13 +168,10 @@ static int probe_file_system_by_fd(
         if (r < 0)
                 return r;
 
-        s = strdup(fstype);
-        if (!s)
-                return -ENOMEM;
-
-        *ret_fstype = TAKE_PTR(s);
+        r = strdup_to(ret_fstype, fstype);
+        if (r < 0)
+                return r;
         *ret_uuid = id;
-
         return 0;
 }
 
@@ -199,7 +197,7 @@ static int block_get_size_by_fd(int fd, uint64_t *ret) {
         if (!S_ISBLK(st.st_mode))
                 return -ENOTBLK;
 
-        return RET_NERRNO(ioctl(fd, BLKGETSIZE64, ret));
+        return blockdev_get_device_size(fd, ret);
 }
 
 static int block_get_size_by_path(const char *path, uint64_t *ret) {
@@ -259,43 +257,30 @@ static int run_fsck(const char *node, const char *fstype) {
 
 DEFINE_TRIVIAL_CLEANUP_FUNC_FULL(key_serial_t, keyring_unlink, -1);
 
-static int upload_to_keyring(
-                UserRecord *h,
-                const char *password,
-                key_serial_t *ret_key_serial) {
+static int upload_to_keyring(UserRecord *h, const void *vk, size_t vks, key_serial_t *ret) {
 
         _cleanup_free_ char *name = NULL;
         key_serial_t serial;
 
         assert(h);
-        assert(password);
+        assert(vk);
+        assert(vks > 0);
 
-        /* If auto-shrink-on-logout is turned on, we need to keep the key we used to unlock the LUKS volume
-         * around, since we'll need it when automatically resizing (since we can't ask the user there
-         * again). We do this by uploading it into the kernel keyring, specifically the "session" one. This
-         * is done under the assumption systemd-homed gets its private per-session keyring (i.e. default
-         * service behaviour, given that KeyringMode=private is the default). It will survive between our
-         * systemd-homework invocations that way.
-         *
-         * If auto-shrink-on-logout is disabled we'll skip this step, to be frugal with sensitive data. */
-
-        if (user_record_auto_resize_mode(h) != AUTO_RESIZE_SHRINK_AND_GROW) {  /* Won't need it */
-                if (ret_key_serial)
-                        *ret_key_serial = -1;
-                return 0;
-        }
+        /* We upload the LUKS volume key into the kernel session keyring, under the assumption that
+         * systemd-homed gets its own private session keyring (i.e. the default service behavior, given
+         * that KeyringMode=private is the default). That way, the key will survive between invocations
+         * of systemd-homework. */
 
         name = strjoin("homework-user-", h->user_name);
         if (!name)
                 return -ENOMEM;
 
-        serial = add_key("user", name, password, strlen(password), KEY_SPEC_SESSION_KEYRING);
+        serial = add_key("user", name, vk, vks, KEY_SPEC_SESSION_KEYRING);
         if (serial == -1)
                 return -errno;
 
-        if (ret_key_serial)
-                *ret_key_serial = serial;
-
+        if (ret)
+                *ret = serial;
         return 1;
 }
 
@@ -304,13 +289,14 @@ static int luks_try_passwords(
                 struct crypt_device *cd,
                 char **passwords,
                 void *volume_key,
-                size_t *volume_key_size,
-                key_serial_t *ret_key_serial) {
+                size_t *volume_key_size) {
 
         int r;
 
         assert(h);
         assert(cd);
+        assert(volume_key);
+        assert(volume_key_size);
 
         STRV_FOREACH(pp, passwords) {
                 size_t vks = *volume_key_size;
@@ -323,21 +309,71 @@ static int luks_try_passwords(
                                 *pp,
                                 strlen(*pp));
                 if (r >= 0) {
-                        if (ret_key_serial) {
-                                /* If ret_key_serial is non-NULL, let's try to upload the password that
-                                 * worked, and return its serial. */
-                                r = upload_to_keyring(h, *pp, ret_key_serial);
-                                if (r < 0) {
-                                        log_debug_errno(r, "Failed to upload LUKS password to kernel keyring, ignoring: %m");
-                                        *ret_key_serial = -1;
-                                }
-                        }
-
                         *volume_key_size = vks;
                         return 0;
                 }
 
                 log_debug_errno(r, "Password %zu didn't work for unlocking LUKS superblock: %m", (size_t) (pp - passwords));
+        }
+
+        return -ENOKEY;
+}
+
+static int luks_get_volume_key(
+                UserRecord *h,
+                struct crypt_device *cd,
+                const PasswordCache *cache,
+                void *volume_key,
+                size_t *volume_key_size,
+                key_serial_t *ret_key_serial) {
+
+        char **list;
+        size_t vks;
+        int r;
+
+        assert(h);
+        assert(cd);
+        assert(volume_key);
+        assert(volume_key_size);
+
+        if (cache && cache->volume_key) {
+                /* Shortcut: If volume key was loaded from the keyring then just use it */
+                if (cache->volume_key_size > *volume_key_size)
+                        return log_error_errno(SYNTHETIC_ERRNO(ENOBUFS),
+                                               "LUKS volume key from kernel keyring too big for buffer (need %zu bytes, have %zu).",
+                                               cache->volume_key_size, *volume_key_size);
+                memcpy(volume_key, cache->volume_key, cache->volume_key_size);
+                *volume_key_size = cache->volume_key_size;
+                if (ret_key_serial)
+                        *ret_key_serial = -1; /* Key came from keyring. No need to re-upload it */
+                return 0;
+        }
+
+        vks = *volume_key_size;
+
+        FOREACH_ARGUMENT(list,
+                         cache ? cache->pkcs11_passwords : NULL,
+                         cache ? cache->fido2_passwords : NULL,
+                         h->password) {
+
+                r = luks_try_passwords(h, cd, list, volume_key, &vks);
+                if (r == -ENOKEY)
+                        continue;
+                if (r < 0)
+                        return r;
+
+                /* We got a volume key! */
+
+                if (ret_key_serial) {
+                        r = upload_to_keyring(h, volume_key, vks, ret_key_serial);
+                        if (r < 0) {
+                                log_warning_errno(r, "Failed to upload LUKS volume key to kernel keyring, ignoring: %m");
+                                *ret_key_serial = -1;
+                        }
+                }
+
+                *volume_key_size = vks;
+                return 0;
         }
 
         return -ENOKEY;
@@ -351,7 +387,6 @@ static int luks_setup(
                 const char *cipher,
                 const char *cipher_mode,
                 uint64_t volume_key_size,
-                char **passwords,
                 const PasswordCache *cache,
                 bool discard,
                 struct crypt_device **ret,
@@ -365,7 +400,6 @@ static int luks_setup(
         _cleanup_(erase_and_freep) void *vk = NULL;
         sd_id128_t p;
         size_t vks;
-        char **list;
         int r;
 
         assert(h);
@@ -385,7 +419,7 @@ static int luks_setup(
 
         r = sym_crypt_get_volume_key_size(cd);
         if (r <= 0)
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to determine LUKS volume key size");
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to determine LUKS volume key size.");
         vks = (size_t) r;
 
         if (!sd_id128_is_null(uuid) || ret_found_uuid) {
@@ -418,16 +452,7 @@ static int luks_setup(
         if (!vk)
                 return log_oom();
 
-        r = -ENOKEY;
-        FOREACH_POINTER(list,
-                        cache ? cache->keyring_passswords : NULL,
-                        cache ? cache->pkcs11_passwords : NULL,
-                        cache ? cache->fido2_passwords : NULL,
-                        passwords) {
-                r = luks_try_passwords(h, cd, list, vk, &vks, ret_key_serial ? &key_serial : NULL);
-                if (r != -ENOKEY)
-                        break;
-        }
+        r = luks_get_volume_key(h, cd, cache, vk, &vks, ret_key_serial ? &key_serial : NULL);
         if (r == -ENOKEY)
                 return log_error_errno(r, "No valid password for LUKS superblock.");
         if (r < 0)
@@ -519,7 +544,6 @@ static int luks_open(
 
         _cleanup_(erase_and_freep) void *vk = NULL;
         sd_id128_t p;
-        char **list;
         size_t vks;
         int r;
 
@@ -540,7 +564,7 @@ static int luks_open(
 
         r = sym_crypt_get_volume_key_size(setup->crypt_device);
         if (r <= 0)
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to determine LUKS volume key size");
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to determine LUKS volume key size.");
         vks = (size_t) r;
 
         if (ret_found_uuid) {
@@ -559,16 +583,7 @@ static int luks_open(
         if (!vk)
                 return log_oom();
 
-        r = -ENOKEY;
-        FOREACH_POINTER(list,
-                        cache ? cache->keyring_passswords : NULL,
-                        cache ? cache->pkcs11_passwords : NULL,
-                        cache ? cache->fido2_passwords : NULL,
-                        h->password) {
-                r = luks_try_passwords(h, setup->crypt_device, list, vk, &vks, NULL);
-                if (r != -ENOKEY)
-                        break;
-        }
+        r = luks_get_volume_key(h, setup->crypt_device, cache, vk, &vks, NULL);
         if (r == -ENOKEY)
                 return log_error_errno(r, "No valid password for LUKS superblock.");
         if (r < 0)
@@ -713,7 +728,6 @@ static int luks_validate(
                 if (!streq_ptr(blkid_partition_get_name(pp), label))
                         continue;
 
-
                 r = blkid_partition_get_uuid_id128(pp, &id);
                 if (r < 0)
                         log_debug_errno(r, "Failed to read partition UUID, ignoring: %m");
@@ -811,7 +825,7 @@ static int luks_validate_home_record(
         assert(h);
 
         for (int token = 0; token < sym_crypt_token_max(CRYPT_LUKS2); token++) {
-                _cleanup_(json_variant_unrefp) JsonVariant *v = NULL, *rr = NULL;
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL, *rr = NULL;
                 _cleanup_(EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
                 _cleanup_(user_record_unrefp) UserRecord *lhr = NULL;
                 _cleanup_free_ void *encrypted = NULL, *iv = NULL;
@@ -820,7 +834,7 @@ static int luks_validate_home_record(
                 _cleanup_free_ char *decrypted = NULL;
                 const char *text, *type;
                 crypt_token_info state;
-                JsonVariant *jr, *jiv;
+                sd_json_variant *jr, *jiv;
                 unsigned line, column;
                 const EVP_CIPHER *cc;
 
@@ -839,22 +853,22 @@ static int luks_validate_home_record(
                 if (r < 0)
                         return log_error_errno(r, "Failed to read LUKS token %i: %m", token);
 
-                r = json_parse(text, JSON_PARSE_SENSITIVE, &v, &line, &column);
+                r = sd_json_parse(text, SD_JSON_PARSE_SENSITIVE, &v, &line, &column);
                 if (r < 0)
                         return log_error_errno(r, "Failed to parse LUKS token JSON data %u:%u: %m", line, column);
 
-                jr = json_variant_by_key(v, "record");
+                jr = sd_json_variant_by_key(v, "record");
                 if (!jr)
                         return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "LUKS token lacks 'record' field.");
-                jiv = json_variant_by_key(v, "iv");
+                jiv = sd_json_variant_by_key(v, "iv");
                 if (!jiv)
                         return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "LUKS token lacks 'iv' field.");
 
-                r = json_variant_unbase64(jr, &encrypted, &encrypted_size);
+                r = sd_json_variant_unbase64(jr, &encrypted, &encrypted_size);
                 if (r < 0)
                         return log_error_errno(r, "Failed to base64 decode record: %m");
 
-                r = json_variant_unbase64(jiv, &iv, &iv_size);
+                r = sd_json_variant_unbase64(jiv, &iv, &iv_size);
                 if (r < 0)
                         return log_error_errno(r, "Failed to base64 decode IV: %m");
 
@@ -892,7 +906,7 @@ static int luks_validate_home_record(
 
                 decrypted[decrypted_size] = 0;
 
-                r = json_parse(decrypted, JSON_PARSE_SENSITIVE, &rr, NULL, NULL);
+                r = sd_json_parse(decrypted, SD_JSON_PARSE_SENSITIVE, &rr, NULL, NULL);
                 if (r < 0)
                         return log_error_errno(r, "Failed to parse decrypted JSON record, refusing.");
 
@@ -927,7 +941,7 @@ static int format_luks_token_text(
 
         int r, encrypted_size_out1 = 0, encrypted_size_out2 = 0, iv_size, key_size;
         _cleanup_(EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
-        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
         _cleanup_free_ void *iv = NULL, *encrypted = NULL;
         size_t text_length, encrypted_size;
         _cleanup_free_ char *text = NULL;
@@ -962,7 +976,7 @@ static int format_luks_token_text(
         if (EVP_EncryptInit_ex(context, cc, NULL, volume_key, iv) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to initialize encryption context.");
 
-        r = json_variant_format(hr->json, 0, &text);
+        r = sd_json_variant_format(hr->json, 0, &text);
         if (r < 0)
                 return log_error_errno(r, "Failed to format user record for LUKS: %m");
 
@@ -979,20 +993,20 @@ static int format_luks_token_text(
         assert((size_t) encrypted_size_out1 <= encrypted_size);
 
         if (EVP_EncryptFinal_ex(context, (uint8_t*) encrypted + encrypted_size_out1, &encrypted_size_out2) != 1)
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to finish encryption of JSON record. ");
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to finish encryption of JSON record.");
 
         assert((size_t) encrypted_size_out1 + (size_t) encrypted_size_out2 <= encrypted_size);
 
-        r = json_build(&v,
-                       JSON_BUILD_OBJECT(
-                                       JSON_BUILD_PAIR("type", JSON_BUILD_CONST_STRING("systemd-homed")),
-                                       JSON_BUILD_PAIR("keyslots", JSON_BUILD_EMPTY_ARRAY),
-                                       JSON_BUILD_PAIR("record", JSON_BUILD_BASE64(encrypted, encrypted_size_out1 + encrypted_size_out2)),
-                                       JSON_BUILD_PAIR("iv", JSON_BUILD_BASE64(iv, iv_size))));
+        r = sd_json_buildo(
+                        &v,
+                        SD_JSON_BUILD_PAIR("type", JSON_BUILD_CONST_STRING("systemd-homed")),
+                        SD_JSON_BUILD_PAIR("keyslots", SD_JSON_BUILD_EMPTY_ARRAY),
+                        SD_JSON_BUILD_PAIR("record", SD_JSON_BUILD_BASE64(encrypted, encrypted_size_out1 + encrypted_size_out2)),
+                        SD_JSON_BUILD_PAIR("iv", SD_JSON_BUILD_BASE64(iv, iv_size)));
         if (r < 0)
                 return log_error_errno(r, "Failed to prepare LUKS JSON token object: %m");
 
-        r = json_variant_format(v, 0, ret);
+        r = sd_json_variant_format(v, 0, ret);
         if (r < 0)
                 return log_error_errno(r, "Failed to format encrypted user record for LUKS: %m");
 
@@ -1295,9 +1309,6 @@ int home_setup_luks(
                         if (!IN_SET(errno, ENOTTY, EINVAL))
                                 return log_error_errno(errno, "Failed to get block device metrics of %s: %m", n);
 
-                        if (ioctl(setup->loop->fd, BLKGETSIZE64, &size) < 0)
-                                return log_error_errno(r, "Failed to read block device size of %s: %m", n);
-
                         if (fstat(setup->loop->fd, &st) < 0)
                                 return log_error_errno(r, "Failed to stat block device %s: %m", n);
                         assert(S_ISBLK(st.st_mode));
@@ -1329,6 +1340,8 @@ int home_setup_luks(
 
                                 offset *= 512U;
                         }
+
+                        size = setup->loop->device_size;
                 } else {
 #if HAVE_VALGRIND_MEMCHECK_H
                         VALGRIND_MAKE_MEM_DEFINED(&info, sizeof(info));
@@ -1403,7 +1416,6 @@ int home_setup_luks(
                                h->luks_cipher,
                                h->luks_cipher_mode,
                                h->luks_volume_key_size,
-                               h->password,
                                cache,
                                user_record_luks_discard(h) || user_record_luks_offline_discard(h),
                                &setup->crypt_device,
@@ -1698,12 +1710,13 @@ static struct crypt_pbkdf_type* build_minimal_pbkdf(struct crypt_pbkdf_type *buf
         assert(hr);
 
         /* For PKCS#11 derived keys (which are generated randomly and are of high quality already) we use a
-         * minimal PBKDF */
+         * minimal PBKDF and CRYPT_PBKDF_NO_BENCHMARK flag to skip benchmark. */
         *buffer = (struct crypt_pbkdf_type) {
                 .hash = user_record_luks_pbkdf_hash_algorithm(hr),
                 .type = CRYPT_KDF_PBKDF2,
-                .iterations = 1,
-                .time_ms = 1,
+                .iterations = 1000, /* recommended minimum count for pbkdf2
+                                     * according to NIST SP 800-132, ch. 5.2 */
+                .flags = CRYPT_PBKDF_NO_BENCHMARK
         };
 
         return buffer;
@@ -1983,11 +1996,11 @@ static int wait_for_devlink(const char *path) {
                 _cleanup_free_ char *dn = NULL;
                 usec_t w;
 
-                if (laccess(path, F_OK) < 0) {
-                        if (errno != ENOENT)
-                                return log_error_errno(errno, "Failed to determine whether %s exists: %m", path);
-                } else
+                r = access_nofollow(path, F_OK);
+                if (r >= 0)
                         return 0; /* Found it */
+                if (r != -ENOENT)
+                        return log_error_errno(r, "Failed to determine whether %s exists: %m", path);
 
                 if (inotify_fd < 0) {
                         /* We need to wait for the device symlink to show up, let's create an inotify watch for it */
@@ -2227,8 +2240,9 @@ int home_create_luks(
                 if (flock(setup->image_fd, LOCK_EX) < 0) /* make sure udev doesn't read from it while we operate on the device */
                         return log_error_errno(errno, "Failed to lock block device %s: %m", ip);
 
-                if (ioctl(setup->image_fd, BLKGETSIZE64, &block_device_size) < 0)
-                        return log_error_errno(errno, "Failed to read block device size: %m");
+                r = blockdev_get_device_size(setup->image_fd, &block_device_size);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to read block device size: %m");
 
                 if (h->disk_size == UINT64_MAX) {
 
@@ -2363,6 +2377,8 @@ int home_create_luks(
                             user_record_luks_discard(h),
                             /* quiet = */ true,
                             /* sector_size = */ 0,
+                            /* compression = */ NULL,
+                            /* compression_level= */ NULL,
                             extra_mkfs_options);
         if (r < 0)
                 return r;
@@ -2539,7 +2555,7 @@ static int can_resize_fs(int fd, uint64_t old_size, uint64_t new_size) {
 
                 /* btrfs can grow and shrink online */
 
-        } else if (is_fs_type(&sfs, XFS_SB_MAGIC)) {
+        } else if (is_fs_type(&sfs, XFS_SUPER_MAGIC)) {
 
                 if (new_size < XFS_MINIMAL_SIZE)
                         return log_error_errno(SYNTHETIC_ERRNO(ERANGE), "New file system size too small for xfs (needs to be 14M at least).");
@@ -2602,7 +2618,7 @@ static int ext4_offline_resize_fs(
                 return r;
         if (r == 0) {
                 /* Child */
-                execlp("e2fsck" ,"e2fsck", "-fp", setup->dm_node, NULL);
+                execlp("e2fsck", "e2fsck", "-fp", setup->dm_node, NULL);
                 log_open();
                 log_error_errno(errno, "Failed to execute e2fsck: %m");
                 _exit(EXIT_FAILURE);
@@ -2634,7 +2650,7 @@ static int ext4_offline_resize_fs(
                 return r;
         if (r == 0) {
                 /* Child */
-                execlp("resize2fs" ,"resize2fs", setup->dm_node, size_str, NULL);
+                execlp("resize2fs", "resize2fs", setup->dm_node, size_str, NULL);
                 log_open();
                 log_error_errno(errno, "Failed to execute resize2fs: %m");
                 _exit(EXIT_FAILURE);
@@ -2720,7 +2736,7 @@ static int prepare_resize_partition(
 
                 p = fdisk_table_get_partition(t, i);
                 if (!p)
-                        return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to read partition metadata: %m");
+                        return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to read partition metadata.");
 
                 if (fdisk_partition_is_used(p) <= 0)
                         continue;
@@ -3126,7 +3142,7 @@ int home_resize_luks(
         struct fdisk_partition *partition = NULL;
         _cleanup_close_ int opened_image_fd = -EBADF;
         _cleanup_free_ char *whole_disk = NULL;
-        int r, resize_type, image_fd = -EBADF;
+        int r, resize_type, image_fd = -EBADF, reconciled = USER_RECONCILE_IDENTICAL;
         sd_id128_t disk_uuid;
         const char *ip, *ipo;
         struct statfs sfs;
@@ -3183,8 +3199,9 @@ int home_resize_luks(
                 } else
                         log_info("Operating on whole block device %s.", ip);
 
-                if (ioctl(image_fd, BLKGETSIZE64, &old_image_size) < 0)
-                        return log_error_errno(errno, "Failed to determine size of original block device: %m");
+                r = blockdev_get_device_size(image_fd, &old_image_size);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to determine size of original block device: %m");
 
                 if (flock(image_fd, LOCK_EX) < 0) /* make sure udev doesn't read from it while we operate on the device */
                         return log_error_errno(errno, "Failed to lock block device %s: %m", ip);
@@ -3231,9 +3248,9 @@ int home_resize_luks(
                 return r;
 
         if (!FLAGS_SET(flags, HOME_SETUP_RESIZE_DONT_SYNC_IDENTITIES)) {
-                r = home_load_embedded_identity(h, setup->root_fd, header_home, USER_RECONCILE_REQUIRE_NEWER_OR_EQUAL, cache, &embedded_home, &new_home);
-                if (r < 0)
-                        return r;
+                reconciled = home_load_embedded_identity(h, setup->root_fd, header_home, USER_RECONCILE_REQUIRE_NEWER_OR_EQUAL, cache, &embedded_home, &new_home);
+                if (reconciled < 0)
+                        return reconciled;
         }
 
         r = home_maybe_shift_uid(h, flags, setup);
@@ -3444,7 +3461,11 @@ int home_resize_luks(
                 /* → Shrink */
 
                 if (!FLAGS_SET(flags, HOME_SETUP_RESIZE_DONT_SYNC_IDENTITIES)) {
-                        r = home_store_embedded_identity(new_home, setup->root_fd, h->uid, embedded_home);
+                        r = home_store_embedded_identity(new_home, setup->root_fd, embedded_home);
+                        if (r < 0)
+                                return r;
+
+                        r = home_reconcile_blob_dirs(new_home, setup->root_fd, reconciled);
                         if (r < 0)
                                 return r;
                 }
@@ -3532,7 +3553,11 @@ int home_resize_luks(
 
         } else { /* → Grow */
                 if (!FLAGS_SET(flags, HOME_SETUP_RESIZE_DONT_SYNC_IDENTITIES)) {
-                        r = home_store_embedded_identity(new_home, setup->root_fd, h->uid, embedded_home);
+                        r = home_store_embedded_identity(new_home, setup->root_fd, embedded_home);
+                        if (r < 0)
+                                return r;
+
+                        r = home_reconcile_blob_dirs(new_home, setup->root_fd, reconciled);
                         if (r < 0)
                                 return r;
                 }
@@ -3582,7 +3607,6 @@ int home_passwd_luks(
         _cleanup_(erase_and_freep) void *volume_key = NULL;
         struct crypt_pbkdf_type good_pbkdf, minimal_pbkdf;
         const char *type;
-        char **list;
         int r;
 
         assert(h);
@@ -3611,17 +3635,7 @@ int home_passwd_luks(
         if (!volume_key)
                 return log_oom();
 
-        r = -ENOKEY;
-        FOREACH_POINTER(list,
-                        cache ? cache->keyring_passswords : NULL,
-                        cache ? cache->pkcs11_passwords : NULL,
-                        cache ? cache->fido2_passwords : NULL,
-                        h->password) {
-
-                r = luks_try_passwords(h, setup->crypt_device, list, volume_key, &volume_key_size, NULL);
-                if (r != -ENOKEY)
-                        break;
-        }
+        r = luks_get_volume_key(h, setup->crypt_device, cache, volume_key, &volume_key_size, NULL);
         if (r == -ENOKEY)
                 return log_error_errno(SYNTHETIC_ERRNO(ENOKEY), "Failed to unlock LUKS superblock with supplied passwords.");
         if (r < 0)
@@ -3664,11 +3678,6 @@ int home_passwd_luks(
                         return log_error_errno(r, "Failed to set up LUKS password: %m");
 
                 log_info("Updated LUKS key slot %zu.", i);
-
-                /* If we changed the password, then make sure to update the copy in the keyring, so that
-                 * auto-rebalance continues to work. We only do this if we operate on an active home dir. */
-                if (i == 0 && FLAGS_SET(flags, HOME_SETUP_ALREADY_ACTIVATED))
-                        upload_to_keyring(h, effective_passwords[i], NULL);
         }
 
         return 1;
@@ -3706,36 +3715,10 @@ int home_lock_luks(UserRecord *h, HomeSetup *setup) {
         return 0;
 }
 
-static int luks_try_resume(
-                struct crypt_device *cd,
-                const char *dm_name,
-                char **password) {
-
-        int r;
-
-        assert(cd);
-        assert(dm_name);
-
-        STRV_FOREACH(pp, password) {
-                r = sym_crypt_resume_by_passphrase(
-                                cd,
-                                dm_name,
-                                CRYPT_ANY_SLOT,
-                                *pp,
-                                strlen(*pp));
-                if (r >= 0) {
-                        log_info("Resumed LUKS device %s.", dm_name);
-                        return 0;
-                }
-
-                log_debug_errno(r, "Password %zu didn't work for resuming device: %m", (size_t) (pp - password));
-        }
-
-        return -ENOKEY;
-}
-
 int home_unlock_luks(UserRecord *h, HomeSetup *setup, const PasswordCache *cache) {
-        char **list;
+        _cleanup_(keyring_unlinkp) key_serial_t key_serial = -1;
+        _cleanup_(erase_and_freep) void *vk = NULL;
+        size_t vks;
         int r;
 
         assert(h);
@@ -3748,19 +3731,26 @@ int home_unlock_luks(UserRecord *h, HomeSetup *setup, const PasswordCache *cache
 
         log_info("Discovered used LUKS device %s.", setup->dm_node);
 
-        r = -ENOKEY;
-        FOREACH_POINTER(list,
-                        cache ? cache->pkcs11_passwords : NULL,
-                        cache ? cache->fido2_passwords : NULL,
-                        h->password) {
-                r = luks_try_resume(setup->crypt_device, setup->dm_name, list);
-                if (r != -ENOKEY)
-                        break;
-        }
+        r = sym_crypt_get_volume_key_size(setup->crypt_device);
+        if (r <= 0)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to determine LUKS volume key size.");
+        vks = (size_t) r;
+
+        vk = malloc(vks);
+        if (!vk)
+                return log_oom();
+
+        r = luks_get_volume_key(h, setup->crypt_device, cache, vk, &vks, &key_serial);
         if (r == -ENOKEY)
                 return log_error_errno(r, "No valid password for LUKS superblock.");
         if (r < 0)
+                return log_error_errno(r, "Failed to unlock LUKS superblock: %m");
+
+        r = sym_crypt_resume_by_volume_key(setup->crypt_device, setup->dm_name, vk, vks);
+        if (r < 0)
                 return log_error_errno(r, "Failed to resume LUKS superblock: %m");
+
+        TAKE_KEY_SERIAL(key_serial); /* Leave key in kernel keyring */
 
         log_info("LUKS device resumed.");
         return 0;

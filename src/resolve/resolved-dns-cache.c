@@ -5,7 +5,7 @@
 #include "af-list.h"
 #include "alloc-util.h"
 #include "dns-domain.h"
-#include "format-util.h"
+#include "format-ifname.h"
 #include "resolved-dns-answer.h"
 #include "resolved-dns-cache.h"
 #include "resolved-dns-packet.h"
@@ -164,8 +164,8 @@ void dns_cache_flush(DnsCache *c) {
         while ((key = hashmap_first_key(c->by_key)))
                 dns_cache_remove_by_key(c, key);
 
-        assert(hashmap_size(c->by_key) == 0);
-        assert(prioq_size(c->by_expiry) == 0);
+        assert(hashmap_isempty(c->by_key));
+        assert(prioq_isempty(c->by_expiry));
 
         c->by_key = hashmap_free(c->by_key);
         c->by_expiry = prioq_free(c->by_expiry);
@@ -186,7 +186,7 @@ static void dns_cache_make_space(DnsCache *c, unsigned add) {
                 _cleanup_(dns_resource_key_unrefp) DnsResourceKey *key = NULL;
                 DnsCacheItem *i;
 
-                if (prioq_size(c->by_expiry) <= 0)
+                if (prioq_isempty(c->by_expiry))
                         break;
 
                 if (prioq_size(c->by_expiry) + add < CACHE_MAX)
@@ -241,6 +241,22 @@ void dns_cache_prune(DnsCache *c) {
                         dns_cache_remove_by_key(c, key);
                 }
         }
+}
+
+bool dns_cache_expiry_in_one_second(DnsCache *c, usec_t t) {
+        DnsCacheItem *i;
+
+        assert(c);
+
+        /* Check if any items expire within the next second */
+        i = prioq_peek(c->by_expiry);
+        if (!i)
+                return false;
+
+        if (i->until <= usec_add(t, USEC_PER_SEC))
+                return true;
+
+        return false;
 }
 
 static int dns_cache_item_prioq_compare_func(const void *a, const void *b) {
@@ -531,6 +547,20 @@ static int dns_cache_put_positive(
         TAKE_PTR(i);
         return 0;
 }
+/* https://www.iana.org/assignments/special-use-domain-names/special-use-domain-names.xhtml */
+/* https://www.iana.org/assignments/locally-served-dns-zones/locally-served-dns-zones.xhtml#transport-independent */
+static bool dns_special_use_domain_invalid_answer(DnsResourceKey *key, int rcode) {
+        /* Sometimes we know a domain exists, even if broken nameservers say otherwise. Make sure not to
+         * cache any answers we know are wrong. */
+
+        /* RFC9462 § 6.4: resolvers SHOULD respond to queries of any type other than SVCB for
+         * _dns.resolver.arpa. with NODATA and queries of any type for any domain name under resolver.arpa
+         * with NODATA. */
+        if (dns_name_endswith(dns_resource_key_name(key), "resolver.arpa") > 0 && rcode == DNS_RCODE_NXDOMAIN)
+                return true;
+
+        return false;
+}
 
 static int dns_cache_put_negative(
                 DnsCache *c,
@@ -560,6 +590,8 @@ static int dns_cache_put_negative(
         if (dns_class_is_pseudo(key->class))
                 return 0;
         if (dns_type_is_pseudo(key->type))
+                return 0;
+        if (dns_special_use_domain_invalid_answer(key, rcode))
                 return 0;
 
         if (IN_SET(rcode, DNS_RCODE_SUCCESS, DNS_RCODE_NXDOMAIN)) {
@@ -878,7 +910,11 @@ fail:
         return r;
 }
 
-static DnsCacheItem *dns_cache_get_by_key_follow_cname_dname_nsec(DnsCache *c, DnsResourceKey *k) {
+static DnsCacheItem *dns_cache_get_by_key_follow_cname_dname_nsec(
+                DnsCache *c,
+                DnsResourceKey *k,
+                uint64_t query_flags) {
+
         DnsCacheItem *i;
         const char *n;
         int r;
@@ -901,7 +937,7 @@ static DnsCacheItem *dns_cache_get_by_key_follow_cname_dname_nsec(DnsCache *c, D
         if (i && i->type == DNS_CACHE_NXDOMAIN)
                 return i;
 
-        if (dns_type_may_redirect(k->type)) {
+        if (dns_type_may_redirect(k->type) && !FLAGS_SET(query_flags, SD_RESOLVED_NO_CNAME)) {
                 /* Check if we have a CNAME record instead */
                 i = hashmap_get(c->by_key, &DNS_RESOURCE_KEY_CONST(k->class, DNS_TYPE_CNAME, n));
                 if (i && i->type != DNS_CACHE_NODATA)
@@ -1021,7 +1057,7 @@ int dns_cache_lookup(
                 goto miss;
         }
 
-        first = dns_cache_get_by_key_follow_cname_dname_nsec(c, key);
+        first = dns_cache_get_by_key_follow_cname_dname_nsec(c, key, query_flags);
         if (!first) {
                 /* If one question cannot be answered we need to refresh */
 
@@ -1303,6 +1339,10 @@ int dns_cache_export_shared_to_packet(DnsCache *cache, DnsPacket *p, usec_t ts, 
                         if (!j->shared_owner)
                                 continue;
 
+                        /* Ignore cached goodby packet. See on_mdns_packet() and RFC 6762 section 10.1. */
+                        if (j->rr->ttl <= 1)
+                                continue;
+
                         /* RFC6762 7.1: Don't append records with less than half the TTL remaining
                          * as known answers. */
                         if (usec_sub_unsigned(j->until, ts) < j->rr->ttl * USEC_PER_SEC / 2)
@@ -1389,8 +1429,8 @@ void dns_cache_dump(DnsCache *cache, FILE *f) {
                 }
 }
 
-int dns_cache_dump_to_json(DnsCache *cache, JsonVariant **ret) {
-        _cleanup_(json_variant_unrefp) JsonVariant *c = NULL;
+int dns_cache_dump_to_json(DnsCache *cache, sd_json_variant **ret) {
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *c = NULL;
         DnsCacheItem *i;
         int r;
 
@@ -1398,17 +1438,17 @@ int dns_cache_dump_to_json(DnsCache *cache, JsonVariant **ret) {
         assert(ret);
 
         HASHMAP_FOREACH(i, cache->by_key) {
-                _cleanup_(json_variant_unrefp) JsonVariant *d = NULL, *k = NULL;
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *d = NULL, *k = NULL;
 
                 r = dns_resource_key_to_json(i->key, &k);
                 if (r < 0)
                         return r;
 
                 if (i->rr) {
-                        _cleanup_(json_variant_unrefp) JsonVariant *l = NULL;
+                        _cleanup_(sd_json_variant_unrefp) sd_json_variant *l = NULL;
 
                         LIST_FOREACH(by_key, j, i) {
-                                _cleanup_(json_variant_unrefp) JsonVariant *rj = NULL;
+                                _cleanup_(sd_json_variant_unrefp) sd_json_variant *rj = NULL;
 
                                 assert(j->rr);
 
@@ -1420,48 +1460,47 @@ int dns_cache_dump_to_json(DnsCache *cache, JsonVariant **ret) {
                                 if (r < 0)
                                         return r;
 
-                                r = json_variant_append_arrayb(
+                                r = sd_json_variant_append_arraybo(
                                                 &l,
-                                                JSON_BUILD_OBJECT(
-                                                                JSON_BUILD_PAIR_VARIANT("rr", rj),
-                                                                JSON_BUILD_PAIR_BASE64("raw", j->rr->wire_format, j->rr->wire_format_size)));
+                                                SD_JSON_BUILD_PAIR_VARIANT("rr", rj),
+                                                SD_JSON_BUILD_PAIR_BASE64("raw", j->rr->wire_format, j->rr->wire_format_size));
                                 if (r < 0)
                                         return r;
                         }
 
                         if (!l) {
-                                r = json_variant_new_array(&l, NULL, 0);
+                                r = sd_json_variant_new_array(&l, NULL, 0);
                                 if (r < 0)
                                         return r;
                         }
 
-                        r = json_build(&d,
-                                       JSON_BUILD_OBJECT(
-                                                       JSON_BUILD_PAIR_VARIANT("key", k),
-                                                       JSON_BUILD_PAIR_VARIANT("rrs", l),
-                                                       JSON_BUILD_PAIR_UNSIGNED("until", i->until)));
+                        r = sd_json_buildo(
+                                        &d,
+                                        SD_JSON_BUILD_PAIR_VARIANT("key", k),
+                                        SD_JSON_BUILD_PAIR_VARIANT("rrs", l),
+                                        SD_JSON_BUILD_PAIR_UNSIGNED("until", i->until));
                 } else if (i->type == DNS_CACHE_NODATA) {
-                        r = json_build(&d,
-                                       JSON_BUILD_OBJECT(
-                                                       JSON_BUILD_PAIR_VARIANT("key", k),
-                                                       JSON_BUILD_PAIR_EMPTY_ARRAY("rrs"),
-                                                       JSON_BUILD_PAIR_UNSIGNED("until", i->until)));
+                        r = sd_json_buildo(
+                                        &d,
+                                        SD_JSON_BUILD_PAIR_VARIANT("key", k),
+                                        SD_JSON_BUILD_PAIR_EMPTY_ARRAY("rrs"),
+                                        SD_JSON_BUILD_PAIR_UNSIGNED("until", i->until));
                 } else
-                        r = json_build(&d,
-                                       JSON_BUILD_OBJECT(
-                                                       JSON_BUILD_PAIR_VARIANT("key", k),
-                                                       JSON_BUILD_PAIR_STRING("type", dns_cache_item_type_to_string(i)),
-                                                       JSON_BUILD_PAIR_UNSIGNED("until", i->until)));
+                        r = sd_json_buildo(
+                                        &d,
+                                        SD_JSON_BUILD_PAIR_VARIANT("key", k),
+                                        SD_JSON_BUILD_PAIR_STRING("type", dns_cache_item_type_to_string(i)),
+                                        SD_JSON_BUILD_PAIR_UNSIGNED("until", i->until));
                 if (r < 0)
                         return r;
 
-                r = json_variant_append_array(&c, d);
+                r = sd_json_variant_append_array(&c, d);
                 if (r < 0)
                         return r;
         }
 
         if (!c)
-                return json_variant_new_array(ret, NULL, 0);
+                return sd_json_variant_new_array(ret, NULL, 0);
 
         *ret = TAKE_PTR(c);
         return 0;

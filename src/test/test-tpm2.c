@@ -74,16 +74,15 @@ TEST(tpm2_util_pbkdf2_hmac_sha256) {
         };
 
         uint8_t res[SHA256_DIGEST_SIZE];
-        for(size_t i = 0; i < sizeof(test_vectors)/sizeof(test_vectors[0]); i++) {
-
+        FOREACH_ELEMENT(vector, test_vectors) {
                 int rc = tpm2_util_pbkdf2_hmac_sha256(
-                                test_vectors[i].pass,
-                                test_vectors[i].passlen,
-                                test_vectors[i].salt,
-                                test_vectors[i].saltlen,
+                                vector->pass,
+                                vector->passlen,
+                                vector->salt,
+                                vector->saltlen,
                                 res);
                 assert_se(rc == 0);
-                assert_se(memcmp(test_vectors[i].expected, res, SHA256_DIGEST_SIZE) == 0);
+                assert_se(memcmp(vector->expected, res, SHA256_DIGEST_SIZE) == 0);
         }
 }
 
@@ -153,8 +152,8 @@ static void _test_pcr_selection_mask_hash(uint32_t mask, TPMI_ALG_HASH hash) {
         uint32_t test_masks[] = {
                 0x0, 0x1, 0x100, 0x10000, 0xf0f0f0, 0xaaaaaa, 0xffffff,
         };
-        for (unsigned i = 0; i < ELEMENTSOF(test_masks); i++) {
-                uint32_t test_mask = test_masks[i];
+        FOREACH_ELEMENT(i, test_masks) {
+                uint32_t test_mask = *i;
 
                 TPMS_PCR_SELECTION a = POISON_TPMS, b = POISON_TPMS, test_s = POISON_TPMS;
                 tpm2_tpms_pcr_selection_from_mask(test_mask, hash, &test_s);
@@ -182,11 +181,11 @@ static void _test_pcr_selection_mask_hash(uint32_t mask, TPMI_ALG_HASH hash) {
 TEST(tpms_pcr_selection_mask_and_hash) {
         TPMI_ALG_HASH HASH_ALGS[] = { TPM2_ALG_SHA1, TPM2_ALG_SHA256, };
 
-        for (unsigned i = 0; i < ELEMENTSOF(HASH_ALGS); i++)
+        FOREACH_ELEMENT(hash, HASH_ALGS)
                 for (uint32_t m2 = 0; m2 <= 0xffffff; m2 += 0x50000)
                         for (uint32_t m1 = 0; m1 <= 0xffff; m1 += 0x500)
                                 for (uint32_t m0 = 0; m0 <= 0xff; m0 += 0x5)
-                                        _test_pcr_selection_mask_hash(m0 | m1 | m2, HASH_ALGS[i]);
+                                        _test_pcr_selection_mask_hash(m0 | m1 | m2, *hash);
 }
 
 static void _test_tpms_sw(
@@ -199,7 +198,7 @@ static void _test_tpms_sw(
         tpm2_tpms_pcr_selection_from_mask(mask, hash, &s);
 
         _cleanup_free_ char *tpms_str = tpm2_tpms_pcr_selection_to_string(&s);
-        assert_se(streq(tpms_str, expected_str));
+        ASSERT_STREQ(tpms_str, expected_str);
 
         assert_se(tpm2_tpms_pcr_selection_weight(&s) == expected_weight);
         assert_se(tpm2_tpms_pcr_selection_is_empty(&s) == (expected_weight == 0));
@@ -242,7 +241,7 @@ static void _test_tpml_sw(
         assert_se(l.count == expected_count);
 
         _cleanup_free_ char *tpml_str = tpm2_tpml_pcr_selection_to_string(&l);
-        assert_se(streq(tpml_str, expected_str));
+        ASSERT_STREQ(tpml_str, expected_str);
 
         assert_se(tpm2_tpml_pcr_selection_weight(&l) == expected_weight);
         assert_se(tpm2_tpml_pcr_selection_is_empty(&l) == (expected_weight == 0));
@@ -678,7 +677,7 @@ TEST(parse_pcr_argument) {
         assert_se(tpm2_parse_pcr_argument("1,2=123456abc", &v, &n_v) < 0);
         assert_se(tpm2_parse_pcr_argument("1,2:invalid", &v, &n_v) < 0);
         assert_se(tpm2_parse_pcr_argument("1:sha1=invalid", &v, &n_v) < 0);
-        assert_se(v == NULL);
+        ASSERT_NULL(v);
         assert_se(n_v == 0);
 
         check_parse_pcr_argument_to_mask("", 0x0);
@@ -819,36 +818,75 @@ static void check_tpm2b_public_fingerprint(const TPM2B_PUBLIC *public, const cha
         assert_se(memcmp_nn(fp, fp_size, expected, expected_len) == 0);
 }
 
-TEST(tpm2b_public_from_openssl_pkey) {
-        TPM2B_PUBLIC public;
+static void check_tpm2b_public_name(const TPM2B_PUBLIC *public, const char *hexname) {
+        DEFINE_HEX_PTR(expected, hexname);
+        TPM2B_NAME name = {};
+
+        assert_se(tpm2_calculate_pubkey_name(&public->publicArea, &name) >= 0);
+        assert_se(memcmp_nn(name.name, name.size, expected, expected_len) == 0);
+}
+
+static void check_tpm2b_public_from_ecc_pem(const char *pem, const char *hexx, const char *hexy, const char *hexfp, const char *hexname) {
+        TPM2B_PUBLIC public = {};
         TPMT_PUBLIC *p = &public.publicArea;
 
-        DEFINE_HEX_PTR(key_ecc, "2d2d2d2d2d424547494e205055424c4943204b45592d2d2d2d2d0a4d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a30444151634451674145726a6e4575424c73496c3972687068777976584e50686a346a426e500a44586e794a304b395579724e6764365335413532542b6f5376746b436a365a726c34685847337741515558706f426c532b7448717452714c35513d3d0a2d2d2d2d2d454e44205055424c4943204b45592d2d2d2d2d0a");
-        get_tpm2b_public_from_pem(key_ecc, key_ecc_len, &public);
+        DEFINE_HEX_PTR(key, pem);
+        get_tpm2b_public_from_pem(key, key_len, &public);
 
         assert_se(p->type == TPM2_ALG_ECC);
         assert_se(p->parameters.eccDetail.curveID == TPM2_ECC_NIST_P256);
 
-        DEFINE_HEX_PTR(expected_x, "ae39c4b812ec225f6b869870caf5cd3e18f88c19cf0d79f22742bd532acd81de");
+        DEFINE_HEX_PTR(expected_x, hexx);
         assert_se(memcmp_nn(p->unique.ecc.x.buffer, p->unique.ecc.x.size, expected_x, expected_x_len) == 0);
 
-        DEFINE_HEX_PTR(expected_y, "92e40e764fea12bed9028fa66b9788571b7c004145e9a01952fad1eab51a8be5");
+        DEFINE_HEX_PTR(expected_y, hexy);
         assert_se(memcmp_nn(p->unique.ecc.y.buffer, p->unique.ecc.y.size, expected_y, expected_y_len) == 0);
 
-        check_tpm2b_public_fingerprint(&public, "cd3373293b62a52b48c12100e80ea9bfd806266ce76893a5ec31cb128052d97c");
+        check_tpm2b_public_fingerprint(&public, hexfp);
+        check_tpm2b_public_name(&public, hexname);
+}
 
-        DEFINE_HEX_PTR(key_rsa, "2d2d2d2d2d424547494e205055424c4943204b45592d2d2d2d2d0a4d494942496a414e42676b71686b6947397730424151454641414f43415138414d49494243674b4341514541795639434950652f505852337a436f63787045300a6a575262546c3568585844436b472f584b79374b6d2f4439584942334b734f5a31436a5937375571372f674359363170697838697552756a73413464503165380a593445336c68556d374a332b6473766b626f4b64553243626d52494c2f6675627771694c4d587a41673342575278747234547545443533527a373634554650640a307a70304b68775231496230444c67772f344e67566f314146763378784b4d6478774d45683567676b73733038326332706c354a504e32587677426f744e6b4d0a5471526c745a4a35355244436170696e7153334577376675646c4e735851357746766c7432377a7637344b585165616d704c59433037584f6761304c676c536b0a79754774586b6a50542f735542544a705374615769674d5a6f714b7479563463515a58436b4a52684459614c47587673504233687a766d5671636e6b47654e540a65774944415141420a2d2d2d2d2d454e44205055424c4943204b45592d2d2d2d2d0a");
-        get_tpm2b_public_from_pem(key_rsa, key_rsa_len, &public);
+static void check_tpm2b_public_from_rsa_pem(const char *pem, const char *hexn, uint32_t exponent, const char *hexfp, const char *hexname) {
+        TPM2B_PUBLIC public = {};
+        TPMT_PUBLIC *p = &public.publicArea;
 
-        DEFINE_HEX_PTR(expected_n, "c95f4220f7bf3d7477cc2a1cc691348d645b4e5e615d70c2906fd72b2eca9bf0fd5c80772ac399d428d8efb52aeff80263ad698b1f22b91ba3b00e1d3f57bc638137961526ec9dfe76cbe46e829d53609b99120bfdfb9bc2a88b317cc0837056471b6be13b840f9dd1cfbeb85053ddd33a742a1c11d486f40cb830ff8360568d4016fdf1c4a31dc7030487982092cb34f36736a65e493cdd97bf0068b4d90c4ea465b59279e510c26a98a7a92dc4c3b7ee76536c5d0e7016f96ddbbcefef829741e6a6a4b602d3b5ce81ad0b8254a4cae1ad5e48cf4ffb140532694ad6968a0319a2a2adc95e1c4195c29094610d868b197bec3c1de1cef995a9c9e419e3537b");
-        assert_se(p->unique.rsa.size == expected_n_len);
-        assert_se(memcmp(p->unique.rsa.buffer, expected_n, expected_n_len) == 0);
+        DEFINE_HEX_PTR(key, pem);
+        get_tpm2b_public_from_pem(key, key_len, &public);
+
+        assert_se(p->type == TPM2_ALG_RSA);
+
+        DEFINE_HEX_PTR(expected_n, hexn);
+        assert_se(memcmp_nn(p->unique.rsa.buffer, p->unique.rsa.size, expected_n, expected_n_len) == 0);
 
         assert_se(p->parameters.rsaDetail.keyBits == expected_n_len * 8);
 
-        assert_se(p->parameters.rsaDetail.exponent == 0);
+        assert_se(p->parameters.rsaDetail.exponent == exponent);
 
-        check_tpm2b_public_fingerprint(&public, "d9186d13a7fd5b3644cee05448f49ad3574e82a2942ff93cf89598d36cca78a9");
+        check_tpm2b_public_fingerprint(&public, hexfp);
+        check_tpm2b_public_name(&public, hexname);
+}
+
+TEST(tpm2b_public_from_openssl_pkey) {
+        /* standard ECC key */
+        check_tpm2b_public_from_ecc_pem("2d2d2d2d2d424547494e205055424c4943204b45592d2d2d2d2d0a4d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a30444151634451674145726a6e4575424c73496c3972687068777976584e50686a346a426e500a44586e794a304b395579724e6764365335413532542b6f5376746b436a365a726c34685847337741515558706f426c532b7448717452714c35513d3d0a2d2d2d2d2d454e44205055424c4943204b45592d2d2d2d2d0a",
+                                        "ae39c4b812ec225f6b869870caf5cd3e18f88c19cf0d79f22742bd532acd81de",
+                                        "92e40e764fea12bed9028fa66b9788571b7c004145e9a01952fad1eab51a8be5",
+                                        "cd3373293b62a52b48c12100e80ea9bfd806266ce76893a5ec31cb128052d97c",
+                                        "000b5c127e4dbaf8fb7bac641e8db25a84a48db876ca7ee3bd317ae1a4554ff72f17");
+
+        /* standard RSA key */
+        check_tpm2b_public_from_rsa_pem("2d2d2d2d2d424547494e205055424c4943204b45592d2d2d2d2d0a4d494942496a414e42676b71686b6947397730424151454641414f43415138414d49494243674b4341514541795639434950652f505852337a436f63787045300a6a575262546c3568585844436b472f584b79374b6d2f4439584942334b734f5a31436a5937375571372f674359363170697838697552756a73413464503165380a593445336c68556d374a332b6473766b626f4b64553243626d52494c2f6675627771694c4d587a41673342575278747234547545443533527a373634554650640a307a70304b68775231496230444c67772f344e67566f314146763378784b4d6478774d45683567676b73733038326332706c354a504e32587677426f744e6b4d0a5471526c745a4a35355244436170696e7153334577376675646c4e735851357746766c7432377a7637344b585165616d704c59433037584f6761304c676c536b0a79754774586b6a50542f735542544a705374615769674d5a6f714b7479563463515a58436b4a52684459614c47587673504233687a766d5671636e6b47654e540a65774944415141420a2d2d2d2d2d454e44205055424c4943204b45592d2d2d2d2d0a",
+                                        "c95f4220f7bf3d7477cc2a1cc691348d645b4e5e615d70c2906fd72b2eca9bf0fd5c80772ac399d428d8efb52aeff80263ad698b1f22b91ba3b00e1d3f57bc638137961526ec9dfe76cbe46e829d53609b99120bfdfb9bc2a88b317cc0837056471b6be13b840f9dd1cfbeb85053ddd33a742a1c11d486f40cb830ff8360568d4016fdf1c4a31dc7030487982092cb34f36736a65e493cdd97bf0068b4d90c4ea465b59279e510c26a98a7a92dc4c3b7ee76536c5d0e7016f96ddbbcefef829741e6a6a4b602d3b5ce81ad0b8254a4cae1ad5e48cf4ffb140532694ad6968a0319a2a2adc95e1c4195c29094610d868b197bec3c1de1cef995a9c9e419e3537b",
+                                        0x10001,
+                                        "d9186d13a7fd5b3644cee05448f49ad3574e82a2942ff93cf89598d36cca78a9",
+                                        "000be1bd75c7976e7a30e9e82223b81a9eff0d42c30618e588db592ed5da94455e81");
+
+        /* RSA key with non-default (i.e. not 0x10001) exponent */
+        check_tpm2b_public_from_rsa_pem("2d2d2d2d2d424547494e205055424c4943204b45592d2d2d2d2d0a4d494942496a414e42676b71686b6947397730424151454641414f43415138414d49494243674b434151454179566c7551664b75565171596a5a71436a657a760a364e4a6f58654c736f702f72765375666330773769544d4f73566741557462515452505451725874397065537a4370524467634378656b6a544144577279304b0a6d59786a7a3634776c6a7030463959383068636a6b6b4b3759414d333054664c4648656c2b377574427370777142467a6e2b385a6659567353434b397354706f0a316c61376e5347514e7451576f36444a366c525a336a676d6d584f61544654416145304a432b7046584273564471736d46326438362f314e51714a755a5154520a575852636954704e58357649792f37766b6c5a6a685569526c78764e594f4e3070636476534a37364e74496e447a3048506f775a38705a454f4d2f4a454f59780a617a4c4a6a644936446b355279593578325a7949375074566a3057537242524f4d696f2b674c6556457a43343456336438315a38445138564e334c69625130330a70514944415141460a2d2d2d2d2d454e44205055424c4943204b45592d2d2d2d2d0a",
+                                        "c9596e41f2ae550a988d9a828decefe8d2685de2eca29febbd2b9f734c3b89330eb1580052d6d04d13d342b5edf69792cc2a510e0702c5e9234c00d6af2d0a998c63cfae30963a7417d63cd217239242bb600337d137cb1477a5fbbbad06ca70a811739fef197d856c4822bdb13a68d656bb9d219036d416a3a0c9ea5459de382699739a4c54c0684d090bea455c1b150eab2617677cebfd4d42a26e6504d159745c893a4d5f9bc8cbfeef925663854891971bcd60e374a5c76f489efa36d2270f3d073e8c19f2964438cfc910e6316b32c98dd23a0e4e51c98e71d99c88ecfb558f4592ac144e322a3e80b7951330b8e15dddf3567c0d0f153772e26d0d37a5",
+                                        0x10005,
+                                        "c8ca80a687d5972e1d961aaa2cfde2ff2e7a20d85e3ea0382804e70e013d65af",
+                                        "000beb8974d36d8cf58fdc87460dda00319e10c94c1b9f222ac9ce29d1c4776246cc");
 }
 #endif
 
@@ -1100,42 +1138,40 @@ static void calculate_seal_and_unseal(
         assert_se(asprintf(&secret_string, "The classified documents are in room %x", parent_index) > 0);
         size_t secret_size = strlen(secret_string) + 1;
 
-        _cleanup_free_ void *blob = NULL;
-        size_t blob_size = 0;
-        _cleanup_free_ void *serialized_parent = NULL;
-        size_t serialized_parent_size;
+        _cleanup_(iovec_done) struct iovec blob = {}, serialized_parent = {};
         assert_se(tpm2_calculate_seal(
                         parent_index,
                         parent_public,
                         /* attributes= */ NULL,
-                        secret_string, secret_size,
+                        &IOVEC_MAKE(secret_string, secret_size),
                         /* policy= */ NULL,
                         /* pin= */ NULL,
-                        /* ret_secret= */ NULL, /* ret_secret_size= */ 0,
-                        &blob, &blob_size,
-                        &serialized_parent, &serialized_parent_size) >= 0);
+                        /* ret_secret= */ NULL,
+                        &blob,
+                        &serialized_parent) >= 0);
 
-        _cleanup_free_ void *unsealed_secret = NULL;
-        size_t unsealed_secret_size;
+        _cleanup_(iovec_done) struct iovec unsealed_secret = {};
         assert_se(tpm2_unseal(
                         c,
                         /* hash_pcr_mask= */ 0,
                         /* pcr_bank= */ 0,
-                        /* pubkey= */ NULL, /* pubkey_size= */ 0,
+                        /* pubkey= */ NULL,
                         /* pubkey_pcr_mask= */ 0,
                         /* signature= */ NULL,
                         /* pin= */ NULL,
                         /* pcrlock_policy= */ NULL,
                         /* primary_alg= */ 0,
-                        blob, blob_size,
-                        /* known_policy_hash= */ NULL, /* known_policy_hash_size= */ 0,
-                        serialized_parent, serialized_parent_size,
-                        &unsealed_secret, &unsealed_secret_size) >= 0);
+                        &blob,
+                        /* n_blobs= */ 1,
+                        /* known_policy_hash= */ NULL,
+                        /* n_known_policy_hash= */ 0,
+                        &serialized_parent,
+                        &unsealed_secret) >= 0);
 
-        assert_se(memcmp_nn(secret_string, secret_size, unsealed_secret, unsealed_secret_size) == 0);
+        assert_se(memcmp_nn(secret_string, secret_size, unsealed_secret.iov_base, unsealed_secret.iov_len) == 0);
 
-        char unsealed_string[unsealed_secret_size];
-        assert_se(snprintf(unsealed_string, unsealed_secret_size, "%s", (char*) unsealed_secret) == (int) unsealed_secret_size - 1);
+        char unsealed_string[unsealed_secret.iov_len];
+        assert_se(snprintf(unsealed_string, unsealed_secret.iov_len, "%s", (char*) unsealed_secret.iov_base) == (int) unsealed_secret.iov_len - 1);
         log_debug("Unsealed secret is: %s", unsealed_string);
 }
 
@@ -1144,7 +1180,7 @@ static int check_calculate_seal(Tpm2Context *c) {
         int r;
 
         if (detect_virtualization() == VIRTUALIZATION_NONE && !slow_tests_enabled()) {
-                log_notice("Skipping slow calculate seal TPM2 tests. Physical system detected, and slow tests disabled.");
+                log_notice("Skipping slow calculate seal TPM2 tests. Physical system detected, and slow tests disabled. (To enable, run again with $SYSTEMD_SLOW_TESTS=1.)");
                 return 0;
         }
 
@@ -1155,11 +1191,9 @@ static int check_calculate_seal(Tpm2Context *c) {
         calculate_seal_and_unseal(c, TPM2_SRK_HANDLE, srk_public);
 
         TPMI_ALG_ASYM test_algs[] = { TPM2_ALG_RSA, TPM2_ALG_ECC, };
-        for (unsigned i = 0; i < ELEMENTSOF(test_algs); i++) {
-                TPMI_ALG_ASYM alg = test_algs[i];
-
+        FOREACH_ELEMENT(alg, test_algs) {
                 TPM2B_PUBLIC template = { .size = sizeof(TPMT_PUBLIC), };
-                assert_se(tpm2_get_srk_template(alg, &template.publicArea) >= 0);
+                assert_se(tpm2_get_srk_template(*alg, &template.publicArea) >= 0);
 
                 _cleanup_free_ TPM2B_PUBLIC *public = NULL;
                 _cleanup_(tpm2_handle_freep) Tpm2Handle *handle = NULL;
@@ -1187,34 +1221,41 @@ static void check_seal_unseal_for_handle(Tpm2Context *c, TPM2_HANDLE handle) {
 
         log_debug("Check seal/unseal for handle 0x%" PRIx32, handle);
 
-        _cleanup_free_ void *secret = NULL, *blob = NULL, *srk = NULL, *unsealed_secret = NULL;
-        size_t secret_size, blob_size, srk_size, unsealed_secret_size;
+        _cleanup_(iovec_done) struct iovec secret = {}, srk = {}, unsealed_secret = {};
+        struct iovec *blobs = NULL;
+        size_t n_blobs = 0;
+        CLEANUP_ARRAY(blobs, n_blobs, iovec_array_free);
+
         assert_se(tpm2_seal(
                         c,
                         handle,
                         &policy,
+                        1,
                         /* pin= */ NULL,
-                        &secret, &secret_size,
-                        &blob, &blob_size,
+                        &secret,
+                        &blobs,
+                        &n_blobs,
                         /* ret_primary_alg= */ NULL,
-                        &srk, &srk_size) >= 0);
+                        &srk) >= 0);
 
         assert_se(tpm2_unseal(
                         c,
                         /* hash_pcr_mask= */ 0,
                         /* pcr_bank= */ 0,
-                        /* pubkey= */ NULL, /* pubkey_size= */ 0,
+                        /* pubkey= */ NULL,
                         /* pubkey_pcr_mask= */ 0,
                         /* signature= */ NULL,
                         /* pin= */ NULL,
                         /* pcrlock_policy= */ NULL,
                         /* primary_alg= */ 0,
-                        blob, blob_size,
-                        /* policy_hash= */ NULL, /* policy_hash_size= */ 0,
-                        srk, srk_size,
-                        &unsealed_secret, &unsealed_secret_size) >= 0);
+                        blobs,
+                        n_blobs,
+                        /* policy_hash= */ NULL,
+                        /* n_policy_hash= */ 0,
+                        &srk,
+                        &unsealed_secret) >= 0);
 
-        assert_se(memcmp_nn(secret, secret_size, unsealed_secret, unsealed_secret_size) == 0);
+        assert_se(iovec_memcmp(&secret, &unsealed_secret) == 0);
 }
 
 static void check_seal_unseal(Tpm2Context *c) {
@@ -1223,7 +1264,7 @@ static void check_seal_unseal(Tpm2Context *c) {
         assert(c);
 
         if (detect_virtualization() == VIRTUALIZATION_NONE && !slow_tests_enabled()) {
-                log_notice("Skipping slow seal/unseal TPM2 tests. Physical system detected, and slow tests disabled.");
+                log_notice("Skipping slow seal/unseal TPM2 tests. Physical system detected, and slow tests disabled. (To enable, run again with $SYSTEMD_SLOW_TESTS=1.)");
                 return;
         }
 
@@ -1232,7 +1273,7 @@ static void check_seal_unseal(Tpm2Context *c) {
         check_seal_unseal_for_handle(c, 0);
         check_seal_unseal_for_handle(c, TPM2_SRK_HANDLE);
 
-        FOREACH_ARRAY(template, test_templates, ELEMENTSOF(test_templates)) {
+        FOREACH_ELEMENT(template, test_templates) {
                 TPM2B_PUBLIC public = {
                         .publicArea = **template,
                         .size = sizeof(**template),

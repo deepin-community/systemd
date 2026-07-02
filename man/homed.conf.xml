@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="homed.conf" conditional='ENABLE_HOMED'
@@ -22,10 +22,16 @@
   </refnamediv>
 
   <refsynopsisdiv>
-    <para><filename>/etc/systemd/homed.conf</filename></para>
-    <para><filename>/etc/systemd/homed.conf.d/*.conf</filename></para>
-    <para><filename>/run/systemd/homed.conf.d/*.conf</filename></para>
-    <para><filename>/usr/lib/systemd/homed.conf.d/*.conf</filename></para>
+    <para><simplelist>
+      <member><filename>/etc/systemd/homed.conf</filename></member>
+      <member><filename>/run/systemd/homed.conf</filename></member>
+      <member><filename>/usr/local/lib/systemd/homed.conf</filename></member>
+      <member><filename>/usr/lib/systemd/homed.conf</filename></member>
+      <member><filename>/etc/systemd/homed.conf.d/*.conf</filename></member>
+      <member><filename>/run/systemd/homed.conf.d/*.conf</filename></member>
+      <member><filename>/usr/local/lib/systemd/homed.conf.d/*.conf</filename></member>
+      <member><filename>/usr/lib/systemd/homed.conf.d/*.conf</filename></member>
+    </simplelist></para>
   </refsynopsisdiv>
 
   <refsect1>
@@ -54,7 +60,7 @@
         <citerefentry><refentrytitle>homectl</refentrytitle><manvolnum>1</manvolnum></citerefentry>. If not
         configured or assigned the empty string, the default storage is automatically determined: if not
         running in a container environment and <filename>/home/</filename> is not itself encrypted, defaults
-        to <literal>luks</literal>. Otherwise defaults to <literal>subvolume</literal> if
+        to <literal>luks</literal>. Otherwise, defaults to <literal>subvolume</literal> if
         <filename>/home/</filename> is on a btrfs file system, and <literal>directory</literal>
         otherwise. Note that the storage selected on the <command>homectl</command> command line always takes
         precedence.</para>
@@ -66,7 +72,7 @@
         <term><varname>DefaultFileSystemType=</varname></term>
         <listitem><para>When using <literal>luks</literal> as storage (see above), selects the default file
         system to use inside the user's LUKS volume. Takes one of <literal>btrfs</literal>,
-        <literal>ext4</literal> or <literal>xfs</literal>. If not specified defaults to
+        <literal>ext4</literal> or <literal>xfs</literal>. If not specified, defaults to
         <literal>btrfs</literal>. This setting has no effect if a different storage mechanism is used. The
         file system type selected on the <command>homectl</command> command line always takes
         precedence.</para>
@@ -79,10 +85,10 @@
 
   <refsect1>
       <title>See Also</title>
-      <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-homed.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
-      </para>
+      <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-homed.service</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      </simplelist></para>
   </refsect1>
 
 </refentry>

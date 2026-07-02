@@ -56,15 +56,14 @@ endif
 
 generate_keyboard_keys_list = find_program('generate-keyboard-keys-list.sh')
 keyboard_keys_list_txt = custom_target(
-        'keyboard-keys-list.txt',
+        input : files('../basic/linux/input.h'),
         output : 'keyboard-keys-list.txt',
-        command : [generate_keyboard_keys_list, cpp],
+        command : [generate_keyboard_keys_list, cpp, '@INPUT@'],
         capture : true)
 
 generate_keyboard_keys_gperf = find_program('generate-keyboard-keys-gperf.sh')
 fname = 'keyboard-keys-from-name.gperf'
 gperf_file = custom_target(
-        fname,
         input : keyboard_keys_list_txt,
         output : fname,
         command : [generate_keyboard_keys_gperf, '@INPUT@'],
@@ -72,7 +71,6 @@ gperf_file = custom_target(
 
 fname = 'keyboard-keys-from-name.h'
 keyboard_keys_from_name_h = custom_target(
-        fname,
         input : gperf_file,
         output : fname,
         command : [gperf,
@@ -88,7 +86,6 @@ keyboard_keys_from_name_h = custom_target(
 udev_link_gperf_gperf = files('net/link-config-gperf.gperf')
 
 link_config_gperf_c = custom_target(
-        'link-config-gperf.c',
         input : udev_link_gperf_gperf,
         output : 'link-config-gperf.c',
         command : [gperf, '@INPUT@', '--output-file', '@OUTPUT@'])
@@ -114,7 +111,7 @@ libudevd_core = static_library(
         include_directories : includes + include_directories('net'),
         link_with : udev_link_with,
         dependencies : [libblkid,
-                        libkmod,
+                        libkmod_cflags,
                         userspace],
         build_by_default : false)
 
@@ -205,6 +202,7 @@ executables += [
         },
         udev_test_template + {
                 'sources' : files('net/test-link-config-tables.c'),
+                'include_directories' : includes + include_directories('.'),
                 'suite' : 'udev',
         },
         udev_test_template + {
@@ -240,6 +238,7 @@ executables += [
         },
         udev_fuzz_template + {
                 'sources' : files('net/fuzz-link-parser.c'),
+                'include_directories' : includes + include_directories('.'),
         },
         udev_fuzz_template + {
                 'sources' : files('fuzz-udev-rule-parse-value.c'),
@@ -260,7 +259,6 @@ if install_sysconfdir_samples
 endif
 
 udev_pc = custom_target(
-        'udev.pc',
         input : 'udev.pc.in',
         output : 'udev.pc',
         command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],

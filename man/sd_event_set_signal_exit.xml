@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="sd_event_set_signal_exit" xmlns:xi="http://www.w3.org/2001/XInclude">
@@ -48,10 +48,10 @@
     <para>If the parameter <parameter>b</parameter> is specified as true, the event loop will terminate on
     <constant>SIGINT</constant> and <constant>SIGTERM</constant>. If specified as false, it will no
     longer. When this functionality is turned off the calling thread's signal mask is restored to match the
-    state before it was turned on, for the two signals. By default the two signals are not handled by the
+    state before it was turned on, for the two signals. By default, the two signals are not handled by the
     event loop, and Linux' default signal handling for them is in effect.</para>
 
-    <para>It's customary for UNIX programs to exit on either of these two signals, hence it's typically a
+    <para>It is customary for UNIX programs to exit on either of these two signals, hence it is typically a
     good idea to enable this functionality for the main event loop of a program.</para>
   </refsect1>
 
@@ -99,12 +99,12 @@
   <refsect1>
     <title>See Also</title>
 
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd-event</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_event_new</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_event_add_signal</refentrytitle><manvolnum>3</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd-event</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_event_new</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_event_add_signal</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

@@ -59,7 +59,7 @@
 #include "string-util.h"
 #include "tomoyo-util.h"
 #include "tpm2-util.h"
-#include "uid-alloc-range.h"
+#include "uid-classification.h"
 #include "user-util.h"
 #include "virt.h"
 
@@ -141,7 +141,6 @@ static int condition_test_kernel_command_line(Condition *c, char **env) {
 }
 
 static int condition_test_credential(Condition *c, char **env) {
-        int (*gd)(const char **ret);
         int r;
 
         assert(c);
@@ -155,7 +154,8 @@ static int condition_test_credential(Condition *c, char **env) {
         if (!credential_name_valid(c->parameter)) /* credentials with invalid names do not exist */
                 return false;
 
-        FOREACH_POINTER(gd, get_credentials_dir, get_encrypted_credentials_dir) {
+        int (*gd)(const char **ret);
+        FOREACH_ARGUMENT(gd, get_credentials_dir, get_encrypted_credentials_dir) {
                 _cleanup_free_ char *j = NULL;
                 const char *cd;
 
@@ -169,10 +169,11 @@ static int condition_test_credential(Condition *c, char **env) {
                 if (!j)
                         return -ENOMEM;
 
-                if (laccess(j, F_OK) >= 0)
+                r = access_nofollow(j, F_OK);
+                if (r >= 0)
                         return true; /* yay! */
-                if (errno != ENOENT)
-                        return -errno;
+                if (r != -ENOENT)
+                        return r;
 
                 /* not found in this dir */
         }
@@ -260,19 +261,21 @@ static int condition_test_osrelease(Condition *c, char **env) {
                 /* The os-release spec mandates env-var-like key names */
                 if (r == 0 || isempty(word) || !env_name_is_valid(key))
                         return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
-                                        "Failed to parse parameter, key/value format expected: %m");
+                                        "Failed to parse parameter, key/value format expected.");
 
                 /* Do not allow whitespace after the separator, as that's not a valid os-release format */
                 operator = parse_compare_operator(&word, COMPARE_ALLOW_FNMATCH|COMPARE_EQUAL_BY_STRING);
                 if (operator < 0 || isempty(word) || strchr(WHITESPACE, *word) != NULL)
                         return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
-                                        "Failed to parse parameter, key/value format expected: %m");
+                                        "Failed to parse parameter, key/value format expected.");
 
                 r = parse_os_release(NULL, key, &actual_value);
                 if (r < 0)
                         return log_debug_errno(r, "Failed to parse os-release: %m");
 
-                r = version_or_fnmatch_compare(operator, actual_value, word);
+                /* If not found, use "". This means that missing and empty assignments
+                 * in the file have the same result. */
+                r = version_or_fnmatch_compare(operator, strempty(actual_value), word);
                 if (r < 0)
                         return r;
                 if (!r)
@@ -543,7 +546,7 @@ static int condition_test_firmware_smbios_field(const char *expression) {
 
         /* Read actual value from sysfs */
         if (!filename_is_valid(field))
-                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid SMBIOS field name");
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid SMBIOS field name.");
 
         const char *p = strjoina("/sys/class/dmi/id/", field);
         r = read_virtual_file(p, SIZE_MAX, &actual_value, NULL);
@@ -599,7 +602,7 @@ static int condition_test_firmware(Condition *c, char **env) {
 
                 end = strrchr(arg, ')');
                 if (!end || *(end + 1) != '\0')
-                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Malformed ConditionFirmware=%s: %m", c->parameter);
+                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Malformed ConditionFirmware=%s.", c->parameter);
 
                 smbios_arg = strndup(arg, end - arg);
                 if (!smbios_arg)
@@ -667,7 +670,7 @@ static int has_tpm2(void) {
          *
          * Note that we don't check if we ourselves are built with TPM2 support here! */
 
-        return FLAGS_SET(tpm2_support(), TPM2_SUPPORT_SUBSYSTEM|TPM2_SUPPORT_FIRMWARE);
+        return FLAGS_SET(tpm2_support_full(TPM2_SUPPORT_SUBSYSTEM|TPM2_SUPPORT_FIRMWARE), TPM2_SUPPORT_SUBSYSTEM|TPM2_SUPPORT_FIRMWARE);
 }
 
 static int condition_test_security(Condition *c, char **env) {
@@ -751,9 +754,9 @@ static int condition_test_needs_update(Condition *c, char **env) {
         assert(c->parameter);
         assert(c->type == CONDITION_NEEDS_UPDATE);
 
-        r = proc_cmdline_get_bool("systemd.condition-needs-update", /* flags = */ 0, &b);
+        r = proc_cmdline_get_bool("systemd.condition_needs_update", /* flags = */ 0, &b);
         if (r < 0)
-                log_debug_errno(r, "Failed to parse systemd.condition-needs-update= kernel command line argument, ignoring: %m");
+                log_debug_errno(r, "Failed to parse systemd.condition_needs_update= kernel command line argument, ignoring: %m");
         if (r > 0)
                 return b;
 
@@ -931,7 +934,7 @@ static int condition_test_path_is_mount_point(Condition *c, char **env) {
         assert(c->parameter);
         assert(c->type == CONDITION_PATH_IS_MOUNT_POINT);
 
-        return path_is_mount_point(c->parameter, NULL, AT_SYMLINK_FOLLOW) > 0;
+        return path_is_mount_point_full(c->parameter, /* root = */ NULL, AT_SYMLINK_FOLLOW) > 0;
 }
 
 static int condition_test_path_is_read_write(Condition *c, char **env) {
@@ -1008,6 +1011,7 @@ static int condition_test_psi(Condition *c, char **env) {
         const char *p, *value, *pressure_type;
         loadavg_t *current, limit;
         ResourcePressure pressure;
+        PressureType preferred_pressure_type = PRESSURE_TYPE_FULL;
         int r;
 
         assert(c);
@@ -1024,11 +1028,15 @@ static int condition_test_psi(Condition *c, char **env) {
                         "io";
 
         p = c->parameter;
-        r = extract_many_words(&p, ":", 0, &first, &second, NULL);
+        r = extract_many_words(&p, ":", 0, &first, &second);
         if (r <= 0)
                 return log_debug_errno(r < 0 ? r : SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s: %m", c->parameter);
         /* If only one parameter is passed, then we look at the global system pressure rather than a specific cgroup. */
         if (r == 1) {
+                /* cpu.pressure 'full' is reported but undefined at system level */
+                if (c->type == CONDITION_CPU_PRESSURE)
+                        preferred_pressure_type = PRESSURE_TYPE_SOME;
+
                 pressure_path = path_join("/proc/pressure", pressure_type);
                 if (!pressure_path)
                         return log_oom_debug();
@@ -1046,7 +1054,7 @@ static int condition_test_psi(Condition *c, char **env) {
 
                 slice = strstrip(first);
                 if (!slice)
-                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s: %m", c->parameter);
+                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s.", c->parameter);
 
                 r = cg_all_unified();
                 if (r < 0)
@@ -1099,7 +1107,7 @@ static int condition_test_psi(Condition *c, char **env) {
         /* If a value including a specific timespan (in the intervals allowed by the kernel),
          * parse it, otherwise we assume just a plain percentage that will be checked if it is
          * smaller or equal to the current pressure average over 5 minutes. */
-        r = extract_many_words(&value, "/", 0, &third, &fourth, NULL);
+        r = extract_many_words(&value, "/", 0, &third, &fourth);
         if (r <= 0)
                 return log_debug_errno(r < 0 ? r : SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s: %m", c->parameter);
         if (r == 1)
@@ -1109,7 +1117,7 @@ static int condition_test_psi(Condition *c, char **env) {
 
                 timespan = skip_leading_chars(fourth, NULL);
                 if (!timespan)
-                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s: %m", c->parameter);
+                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s.", c->parameter);
 
                 if (startswith(timespan, "10sec"))
                         current = &pressure.avg10;
@@ -1118,12 +1126,12 @@ static int condition_test_psi(Condition *c, char **env) {
                 else if (startswith(timespan, "5min"))
                         current = &pressure.avg300;
                 else
-                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s: %m", c->parameter);
+                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s.", c->parameter);
         }
 
         value = strstrip(third);
         if (!value)
-                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s: %m", c->parameter);
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s.", c->parameter);
 
         r = parse_permyriad(value);
         if (r < 0)
@@ -1133,8 +1141,9 @@ static int condition_test_psi(Condition *c, char **env) {
         if (r < 0)
                 return log_debug_errno(r, "Failed to parse loadavg: %s", c->parameter);
 
-        r = read_resource_pressure(pressure_path, PRESSURE_TYPE_FULL, &pressure);
-        if (r == -ENODATA) /* cpu.pressure 'full' was added recently, fall back to 'some'. */
+        r = read_resource_pressure(pressure_path, preferred_pressure_type, &pressure);
+        /* cpu.pressure 'full' was recently added at cgroup level, fall back to 'some' */
+        if (r == -ENODATA && preferred_pressure_type == PRESSURE_TYPE_FULL)
                 r = read_resource_pressure(pressure_path, PRESSURE_TYPE_SOME, &pressure);
         if (r == -ENOENT) {
                 /* We already checked that /proc/pressure exists, so this means we were given a cgroup

@@ -10,20 +10,28 @@
 #include "version.h"
 
 static void curl_glue_check_finished(CurlGlue *g) {
-        CURLMsg *msg;
-        int k = 0;
+        int r;
 
         assert(g);
 
+        /* sd_event_get_exit_code() returns -ENODATA if no exit was scheduled yet */
+        r = sd_event_get_exit_code(g->event, /* ret_code= */ NULL);
+        if (r >= 0)
+                return; /* exit scheduled? Then don't process this anymore */
+        if (r != -ENODATA)
+                log_debug_errno(r, "Unexpected error while checking for event loop exit code, ignoring: %m");
+
+        CURLMsg *msg;
+        int k = 0;
         msg = curl_multi_info_read(g->curl, &k);
         if (!msg)
                 return;
 
-        if (msg->msg != CURLMSG_DONE)
-                return;
-
-        if (g->on_finished)
+        if (msg->msg == CURLMSG_DONE && g->on_finished)
                 g->on_finished(g, msg->easy_handle, msg->data.result);
+
+        /* This is a queue, process another item soon, but do so in a later event loop iteration. */
+        (void) sd_event_source_set_enabled(g->defer, SD_EVENT_ONESHOT);
 }
 
 static int curl_glue_on_io(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
@@ -66,6 +74,10 @@ static int curl_glue_socket_callback(CURL *curl, curl_socket_t s, int action, vo
 
                 return 0;
         }
+
+        /* Don't configure io event source anymore when the event loop is dead already. */
+        if (g->event && sd_event_get_state(g->event) == SD_EVENT_FINISHED)
+                return 0;
 
         r = hashmap_ensure_allocated(&g->ios, &trivial_hash_ops);
         if (r < 0) {
@@ -126,11 +138,16 @@ static int curl_glue_timer_callback(CURLM *curl, long timeout_ms, void *userdata
 
         assert(curl);
 
+        /* Don't configure timer anymore when the event loop is dead already. */
+        if (g->timer) {
+                sd_event *event_loop = sd_event_source_get_event(g->timer);
+                if (event_loop && sd_event_get_state(event_loop) == SD_EVENT_FINISHED)
+                        return 0;
+        }
+
         if (timeout_ms < 0) {
-                if (g->timer) {
-                        if (sd_event_source_set_enabled(g->timer, SD_EVENT_OFF) < 0)
-                                return -1;
-                }
+                if (sd_event_source_set_enabled(g->timer, SD_EVENT_OFF) < 0)
+                        return -1;
 
                 return 0;
         }
@@ -153,6 +170,15 @@ static int curl_glue_timer_callback(CURLM *curl, long timeout_ms, void *userdata
         return 0;
 }
 
+static int curl_glue_on_defer(sd_event_source *s, void *userdata) {
+        CurlGlue *g = ASSERT_PTR(userdata);
+
+        assert(s);
+
+        curl_glue_check_finished(g);
+        return 0;
+}
+
 CurlGlue *curl_glue_unref(CurlGlue *g) {
         sd_event_source *io;
 
@@ -167,7 +193,8 @@ CurlGlue *curl_glue_unref(CurlGlue *g) {
 
         hashmap_free(g->ios);
 
-        sd_event_source_unref(g->timer);
+        sd_event_source_disable_unref(g->timer);
+        sd_event_source_disable_unref(g->defer);
         sd_event_unref(g->event);
         return mfree(g);
 }
@@ -210,6 +237,12 @@ int curl_glue_new(CurlGlue **glue, sd_event *event) {
 
         if (curl_multi_setopt(g->curl, CURLMOPT_TIMERFUNCTION, curl_glue_timer_callback) != CURLM_OK)
                 return -EINVAL;
+
+        r = sd_event_add_defer(g->event, &g->defer, curl_glue_on_defer, g);
+        if (r < 0)
+                return r;
+
+        (void) sd_event_source_set_description(g->defer, "curl-defer");
 
         *glue = TAKE_PTR(g);
 
@@ -355,7 +388,6 @@ int curl_parse_http_time(const char *t, usec_t *ret) {
         _cleanup_(freelocalep) locale_t loc = (locale_t) 0;
         const char *e;
         struct tm tm;
-        time_t v;
 
         assert(t);
         assert(ret);
@@ -375,10 +407,5 @@ int curl_parse_http_time(const char *t, usec_t *ret) {
         if (!e || *e != 0)
                 return -EINVAL;
 
-        v = timegm(&tm);
-        if (v == (time_t) -1)
-                return -EINVAL;
-
-        *ret = (usec_t) v * USEC_PER_SEC;
-        return 0;
+        return mktime_or_timegm_usec(&tm, /* usec= */ true, ret);
 }

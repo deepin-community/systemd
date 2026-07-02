@@ -192,7 +192,7 @@ int chaseat(int dir_fd, const char *path, ChaseFlags flags, char **ret_path, int
 
         if (!(flags &
               (CHASE_AT_RESOLVE_IN_ROOT|CHASE_NONEXISTENT|CHASE_NO_AUTOFS|CHASE_SAFE|CHASE_STEP|
-               CHASE_PROHIBIT_SYMLINKS|CHASE_MKDIR_0755)) &&
+               CHASE_PROHIBIT_SYMLINKS|CHASE_MKDIR_0755|CHASE_PARENT)) &&
             !ret_path && ret_fd) {
 
                 /* Shortcut the ret_fd case if the caller isn't interested in the actual path and has no root
@@ -374,11 +374,11 @@ int chaseat(int dir_fd, const char *path, ChaseFlags flags, char **ret_path, int
                                 return r;
 
                         if (FLAGS_SET(flags, CHASE_MKDIR_0755) && !isempty(todo)) {
-                                child = xopenat(fd,
-                                                first,
-                                                O_DIRECTORY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,
-                                                /* xopen_flags = */ 0,
-                                                0755);
+                                child = xopenat_full(fd,
+                                                     first,
+                                                     O_DIRECTORY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,
+                                                     /* xopen_flags = */ 0,
+                                                     0755);
                                 if (child < 0)
                                         return child;
                         } else if (FLAGS_SET(flags, CHASE_PARENT) && isempty(todo)) {
@@ -641,8 +641,8 @@ int chase(const char *path, const char *root, ChaseFlags flags, char **ret_path,
                          * absolute, hence it is not necessary to prefix with the root. When "root" points to
                          * a non-root directory, the result path is always normalized and relative, hence
                          * we can simply call path_join() and not necessary to call path_simplify().
-                         * Note that the result of chaseat() may start with "." (more specifically, it may be
-                         * "." or "./"), and we need to drop "." in that case. */
+                         * As a special case, chaseat() may return "." or "./", which are normalized too,
+                         * but we need to drop "." before merging with root. */
 
                         if (empty_or_root(root))
                                 assert(path_is_absolute(p));
@@ -651,7 +651,7 @@ int chase(const char *path, const char *root, ChaseFlags flags, char **ret_path,
 
                                 assert(!path_is_absolute(p));
 
-                                q = path_join(root, p + (*p == '.'));
+                                q = path_join(root, p + STR_IN_SET(p, ".", "./"));
                                 if (!q)
                                         return -ENOMEM;
 
@@ -741,12 +741,7 @@ int chase_extract_filename(const char *path, const char *root, char **ret) {
                         return r;
         }
 
-        char *fname = strdup(".");
-        if (!fname)
-                return -ENOMEM;
-
-        *ret = fname;
-        return 0;
+        return strdup_to(ret, ".");
 }
 
 int chase_and_open(const char *path, const char *root, ChaseFlags chase_flags, int open_flags, char **ret_path) {
@@ -760,10 +755,10 @@ int chase_and_open(const char *path, const char *root, ChaseFlags chase_flags, i
         if (empty_or_root(root) && !ret_path &&
             (chase_flags & (CHASE_NO_AUTOFS|CHASE_SAFE|CHASE_PROHIBIT_SYMLINKS|CHASE_PARENT|CHASE_MKDIR_0755)) == 0)
                 /* Shortcut this call if none of the special features of this call are requested */
-                return RET_NERRNO(xopenat(AT_FDCWD, path,
-                                          open_flags | (FLAGS_SET(chase_flags, CHASE_NOFOLLOW) ? O_NOFOLLOW : 0),
-                                          /* xopen_flags = */ 0,
-                                          mode));
+                return xopenat_full(AT_FDCWD, path,
+                                    open_flags | (FLAGS_SET(chase_flags, CHASE_NOFOLLOW) ? O_NOFOLLOW : 0),
+                                    /* xopen_flags = */ 0,
+                                    mode);
 
         r = chase(path, root, CHASE_PARENT|chase_flags, &p, &path_fd);
         if (r < 0)
@@ -777,7 +772,7 @@ int chase_and_open(const char *path, const char *root, ChaseFlags chase_flags, i
                         return r;
         }
 
-        r = xopenat(path_fd, strempty(fname), open_flags|O_NOFOLLOW, /* xopen_flags = */ 0, mode);
+        r = xopenat_full(path_fd, strempty(fname), open_flags|O_NOFOLLOW, /* xopen_flags = */ 0, mode);
         if (r < 0)
                 return r;
 
@@ -964,10 +959,10 @@ int chase_and_openat(int dir_fd, const char *path, ChaseFlags chase_flags, int o
         if (dir_fd == AT_FDCWD && !ret_path &&
             (chase_flags & (CHASE_NO_AUTOFS|CHASE_SAFE|CHASE_PROHIBIT_SYMLINKS|CHASE_PARENT|CHASE_MKDIR_0755)) == 0)
                 /* Shortcut this call if none of the special features of this call are requested */
-                return RET_NERRNO(xopenat(dir_fd, path,
-                                          open_flags | (FLAGS_SET(chase_flags, CHASE_NOFOLLOW) ? O_NOFOLLOW : 0),
-                                          /* xopen_flags = */ 0,
-                                          mode));
+                return xopenat_full(dir_fd, path,
+                                    open_flags | (FLAGS_SET(chase_flags, CHASE_NOFOLLOW) ? O_NOFOLLOW : 0),
+                                    /* xopen_flags = */ 0,
+                                    mode);
 
         r = chaseat(dir_fd, path, chase_flags|CHASE_PARENT, &p, &path_fd);
         if (r < 0)
@@ -979,7 +974,7 @@ int chase_and_openat(int dir_fd, const char *path, ChaseFlags chase_flags, int o
                         return r;
         }
 
-        r = xopenat(path_fd, strempty(fname), open_flags|O_NOFOLLOW, /* xopen_flags = */ 0, mode);
+        r = xopenat_full(path_fd, strempty(fname), open_flags|O_NOFOLLOW, /* xopen_flags = */ 0, mode);
         if (r < 0)
                 return r;
 

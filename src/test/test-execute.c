@@ -7,6 +7,7 @@
 
 #include "sd-event.h"
 
+#include "build-path.h"
 #include "capability-util.h"
 #include "cpu-set-util.h"
 #include "copy.h"
@@ -28,6 +29,7 @@
 #include "signal-util.h"
 #include "static-destruct.h"
 #include "stat-util.h"
+#include "sysctl-util.h"
 #include "tests.h"
 #include "tmpfile-util.h"
 #include "unit.h"
@@ -39,6 +41,7 @@
 static char *user_runtime_unit_dir = NULL;
 static bool can_unshare;
 static bool have_net_dummy;
+static bool have_netns;
 static unsigned n_ran_tests = 0;
 
 STATIC_DESTRUCTOR_REGISTER(user_runtime_unit_dir, freep);
@@ -56,8 +59,13 @@ static void wait_for_service_finish(Manager *m, Unit *unit) {
         usec_t ts;
         usec_t timeout = 2 * USEC_PER_MINUTE;
 
-        assert_se(m);
-        assert_se(unit);
+        ASSERT_NOT_NULL(m);
+        ASSERT_NOT_NULL(unit);
+
+        /* Bump the timeout when running in plain QEMU, as some more involved tests might start hitting the
+         * default 2m timeout (like exec-dynamicuser-statedir.service) */
+        if (detect_virtualization() == VIRTUALIZATION_QEMU)
+                timeout *= 2;
 
         service = SERVICE(unit);
         printf("%s\n", unit->id);
@@ -68,7 +76,7 @@ static void wait_for_service_finish(Manager *m, Unit *unit) {
                 usec_t n;
 
                 r = sd_event_run(m->event, 100 * USEC_PER_MSEC);
-                assert_se(r >= 0);
+                ASSERT_OK(r);
 
                 n = now(CLOCK_MONOTONIC);
                 if (ts + timeout < n) {
@@ -85,8 +93,8 @@ static void check_main_result(const char *file, unsigned line, const char *func,
                               Manager *m, Unit *unit, int status_expected, int code_expected) {
         Service *service = NULL;
 
-        assert_se(m);
-        assert_se(unit);
+        ASSERT_NOT_NULL(m);
+        ASSERT_NOT_NULL(unit);
 
         wait_for_service_finish(m, unit);
 
@@ -112,8 +120,8 @@ static void check_service_result(const char *file, unsigned line, const char *fu
                                  Manager *m, Unit *unit, ServiceResult result_expected) {
         Service *service = NULL;
 
-        assert_se(m);
-        assert_se(unit);
+        ASSERT_NOT_NULL(m);
+        ASSERT_NOT_NULL(unit);
 
         wait_for_service_finish(m, unit);
 
@@ -177,7 +185,7 @@ static bool check_user_has_group_with_same_name(const char *name) {
         struct passwd *p;
         struct group *g;
 
-        assert_se(name);
+        ASSERT_NOT_NULL(name);
 
         p = getpwnam(name);
         if (!p ||
@@ -213,21 +221,83 @@ static void start_parent_slices(Unit *unit) {
         if (slice) {
                 start_parent_slices(slice);
                 int r = unit_start(slice, NULL);
-                assert_se(r >= 0 || r == -EALREADY);
+                if (r != -EALREADY)
+                        ASSERT_OK(r);
         }
+}
+
+static bool apparmor_restrict_unprivileged_userns(void) {
+        _cleanup_free_ char *v = NULL;
+        int r;
+
+        /* If kernel.apparmor_restrict_unprivileged_userns=1, then we cannot
+         * use unprivileged user namespaces. */
+        r = sysctl_read("kernel/apparmor_restrict_unprivileged_userns", &v);
+        if (r < 0) {
+                if (r != -ENOENT)
+                        log_debug_errno(r, "Failed to read kernel.apparmor_restrict_unprivileged_userns sysctl, ignoring: %m");
+
+                return false;
+        }
+
+        return streq(v, "1");
+}
+
+static bool have_userns_privileges(void) {
+        pid_t pid;
+        int r;
+
+        if (apparmor_restrict_unprivileged_userns())
+                return false;
+
+        r = safe_fork("(sd-test-check-userns)",
+                      FORK_RESET_SIGNALS |
+                      FORK_CLOSE_ALL_FDS |
+                      FORK_DEATHSIG_SIGKILL,
+                      &pid);
+        ASSERT_OK(r);
+        if (r == 0) {
+                /* Keep CAP_SYS_ADMIN if we have it to ensure we give an
+                 * accurate result to the caller. Some kernels have a
+                 * kernel.unprivileged_userns_clone sysctl which can be
+                 * configured to make CLONE_NEWUSER require CAP_SYS_ADMIN.
+                 * Additionally, AppArmor may restrict unprivileged user
+                 * namespace creation. */
+                r = capability_bounding_set_drop(UINT64_C(1) << CAP_SYS_ADMIN, /* right_now = */ true);
+                if (r < 0) {
+                        log_debug_errno(r, "Failed to drop capabilities: %m");
+                        _exit(2);
+                }
+
+                r = RET_NERRNO(unshare(CLONE_NEWUSER));
+                if (r < 0 && !ERRNO_IS_NEG_PRIVILEGE(r))
+                        log_debug_errno(r, "Failed to create user namespace: %m");
+
+                _exit(r >= 0 ? EXIT_SUCCESS : ERRNO_IS_NEG_PRIVILEGE(r) ? EXIT_FAILURE : 2);
+        }
+
+        /* The exit code records the result of the check:
+         *  EXIT_SUCCESS => we can use user namespaces
+         *  EXIT_FAILURE => we can NOT use user namespaces
+         *  2            => some other error occurred */
+        r = wait_for_terminate_and_check("(sd-test-check-userns)", pid, 0);
+        if (!IN_SET(r, EXIT_SUCCESS, EXIT_FAILURE))
+                log_debug("Failed to check if user namespaces can be used, assuming not.");
+
+        return r == EXIT_SUCCESS;
 }
 
 static void _test(const char *file, unsigned line, const char *func,
                   Manager *m, const char *unit_name, int status_expected, int code_expected) {
         Unit *unit;
 
-        assert_se(unit_name);
+        ASSERT_NOT_NULL(unit_name);
 
-        assert_se(manager_load_startable_unit_or_warn(m, unit_name, NULL, &unit) >= 0);
+        ASSERT_OK(manager_load_startable_unit_or_warn(m, unit_name, NULL, &unit));
         /* We need to start the slices as well otherwise the slice cgroups might be pruned
          * in on_cgroup_empty_event. */
         start_parent_slices(unit);
-        assert_se(unit_start(unit, NULL) >= 0);
+        ASSERT_OK(unit_start(unit, NULL));
         check_main_result(file, line, func, m, unit, status_expected, code_expected);
 
         ++n_ran_tests;
@@ -239,18 +309,18 @@ static void _test_service(const char *file, unsigned line, const char *func,
                           Manager *m, const char *unit_name, ServiceResult result_expected) {
         Unit *unit;
 
-        assert_se(unit_name);
+        ASSERT_NOT_NULL(unit_name);
 
-        assert_se(manager_load_startable_unit_or_warn(m, unit_name, NULL, &unit) >= 0);
-        assert_se(unit_start(unit, NULL) >= 0);
+        ASSERT_OK(manager_load_startable_unit_or_warn(m, unit_name, NULL, &unit));
+        ASSERT_OK(unit_start(unit, NULL));
         check_service_result(file, line, func, m, unit, result_expected);
 }
 #define test_service(m, unit_name, result_expected) \
         _test_service(PROJECT_FILE, __LINE__, __func__, m, unit_name, result_expected)
 
 static void test_exec_bindpaths(Manager *m) {
-        assert_se(mkdir_p("/tmp/test-exec-bindpaths", 0755) >= 0);
-        assert_se(mkdir_p("/tmp/test-exec-bindreadonlypaths", 0755) >= 0);
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindpaths", 0755));
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindreadonlypaths", 0755));
 
         test(m, "exec-bindpaths.service", can_unshare ? 0 : EXIT_NAMESPACE, CLD_EXITED);
 
@@ -261,8 +331,8 @@ static void test_exec_bindpaths(Manager *m) {
 static void test_exec_cpuaffinity(Manager *m) {
         _cleanup_(cpu_set_reset) CPUSet c = {};
 
-        assert_se(cpu_set_realloc(&c, 8192) >= 0); /* just allocate the maximum possible size */
-        assert_se(sched_getaffinity(0, c.allocated, c.set) >= 0);
+        ASSERT_OK(cpu_set_realloc(&c, 8192)); /* just allocate the maximum possible size */
+        ASSERT_OK_ERRNO(sched_getaffinity(0, c.allocated, c.set));
 
         if (!CPU_ISSET_S(0, c.allocated, c.set)) {
                 log_notice("Cannot use CPU 0, skipping %s", __func__);
@@ -283,12 +353,12 @@ static void test_exec_cpuaffinity(Manager *m) {
 
 static void test_exec_credentials(Manager *m) {
         test(m, "exec-set-credential.service", 0, CLD_EXITED);
-        test(m, "exec-load-credential.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_CREDENTIALS, CLD_EXITED);
-        test(m, "exec-credentials-dir-specifier.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_CREDENTIALS, CLD_EXITED);
+        test(m, "exec-load-credential.service", 0, CLD_EXITED);
+        test(m, "exec-credentials-dir-specifier.service", 0, CLD_EXITED);
 }
 
 static void test_exec_workingdirectory(Manager *m) {
-        assert_se(mkdir_p("/tmp/test-exec_workingdirectory", 0755) >= 0);
+        ASSERT_OK(mkdir_p("/tmp/test-exec_workingdirectory", 0755));
 
         test(m, "exec-workingdirectory.service", 0, CLD_EXITED);
         test(m, "exec-workingdirectory-trailing-dot.service", 0, CLD_EXITED);
@@ -297,13 +367,13 @@ static void test_exec_workingdirectory(Manager *m) {
 }
 
 static void test_exec_execsearchpath(Manager *m) {
-        assert_se(mkdir_p("/tmp/test-exec_execsearchpath", 0755) >= 0);
+        ASSERT_OK(mkdir_p("/tmp/test-exec_execsearchpath", 0755));
 
-        assert_se(copy_file("/bin/ls", "/tmp/test-exec_execsearchpath/ls_temp", 0,  0777, COPY_REPLACE) >= 0);
+        ASSERT_OK(copy_file("/bin/ls", "/tmp/test-exec_execsearchpath/ls_temp", 0,  0777, COPY_REPLACE));
 
         test(m, "exec-execsearchpath.service", 0, CLD_EXITED);
 
-        assert_se(rm_rf("/tmp/test-exec_execsearchpath", REMOVE_ROOT|REMOVE_PHYSICAL) >= 0);
+        ASSERT_OK(rm_rf("/tmp/test-exec_execsearchpath", REMOVE_ROOT|REMOVE_PHYSICAL));
 
         test(m, "exec-execsearchpath.service", EXIT_EXEC, CLD_EXITED);
 }
@@ -346,17 +416,14 @@ static void test_exec_execsearchpath_environment_files(Manager *m) {
         int r;
 
         r = write_string_file("/tmp/test-exec_execsearchpath_environmentfile.conf", path_not_set, WRITE_STRING_FILE_CREATE);
-
-        assert_se(r == 0);
+        ASSERT_OK(r);
 
         test(m, "exec-execsearchpath-environmentfile.service", 0, CLD_EXITED);
 
         (void) unlink("/tmp/test-exec_environmentfile.conf");
 
-
         r = write_string_file("/tmp/test-exec_execsearchpath_environmentfile-set.conf", path_set, WRITE_STRING_FILE_CREATE);
-
-        assert_se(r == 0);
+        ASSERT_OK(r);
 
         test(m, "exec-execsearchpath-environmentfile-set.service", 0, CLD_EXITED);
 
@@ -364,28 +431,31 @@ static void test_exec_execsearchpath_environment_files(Manager *m) {
 }
 
 static void test_exec_execsearchpath_passenvironment(Manager *m) {
-        assert_se(setenv("VAR1", "word1 word2", 1) == 0);
-        assert_se(setenv("VAR2", "word3", 1) == 0);
-        assert_se(setenv("VAR3", "$word 5 6", 1) == 0);
-        assert_se(setenv("VAR4", "new\nline", 1) == 0);
-        assert_se(setenv("VAR5", "passwordwithbackslashes", 1) == 0);
+        ASSERT_OK_ERRNO(setenv("VAR1", "word1 word2", 1));
+        ASSERT_OK_ERRNO(setenv("VAR2", "word3", 1));
+        ASSERT_OK_ERRNO(setenv("VAR3", "$word 5 6", 1));
+        ASSERT_OK_ERRNO(setenv("VAR4", "new\nline", 1));
+        ASSERT_OK_ERRNO(setenv("VAR5", "passwordwithbackslashes", 1));
 
         test(m, "exec-execsearchpath-passenvironment.service", 0, CLD_EXITED);
 
-        assert_se(setenv("PATH", "/usr", 1) == 0);
+        ASSERT_OK_ERRNO(setenv("PATH", "/usr", 1));
         test(m, "exec-execsearchpath-passenvironment-set.service", 0, CLD_EXITED);
 
-        assert_se(unsetenv("VAR1") == 0);
-        assert_se(unsetenv("VAR2") == 0);
-        assert_se(unsetenv("VAR3") == 0);
-        assert_se(unsetenv("VAR4") == 0);
-        assert_se(unsetenv("VAR5") == 0);
-        assert_se(unsetenv("PATH") == 0);
+        ASSERT_OK_ERRNO(unsetenv("VAR1"));
+        ASSERT_OK_ERRNO(unsetenv("VAR2"));
+        ASSERT_OK_ERRNO(unsetenv("VAR3"));
+        ASSERT_OK_ERRNO(unsetenv("VAR4"));
+        ASSERT_OK_ERRNO(unsetenv("VAR5"));
+        ASSERT_OK_ERRNO(unsetenv("PATH"));
 }
 
 static void test_exec_personality(Manager *m) {
 #if defined(__x86_64__)
         test(m, "exec-personality-x86-64.service", 0, CLD_EXITED);
+
+#elif defined(__s390x__)
+        test(m, "exec-personality-s390x.service", 0, CLD_EXITED);
 
 #elif defined(__s390__)
         test(m, "exec-personality-s390.service", 0, CLD_EXITED);
@@ -415,11 +485,14 @@ static void test_exec_ignoresigpipe(Manager *m) {
 }
 
 static void test_exec_privatetmp(Manager *m) {
-        assert_se(touch("/tmp/test-exec_privatetmp") >= 0);
+        ASSERT_OK(touch("/tmp/test-exec_privatetmp"));
 
-        test(m, "exec-privatetmp-yes.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+        if (MANAGER_IS_SYSTEM(m) || have_userns_privileges()) {
+                test(m, "exec-privatetmp-yes.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+                test(m, "exec-privatetmp-disabled-by-prefix.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+        }
+
         test(m, "exec-privatetmp-no.service", 0, CLD_EXITED);
-        test(m, "exec-privatetmp-disabled-by-prefix.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
 
         (void) unlink("/tmp/test-exec_privatetmp");
 }
@@ -436,12 +509,15 @@ static void test_exec_privatedevices(Manager *m) {
                 return;
         }
 
-        test(m, "exec-privatedevices-yes.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+        if (MANAGER_IS_SYSTEM(m) || have_userns_privileges()) {
+                test(m, "exec-privatedevices-yes.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+                if (access("/dev/kmsg", F_OK) >= 0)
+                        test(m, "exec-privatedevices-bind.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+                test(m, "exec-privatedevices-disabled-by-prefix.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+                test(m, "exec-privatedevices-yes-with-group.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+        }
+
         test(m, "exec-privatedevices-no.service", 0, CLD_EXITED);
-        if (access("/dev/kmsg", F_OK) >= 0)
-                test(m, "exec-privatedevices-bind.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
-        test(m, "exec-privatedevices-disabled-by-prefix.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
-        test(m, "exec-privatedevices-yes-with-group.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
 
         /* We use capsh to test if the capabilities are
          * properly set, so be sure that it exists */
@@ -451,9 +527,12 @@ static void test_exec_privatedevices(Manager *m) {
                 return;
         }
 
-        test(m, "exec-privatedevices-yes-capability-mknod.service", can_unshare || MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+        if (MANAGER_IS_SYSTEM(m) || have_userns_privileges()) {
+                test(m, "exec-privatedevices-yes-capability-mknod.service", can_unshare || MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+                test(m, "exec-privatedevices-yes-capability-sys-rawio.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+        }
+
         test(m, "exec-privatedevices-no-capability-mknod.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_FAILURE, CLD_EXITED);
-        test(m, "exec-privatedevices-yes-capability-sys-rawio.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
         test(m, "exec-privatedevices-no-capability-sys-rawio.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_FAILURE, CLD_EXITED);
 }
 
@@ -485,13 +564,17 @@ static void test_exec_protectkernelmodules(Manager *m) {
         }
 
         test(m, "exec-protectkernelmodules-no-capabilities.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_FAILURE, CLD_EXITED);
-        test(m, "exec-protectkernelmodules-yes-capabilities.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
-        test(m, "exec-protectkernelmodules-yes-mount-propagation.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+
+        if (MANAGER_IS_SYSTEM(m) || have_userns_privileges()) {
+                test(m, "exec-protectkernelmodules-yes-capabilities.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+                test(m, "exec-protectkernelmodules-yes-mount-propagation.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+        }
 }
 
 static void test_exec_readonlypaths(Manager *m) {
 
-        test(m, "exec-readonlypaths-simple.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+        if (MANAGER_IS_SYSTEM(m) || have_userns_privileges())
+                test(m, "exec-readonlypaths-simple.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
 
         if (path_is_read_only_fs("/var") > 0) {
                 log_notice("Directory /var is readonly, skipping remaining tests in %s", __func__);
@@ -520,7 +603,8 @@ static void test_exec_inaccessiblepaths(Manager *m) {
                 return;
         }
 
-        test(m, "exec-inaccessiblepaths-sys.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+        if (MANAGER_IS_SYSTEM(m) || have_userns_privileges())
+                test(m, "exec-inaccessiblepaths-sys.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
 
         if (path_is_read_only_fs("/") > 0) {
                 log_notice("Root directory is readonly, skipping remaining tests in %s", __func__);
@@ -530,13 +614,14 @@ static void test_exec_inaccessiblepaths(Manager *m) {
         test(m, "exec-inaccessiblepaths-mount-propagation.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
 }
 
+#if !HAS_FEATURE_ADDRESS_SANITIZER
 static int on_spawn_io(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
         char **result = userdata;
         char buf[4096];
         ssize_t l;
 
-        assert_se(s);
-        assert_se(fd >= 0);
+        ASSERT_NOT_NULL(s);
+        ASSERT_GT(fd, 0);
 
         l = read(fd, buf, sizeof(buf) - 1);
         if (l < 0) {
@@ -550,20 +635,20 @@ static int on_spawn_io(sd_event_source *s, int fd, uint32_t revents, void *userd
 
         buf[l] = '\0';
         if (result)
-                assert_se(strextend(result, buf));
+                ASSERT_NOT_NULL(strextend(result, buf));
         else
                 log_error("ldd: %s", buf);
 
 reenable:
         /* Re-enable the event source if we did not encounter EOF */
-        assert_se(sd_event_source_set_enabled(s, SD_EVENT_ONESHOT) >= 0);
+        ASSERT_OK(sd_event_source_set_enabled(s, SD_EVENT_ONESHOT));
         return 0;
 }
 
 static int on_spawn_timeout(sd_event_source *s, uint64_t usec, void *userdata) {
         pid_t *pid = userdata;
 
-        assert_se(pid);
+        ASSERT_NOT_NULL(pid);
 
         (void) kill(*pid, SIGKILL);
 
@@ -573,7 +658,7 @@ static int on_spawn_timeout(sd_event_source *s, uint64_t usec, void *userdata) {
 static int on_spawn_sigchld(sd_event_source *s, const siginfo_t *si, void *userdata) {
         int ret = -EIO;
 
-        assert_se(si);
+        ASSERT_NOT_NULL(si);
 
         if (si->si_code == CLD_EXITED)
                 ret = si->si_status;
@@ -593,19 +678,19 @@ static int find_libraries(const char *exec, char ***ret) {
         pid_t pid;
         int r;
 
-        assert_se(exec);
-        assert_se(ret);
+        ASSERT_NOT_NULL(exec);
+        ASSERT_NOT_NULL(ret);
 
-        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGCHLD, -1) >= 0);
+        ASSERT_OK(sigprocmask_many(SIG_BLOCK, NULL, SIGCHLD));
 
-        assert_se(pipe2(outpipe, O_NONBLOCK|O_CLOEXEC) == 0);
-        assert_se(pipe2(errpipe, O_NONBLOCK|O_CLOEXEC) == 0);
+        ASSERT_OK_ERRNO(pipe2(outpipe, O_NONBLOCK|O_CLOEXEC));
+        ASSERT_OK_ERRNO(pipe2(errpipe, O_NONBLOCK|O_CLOEXEC));
 
         r = safe_fork_full("(spawn-ldd)",
                            (int[]) { -EBADF, outpipe[1], errpipe[1] },
                            NULL, 0,
                            FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG_SIGTERM|FORK_REARRANGE_STDIO|FORK_LOG, &pid);
-        assert_se(r >= 0);
+        ASSERT_OK(r);
         if (r == 0) {
                 execlp("ldd", "ldd", exec, NULL);
                 _exit(EXIT_FAILURE);
@@ -614,40 +699,40 @@ static int find_libraries(const char *exec, char ***ret) {
         outpipe[1] = safe_close(outpipe[1]);
         errpipe[1] = safe_close(errpipe[1]);
 
-        assert_se(sd_event_new(&e) >= 0);
+        ASSERT_OK(sd_event_new(&e));
 
-        assert_se(sd_event_add_time_relative(e, NULL, CLOCK_MONOTONIC,
-                                             10 * USEC_PER_SEC, USEC_PER_SEC, on_spawn_timeout, &pid) >= 0);
-        assert_se(sd_event_add_io(e, &stdout_source, outpipe[0], EPOLLIN, on_spawn_io, &result) >= 0);
-        assert_se(sd_event_source_set_enabled(stdout_source, SD_EVENT_ONESHOT) >= 0);
-        assert_se(sd_event_add_io(e, &stderr_source, errpipe[0], EPOLLIN, on_spawn_io, NULL) >= 0);
-        assert_se(sd_event_source_set_enabled(stderr_source, SD_EVENT_ONESHOT) >= 0);
-        assert_se(sd_event_add_child(e, &sigchld_source, pid, WEXITED, on_spawn_sigchld, NULL) >= 0);
+        ASSERT_OK(sd_event_add_time_relative(e, NULL, CLOCK_MONOTONIC,
+                                             10 * USEC_PER_SEC, USEC_PER_SEC, on_spawn_timeout, &pid));
+        ASSERT_OK(sd_event_add_io(e, &stdout_source, outpipe[0], EPOLLIN, on_spawn_io, &result));
+        ASSERT_OK(sd_event_source_set_enabled(stdout_source, SD_EVENT_ONESHOT));
+        ASSERT_OK(sd_event_add_io(e, &stderr_source, errpipe[0], EPOLLIN, on_spawn_io, NULL));
+        ASSERT_OK(sd_event_source_set_enabled(stderr_source, SD_EVENT_ONESHOT));
+        ASSERT_OK(sd_event_add_child(e, &sigchld_source, pid, WEXITED, on_spawn_sigchld, NULL));
         /* SIGCHLD should be processed after IO is complete */
-        assert_se(sd_event_source_set_priority(sigchld_source, SD_EVENT_PRIORITY_NORMAL + 1) >= 0);
+        ASSERT_OK(sd_event_source_set_priority(sigchld_source, SD_EVENT_PRIORITY_NORMAL + 1));
 
-        assert_se(sd_event_loop(e) >= 0);
+        ASSERT_OK(sd_event_loop(e));
 
         _cleanup_strv_free_ char **v = NULL;
-        assert_se(strv_split_newlines_full(&v, result, 0) >= 0);
+        ASSERT_OK(strv_split_newlines_full(&v, result, 0));
 
         STRV_FOREACH(q, v) {
                 _cleanup_free_ char *word = NULL;
                 const char *p = *q;
 
                 r = extract_first_word(&p, &word, NULL, 0);
-                assert_se(r >= 0);
+                ASSERT_OK(r);
                 if (r == 0)
                         continue;
 
                 if (path_is_absolute(word)) {
-                        assert_se(strv_consume(&libraries, TAKE_PTR(word)) >= 0);
+                        ASSERT_OK(strv_consume(&libraries, TAKE_PTR(word)));
                         continue;
                 }
 
                 word = mfree(word);
                 r = extract_first_word(&p, &word, NULL, 0);
-                assert_se(r >= 0);
+                ASSERT_OK(r);
                 if (r == 0)
                         continue;
 
@@ -656,12 +741,12 @@ static int find_libraries(const char *exec, char ***ret) {
 
                 word = mfree(word);
                 r = extract_first_word(&p, &word, NULL, 0);
-                assert_se(r >= 0);
+                ASSERT_OK(r);
                 if (r == 0)
                         continue;
 
                 if (path_is_absolute(word)) {
-                        assert_se(strv_consume(&libraries, TAKE_PTR(word)) >= 0);
+                        ASSERT_OK(strv_consume(&libraries, TAKE_PTR(word)));
                         continue;
                 }
         }
@@ -669,13 +754,15 @@ static int find_libraries(const char *exec, char ***ret) {
         *ret = TAKE_PTR(libraries);
         return 0;
 }
+#endif
 
 static void test_exec_mount_apivfs(Manager *m) {
+#if !HAS_FEATURE_ADDRESS_SANITIZER
         _cleanup_free_ char *fullpath_touch = NULL, *fullpath_test = NULL, *data = NULL;
         _cleanup_strv_free_ char **libraries = NULL, **libraries_test = NULL;
         int r;
 
-        assert_se(user_runtime_unit_dir);
+        ASSERT_NOT_NULL(user_runtime_unit_dir);
 
         r = find_executable("ldd", NULL);
         if (r < 0) {
@@ -693,31 +780,38 @@ static void test_exec_mount_apivfs(Manager *m) {
                 return;
         }
 
-        assert_se(find_libraries(fullpath_touch, &libraries) >= 0);
-        assert_se(find_libraries(fullpath_test, &libraries_test) >= 0);
-        assert_se(strv_extend_strv(&libraries, libraries_test, true) >= 0);
+        if (MANAGER_IS_USER(m) && !have_userns_privileges())
+                return (void)log_notice("Skipping %s, do not have user namespace privileges", __func__);
 
-        assert_se(strextend(&data, "[Service]\n"));
-        assert_se(strextend(&data, "ExecStart=", fullpath_touch, " /aaa\n"));
-        assert_se(strextend(&data, "ExecStart=", fullpath_test, " -f /aaa\n"));
-        assert_se(strextend(&data, "BindReadOnlyPaths=", fullpath_touch, "\n"));
-        assert_se(strextend(&data, "BindReadOnlyPaths=", fullpath_test, "\n"));
+        ASSERT_OK(find_libraries(fullpath_touch, &libraries));
+        ASSERT_OK(find_libraries(fullpath_test, &libraries_test));
+        ASSERT_OK(strv_extend_strv(&libraries, libraries_test, true));
+
+        ASSERT_NOT_NULL(strextend(&data, "[Service]\n"));
+        ASSERT_NOT_NULL(strextend(&data, "ExecStart=", fullpath_touch, " /aaa\n"));
+        ASSERT_NOT_NULL(strextend(&data, "ExecStart=", fullpath_test, " -f /aaa\n"));
+        ASSERT_NOT_NULL(strextend(&data, "BindReadOnlyPaths=", fullpath_touch, "\n"));
+        ASSERT_NOT_NULL(strextend(&data, "BindReadOnlyPaths=", fullpath_test, "\n"));
 
         STRV_FOREACH(p, libraries)
-                assert_se(strextend(&data, "BindReadOnlyPaths=", *p, "\n"));
+                ASSERT_NOT_NULL(strextend(&data, "BindReadOnlyPaths=", *p, "\n"));
 
-        assert_se(write_drop_in(user_runtime_unit_dir, "exec-mount-apivfs-no.service", 10, "bind-mount", data) >= 0);
+        ASSERT_OK(write_drop_in(user_runtime_unit_dir, "exec-mount-apivfs-no.service", 10, "bind-mount", data));
 
-        assert_se(mkdir_p("/tmp/test-exec-mount-apivfs-no/root", 0755) >= 0);
+        ASSERT_OK(mkdir_p("/tmp/test-exec-mount-apivfs-no/root", 0755));
 
         test(m, "exec-mount-apivfs-no.service", can_unshare || !MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
 
         (void) rm_rf("/tmp/test-exec-mount-apivfs-no/root", REMOVE_ROOT|REMOVE_PHYSICAL);
+#endif
 }
 
 static void test_exec_noexecpaths(Manager *m) {
 
-        test(m, "exec-noexecpaths-simple.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+        if (MANAGER_IS_SYSTEM(m) || have_userns_privileges())
+                test(m, "exec-noexecpaths-simple.service", can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_FAILURE : EXIT_NAMESPACE, CLD_EXITED);
+        else
+                return (void)log_notice("Skipping %s, do not have user namespace privileges", __func__);
 }
 
 static void test_exec_temporaryfilesystem(Manager *m) {
@@ -729,13 +823,15 @@ static void test_exec_temporaryfilesystem(Manager *m) {
 }
 
 static void test_exec_systemcallfilter(Manager *m) {
-#if HAVE_SECCOMP
+#if HAVE_SECCOMP && !HAS_FEATURE_ADDRESS_SANITIZER
         int r;
 
         if (!is_seccomp_available()) {
                 log_notice("Seccomp not available, skipping %s", __func__);
                 return;
         }
+
+        test(m, "exec-systemcallfilter-writing-handoff-timestamp.service", 0, CLD_EXITED);
 
         test(m, "exec-systemcallfilter-not-failing.service", 0, CLD_EXITED);
         test(m, "exec-systemcallfilter-not-failing2.service", 0, CLD_EXITED);
@@ -772,7 +868,7 @@ static void test_exec_systemcallfilter(Manager *m) {
 }
 
 static void test_exec_systemcallerrornumber(Manager *m) {
-#if HAVE_SECCOMP
+#if HAVE_SECCOMP && !HAS_FEATURE_ADDRESS_SANITIZER
         int r;
 
         if (!is_seccomp_available()) {
@@ -885,7 +981,7 @@ static char* private_directory_bad(Manager *m) {
                 _cleanup_free_ char *p = NULL;
                 struct stat st;
 
-                assert_se(p = path_join(m->prefix[dt], "private"));
+                ASSERT_NOT_NULL(p = path_join(m->prefix[dt], "private"));
 
                 if (stat(p, &st) >= 0 &&
                     (st.st_mode & (S_IRWXG|S_IRWXO)))
@@ -896,6 +992,11 @@ static char* private_directory_bad(Manager *m) {
 }
 
 static void test_exec_dynamicuser(Manager *m) {
+        if (MANAGER_IS_USER(m)) {
+                log_notice("Skipping %s for user manager", __func__);
+                return;
+        }
+
         _cleanup_free_ char *bad = private_directory_bad(m);
         if (bad) {
                 log_warning("%s: %s has bad permissions, skipping test.", __func__, bad);
@@ -907,7 +1008,7 @@ static void test_exec_dynamicuser(Manager *m) {
                 return;
         }
 
-        int status = can_unshare ? 0 : MANAGER_IS_SYSTEM(m) ? EXIT_NAMESPACE : EXIT_GROUP;
+        int status = can_unshare ? 0 : EXIT_NAMESPACE;
 
         test(m, "exec-dynamicuser-fixeduser.service", status, CLD_EXITED);
         if (check_user_has_group_with_same_name("adm"))
@@ -963,7 +1064,7 @@ static void test_exec_environmentfile(Manager *m) {
         int r;
 
         r = write_string_file("/tmp/test-exec_environmentfile.conf", e, WRITE_STRING_FILE_CREATE);
-        assert_se(r == 0);
+        ASSERT_OK(r);
 
         test(m, "exec-environmentfile.service", 0, CLD_EXITED);
 
@@ -982,25 +1083,28 @@ static void test_exec_passenvironment(Manager *m) {
          * This is still a good approximation of how a test for MANAGER_SYSTEM
          * would work.
          */
-        assert_se(setenv("VAR1", "word1 word2", 1) == 0);
-        assert_se(setenv("VAR2", "word3", 1) == 0);
-        assert_se(setenv("VAR3", "$word 5 6", 1) == 0);
-        assert_se(setenv("VAR4", "new\nline", 1) == 0);
-        assert_se(setenv("VAR5", "passwordwithbackslashes", 1) == 0);
+        ASSERT_OK_ERRNO(setenv("VAR1", "word1 word2", 1));
+        ASSERT_OK_ERRNO(setenv("VAR2", "word3", 1));
+        ASSERT_OK_ERRNO(setenv("VAR3", "$word 5 6", 1));
+        ASSERT_OK_ERRNO(setenv("VAR4", "new\nline", 1));
+        ASSERT_OK_ERRNO(setenv("VAR5", "passwordwithbackslashes", 1));
         test(m, "exec-passenvironment.service", 0, CLD_EXITED);
         test(m, "exec-passenvironment-repeated.service", 0, CLD_EXITED);
         test(m, "exec-passenvironment-empty.service", 0, CLD_EXITED);
-        assert_se(unsetenv("VAR1") == 0);
-        assert_se(unsetenv("VAR2") == 0);
-        assert_se(unsetenv("VAR3") == 0);
-        assert_se(unsetenv("VAR4") == 0);
-        assert_se(unsetenv("VAR5") == 0);
+        ASSERT_OK_ERRNO(unsetenv("VAR1"));
+        ASSERT_OK_ERRNO(unsetenv("VAR2"));
+        ASSERT_OK_ERRNO(unsetenv("VAR3"));
+        ASSERT_OK_ERRNO(unsetenv("VAR4"));
+        ASSERT_OK_ERRNO(unsetenv("VAR5"));
         test(m, "exec-passenvironment-absent.service", 0, CLD_EXITED);
 }
 
 static void test_exec_umask(Manager *m) {
-        test(m, "exec-umask-default.service", can_unshare || MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
-        test(m, "exec-umask-0177.service", can_unshare || MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+        if (MANAGER_IS_SYSTEM(m) || have_userns_privileges()) {
+                test(m, "exec-umask-default.service", can_unshare || MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+                test(m, "exec-umask-0177.service", can_unshare || MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+        } else
+                return (void)log_notice("Skipping %s, do not have user namespace privileges", __func__);
 }
 
 static void test_exec_runtimedirectory(Manager *m) {
@@ -1047,7 +1151,10 @@ static void test_exec_capabilityboundingset(Manager *m) {
 }
 
 static void test_exec_basic(Manager *m) {
-        test(m, "exec-basic.service", can_unshare || MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+        if (MANAGER_IS_SYSTEM(m) || have_userns_privileges())
+                test(m, "exec-basic.service", can_unshare || MANAGER_IS_SYSTEM(m) ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+        else
+                return (void)log_notice("Skipping %s, do not have user namespace privileges", __func__);
 }
 
 static void test_exec_ambientcapabilities(Manager *m) {
@@ -1095,6 +1202,9 @@ static void test_exec_privatenetwork(Manager *m) {
         if (!have_net_dummy)
                 return (void)log_notice("Skipping %s, dummy network interface not available", __func__);
 
+        if (MANAGER_IS_USER(m) && !have_userns_privileges())
+                return (void)log_notice("Skipping %s, do not have user namespace privileges", __func__);
+
         r = find_executable("ip", NULL);
         if (r < 0) {
                 log_notice_errno(r, "Skipping %s, could not find ip binary: %m", __func__);
@@ -1110,6 +1220,12 @@ static void test_exec_networknamespacepath(Manager *m) {
 
         if (!have_net_dummy)
                 return (void)log_notice("Skipping %s, dummy network interface not available", __func__);
+
+        if (!have_netns)
+                return (void)log_notice("Skipping %s, network namespace not available", __func__);
+
+        if (MANAGER_IS_USER(m) && !have_userns_privileges())
+                return (void)log_notice("Skipping %s, do not have user namespace privileges", __func__);
 
         r = find_executable("ip", NULL);
         if (r < 0) {
@@ -1160,7 +1276,11 @@ static void test_exec_specifier(Manager *m) {
 static void test_exec_standardinput(Manager *m) {
         test(m, "exec-standardinput-data.service", 0, CLD_EXITED);
         test(m, "exec-standardinput-file.service", 0, CLD_EXITED);
+
+        ExecOutput saved = m->defaults.std_output;
+        m->defaults.std_output = EXEC_OUTPUT_NULL;
         test(m, "exec-standardinput-file-cat.service", 0, CLD_EXITED);
+        m->defaults.std_output = saved;
 }
 
 static void test_exec_standardoutput(Manager *m) {
@@ -1257,34 +1377,34 @@ static void run_tests(RuntimeScope scope, char **patterns) {
                 {},
         };
 
-        assert_se(unsetenv("USER") == 0);
-        assert_se(unsetenv("LOGNAME") == 0);
-        assert_se(unsetenv("SHELL") == 0);
-        assert_se(unsetenv("HOME") == 0);
-        assert_se(unsetenv("TMPDIR") == 0);
+        ASSERT_OK_ERRNO(unsetenv("USER"));
+        ASSERT_OK_ERRNO(unsetenv("LOGNAME"));
+        ASSERT_OK_ERRNO(unsetenv("SHELL"));
+        ASSERT_OK_ERRNO(unsetenv("HOME"));
+        ASSERT_OK_ERRNO(unsetenv("TMPDIR"));
 
         /* Unset VARx, especially, VAR1, VAR2 and VAR3, which are used in the PassEnvironment test cases,
          * otherwise (and if they are present in the environment), `manager_default_environment` will copy
          * them into the default environment which is passed to each created job, which will make the tests
          * that expect those not to be present to fail. */
-        assert_se(unsetenv("VAR1") == 0);
-        assert_se(unsetenv("VAR2") == 0);
-        assert_se(unsetenv("VAR3") == 0);
-        assert_se(unsetenv("VAR4") == 0);
-        assert_se(unsetenv("VAR5") == 0);
+        ASSERT_OK_ERRNO(unsetenv("VAR1"));
+        ASSERT_OK_ERRNO(unsetenv("VAR2"));
+        ASSERT_OK_ERRNO(unsetenv("VAR3"));
+        ASSERT_OK_ERRNO(unsetenv("VAR4"));
+        ASSERT_OK_ERRNO(unsetenv("VAR5"));
 
-        assert_se(runtime_dir = setup_fake_runtime_dir());
-        assert_se(user_runtime_unit_dir = path_join(runtime_dir, "systemd/user"));
-        assert_se(unit_paths = strjoin(PRIVATE_UNIT_DIR, ":", user_runtime_unit_dir));
-        assert_se(set_unit_path(unit_paths) >= 0);
+        ASSERT_NOT_NULL(runtime_dir = setup_fake_runtime_dir());
+        ASSERT_NOT_NULL(user_runtime_unit_dir = path_join(runtime_dir, "systemd/user"));
+        ASSERT_NOT_NULL(unit_paths = strjoin(PRIVATE_UNIT_DIR, ":", user_runtime_unit_dir));
+        ASSERT_OK(setenv_unit_path(unit_paths));
 
         r = manager_new(scope, MANAGER_TEST_RUN_BASIC, &m);
         if (manager_errno_skip_test(r))
                 return (void) log_tests_skipped_errno(r, "manager_new");
-        assert_se(r >= 0);
+        ASSERT_OK(r);
 
-        m->defaults.std_output = EXEC_OUTPUT_NULL; /* don't rely on host journald */
-        assert_se(manager_startup(m, NULL, NULL, NULL) >= 0);
+        m->defaults.std_output = EXEC_OUTPUT_INHERIT; /* don't rely on host journald */
+        ASSERT_OK(manager_startup(m, NULL, NULL, NULL));
 
         /* Uncomment below if you want to make debugging logs stored to journal. */
         //manager_override_log_target(m, LOG_TARGET_AUTO);
@@ -1296,9 +1416,10 @@ static void run_tests(RuntimeScope scope, char **patterns) {
         start = now(CLOCK_MONOTONIC);
 
         for (const test_entry *test = tests; test->f; test++)
-                if (strv_fnmatch_or_empty(patterns, test->name, FNM_NOESCAPE))
+                if (strv_fnmatch_or_empty(patterns, test->name, FNM_NOESCAPE)) {
+                        log_info("Starting %s.", test->name);
                         test->f(m);
-                else
+                } else
                         log_info("Skipping %s because it does not match any pattern.", test->name);
 
         finish = now(CLOCK_MONOTONIC);
@@ -1323,36 +1444,68 @@ static int prepare_ns(const char *process_name) {
                       FORK_NEW_MOUNTNS |
                       FORK_MOUNTNS_SLAVE,
                       NULL);
-        assert_se(r >= 0);
+        ASSERT_OK(r);
         if (r == 0) {
-                _cleanup_free_ char *unit_dir = NULL;
+                _cleanup_free_ char *unit_dir = NULL, *build_dir = NULL, *build_dir_mount = NULL;
+                int ret;
 
-                /* Make "/" read-only. */
-                assert_se(mount_nofollow_verbose(LOG_DEBUG, NULL, "/", NULL, MS_BIND|MS_REMOUNT|MS_RDONLY, NULL) >= 0);
+                const char *coverage = getenv("COVERAGE_BUILD_DIR");
+                if (!coverage)
+                        /* Make "/" read-only. */
+                        ASSERT_OK(mount_nofollow_verbose(LOG_DEBUG, NULL, "/", NULL, MS_BIND|MS_REMOUNT|MS_RDONLY, NULL));
 
                 /* Creating a new user namespace in the above means all MS_SHARED mounts become MS_SLAVE.
                  * Let's put them back to MS_SHARED here, since that's what we want as defaults. (This will
                  * not reconnect propagation, but simply create new peer groups for all our mounts). */
-                assert_se(mount_follow_verbose(LOG_DEBUG, NULL, "/", NULL, MS_SHARED|MS_REC, NULL) >= 0);
+                ASSERT_OK(mount_follow_verbose(LOG_DEBUG, NULL, "/", NULL, MS_SHARED|MS_REC, NULL));
 
-                assert_se(mkdir_p(PRIVATE_UNIT_DIR, 0755) >= 0);
-                assert_se(mount_nofollow_verbose(LOG_DEBUG, "tmpfs", PRIVATE_UNIT_DIR, "tmpfs", MS_NOSUID|MS_NODEV, NULL) >= 0);
+                ASSERT_OK(mkdir_p(PRIVATE_UNIT_DIR, 0755));
+                ASSERT_OK(mount_nofollow_verbose(LOG_DEBUG, "tmpfs", PRIVATE_UNIT_DIR, "tmpfs", MS_NOSUID|MS_NODEV, NULL));
+                /* Mark our test "playground" as MS_SLAVE, so we can MS_MOVE mounts underneath it. */
+                ASSERT_OK(mount_nofollow_verbose(LOG_DEBUG, NULL, PRIVATE_UNIT_DIR, NULL, MS_SLAVE, NULL));
 
                 /* Copy unit files to make them accessible even when unprivileged. */
-                assert_se(get_testdata_dir("test-execute/", &unit_dir) >= 0);
-                assert_se(copy_directory_at(AT_FDCWD, unit_dir, AT_FDCWD, PRIVATE_UNIT_DIR, COPY_MERGE_EMPTY) >= 0);
+                ASSERT_OK(get_testdata_dir("test-execute/", &unit_dir));
+                ASSERT_OK(copy_directory_at(AT_FDCWD, unit_dir, AT_FDCWD, PRIVATE_UNIT_DIR, COPY_MERGE_EMPTY));
 
                 /* Mount tmpfs on the following directories to make not StateDirectory= or friends disturb the host. */
+                ret = get_build_exec_dir(&build_dir);
+                if (ret != -ENOEXEC)
+                        ASSERT_OK(ret);
+
+                if (build_dir) {
+                        /* Account for a build directory being in one of the soon-to-be-tmpfs directories. If we
+                         * overmount it with an empty tmpfs, manager_new() will pin the wrong systemd-executor binary,
+                         * which can then lead to unexpected (and painful to debug) test fails. */
+                        ASSERT_OK_ERRNO(access(build_dir, F_OK));
+                        ASSERT_NOT_NULL(build_dir_mount = path_join(PRIVATE_UNIT_DIR, "build_dir"));
+                        ASSERT_OK(mkdir_p(build_dir_mount, 0755));
+                        ASSERT_OK(mount_nofollow_verbose(LOG_DEBUG, build_dir, build_dir_mount, NULL, MS_BIND, NULL));
+                }
+
                 FOREACH_STRING(p, "/dev/shm", "/root", "/tmp", "/var/tmp", "/var/lib")
-                        assert_se(mount_nofollow_verbose(LOG_DEBUG, "tmpfs", p, "tmpfs", MS_NOSUID|MS_NODEV, NULL) >= 0);
+                        ASSERT_OK(mount_nofollow_verbose(LOG_DEBUG, "tmpfs", p, "tmpfs", MS_NOSUID|MS_NODEV, NULL));
+
+                if (build_dir_mount) {
+                        ret = RET_NERRNO(access(build_dir, F_OK));
+                        if (ret != -ENOENT)
+                                ASSERT_OK(ret);
+
+                        if (ret == -ENOENT) {
+                                /* The build directory got overmounted by tmpfs, so let's use the "backup" bind mount to
+                                 * bring it back. */
+                                ASSERT_OK(mkdir_p(build_dir, 0755));
+                                ASSERT_OK(mount_nofollow_verbose(LOG_DEBUG, build_dir_mount, build_dir, NULL, MS_MOVE, NULL));
+                        }
+                }
 
                 /* Prepare credstore like tmpfiles.d/credstore.conf for LoadCredential= tests. */
                 FOREACH_STRING(p, "/run/credstore", "/run/credstore.encrypted") {
-                        assert_se(mkdir_p(p, 0) >= 0);
-                        assert_se(mount_nofollow_verbose(LOG_DEBUG, "tmpfs", p, "tmpfs", MS_NOSUID|MS_NODEV, "mode=0000") >= 0);
+                        ASSERT_OK(mkdir_p(p, 0700));
+                        ASSERT_OK(mount_nofollow_verbose(LOG_DEBUG, "tmpfs", p, "tmpfs", MS_NOSUID|MS_NODEV, "mode=0700"));
                 }
 
-                assert_se(write_string_file("/run/credstore/test-execute.load-credential", "foo", WRITE_STRING_FILE_CREATE) >= 0);
+                ASSERT_OK(write_string_file("/run/credstore/test-execute.load-credential", "foo", WRITE_STRING_FILE_CREATE));
         }
 
         return r;
@@ -1365,7 +1518,7 @@ TEST(run_tests_root) {
                 return (void) log_tests_skipped("unshare() is disabled");
 
         /* safe_fork() clears saved_argv in the child process. Let's copy it. */
-        assert_se(filters = strv_copy(strv_skip(saved_argv, 1)));
+        ASSERT_NOT_NULL(filters = strv_copy(strv_skip(saved_argv, 1)));
 
         if (prepare_ns("(test-execute-root)") == 0) {
                 can_unshare = true;
@@ -1391,19 +1544,18 @@ TEST(run_tests_without_unshare) {
                 return (void) log_tests_skipped("Seccomp not available, cannot run unshare() filtered tests");
 
         /* safe_fork() clears saved_argv in the child process. Let's copy it. */
-        assert_se(filters = strv_copy(strv_skip(saved_argv, 1)));
+        ASSERT_NOT_NULL(filters = strv_copy(strv_skip(saved_argv, 1)));
 
         if (prepare_ns("(test-execute-without-unshare)") == 0) {
                 _cleanup_hashmap_free_ Hashmap *s = NULL;
 
                 r = seccomp_syscall_resolve_name("unshare");
-                assert_se(r != __NR_SCMP_ERROR);
-                assert_se(hashmap_ensure_put(&s, NULL, UINT32_TO_PTR(r + 1), INT_TO_PTR(-1)) >= 0);
-                assert_se(seccomp_load_syscall_filter_set_raw(SCMP_ACT_ALLOW, s, SCMP_ACT_ERRNO(EOPNOTSUPP), true) >= 0);
+                ASSERT_NE(r, __NR_SCMP_ERROR);
+                ASSERT_OK(hashmap_ensure_put(&s, NULL, UINT32_TO_PTR(r + 1), INT_TO_PTR(-1)));
+                ASSERT_OK(seccomp_load_syscall_filter_set_raw(SCMP_ACT_ALLOW, s, SCMP_ACT_ERRNO(EOPNOTSUPP), true));
 
                 /* Check unshare() is actually filtered. */
-                assert_se(unshare(CLONE_NEWNS) < 0);
-                assert_se(errno == EOPNOTSUPP);
+                ASSERT_ERROR_ERRNO(unshare(CLONE_NEWNS), EOPNOTSUPP);
 
                 can_unshare = false;
                 run_tests(RUNTIME_SCOPE_SYSTEM, filters);
@@ -1421,10 +1573,10 @@ TEST(run_tests_unprivileged) {
                 return (void) log_tests_skipped("unshare() is disabled");
 
         /* safe_fork() clears saved_argv in the child process. Let's copy it. */
-        assert_se(filters = strv_copy(strv_skip(saved_argv, 1)));
+        ASSERT_NOT_NULL(filters = strv_copy(strv_skip(saved_argv, 1)));
 
         if (prepare_ns("(test-execute-unprivileged)") == 0) {
-                assert_se(capability_bounding_set_drop(0, /* right_now = */ true) >= 0);
+                ASSERT_OK(capability_bounding_set_drop(0, /* right_now = */ true));
 
                 can_unshare = false;
                 run_tests(RUNTIME_SCOPE_USER, filters);
@@ -1441,6 +1593,9 @@ static int intro(void) {
         if (geteuid() != 0 || have_effective_cap(CAP_SYS_ADMIN) <= 0)
                 return log_tests_skipped("not privileged");
 
+        if (running_in_chroot() != 0)
+                return log_tests_skipped("running in chroot");
+
         if (enter_cgroup_subroot(NULL) == -ENOMEDIUM)
                 return log_tests_skipped("cgroupfs not available");
 
@@ -1452,8 +1607,8 @@ static int intro(void) {
 
         if (have_net_dummy) {
                 /* Create a network namespace and a dummy interface in it for NetworkNamespacePath= */
-                (void) system("ip netns add test-execute-netns");
-                (void) system("ip netns exec test-execute-netns ip link add dummy-test-ns type dummy");
+                have_netns = system("ip netns add test-execute-netns") == 0;
+                have_netns = have_netns && system("ip netns exec test-execute-netns ip link add dummy-test-ns type dummy") == 0;
         }
 
         return EXIT_SUCCESS;

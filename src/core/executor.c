@@ -8,6 +8,7 @@
 #include "alloc-util.h"
 #include "argv-util.h"
 #include "build.h"
+#include "capability-util.h"
 #include "exec-invoke.h"
 #include "execute-serialize.h"
 #include "execute.h"
@@ -206,6 +207,13 @@ static int run(int argc, char *argv[]) {
         log_set_prohibit_ipc(false);
         log_open();
 
+        /* Clear ambient capabilities, so services do not inherit them implicitly. Dropping them does
+         * not affect the permitted and effective sets which are important for the executor itself to
+         * operate. */
+        r = capability_ambient_set_apply(0, /* also_inherit= */ false);
+        if (r < 0)
+                log_warning_errno(r, "Failed to clear ambient capabilities, ignoring: %m");
+
         /* This call would collect all passed fds and enable CLOEXEC. We'll unset it in exec_invoke (flag_fds)
          * for fds that shall be passed to the child.
          * The serialization fd is set to CLOEXEC in parse_argv, so it's also filtered. */
@@ -245,12 +253,13 @@ static int run(int argc, char *argv[]) {
 
                 log_exec_struct_errno(&context, &params, LOG_ERR, r,
                                       "MESSAGE_ID=" SD_MESSAGE_SPAWN_FAILED_STR,
-                                      LOG_EXEC_INVOCATION_ID(&params),
                                       LOG_EXEC_MESSAGE(&params, "Failed at step %s spawning %s: %m",
                                                        status, command.path),
                                       "EXECUTABLE=%s", command.path);
         } else
-                assert(exit_status == EXIT_SUCCESS); /* When 'skip' is chosen in the confirm spawn prompt */
+                /* r == 0: 'skip' is chosen in the confirm spawn prompt
+                 * r > 0:  expected/ignored failure, do not log at error level */
+                assert((r == 0) == (exit_status == EXIT_SUCCESS));
 
         return exit_status;
 }

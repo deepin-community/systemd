@@ -5,7 +5,8 @@
 #include <stdio.h>
 #include <sys/types.h>
 
-#include "json.h"
+#include "sd-json.h"
+
 #include "macro.h"
 #include "pager.h"
 
@@ -68,8 +69,12 @@ typedef enum TableDataType {
         TABLE_SET_COLOR,
         TABLE_SET_RGAP_COLOR,
         TABLE_SET_BOTH_COLORS,
+        TABLE_SET_UNDERLINE,
+        TABLE_SET_RGAP_UNDERLINE,
+        TABLE_SET_BOTH_UNDERLINES,
         TABLE_SET_URL,
         TABLE_SET_UPPERCASE,
+        TABLE_SET_JSON_FIELD_NAME,
 
         _TABLE_DATA_TYPE_INVALID = -EINVAL,
 } TableDataType;
@@ -111,6 +116,8 @@ int table_set_align_percent(Table *t, TableCell *cell, unsigned percent);
 int table_set_ellipsize_percent(Table *t, TableCell *cell, unsigned percent);
 int table_set_color(Table *t, TableCell *cell, const char *color);
 int table_set_rgap_color(Table *t, TableCell *cell, const char *color);
+int table_set_underline(Table *t, TableCell *cell, bool b);
+int table_set_rgap_underline(Table *t, TableCell *cell, bool b);
 int table_set_url(Table *t, TableCell *cell, const char *url);
 int table_set_uppercase(Table *t, TableCell *cell, bool b);
 
@@ -129,7 +136,7 @@ int table_set_sort_internal(Table *t, size_t first_column, ...);
 #define table_set_sort(...) table_set_sort_internal(__VA_ARGS__, SIZE_MAX)
 int table_set_reverse(Table *t, size_t column, bool b);
 int table_hide_column_from_display_internal(Table *t, ...);
-#define table_hide_column_from_display(t, ...) table_hide_column_from_display_internal(t, __VA_ARGS__, (size_t) -1)
+#define table_hide_column_from_display(t, ...) table_hide_column_from_display_internal(t, __VA_ARGS__, SIZE_MAX)
 
 int table_print(Table *t, FILE *f);
 int table_format(Table *t, char **ret);
@@ -139,6 +146,12 @@ static inline TableCell* TABLE_HEADER_CELL(size_t i) {
 }
 
 size_t table_get_rows(Table *t);
+static inline bool table_isempty(Table *t) {
+        if (!t)
+                return true;
+
+        return table_get_rows(t) <= 1;
+}
 size_t table_get_columns(Table *t);
 
 size_t table_get_current_column(Table *t);
@@ -148,11 +161,12 @@ TableCell *table_get_cell(Table *t, size_t row, size_t column);
 const void *table_get(Table *t, TableCell *cell);
 const void *table_get_at(Table *t, size_t row, size_t column);
 
-int table_to_json(Table *t, JsonVariant **ret);
-int table_print_json(Table *t, FILE *f, JsonFormatFlags json_flags);
+int table_to_json(Table *t, sd_json_variant **ret);
+int table_print_json(Table *t, FILE *f, sd_json_format_flags_t json_flags);
 
-int table_print_with_pager(Table *t, JsonFormatFlags json_format_flags, PagerFlags pager_flags, bool show_header);
+int table_print_with_pager(Table *t, sd_json_format_flags_t json_format_flags, PagerFlags pager_flags, bool show_header);
 
+char* table_mangle_to_json_field_name(const char *str);
 int table_set_json_field_name(Table *t, size_t idx, const char *name);
 
 #define table_log_add_error(r) \

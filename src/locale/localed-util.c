@@ -10,8 +10,8 @@
 #include "env-file-label.h"
 #include "env-file.h"
 #include "env-util.h"
+#include "escape.h"
 #include "fd-util.h"
-#include "fileio-label.h"
 #include "fileio.h"
 #include "fs-util.h"
 #include "kbd-util.h"
@@ -258,15 +258,16 @@ static int verify_keymap(const char *keymap, int log_level, sd_bus_error *error)
         assert(keymap);
 
         r = keymap_exists(keymap); /* This also verifies that the keymap name is kosher. */
-        if (r < 0) {
+        if (r <= 0) {
+                _cleanup_free_ char *escaped = cescape(keymap);
+                if (r < 0) {
+                        if (error)
+                                sd_bus_error_set_errnof(error, r, "Failed to check keymap %s: %m", strna(escaped));
+                        return log_full_errno(log_level, r, "Failed to check keymap %s: %m", strna(escaped));
+                }
                 if (error)
-                        sd_bus_error_set_errnof(error, r, "Failed to check keymap %s: %m", keymap);
-                return log_full_errno(log_level, r, "Failed to check keymap %s: %m", keymap);
-        }
-        if (r == 0) {
-                if (error)
-                        sd_bus_error_setf(error, SD_BUS_ERROR_FAILED, "Keymap %s is not installed.", keymap);
-                return log_full_errno(log_level, SYNTHETIC_ERRNO(ENOENT), "Keymap %s is not installed.", keymap);
+                        sd_bus_error_setf(error, SD_BUS_ERROR_FAILED, "Keymap %s is not installed.", strna(escaped));
+                return log_full_errno(log_level, SYNTHETIC_ERRNO(ENOENT), "Keymap %s is not installed.", strna(escaped));
         }
 
         return 0;
@@ -304,7 +305,7 @@ void context_clear(Context *c) {
         c->x11_cache = sd_bus_message_unref(c->x11_cache);
         c->vc_cache = sd_bus_message_unref(c->vc_cache);
 
-        c->polkit_registry = bus_verify_polkit_async_registry_free(c->polkit_registry);
+        c->polkit_registry = hashmap_free(c->polkit_registry);
 };
 
 X11Context *context_get_x11_context(Context *c) {
@@ -735,7 +736,9 @@ int vconsole_convert_to_x11(const VCContext *vc, X11Context *ret) {
 }
 
 int find_converted_keymap(const X11Context *xc, char **ret) {
-        _cleanup_free_ char *n = NULL;
+        _cleanup_free_ char *n = NULL, *p = NULL, *pz = NULL;
+        _cleanup_strv_free_ char **keymap_dirs = NULL;
+        int r;
 
         assert(xc);
         assert(!isempty(xc->layout));
@@ -748,18 +751,29 @@ int find_converted_keymap(const X11Context *xc, char **ret) {
         if (!n)
                 return -ENOMEM;
 
-        NULSTR_FOREACH(dir, KBD_KEYMAP_DIRS) {
-                _cleanup_free_ char *p = NULL, *pz = NULL;
+        p = strjoin("xkb/", n, ".map");
+        pz = strjoin("xkb/", n, ".map.gz");
+        if (!p || !pz)
+                return -ENOMEM;
+
+        r = keymap_directories(&keymap_dirs);
+        if (r < 0)
+                return r;
+
+        STRV_FOREACH(dir, keymap_dirs) {
+                _cleanup_close_ int dir_fd = -EBADF;
                 bool uncompressed;
 
-                p = strjoin(dir, "xkb/", n, ".map");
-                pz = strjoin(dir, "xkb/", n, ".map.gz");
-                if (!p || !pz)
-                        return -ENOMEM;
+                dir_fd = open(*dir, O_CLOEXEC | O_DIRECTORY | O_PATH);
+                if (dir_fd < 0) {
+                        if (errno != ENOENT)
+                                log_debug_errno(errno, "Failed to open %s, ignoring: %m", *dir);
+                        continue;
+                }
 
-                uncompressed = access(p, F_OK) == 0;
-                if (uncompressed || access(pz, F_OK) == 0) {
-                        log_debug("Found converted keymap %s at %s", n, uncompressed ? p : pz);
+                uncompressed = faccessat(dir_fd, p, F_OK, 0) >= 0;
+                if (uncompressed || faccessat(dir_fd, pz, F_OK, 0) >= 0) {
+                        log_debug("Found converted keymap %s at %s/%s", n, *dir, uncompressed ? p : pz);
                         *ret = TAKE_PTR(n);
                         return 1;
                 }

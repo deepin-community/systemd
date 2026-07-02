@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd" [
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd" [
 <!ENTITY % entities SYSTEM "custom-entities.ent" >
 %entities;
 ]>
@@ -59,14 +59,14 @@
           <listitem>
             <para>List units that <command>systemd</command> currently has in memory. This includes units that are
             either referenced directly or through a dependency, units that are pinned by applications programmatically,
-            or units that were active in the past and have failed. By default only units which are active, have pending
+            or units that were active in the past and have failed. By default, only units which are active, have pending
             jobs, or have failed are shown; this can be changed with option <option>--all</option>. If one or more
             <replaceable>PATTERN</replaceable>s are specified, only units matching one of them are shown. The units
             that are shown are additionally filtered by <option>--type=</option> and <option>--state=</option> if those
             options are specified.</para>
 
             <para>Note that this command does not show unit templates, but only instances of unit
-            templates. Units templates that aren't instantiated are not runnable, and will thus never show up
+            templates. Units templates that are not instantiated are not runnable, and will thus never show up
             in the output of this command. Specifically this means that <filename>foo@.service</filename>
             will never be shown in this list — unless instantiated, e.g. as
             <filename>foo@bar.service</filename>. Use <command>list-unit-files</command> (see below) for
@@ -96,12 +96,15 @@ To show all installed unit files use 'systemctl list-unit-files'.</programlistin
 
             <para>The LOAD column shows the load state, one of <constant>loaded</constant>,
             <constant>not-found</constant>, <constant>bad-setting</constant>, <constant>error</constant>,
-            <constant>masked</constant>. The ACTIVE columns shows the general unit state, one of
-            <constant>active</constant>, <constant>reloading</constant>, <constant>inactive</constant>,
-            <constant>failed</constant>, <constant>activating</constant>, <constant>deactivating</constant>. The SUB
-            column shows the unit-type-specific detailed state of the unit, possible values vary by unit type. The list
-            of possible LOAD, ACTIVE, and SUB states is not constant and new systemd releases may both add and remove
-            values. <programlisting>systemctl --state=help</programlisting> command may be used to display the
+            <constant>masked</constant>. The ACTIVE columns shows the general unit state, one of the
+            following:</para>
+
+            <xi:include href="unit-states.xml" xpointer="table"/>
+
+            <para>The SUB column shows the unit-type-specific detailed state of the unit, possible values
+            vary by unit type. The list of possible LOAD, ACTIVE, and SUB states is not constant and new
+            systemd releases may both add and remove values.
+            <programlisting>systemctl --state=help</programlisting> command may be used to display the
             current set of possible values.</para>
 
             <para>This is the default command.</para>
@@ -160,10 +163,9 @@ PATH                           CONDITION         UNIT                           
             shown. Produces output similar to
             <programlisting>
 LISTEN           UNIT                        ACTIVATES
-/dev/initctl     systemd-initctl.socket      systemd-initctl.service
-…
-[::]:22          sshd.socket                 sshd.service
 kobject-uevent 1 systemd-udevd-kernel.socket systemd-udevd.service
+/dev/rfkill      systemd-rfkill.socket       systemd-rfkill.service
+…
 
 5 sockets listed.</programlisting>
             Note: because the addresses might contains spaces, this output
@@ -189,7 +191,7 @@ NEXT                         LEFT          LAST                         PASSED  
 Sun 2017-02-26 18:55:42 EST  1min 14s left Thu 2017-02-23 13:54:44 EST  3 days ago systemd-tmpfiles-clean.timer systemd-tmpfiles-clean.service
 Sun 2017-02-26 20:37:16 EST  1h 42min left Sun 2017-02-26 11:56:36 EST  6h ago     apt-daily.timer              apt-daily.service
 Sun 2017-02-26 20:57:49 EST  2h 3min left  Sun 2017-02-26 11:56:36 EST  6h ago     snapd.refresh.timer          snapd.refresh.service
-            </programlisting>
+</programlisting>
             </para>
 
             <para><emphasis>NEXT</emphasis> shows the next time the timer will run.</para>
@@ -291,7 +293,8 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             <literal>inactive</literal> or <literal>maintenance</literal> is a white circle ("○"),
             <literal>active</literal> is a green dot ("●"), <literal>deactivating</literal> is a white dot,
             <literal>failed</literal> or <literal>error</literal> is a red cross ("×"), and
-            <literal>reloading</literal> is a green clockwise circle arrow ("↻").</para>
+            <literal>reloading</literal> or <literal>refreshing</literal> is a green clockwise circle arrow
+            ("↻").</para>
 
             <para>The "Loaded:" line in the output will show <literal>loaded</literal> if the unit has been
             loaded into memory. Other possible values for "Loaded:" include: <literal>error</literal> if
@@ -350,10 +353,10 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             "fragment" and "drop-ins" (source files) of units. Each
             file is preceded by a comment which includes the file
             name. Note that this shows the contents of the backing files
-            on disk, which may not match the system manager's
+            on disk, which might not match the system manager's
             understanding of these units if any unit files were
             updated on disk and the <command>daemon-reload</command>
-            command wasn't issued since.</para>
+            command was not issued since.</para>
 
             <xi:include href="version-info.xml" xpointer="v209"/>
           </listitem>
@@ -387,7 +390,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             <filename>default.target</filename> is implied.</para>
 
             <para>The units that are shown are additionally filtered by <option>--type=</option> and
-            <option>--state=</option> if those options are specified. Note that we won't be able to
+            <option>--state=</option> if those options are specified. Note that we will not be able to
             use a tree structure in this case, so <option>--plain</option> is implied.</para>
 
             <para>By default, only target units are recursively
@@ -401,7 +404,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
 
             <para>Note that this command only lists units currently loaded into memory by the service manager. In
             particular, this command is not suitable to get a comprehensive list at all reverse dependencies on a
-            specific unit, as it won't list the dependencies declared by units currently not loaded.</para>
+            specific unit, as it will not list the dependencies declared by units currently not loaded.</para>
 
             <xi:include href="version-info.xml" xpointer="v198"/>
           </listitem>
@@ -492,8 +495,8 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             <para>Stop and then start one or more units specified on the
             command line if the units are running. This does nothing
             if units are not running.</para>
-            <!-- Note that we don't document condrestart here, as that is just compatibility support, and we generally
-                 don't document that. -->
+            <!-- Note that we do not document condrestart here, as that is just compatibility support, and we generally
+                 do not document that. -->
           </listitem>
         </varlistentry>
         <varlistentry>
@@ -502,6 +505,9 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <listitem>
             <para>Reload one or more units if they support it. If not, stop and then start them instead. If the units
             are not running yet, they will be started.</para>
+
+            <para>This has a slightly differing functionality when used in combination with <option>--marked</option>,
+            see below.</para>
           </listitem>
         </varlistentry>
         <varlistentry>
@@ -510,10 +516,10 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <listitem>
             <para>Reload one or more units if they support it. If not, stop and then start them instead. This does
             nothing if the units are not running.</para>
-            <!-- Note that we don't document force-reload here, as that is just compatibility support, and we generally
-                 don't document that. -->
+            <!-- Note that we do not document force-reload here, as that is just compatibility support, and we generally
+                 do not document that. -->
 
-                 <xi:include href="version-info.xml" xpointer="v229"/>
+            <xi:include href="version-info.xml" xpointer="v229"/>
           </listitem>
         </varlistentry>
         <varlistentry>
@@ -552,7 +558,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <term><command>clean <replaceable>PATTERN</replaceable>…</command></term>
 
           <listitem>
-            <para>Remove the configuration, state, cache, logs or runtime data of the specified units. Use
+            <para>Remove the configuration, state, cache, logs, runtime or file descriptor store data of the specified units. Use
             <option>--what=</option> to select which kind of resource to remove. For service units this may
             be used to remove the directories configured with <varname>ConfigurationDirectory=</varname>,
             <varname>StateDirectory=</varname>, <varname>CacheDirectory=</varname>,
@@ -567,7 +573,57 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             command only applies to units that use either of these settings. If <option>--what=</option> is
             not specified, the cache and runtime data as well as the file descriptor store are removed (as
             these three types of resources are generally redundant and reproducible on the next invocation of
-            the unit). Note that the specified units must be stopped to invoke this operation.</para>
+            the unit). Multiple values can be seperated by commas. Note that the specified units must be stopped
+            to invoke this operation.</para>
+
+            <table>
+              <title>
+                Possible values for <option>--what=</option>
+              </title>
+
+              <tgroup cols='2'>
+                <thead>
+                  <row>
+                    <entry>Value</entry>
+                    <entry>Unit Setting</entry>
+                  </row>
+                </thead>
+                <tbody>
+                  <row>
+                    <entry><literal>runtime</literal></entry>
+                    <entry><varname>RuntimeDirectory=</varname></entry>
+                  </row>
+                  <row>
+                    <entry><literal>state</literal></entry>
+                    <entry><varname>StateDirectory=</varname></entry>
+                  </row>
+                  <row>
+                    <entry><literal>cache</literal></entry>
+                    <entry><varname>CacheDirectory=</varname></entry>
+                  </row>
+                  <row>
+                    <entry><literal>logs</literal></entry>
+                    <entry><varname>LogsDirectory=</varname></entry>
+                  </row>
+                  <row>
+                    <entry><literal>configuration</literal></entry>
+                    <entry><varname>ConfigurationDirectory=</varname></entry>
+                  </row>
+                  <row>
+                    <entry><literal>fdstore</literal></entry>
+                    <entry><varname>FileDescriptorStorePreserve=</varname></entry>
+                  </row>
+                  <row>
+                    <entry><literal>all</literal></entry>
+                    <entry>All of the above</entry>
+                  </row>
+                  <row>
+                    <entry><literal>help</literal></entry>
+                    <entry>Show the supported values and exit</entry>
+                  </row>
+                </tbody>
+              </tgroup>
+            </table>
 
             <xi:include href="version-info.xml" xpointer="v243"/>
           </listitem>
@@ -580,7 +636,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             command line using cgroup freezer</para>
 
             <para>Freezing the unit will cause all processes contained within the cgroup corresponding to the unit
-            to be suspended. Being suspended means that unit's processes won't be scheduled to run on CPU until thawed.
+            to be suspended. Being suspended means that unit's processes will not be scheduled to run on CPU until thawed.
             Note that this command is supported only on systems that use unified cgroup hierarchy. Unit is automatically
             thawed just before we execute a job against the unit, e.g. before the unit is stopped.</para>
 
@@ -928,6 +984,11 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             enabled with to the defaults configured in its [Install] section. This command expects
             a unit name only, it does not accept paths to unit files.</para>
 
+            <para>This command implicitly reloads the system manager configuration after completing the operation.
+            Note that this command does not implicitly restart the units that are being disabled. If this is
+            desired, either combine this command with the <option>--now</option> switch, or invoke
+            the <command>try-restart</command> command with appropriate arguments later.</para>
+
             <xi:include href="version-info.xml" xpointer="v238"/>
           </listitem>
         </varlistentry>
@@ -936,7 +997,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <term><command>preset <replaceable>UNIT</replaceable>…</command></term>
 
           <listitem>
-            <para>Reset the enable/disable status one or more unit files, as specified on
+            <para>Reset the enable/disable status of one or more unit files, as specified on
             the command line, to the defaults configured in the preset policy files. This
             has the same effect as <command>disable</command> or
             <command>enable</command>, depending how the unit is listed in the preset
@@ -1054,20 +1115,19 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
                   </row>
                   <row>
                     <entry><literal>bad</literal></entry>
-                    <entry>The unit file is invalid or another error occurred. Note that <command>is-enabled</command> will not actually return this state, but print an error message instead. However the unit file listing printed by <command>list-unit-files</command> might show it.</entry>
+                    <entry>The unit file is invalid or another error occurred. Note that <command>is-enabled</command> will not actually return this state, but print an error message instead. However, the unit file listing printed by <command>list-unit-files</command> might show it.</entry>
                     <entry>&gt; 0</entry>
                   </row>
                   <row>
                     <entry><literal>not-found</literal></entry>
-                    <entry>The unit file doesn't exist.</entry>
+                    <entry>The unit file does not exist.</entry>
                     <entry>4</entry>
                   </row>
                 </tbody>
               </tgroup>
             </table>
 
-              <xi:include href="version-info.xml" xpointer="v238"/>
-
+            <xi:include href="version-info.xml" xpointer="v238"/>
           </listitem>
         </varlistentry>
 
@@ -1089,7 +1149,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             specified). If a matching unit file already exists under these directories this operation will
             hence fail. This means that the operation is primarily useful to mask units shipped by the vendor
             (as those are shipped in <filename>/usr/lib/systemd/system/</filename> and not the aforementioned
-            two directories), but typically doesn't work for units created locally (as those are typically
+            two directories), but typically does not work for units created locally (as those are typically
             placed precisely in the two aforementioned directories). Similar restrictions apply for
             <option>--user</option> mode, in which case the directories are below the user's home directory
             however.</para>
@@ -1171,7 +1231,6 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             <command>enable</command>.</para>
 
             <xi:include href="version-info.xml" xpointer="v217"/>
-
           </listitem>
         </varlistentry>
 
@@ -1179,37 +1238,39 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <term><command>edit <replaceable>UNIT</replaceable>…</command></term>
 
           <listitem>
-            <para>Edit a drop-in snippet or a whole replacement file if
-            <option>--full</option> is specified, to extend or override the
-            specified unit.</para>
+            <para>Edit or replace a drop-in snippet or the main unit file, to extend or override the
+            definition of the specified unit.</para>
 
-            <para>Depending on whether <option>--system</option> (the default),
-            <option>--user</option>, or <option>--global</option> is specified,
-            this command creates a drop-in file for each unit either for the system,
-            for the calling user, or for all futures logins of all users. Then,
-            the editor (see the "Environment" section below) is invoked on
-            temporary files which will be written to the real location if the
-            editor exits successfully.</para>
+            <para>Depending on whether <option>--system</option> (the default), <option>--user</option>, or
+            <option>--global</option> is specified, this command will operate on the system unit files, unit
+            files for the calling user, or the unit files shared between all users.</para>
+
+            <para>The editor (see the "Environment" section below) is invoked on temporary files which will
+            be written to the real location if the editor exits successfully. After the editing is finished,
+            configuration is reloaded, equivalent to <command>systemctl daemon-reload --system</command> or
+            <command>systemctl daemon-reload --user</command>. For <command>edit --global</command>, the
+            reload is not performed and the edits will take effect only for subsequent logins (or after a
+            reload is requested in a different way).</para>
+
+            <para>If <option>--full</option> is specified, a replacement for the main unit file will be
+            created or edited. Otherwise, a drop-in file will be created or edited.</para>
 
             <para>If <option>--drop-in=</option> is specified, the given drop-in file name
             will be used instead of the default <filename>override.conf</filename>.</para>
 
-            <para>If <option>--full</option> is specified, this will copy the
-            original units instead of creating drop-in files.</para>
-
-            <para>If <option>--force</option> is specified and any units do
-            not already exist, new unit files will be opened for editing.</para>
+            <para>The unit must exist, i.e. its main unit file must be present. If <option>--force</option>
+            is specified, this requirement is ignored and a new unit may be created (with
+            <option>--full</option>), or a drop-in for a nonexistent unit may be created.</para>
 
             <para>If <option>--runtime</option> is specified, the changes will
             be made temporarily in <filename>/run/</filename> and they will be
             lost on the next reboot.</para>
 
+            <para>If <option>--stdin</option> is specified, the new contents will be read from standard
+            input. In this mode, the old contents of the file are discarded.</para>
+
             <para>If the temporary file is empty upon exit, the modification of
             the related unit is canceled.</para>
-
-            <para>After the units have been edited, systemd configuration is
-            reloaded (in a way that is equivalent to <command>daemon-reload</command>).
-            </para>
 
             <para>Note that this command cannot be used to remotely edit units
             and that you cannot temporarily edit units which are in
@@ -1318,35 +1379,48 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <term><command>show-environment</command></term>
 
           <listitem>
-            <para>Dump the systemd manager environment block. This is the environment
-            block that is passed to all processes the manager spawns. The environment
-            block will be dumped in straightforward form suitable for sourcing into
-            most shells. If no special characters or whitespace is present in the variable
-            values, no escaping is performed, and the assignments have the form
-            <literal>VARIABLE=value</literal>. If whitespace or characters which have
-            special meaning to the shell are present, dollar-single-quote escaping is
-            used, and assignments have the form <literal>VARIABLE=$'value'</literal>.
-            This syntax is known to be supported by
-            <citerefentry project='die-net'><refentrytitle>bash</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-            <citerefentry project='die-net'><refentrytitle>zsh</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-            <citerefentry project='die-net'><refentrytitle>ksh</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-            and
-            <citerefentry project='die-net'><refentrytitle>busybox</refentrytitle><manvolnum>1</manvolnum></citerefentry>'s
-            <citerefentry project='die-net'><refentrytitle>ash</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-            but not
-            <citerefentry project='die-net'><refentrytitle>dash</refentrytitle><manvolnum>1</manvolnum></citerefentry>
-            or
-            <citerefentry project='die-net'><refentrytitle>fish</refentrytitle><manvolnum>1</manvolnum></citerefentry>.
+            <para>Dump the systemd manager environment block. This is the environment block that is passed to
+            all processes the manager spawns. The environment block will be dumped in straightforward form
+            suitable for sourcing into most shells. If no special characters or whitespace is present in the
+            variable values, no escaping is performed, and the assignments have the form
+            <literal>VARIABLE=value</literal>. If whitespace or characters which have special meaning to the
+            shell are present, dollar-single-quote escaping is used, and assignments have the form
+            <literal>VARIABLE=$'value'</literal>.  This syntax is known to be supported by <citerefentry
+            project='die-net'><refentrytitle>bash</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+            <citerefentry
+            project='die-net'><refentrytitle>zsh</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+            <citerefentry
+            project='die-net'><refentrytitle>ksh</refentrytitle><manvolnum>1</manvolnum></citerefentry>, and
+            <citerefentry
+            project='die-net'><refentrytitle>busybox</refentrytitle><manvolnum>1</manvolnum></citerefentry>'s
+            <citerefentry
+            project='die-net'><refentrytitle>ash</refentrytitle><manvolnum>1</manvolnum></citerefentry>, but
+            not <citerefentry
+            project='die-net'><refentrytitle>dash</refentrytitle><manvolnum>1</manvolnum></citerefentry> or
+            <citerefentry
+            project='die-net'><refentrytitle>fish</refentrytitle><manvolnum>1</manvolnum></citerefentry>.
             </para>
+
+            <para>Note that this shows the <emphasis>effective</emphasis> block, i.e. the combination of
+            environment variables configured via configuration files, environment generators and via IPC
+            (i.e. via the <command>set-environment</command> described below). At the moment a unit process
+            is forked off, this combined environment block will be further combined with per-unit environment
+            variables, which are not visible in this command.</para>
           </listitem>
         </varlistentry>
         <varlistentry>
           <term><command>set-environment <replaceable>VARIABLE=VALUE</replaceable>…</command></term>
 
           <listitem>
-            <para>Set one or more systemd manager environment variables, as specified on the command
+            <para>Set one or more service manager environment variables, as specified on the command
             line. This command will fail if variable names and values do not conform to the rules listed
             above.</para>
+
+            <para>Note that this operates on an environment block separate from the environment block
+            configured from service manager configuration and environment generators. Whenever a process is
+            invoked the two blocks are combined (also incorporating any per-service environment variables),
+            and passed to it. The <command>show-environment</command> verb will show the combination of the
+            blocks, see above.</para>
 
             <xi:include href="version-info.xml" xpointer="v233"/>
           </listitem>
@@ -1355,11 +1429,16 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <term><command>unset-environment <replaceable>VARIABLE</replaceable>…</command></term>
 
           <listitem>
-            <para>Unset one or more systemd manager environment
-            variables. If only a variable name is specified, it will be
-            removed regardless of its value. If a variable and a value
-            are specified, the variable is only removed if it has the
-            specified value.</para>
+            <para>Unset one or more systemd manager environment variables. If only a variable name is
+            specified, it will be removed regardless of its value. If a variable and a value are specified,
+            the variable is only removed if it has the specified value.</para>
+
+            <para>Note that this operates on an environment block separate from the environment block
+            configured from service manager configuration and environment generators. Whenever a process is
+            invoked the two blocks are combined (also incorporating any per-service environment variables),
+            and passed to it. The <command>show-environment</command> verb will show the combination of the
+            blocks, see above. Note that this means this command cannot be used to unset environment
+            variables defined in the service manager configuration files or via generators.</para>
 
             <xi:include href="version-info.xml" xpointer="v233"/>
           </listitem>
@@ -1565,7 +1644,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
               </tgroup>
             </table>
 
-              <xi:include href="version-info.xml" xpointer="v215"/>
+            <xi:include href="version-info.xml" xpointer="v215"/>
           </listitem>
         </varlistentry>
 
@@ -1636,7 +1715,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <listitem>
             <para>Shut down and reboot the system.</para>
 
-            <para>This command mostly equivalent to <command>systemctl start reboot.target
+            <para>This command is mostly equivalent to <command>systemctl start reboot.target
             --job-mode=replace-irreversibly --no-block</command>, but also prints a wall message to all
             users. This command is asynchronous; it will return after the reboot operation is enqueued,
             without waiting for it to complete.</para>
@@ -1668,7 +1747,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
 
           <listitem>
             <para>Shut down and reboot the system via <command>kexec</command>. This command will load a
-            kexec kernel if one wasn't loaded yet or fail. A kernel may be loaded earlier by a separate step,
+            kexec kernel if one was not loaded yet or fail. A kernel may be loaded earlier by a separate step,
             this is particularly useful if a custom initrd or additional kernel command line options are
             desired. The <option>--force</option> can be used to continue without a kexec kernel, i.e. to
             perform a normal reboot. The final reboot step is equivalent to
@@ -1756,12 +1835,34 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         </varlistentry>
 
         <varlistentry>
+          <term><command>sleep</command></term>
+
+          <listitem>
+            <para>Put the system to sleep, through <command>suspend</command>, <command>hibernate</command>,
+            <command>hybrid-sleep</command>, or <command>suspend-then-hibernate</command>. The sleep operation
+            to use is automatically selected by <citerefentry>
+            <refentrytitle>systemd-logind.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>.
+            By default, <command>suspend-then-hibernate</command> is used, and falls back to <command>suspend</command>
+            and then <command>hibernate</command> if not supported. Refer to <varname>SleepOperation=</varname>
+            setting in <citerefentry><refentrytitle>logind.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+            for more details. This command is asynchronous, and will return after the sleep operation is
+            successfully enqueued. It will not wait for the sleep/resume cycle to complete.</para>
+
+            <xi:include href="version-info.xml" xpointer="v256"/>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
           <term><command>suspend</command></term>
 
           <listitem>
             <para>Suspend the system. This will trigger activation of the special target unit
             <filename>suspend.target</filename>. This command is asynchronous, and will return after the suspend
             operation is successfully enqueued. It will not wait for the suspend/resume cycle to complete.</para>
+
+            <para>If <option>--force</option> is specified, and <command>systemd-logind</command> returned
+            error for the operation, the error will be ignored and the operation will be tried again directly
+            through starting the target unit.</para>
           </listitem>
         </varlistentry>
 
@@ -1772,6 +1873,8 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             <para>Hibernate the system. This will trigger activation of the special target unit
             <filename>hibernate.target</filename>. This command is asynchronous, and will return after the hibernation
             operation is successfully enqueued. It will not wait for the hibernate/thaw cycle to complete.</para>
+
+            <para>This command honors <option>--force</option> in the same way as <command>suspend</command>.</para>
           </listitem>
         </varlistentry>
 
@@ -1783,6 +1886,8 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             <filename>hybrid-sleep.target</filename>. This command is asynchronous, and will return after the hybrid
             sleep operation is successfully enqueued. It will not wait for the sleep/wake-up cycle to complete.</para>
 
+            <para>This command honors <option>--force</option> in the same way as <command>suspend</command>.</para>
+
             <xi:include href="version-info.xml" xpointer="v196"/>
           </listitem>
         </varlistentry>
@@ -1791,12 +1896,15 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <term><command>suspend-then-hibernate</command></term>
 
           <listitem>
-            <para>Suspend the system and hibernate it after the delay specified in <filename>systemd-sleep.conf</filename>.
-            This will trigger activation of the special target unit <filename>suspend-then-hibernate.target</filename>.
-            This command is asynchronous, and will return after the hybrid sleep operation is successfully enqueued.
+            <para>Suspend the system and hibernate it when the battery is low, or when the delay specified
+            in <filename>systemd-sleep.conf</filename> elapsed. This will trigger activation of the special
+            target unit <filename>suspend-then-hibernate.target</filename>. This command is asynchronous,
+            and will return after the hybrid sleep operation is successfully enqueued.
             It will not wait for the sleep/wake-up or hibernate/thaw cycle to complete.</para>
 
-          <xi:include href="version-info.xml" xpointer="v240"/>
+            <para>This command honors <option>--force</option> in the same way as <command>suspend</command>.</para>
+
+            <xi:include href="version-info.xml" xpointer="v240"/>
           </listitem>
         </varlistentry>
       </variablelist>
@@ -1837,8 +1945,8 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
       for more details. The patterns are matched against the primary names of
       units currently in memory, and patterns which do not match anything
       are silently skipped. For example:
-      <programlisting># systemctl stop sshd@*.service</programlisting>
-      will stop all <filename>sshd@.service</filename> instances. Note that alias names of units, and units that aren't
+      <programlisting># systemctl stop "sshd@*.service"</programlisting>
+      will stop all <filename>sshd@.service</filename> instances. Note that alias names of units, and units that are not
       in memory are not considered for glob expansion.
       </para>
 
@@ -1926,12 +2034,8 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>-P</option></term>
 
         <listitem>
-          <para>Equivalent to <option>--value</option> <option>--property=</option>, i.e. shows the
-          value of the property without the property name or <literal>=</literal>. Note that using
-          <option>-P</option> once will also affect all properties listed with
-          <option>-p</option>/<option>--property=</option>.</para>
-
-        <xi:include href="version-info.xml" xpointer="v246"/>
+          <xi:include href="standard-options.xml" xpointer="xpointer(//varlistentry[@id='option-P']/listitem/para)" />
+          <xi:include href="version-info.xml" xpointer="v246"/>
         </listitem>
       </varlistentry>
 
@@ -2073,7 +2177,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <para>When printing properties with <command>show</command>, only print the value, and skip the
           property name and <literal>=</literal>. Also see option <option>-P</option> above.</para>
 
-        <xi:include href="version-info.xml" xpointer="v230"/>
+          <xi:include href="version-info.xml" xpointer="v230"/>
         </listitem>
       </varlistentry>
 
@@ -2083,7 +2187,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <listitem>
           <para>When showing sockets, show the type of the socket.</para>
 
-        <xi:include href="version-info.xml" xpointer="v202"/>
+          <xi:include href="version-info.xml" xpointer="v202"/>
         </listitem>
       </varlistentry>
 
@@ -2091,72 +2195,72 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--job-mode=</option></term>
 
         <listitem>
-        <para>When queuing a new job, this option controls how to deal with
-        already queued jobs. It takes one of <literal>fail</literal>,
-        <literal>replace</literal>,
-        <literal>replace-irreversibly</literal>,
-        <literal>isolate</literal>,
-        <literal>ignore-dependencies</literal>,
-        <literal>ignore-requirements</literal>,
-        <literal>flush</literal>,
-        <literal>triggering</literal>, or
-        <literal>restart-dependencies</literal>. Defaults to
-        <literal>replace</literal>, except when the
-        <command>isolate</command> command is used which implies the
-        <literal>isolate</literal> job mode.</para>
+          <para>When queuing a new job, this option controls how to deal with
+          already queued jobs. It takes one of <literal>fail</literal>,
+          <literal>replace</literal>,
+          <literal>replace-irreversibly</literal>,
+          <literal>isolate</literal>,
+          <literal>ignore-dependencies</literal>,
+          <literal>ignore-requirements</literal>,
+          <literal>flush</literal>,
+          <literal>triggering</literal>, or
+          <literal>restart-dependencies</literal>. Defaults to
+          <literal>replace</literal>, except when the
+          <command>isolate</command> command is used which implies the
+          <literal>isolate</literal> job mode.</para>
 
-        <para>If <literal>fail</literal> is specified and a requested
-        operation conflicts with a pending job (more specifically:
-        causes an already pending start job to be reversed into a stop
-        job or vice versa), cause the operation to fail.</para>
+          <para>If <literal>fail</literal> is specified and a requested
+          operation conflicts with a pending job (more specifically:
+          causes an already pending start job to be reversed into a stop
+          job or vice versa), cause the operation to fail.</para>
 
-        <para>If <literal>replace</literal> (the default) is
-        specified, any conflicting pending job will be replaced, as
-        necessary.</para>
+          <para>If <literal>replace</literal> (the default) is
+          specified, any conflicting pending job will be replaced, as
+          necessary.</para>
 
-        <para>If <literal>replace-irreversibly</literal> is specified,
-        operate like <literal>replace</literal>, but also mark the new
-        jobs as irreversible. This prevents future conflicting
-        transactions from replacing these jobs (or even being enqueued
-        while the irreversible jobs are still pending). Irreversible
-        jobs can still be cancelled using the <command>cancel</command>
-        command. This job mode should be used on any transaction which
-        pulls in <filename>shutdown.target</filename>.</para>
+          <para>If <literal>replace-irreversibly</literal> is specified,
+          operate like <literal>replace</literal>, but also mark the new
+          jobs as irreversible. This prevents future conflicting
+          transactions from replacing these jobs (or even being enqueued
+          while the irreversible jobs are still pending). Irreversible
+          jobs can still be cancelled using the <command>cancel</command>
+          command. This job mode should be used on any transaction which
+          pulls in <filename>shutdown.target</filename>.</para>
 
-        <para><literal>isolate</literal> is only valid for start
-        operations and causes all other units to be stopped when the
-        specified unit is started. This mode is always used when the
-        <command>isolate</command> command is used.</para>
+          <para><literal>isolate</literal> is only valid for start
+          operations and causes all other units to be stopped when the
+          specified unit is started. This mode is always used when the
+          <command>isolate</command> command is used.</para>
 
-        <para><literal>flush</literal> will cause all queued jobs to
-        be canceled when the new job is enqueued.</para>
+          <para><literal>flush</literal> will cause all queued jobs to
+          be canceled when the new job is enqueued.</para>
 
-        <para>If <literal>ignore-dependencies</literal> is specified,
-        then all unit dependencies are ignored for this new job and
-        the operation is executed immediately. If passed, no required
-        units of the unit passed will be pulled in, and no ordering
-        dependencies will be honored. This is mostly a debugging and
-        rescue tool for the administrator and should not be used by
-        applications.</para>
+          <para>If <literal>ignore-dependencies</literal> is specified,
+          then all unit dependencies are ignored for this new job and
+          the operation is executed immediately. If passed, no required
+          units of the unit passed will be pulled in, and no ordering
+          dependencies will be honored. This is mostly a debugging and
+          rescue tool for the administrator and should not be used by
+          applications.</para>
 
-        <para><literal>ignore-requirements</literal> is similar to
-        <literal>ignore-dependencies</literal>, but only causes the
-        requirement dependencies to be ignored, the ordering
-        dependencies will still be honored.</para>
+          <para><literal>ignore-requirements</literal> is similar to
+          <literal>ignore-dependencies</literal>, but only causes the
+          requirement dependencies to be ignored, the ordering
+          dependencies will still be honored.</para>
 
-        <para><literal>triggering</literal> may only be used with
-        <command>systemctl stop</command>. In this mode, the specified
-        unit and any active units that trigger it are stopped. See the
-        discussion of
-        <varname>Triggers=</varname> in <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-        for more information about triggering units.</para>
+          <para><literal>triggering</literal> may only be used with
+          <command>systemctl stop</command>. In this mode, the specified
+          unit and any active units that trigger it are stopped. See the
+          discussion of
+          <varname>Triggers=</varname> in <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+          for more information about triggering units.</para>
 
-        <para><literal>restart-dependencies</literal> may only be used with
-        <command>systemctl start</command>. In this mode, dependencies of
-        the specified unit will receive restart propagation, as if a restart
-        job had been enqueued for the unit.</para>
+          <para><literal>restart-dependencies</literal> may only be used with
+          <command>systemctl start</command>. In this mode, dependencies of
+          the specified unit will receive restart propagation, as if a restart
+          job had been enqueued for the unit.</para>
 
-        <xi:include href="version-info.xml" xpointer="v209"/>
+          <xi:include href="version-info.xml" xpointer="v209"/>
         </listitem>
       </varlistentry>
 
@@ -2172,7 +2276,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           run as effect of the enqueued jobs might request further jobs to be pulled in. This means that
           completion of the listed jobs might ultimately entail more jobs than the listed ones.</para>
 
-        <xi:include href="version-info.xml" xpointer="v242"/>
+          <xi:include href="version-info.xml" xpointer="v242"/>
         </listitem>
       </varlistentry>
 
@@ -2194,18 +2298,18 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
 
         <listitem>
           <para>When system shutdown or sleep state is requested, this option controls checking of inhibitor
-          locks. It takes one of <literal>auto</literal>, <literal>yes</literal> or
-          <literal>no</literal>. Defaults to <literal>auto</literal>, which will behave like
-          <literal>yes</literal> for interactive invocations (i.e. from a TTY) and <literal>no</literal> for
-          non-interactive invocations. <literal>yes</literal> lets the request respect inhibitor locks.
-          <literal>no</literal> lets the request ignore inhibitor locks.</para>
+          locks. It takes one of <literal>auto</literal>, <literal>yes</literal>, and <literal>no</literal>.
+          Defaults to <literal>auto</literal>, which means logind will perform the check and respect active
+          inhibitor locks, but <command>systemctl</command> will only do a client-side check for interactive
+          invocations (i.e. from a TTY), so that a more friendly and informative error can be returned to
+          users. <literal>no</literal> disables the checks both in <command>systemctl</command> and
+          <citerefentry><refentrytitle>systemd-logind</refentrytitle><manvolnum>8</manvolnum></citerefentry>.
+          </para>
 
           <para>Applications can establish inhibitor locks to prevent certain important operations (such as
           CD burning) from being interrupted by system shutdown or sleep. Any user may take these locks and
           privileged users may override these locks. If any locks are taken, shutdown and sleep state
-          requests will normally fail (unless privileged). However, if <literal>no</literal> is specified or
-          <literal>auto</literal> is specified on a non-interactive requests, the operation will be
-          attempted. If locks are present, the operation may require additional privileges.</para>
+          requests will normally fail (unless explicitly overridden with <literal>no</literal>).</para>
 
           <para>Option <option>--force</option> provides another way to override inhibitors.</para>
 
@@ -2219,7 +2323,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <listitem>
           <para>Shortcut for <option>--check-inhibitors=no</option>.</para>
 
-        <xi:include href="version-info.xml" xpointer="v198"/>
+          <xi:include href="version-info.xml" xpointer="v198"/>
         </listitem>
       </varlistentry>
 
@@ -2255,7 +2359,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--no-warn</option></term>
 
         <listitem>
-          <para>Don't generate the warnings shown by default in the following cases:
+          <para>Do not generate the warnings shown by default in the following cases:
           <itemizedlist>
             <listitem>
               <para>when <command>systemctl</command> is invoked without procfs mounted on
@@ -2263,7 +2367,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             </listitem>
             <listitem>
               <para>when using <command>enable</command> or <command>disable</command> on units without
-              install information (i.e. don't have or have an empty [Install] section),</para>
+              install information (i.e. do not have or have an empty [Install] section),</para>
             </listitem>
             <listitem>
               <para>when using <command>disable</command> combined with <option>--user</option> on units
@@ -2271,7 +2375,10 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             </listitem>
             <listitem>
               <para>when a <command>stop</command>-ped, <command>disable</command>-d, or <command>mask</command>-ed
-              unit still has active triggering units.</para>
+              unit still has active triggering units,</para>
+            </listitem>
+            <listitem>
+              <para>when a unit file is changed and requires <command>daemon-reload</command>.</para>
             </listitem>
           </itemizedlist>
           </para>
@@ -2297,14 +2404,16 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--wait</option></term>
 
         <listitem>
-          <para>Synchronously wait for started units to terminate again.
-          This option may not be combined with <option>--no-block</option>.
-          Note that this will wait forever if any given unit never terminates
-          (by itself or by getting stopped explicitly); particularly services
-          which use <literal>RemainAfterExit=yes</literal>.</para>
+          <para>When used with <command>start</command> or <command>restart</command>, synchronously wait for
+          started units to terminate again. This option may not be combined with <option>--no-block</option>.
+          Note that this will wait forever if any given unit never terminates (by itself or by getting
+          stopped explicitly); particularly services which use <literal>RemainAfterExit=yes</literal>.</para>
 
-          <para>When used with <command>is-system-running</command>, wait
-          until the boot process is completed before returning.</para>
+          <para>When used with <command>is-system-running</command>, wait until the boot process is completed
+          before returning.</para>
+
+          <para>When used with <command>kill</command>, wait until the signalled units terminate. Note that
+          this will wait forever if any given unit never terminates.</para>
 
           <xi:include href="version-info.xml" xpointer="v232"/>
         </listitem>
@@ -2347,29 +2456,9 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--no-reload</option></term>
 
         <listitem>
-          <para>When used with <command>enable</command> and
-          <command>disable</command>, do not implicitly reload daemon
-          configuration after executing the changes.</para>
-        </listitem>
-      </varlistentry>
-
-      <varlistentry>
-        <term><option>--no-ask-password</option></term>
-
-        <listitem>
-          <para>When used with <command>start</command> and related
-          commands, disables asking for passwords. Background services
-          may require input of a password or passphrase string, for
-          example to unlock system hard disks or cryptographic
-          certificates. Unless this option is specified and the
-          command is invoked from a terminal,
-          <command>systemctl</command> will query the user on the
-          terminal for the necessary secrets. Use this option to
-          switch this behavior off. In this case, the password must be
-          supplied by some other means (for example graphical password
-          agents) or the service might fail. This also disables
-          querying the user for authentication for privileged
-          operations.</para>
+          <para>When used with <command>enable</command>, <command>disable</command>, <command>preset</command>,
+          <command>mask</command>, or <command>unmask</command>, do not implicitly reload daemon configuration
+          after executing the changes.</para>
         </listitem>
       </varlistentry>
 
@@ -2396,12 +2485,12 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <filename>&UMOUNT_PATH;</filename>), but no main process is defined. If omitted, defaults to
           <option>all</option>.</para>
 
-        <xi:include href="version-info.xml" xpointer="v252"/>
+          <xi:include href="version-info.xml" xpointer="v252"/>
         </listitem>
       </varlistentry>
 
       <varlistentry>
-        <term><option>--kill-value=</option><replaceable>INT</replaceable></term>
+        <term><option>--kill-value=<replaceable>INT</replaceable></option></term>
 
         <listitem><para>If used with the <command>kill</command> command, enqueues a signal along with the
         specified integer value parameter to the specified process(es). This operation is only available for
@@ -2440,7 +2529,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           <varname>FileDescriptorStorePreserve=</varname> option is enabled, since the file descriptor store
           is otherwise cleaned automatically when the unit is stopped.</para>
 
-        <xi:include href="version-info.xml" xpointer="v243"/>
+          <xi:include href="version-info.xml" xpointer="v243"/>
         </listitem>
       </varlistentry>
 
@@ -2449,22 +2538,28 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--force</option></term>
 
         <listitem>
-          <para>When used with <command>enable</command>, overwrite
-          any existing conflicting symlinks.</para>
+          <para>When used with <command>enable</command>, overwrite any existing conflicting symlinks.</para>
 
-          <para>When used with <command>edit</command>, create all of the
-          specified units which do not already exist.</para>
+          <para>When used with <command>edit</command>, create all of the specified units which do not already exist.</para>
 
-          <para>When used with <command>halt</command>, <command>poweroff</command>, <command>reboot</command> or
-          <command>kexec</command>, execute the selected operation without shutting down all units. However, all
-          processes will be killed forcibly and all file systems are unmounted or remounted read-only. This is hence a
-          drastic but relatively safe option to request an immediate reboot. If <option>--force</option> is specified
-          twice for these operations (with the exception of <command>kexec</command>), they will be executed
-          immediately, without terminating any processes or unmounting any file systems. Warning: specifying
-          <option>--force</option> twice with any of these operations might result in data loss. Note that when
-          <option>--force</option> is specified twice the selected operation is executed by
-          <command>systemctl</command> itself, and the system manager is not contacted. This means the command should
-          succeed even when the system manager has crashed.</para>
+          <para>When used with <command>suspend</command>, <command>hibernate</command>, <command>hybrid-sleep</command>,
+          or <command>suspend-then-hibernate</command>, the error returned by <command>systemd-logind</command>
+          will be ignored, and the operation will be performed directly through starting the corresponding units.
+          </para>
+
+          <para>When used with <command>halt</command>, <command>poweroff</command>, <command>reboot</command>,
+          or <command>kexec</command>, execute the selected operation without shutting down all units. However,
+          all processes will be killed forcibly and all file systems are unmounted or remounted read-only.
+          This is hence a drastic but relatively safe option to request an immediate reboot. If <option>--force</option>
+          is specified twice for these operations (with the exception of <command>kexec</command>), they will
+          be executed immediately, without terminating any processes or unmounting any file systems.</para>
+
+          <warning>
+            <para>Specifying <option>--force</option> twice with any of these operations might result in data loss.
+            Note that when <option>--force</option> is specified twice the selected operation is executed by
+            <command>systemctl</command> itself, and the system manager is not contacted. This means the command
+            should succeed even when the system manager has crashed.</para>
+          </warning>
         </listitem>
       </varlistentry>
 
@@ -2476,7 +2571,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           short message explaining the reason for the operation. The message will be logged together with the default
           shutdown message.</para>
 
-        <xi:include href="version-info.xml" xpointer="v225"/>
+          <xi:include href="version-info.xml" xpointer="v225"/>
         </listitem>
       </varlistentry>
 
@@ -2484,13 +2579,11 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--now</option></term>
 
         <listitem>
-          <para>When used with <command>enable</command>, the units
-          will also be started. When used with <command>disable</command> or
-          <command>mask</command>, the units will also be stopped. The start
-          or stop operation is only carried out when the respective enable or
-          disable operation has been successful.</para>
+          <para>When used with <command>enable</command>, <command>disable</command>, <command>mask</command>,
+          or <command>reenable</command>, also start/stop/try-restart the units after the specified
+          unit file operations succeed.</para>
 
-        <xi:include href="version-info.xml" xpointer="v220"/>
+          <xi:include href="version-info.xml" xpointer="v220"/>
         </listitem>
       </varlistentry>
 
@@ -2557,7 +2650,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           enabled according to the preset rules, or only enabled, or
           only disabled.</para>
 
-        <xi:include href="version-info.xml" xpointer="v215"/>
+          <xi:include href="version-info.xml" xpointer="v215"/>
         </listitem>
       </varlistentry>
 
@@ -2589,11 +2682,12 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--firmware-setup</option></term>
 
         <listitem>
-          <para>When used with the <command>reboot</command> command, indicate to the system's firmware to
-          reboot into the firmware setup interface. Note that this functionality is not available on all
-          systems.</para>
+          <para>When used with the <command>reboot</command>, <command>poweroff</command>, or
+          <command>halt</command> command, indicate to the system's firmware to reboot into the firmware
+          setup interface for the next boot. Note that this functionality is not available on all systems.
+          </para>
 
-        <xi:include href="version-info.xml" xpointer="v220"/>
+          <xi:include href="version-info.xml" xpointer="v220"/>
         </listitem>
       </varlistentry>
 
@@ -2601,12 +2695,13 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--boot-loader-menu=<replaceable>timeout</replaceable></option></term>
 
         <listitem>
-          <para>When used with the <command>reboot</command> command, indicate to the system's boot loader to
-          show the boot loader menu on the following boot. Takes a time value as parameter — indicating the
-          menu timeout. Pass zero in order to disable the menu timeout. Note that not all boot loaders
-          support this functionality.</para>
+          <para>When used with the <command>reboot</command>, <command>poweroff</command>, or
+          <command>halt</command> command, indicate to the system's boot loader to show the boot loader menu
+          on the following boot. Takes a time value as parameter — indicating the menu timeout. Pass zero
+          in order to disable the menu timeout. Note that not all boot loaders support this functionality.
+          </para>
 
-        <xi:include href="version-info.xml" xpointer="v242"/>
+          <xi:include href="version-info.xml" xpointer="v242"/>
         </listitem>
       </varlistentry>
 
@@ -2614,12 +2709,13 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--boot-loader-entry=<replaceable>ID</replaceable></option></term>
 
         <listitem>
-          <para>When used with the <command>reboot</command> command, indicate to the system's boot loader to
-          boot into a specific boot loader entry on the following boot. Takes a boot loader entry identifier
-          as argument, or <literal>help</literal> in order to list available entries. Note that not all boot
-          loaders support this functionality.</para>
+          <para>When used with the <command>reboot</command>, <command>poweroff</command>, or
+          <command>halt</command> command, indicate to the system's boot loader to boot into a specific
+          boot loader entry on the following boot. Takes a boot loader entry identifier as argument,
+          or <literal>help</literal> in order to list available entries. Note that not all boot loaders
+          support this functionality.</para>
 
-        <xi:include href="version-info.xml" xpointer="v242"/>
+          <xi:include href="version-info.xml" xpointer="v242"/>
         </listitem>
       </varlistentry>
 
@@ -2627,11 +2723,12 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
         <term><option>--reboot-argument=</option></term>
 
         <listitem>
-          <para>This switch is used with <command>reboot</command>. The value is architecture and firmware specific. As an example, <literal>recovery</literal>
-            might be used to trigger system recovery, and <literal>fota</literal> might be used to trigger a
-            <quote>firmware over the air</quote> update.</para>
+          <para>This switch is used with <command>reboot</command>. The value is architecture and firmware
+          specific. As an example, <literal>recovery</literal> might be used to trigger system recovery, and
+          <literal>fota</literal> might be used to trigger a <quote>firmware over the air</quote>
+          update.</para>
 
-        <xi:include href="version-info.xml" xpointer="v246"/>
+          <xi:include href="version-info.xml" xpointer="v246"/>
         </listitem>
       </varlistentry>
 
@@ -2644,7 +2741,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           the output is printed as a list instead of a tree, and the bullet
           circles are omitted.</para>
 
-        <xi:include href="version-info.xml" xpointer="v203"/>
+          <xi:include href="version-info.xml" xpointer="v203"/>
         </listitem>
       </varlistentry>
 
@@ -2702,7 +2799,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             </varlistentry>
           </variablelist>
 
-            <xi:include href="version-info.xml" xpointer="v247"/>
+          <xi:include href="version-info.xml" xpointer="v247"/>
         </listitem>
       </varlistentry>
 
@@ -2741,7 +2838,7 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
       </varlistentry>
 
       <varlistentry>
-        <term><option>--drop-in=</option><replaceable>NAME</replaceable></term>
+        <term><option>--drop-in=<replaceable>NAME</replaceable></option></term>
 
         <listitem><para>When used with <command>edit</command>, use <replaceable>NAME</replaceable> as the
         drop-in file name instead of <filename>override.conf</filename>.</para>
@@ -2759,15 +2856,40 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
           which should adhere to the syntax documented in <citerefentry
           project='man-pages'><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry>
           section "PARSING TIMESTAMPS". Specially, if <literal>show</literal> is given, the currently scheduled
-          action will be shown, which can be canceled by passing an empty string or <literal>cancel</literal>.</para>
+          action will be shown, which can be canceled by passing an empty string or <literal>cancel</literal>.
+          <literal>auto</literal> will schedule the action according to maintenance window or one minute in
+          the future.</para>
 
-        <xi:include href="version-info.xml" xpointer="v254"/>
+          <xi:include href="version-info.xml" xpointer="v254"/>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--stdin</option></term>
+
+        <listitem>
+          <para>When used with <command>edit</command>, the contents of the file will be read from standard
+          input and the editor will not be launched. In this mode, the old contents of the file are
+          completely replaced. This is useful to "edit" unit files from scripts:</para>
+
+          <programlisting>$ systemctl edit --drop-in=limits.conf --stdin some-service.service &lt;&lt;EOF
+[Unit]
+AllowedCPUs=7,11
+EOF
+</programlisting>
+
+          <para>Multiple drop-ins may be "edited" in this mode; the same contents will be written to all of
+          them.</para>
+
+          <xi:include href="version-info.xml" xpointer="v256"/>
         </listitem>
       </varlistentry>
 
       <xi:include href="user-system-options.xml" xpointer="host" />
       <xi:include href="user-system-options.xml" xpointer="machine" />
+      <xi:include href="user-system-options.xml" xpointer="capsule" />
 
+      <xi:include href="standard-options.xml" xpointer="no-ask-password" />
       <xi:include href="standard-options.xml" xpointer="no-pager" />
       <xi:include href="standard-options.xml" xpointer="legend" />
       <xi:include href="standard-options.xml" xpointer="help" />
@@ -2867,19 +2989,19 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>journalctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>loginctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>machinectl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.resource-control</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.special</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>wall</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.preset</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.generator</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>glob</refentrytitle><manvolnum>7</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>journalctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>loginctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>machinectl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.resource-control</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.special</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>wall</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.preset</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.generator</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>glob</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

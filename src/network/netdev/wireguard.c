@@ -3,15 +3,17 @@
   Copyright © 2015-2017 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
 ***/
 
-#include <sys/ioctl.h>
+/* Make sure the net/if.h header is included before any linux/ one */
 #include <net/if.h>
-#include <netinet/in.h>
 #include <linux/if_arp.h>
 #include <linux/ipv6_route.h>
+#include <netinet/in.h>
+#include <sys/ioctl.h>
 
 #include "sd-resolve.h"
 
 #include "alloc-util.h"
+#include "creds-util.h"
 #include "dns-domain.h"
 #include "event-util.h"
 #include "fd-util.h"
@@ -25,6 +27,7 @@
 #include "networkd-util.h"
 #include "parse-helpers.h"
 #include "parse-util.h"
+#include "path-util.h"
 #include "random-util.h"
 #include "resolve-private.h"
 #include "string-util.h"
@@ -57,6 +60,7 @@ static WireguardPeer* wireguard_peer_free(WireguardPeer *peer) {
 
         free(peer->endpoint_host);
         free(peer->endpoint_port);
+        free(peer->public_key_file);
         free(peer->preshared_key_file);
         explicit_bzero_safe(peer->preshared_key, WG_KEY_LEN);
 
@@ -230,6 +234,9 @@ static int wireguard_set_interface(NetDev *netdev) {
         Wireguard *w = WIREGUARD(netdev);
         int r;
 
+        if (!netdev_is_managed(netdev))
+                return 0; /* Already detached, due to e.g. reloading .netdev files. */
+
         for (WireguardPeer *peer_start = w->peers; peer_start || !sent_once; ) {
                 uint16_t i = 0;
 
@@ -395,6 +402,9 @@ static int peer_resolve_endpoint(WireguardPeer *peer) {
 
         netdev = NETDEV(peer->wireguard);
 
+        if (!netdev_is_managed(netdev))
+                return 0; /* Already detached, due to e.g. reloading .netdev files. */
+
         if (!peer->endpoint_host || !peer->endpoint_port)
                 /* Not necessary to resolve the endpoint. */
                 return 0;
@@ -480,6 +490,8 @@ static int wireguard_decode_key_and_warn(
                 const char *lvalue) {
 
         _cleanup_(erase_and_freep) void *key = NULL;
+        _cleanup_(erase_and_freep) char *cred = NULL;
+        const char *cred_name;
         size_t len;
         int r;
 
@@ -493,10 +505,22 @@ static int wireguard_decode_key_and_warn(
                 return 0;
         }
 
-        if (!streq(lvalue, "PublicKey"))
+        cred_name = startswith(rvalue, "@");
+        if (cred_name) {
+                r = read_credential(cred_name, (void**) &cred, /* ret_size = */ NULL);
+                if (r == -ENOMEM)
+                        return log_oom();
+                if (r < 0) {
+                        log_syntax(unit, LOG_WARNING, filename, line, r,
+                                   "Failed to read credential for wireguard key (%s=), ignoring assignment: %m",
+                                   lvalue);
+                        return 0;
+                }
+
+        } else if (!streq(lvalue, "PublicKey"))
                 (void) warn_file_is_world_accessible(filename, NULL, unit, line);
 
-        r = unbase64mem_full(rvalue, strlen(rvalue), true, &key, &len);
+        r = unbase64mem_full(cred ?: rvalue, SIZE_MAX, /* secure = */ true, &key, &len);
         if (r == -ENOMEM)
                 return log_oom();
         if (r < 0) {
@@ -556,7 +580,7 @@ int config_parse_wireguard_private_key_file(
         if (!path)
                 return log_oom();
 
-        if (path_simplify_and_warn(path, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue) < 0)
+        if (path_simplify_and_warn(path, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue) < 0)
                 return 0;
 
         return free_and_replace(w->private_key_file, path);
@@ -592,7 +616,7 @@ int config_parse_wireguard_peer_key(
         return 0;
 }
 
-int config_parse_wireguard_preshared_key_file(
+int config_parse_wireguard_peer_key_file(
                 const char *unit,
                 const char *filename,
                 unsigned line,
@@ -607,14 +631,25 @@ int config_parse_wireguard_preshared_key_file(
         Wireguard *w = WIREGUARD(data);
         _cleanup_(wireguard_peer_free_or_set_invalidp) WireguardPeer *peer = NULL;
         _cleanup_free_ char *path = NULL;
+        char **key_file;
         int r;
+
+        assert(filename);
+        assert(lvalue);
 
         r = wireguard_peer_new_static(w, filename, section_line, &peer);
         if (r < 0)
                 return log_oom();
 
+        if (streq(lvalue, "PublicKeyFile"))
+                key_file = &peer->public_key_file;
+        else if (streq(lvalue, "PresharedKeyFile"))
+                key_file = &peer->preshared_key_file;
+        else
+                assert_not_reached();
+
         if (isempty(rvalue)) {
-                peer->preshared_key_file = mfree(peer->preshared_key_file);
+                *key_file = mfree(*key_file);
                 TAKE_PTR(peer);
                 return 0;
         }
@@ -623,10 +658,10 @@ int config_parse_wireguard_preshared_key_file(
         if (!path)
                 return log_oom();
 
-        if (path_simplify_and_warn(path, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue) < 0)
+        if (path_simplify_and_warn(path, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue) < 0)
                 return 0;
 
-        free_and_replace(peer->preshared_key_file, path);
+        free_and_replace(*key_file, path);
         TAKE_PTR(peer);
         return 0;
 }
@@ -721,23 +756,39 @@ int config_parse_wireguard_endpoint(
                 void *data,
                 void *userdata) {
 
-        assert(filename);
-        assert(rvalue);
-        assert(userdata);
-
         Wireguard *w = WIREGUARD(userdata);
         _cleanup_(wireguard_peer_free_or_set_invalidp) WireguardPeer *peer = NULL;
-        _cleanup_free_ char *host = NULL;
-        union in_addr_union addr;
-        const char *p;
+        _cleanup_free_ char *cred = NULL;
+        const char *cred_name, *endpoint;
         uint16_t port;
-        int family, r;
+        int r;
+
+        assert(filename);
+        assert(rvalue);
 
         r = wireguard_peer_new_static(w, filename, section_line, &peer);
         if (r < 0)
                 return log_oom();
 
-        r = in_addr_port_ifindex_name_from_string_auto(rvalue, &family, &addr, &port, NULL, NULL);
+        cred_name = startswith(rvalue, "@");
+        if (cred_name) {
+                r = read_credential(cred_name, (void**) &cred, /* ret_size = */ NULL);
+                if (r == -ENOMEM)
+                        return log_oom();
+                if (r < 0) {
+                        log_syntax(unit, LOG_WARNING, filename, line, r,
+                                   "Failed to read credential for wireguard endpoint, ignoring assignment: %m");
+                        return 0;
+                }
+
+                endpoint = strstrip(cred);
+        } else
+                endpoint = rvalue;
+
+        union in_addr_union addr;
+        int family;
+
+        r = in_addr_port_ifindex_name_from_string_auto(endpoint, &family, &addr, &port, NULL, NULL);
         if (r >= 0) {
                 if (family == AF_INET)
                         peer->endpoint.in = (struct sockaddr_in) {
@@ -761,17 +812,23 @@ int config_parse_wireguard_endpoint(
                 return 0;
         }
 
-        p = strrchr(rvalue, ':');
+        _cleanup_free_ char *host = NULL;
+        const char *p;
+
+        p = strrchr(endpoint, ':');
         if (!p) {
                 log_syntax(unit, LOG_WARNING, filename, line, 0,
                            "Unable to find port of endpoint, ignoring assignment: %s",
-                           rvalue);
+                           rvalue); /* We log the original assignment instead of resolved credential here,
+                                       as the latter might be previously encrypted and we'd expose them in
+                                       unprotected logs otherwise. */
                 return 0;
         }
 
-        host = strndup(rvalue, p - rvalue);
+        host = strndup(endpoint, p - endpoint);
         if (!host)
                 return log_oom();
+        p++;
 
         if (!dns_name_is_valid(host)) {
                 log_syntax(unit, LOG_WARNING, filename, line, 0,
@@ -780,7 +837,6 @@ int config_parse_wireguard_endpoint(
                 return 0;
         }
 
-        p++;
         r = parse_ip_port(p, &port);
         if (r < 0) {
                 log_syntax(unit, LOG_WARNING, filename, line, r,
@@ -1061,6 +1117,14 @@ static int wireguard_peer_verify(WireguardPeer *peer) {
         if (section_is_invalid(peer->section))
                 return -EINVAL;
 
+        r = wireguard_read_key_file(peer->public_key_file, peer->public_key);
+        if (r < 0)
+                return log_netdev_error_errno(netdev, r,
+                                              "%s: Failed to read public key from '%s'. "
+                                              "Ignoring [WireGuardPeer] section from line %u.",
+                                              peer->section->filename, peer->public_key_file,
+                                              peer->section->line);
+
         if (eqzero(peer->public_key))
                 return log_netdev_error_errno(netdev, SYNTHETIC_ERRNO(EINVAL),
                                               "%s: WireGuardPeer section without PublicKey= configured. "
@@ -1078,6 +1142,55 @@ static int wireguard_peer_verify(WireguardPeer *peer) {
         return 0;
 }
 
+static int wireguard_read_default_key_cred(NetDev *netdev, const char *filename) {
+        Wireguard *w = WIREGUARD(netdev);
+        _cleanup_free_ char *config_name = NULL;
+        int r;
+
+        assert(filename);
+
+        r = path_extract_filename(filename, &config_name);
+        if (r < 0)
+                return log_netdev_error_errno(netdev, r,
+                                              "%s: Failed to extract config name, ignoring network device: %m",
+                                              filename);
+
+        char *p = endswith(config_name, ".netdev");
+        if (!p)
+                /* Fuzzer run? Then we just ignore this device. */
+                return log_netdev_error_errno(netdev, SYNTHETIC_ERRNO(EINVAL),
+                                              "%s: Invalid netdev config name, refusing default key lookup.",
+                                              filename);
+        *p = '\0';
+
+        _cleanup_(erase_and_freep) char *cred = NULL;
+
+        r = read_credential(strjoina("network.wireguard.private.", config_name), (void**) &cred, /* ret_size = */ NULL);
+        if (r < 0)
+                return log_netdev_error_errno(netdev, r,
+                                              "%s: No private key specified and default key isn't available, "
+                                              "ignoring network device: %m",
+                                              filename);
+
+        _cleanup_(erase_and_freep) void *key = NULL;
+        size_t len;
+
+        r = unbase64mem_full(cred, SIZE_MAX, /* secure = */ true, &key, &len);
+        if (r < 0)
+                return log_netdev_error_errno(netdev, r,
+                                              "%s: No private key specified and default key cannot be parsed, "
+                                              "ignoring network device: %m",
+                                              filename);
+        if (len != WG_KEY_LEN || memeqzero(key, len))
+                return log_netdev_error_errno(netdev, SYNTHETIC_ERRNO(EINVAL),
+                                              "%s: No private key specified and default key is invalid. "
+                                              "Ignoring network device.",
+                                              filename);
+
+        memcpy(w->private_key, key, WG_KEY_LEN);
+        return 0;
+}
+
 static int wireguard_verify(NetDev *netdev, const char *filename) {
         Wireguard *w = WIREGUARD(netdev);
         int r;
@@ -1085,13 +1198,14 @@ static int wireguard_verify(NetDev *netdev, const char *filename) {
         r = wireguard_read_key_file(w->private_key_file, w->private_key);
         if (r < 0)
                 return log_netdev_error_errno(netdev, r,
-                                              "Failed to read private key from %s. Ignoring network device.",
+                                              "Failed to read private key from '%s', ignoring network device: %m",
                                               w->private_key_file);
 
-        if (eqzero(w->private_key))
-                return log_netdev_error_errno(netdev, SYNTHETIC_ERRNO(EINVAL),
-                                              "%s: Missing PrivateKey= or PrivateKeyFile=, "
-                                              "Ignoring network device.", filename);
+        if (eqzero(w->private_key)) {
+                r = wireguard_read_default_key_cred(netdev, filename);
+                if (r < 0)
+                        return r;
+        }
 
         LIST_FOREACH(peers, peer, w->peers) {
                 if (wireguard_peer_verify(peer) < 0) {
@@ -1103,26 +1217,39 @@ static int wireguard_verify(NetDev *netdev, const char *filename) {
                         continue;
 
                 LIST_FOREACH(ipmasks, ipmask, peer->ipmasks) {
-                        _cleanup_(route_freep) Route *route = NULL;
+                        _cleanup_(route_unrefp) Route *route = NULL;
 
                         r = route_new(&route);
                         if (r < 0)
                                 return log_oom();
 
+                        /* For route_section_verify() below. */
+                        r = config_section_new(peer->section->filename, peer->section->line, &route->section);
+                        if (r < 0)
+                                return log_oom();
+
+                        route->source = NETWORK_CONFIG_SOURCE_STATIC;
                         route->family = ipmask->family;
                         route->dst = ipmask->ip;
                         route->dst_prefixlen = ipmask->cidr;
-                        route->scope = RT_SCOPE_UNIVERSE;
                         route->protocol = RTPROT_STATIC;
+                        route->protocol_set = true;
                         route->table = peer->route_table_set ? peer->route_table : w->route_table;
+                        route->table_set = true;
                         route->priority = peer->route_priority_set ? peer->route_priority : w->route_priority;
-                        if (route->priority == 0 && route->family == AF_INET6)
-                                route->priority = IP6_RT_PRIO_USER;
-                        route->source = NETWORK_CONFIG_SOURCE_STATIC;
+                        route->priority_set = true;
 
-                        r = set_ensure_consume(&w->routes, &route_hash_ops, TAKE_PTR(route));
+                        if (route_section_verify(route) < 0)
+                                continue;
+
+                        r = set_ensure_put(&w->routes, &route_hash_ops, route);
                         if (r < 0)
                                 return log_oom();
+                        if (r == 0)
+                                continue;
+
+                        route->wireguard = w;
+                        TAKE_PTR(route);
                 }
         }
 
@@ -1138,4 +1265,5 @@ const NetDevVTable wireguard_vtable = {
         .create_type = NETDEV_CREATE_INDEPENDENT,
         .config_verify = wireguard_verify,
         .iftype = ARPHRD_NONE,
+        .keep_existing = true,
 };

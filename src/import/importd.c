@@ -4,23 +4,31 @@
 #include <sys/wait.h>
 
 #include "sd-bus.h"
+#include "sd-varlink.h"
 
 #include "alloc-util.h"
+#include "build-path.h"
 #include "bus-common-errors.h"
 #include "bus-get-properties.h"
 #include "bus-log-control-api.h"
 #include "bus-polkit.h"
 #include "common-signal.h"
 #include "constants.h"
+#include "daemon-util.h"
+#include "discover-image.h"
 #include "env-util.h"
+#include "event-util.h"
 #include "fd-util.h"
 #include "float.h"
 #include "hostname-util.h"
+#include "import-common.h"
 #include "import-util.h"
+#include "json-util.h"
 #include "machine-pool.h"
 #include "main-func.h"
 #include "missing_capability.h"
 #include "mkdir-label.h"
+#include "os-util.h"
 #include "parse-util.h"
 #include "path-util.h"
 #include "percent-util.h"
@@ -33,6 +41,8 @@
 #include "strv.h"
 #include "syslog-util.h"
 #include "user-util.h"
+#include "varlink-io.systemd.Import.h"
+#include "varlink-util.h"
 #include "web-util.h"
 
 typedef struct Transfer Transfer;
@@ -61,12 +71,11 @@ struct Transfer {
 
         char *remote;
         char *local;
-        bool force_local;
-        bool read_only;
-
+        ImageClass class;
+        ImportFlags flags;
         char *format;
 
-        pid_t pid;
+        PidRef pidref;
 
         int log_fd;
 
@@ -78,14 +87,18 @@ struct Transfer {
 
         unsigned n_canceled;
         unsigned progress_percent;
+        unsigned progress_percent_sent;
 
         int stdin_fd;
         int stdout_fd;
+
+        Set *varlink_subscribed;
 };
 
 struct Manager {
         sd_event *event;
         sd_bus *bus;
+        sd_varlink_server *varlink_server;
 
         uint32_t current_transfer_id;
         Hashmap *transfers;
@@ -105,14 +118,16 @@ struct Manager {
 static const char* const transfer_type_table[_TRANSFER_TYPE_MAX] = {
         [TRANSFER_IMPORT_TAR] = "import-tar",
         [TRANSFER_IMPORT_RAW] = "import-raw",
-        [TRANSFER_IMPORT_FS] = "import-fs",
+        [TRANSFER_IMPORT_FS]  = "import-fs",
         [TRANSFER_EXPORT_TAR] = "export-tar",
         [TRANSFER_EXPORT_RAW] = "export-raw",
-        [TRANSFER_PULL_TAR] = "pull-tar",
-        [TRANSFER_PULL_RAW] = "pull-raw",
+        [TRANSFER_PULL_TAR]   = "pull-tar",
+        [TRANSFER_PULL_RAW]   = "pull-raw",
 };
 
 DEFINE_PRIVATE_STRING_TABLE_LOOKUP_TO_STRING(transfer_type, TransferType);
+
+DEFINE_PRIVATE_HASH_OPS_WITH_VALUE_DESTRUCTOR(varlink_hash_ops, void, trivial_hash_func, trivial_compare_func, sd_varlink, sd_varlink_unref);
 
 static Transfer *transfer_unref(Transfer *t) {
         if (!t)
@@ -129,12 +144,13 @@ static Transfer *transfer_unref(Transfer *t) {
         free(t->format);
         free(t->object_path);
 
-        if (t->pid > 1)
-                sigkill_wait(t->pid);
+        pidref_done_sigkill_wait(&t->pidref);
 
         safe_close(t->log_fd);
         safe_close(t->stdin_fd);
         safe_close(t->stdout_fd);
+
+        set_free(t->varlink_subscribed);
 
         return mfree(t);
 }
@@ -162,7 +178,8 @@ static int transfer_new(Manager *m, Transfer **ret) {
                 .stdin_fd = -EBADF,
                 .stdout_fd = -EBADF,
                 .verify = _IMPORT_VERIFY_INVALID,
-                .progress_percent= UINT_MAX,
+                .progress_percent = UINT_MAX,
+                .progress_percent_sent = UINT_MAX,
         };
 
         id = m->current_transfer_id + 1;
@@ -212,8 +229,46 @@ static void transfer_send_log_line(Transfer *t, const char *line) {
                         priority,
                         line);
         if (r < 0)
-                log_warning_errno(r, "Cannot emit log message signal, ignoring: %m");
- }
+                log_warning_errno(r, "Cannot emit log message bus signal, ignoring: %m");
+
+        r = varlink_many_notifybo(
+                        t->varlink_subscribed,
+                        SD_JSON_BUILD_PAIR("log",
+                                           SD_JSON_BUILD_OBJECT(
+                                                           SD_JSON_BUILD_PAIR_UNSIGNED("priority", priority),
+                                                           SD_JSON_BUILD_PAIR_STRING("message", line))));
+        if (r < 0)
+                log_warning_errno(r, "Cannot emit log message varlink message, ignoring: %m");
+}
+
+static void transfer_send_progress_update(Transfer *t) {
+        int r;
+
+        assert(t);
+
+        if (t->progress_percent_sent == t->progress_percent)
+                return;
+
+        double progress = transfer_percent_as_double(t);
+
+        r = sd_bus_emit_signal(
+                        t->manager->bus,
+                        t->object_path,
+                        "org.freedesktop.import1.Transfer",
+                        "ProgressUpdate",
+                        "d",
+                        progress);
+        if (r < 0)
+                log_warning_errno(r, "Cannot emit progress update bus signal, ignoring: %m");
+
+        r = varlink_many_notifybo(
+                        t->varlink_subscribed,
+                        SD_JSON_BUILD_PAIR_REAL("progress", progress));
+        if (r < 0)
+                log_warning_errno(r, "Cannot emit progress update varlink message, ignoring: %m");
+
+        t->progress_percent_sent = t->progress_percent;
+}
 
 static void transfer_send_logs(Transfer *t, bool flush) {
         assert(t);
@@ -287,9 +342,17 @@ static int transfer_finalize(Transfer *t, bool success) {
                         t->object_path,
                         success ? "done" :
                         t->n_canceled > 0 ? "canceled" : "failed");
-
         if (r < 0)
                 log_error_errno(r, "Cannot emit message: %m");
+
+        if (success)
+                r = varlink_many_reply(t->varlink_subscribed, NULL);
+        else if (t->n_canceled > 0)
+                r = varlink_many_error(t->varlink_subscribed, "io.systemd.Import.TransferCancelled", NULL);
+        else
+                r = varlink_many_error(t->varlink_subscribed, "io.systemd.Import.TransferFailed", NULL);
+        if (r < 0)
+                log_warning_errno(r, "Cannot emit varlink reply, ignoring: %m");
 
         transfer_unref(t);
         return 0;
@@ -300,7 +363,7 @@ static int transfer_cancel(Transfer *t) {
 
         assert(t);
 
-        r = kill_and_sigcont(t->pid, t->n_canceled < 3 ? SIGTERM : SIGKILL);
+        r = pidref_kill_and_sigcont(&t->pidref, t->n_canceled < 3 ? SIGTERM : SIGKILL);
         if (r < 0)
                 return r;
 
@@ -327,7 +390,7 @@ static int transfer_on_pid(sd_event_source *s, const siginfo_t *si, void *userda
         else
                 log_error("Transfer process failed due to unknown reason.");
 
-        t->pid = 0;
+        pidref_done(&t->pidref);
 
         return transfer_finalize(t, success);
 }
@@ -361,15 +424,17 @@ static int transfer_start(Transfer *t) {
         int r;
 
         assert(t);
-        assert(t->pid <= 0);
+        assert(!pidref_is_set(&t->pidref));
 
         if (pipe2(pipefd, O_CLOEXEC) < 0)
                 return -errno;
 
-        r = safe_fork_full("(sd-transfer)",
-                           (int[]) { t->stdin_fd, t->stdout_fd < 0 ? pipefd[1] : t->stdout_fd, pipefd[1] },
-                           NULL, 0,
-                           FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG_SIGTERM|FORK_REARRANGE_STDIO, &t->pid);
+        r = pidref_safe_fork_full(
+                        "(sd-transfer)",
+                        (int[]) { t->stdin_fd, t->stdout_fd < 0 ? pipefd[1] : t->stdout_fd, pipefd[1] },
+                        /* except_fds= */ NULL, /* n_except_fds= */ 0,
+                        FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG_SIGTERM|FORK_REARRANGE_STDIO|FORK_REOPEN_LOG,
+                        &t->pidref);
         if (r < 0)
                 return r;
         if (r == 0) {
@@ -378,6 +443,9 @@ static int transfer_start(Transfer *t) {
                         NULL, /* tar, raw  */
                         NULL, /* --verify= */
                         NULL, /* verify argument */
+                        NULL, /* --class= */
+                        NULL, /* class argument */
+                        NULL, /* --keep-download= */
                         NULL, /* maybe --force */
                         NULL, /* maybe --read-only */
                         NULL, /* if so: the actual URL */
@@ -387,7 +455,7 @@ static int transfer_start(Transfer *t) {
                         NULL, /* local */
                         NULL
                 };
-                unsigned k = 0;
+                size_t k = 0;
 
                 /* Child */
 
@@ -396,6 +464,10 @@ static int transfer_start(Transfer *t) {
                         log_error_errno(errno, "setenv() failed: %m");
                         _exit(EXIT_FAILURE);
                 }
+
+                r = setenv_systemd_log_level();
+                if (r < 0)
+                        log_warning_errno(r, "Failed to update $SYSTEMD_LOG_LEVEL, ignoring: %m");
 
                 r = setenv_systemd_exec_pid(true);
                 if (r < 0)
@@ -453,9 +525,18 @@ static int transfer_start(Transfer *t) {
                         cmd[k++] = import_verify_to_string(t->verify);
                 }
 
-                if (t->force_local)
+                if (t->class != IMAGE_MACHINE) {
+                        cmd[k++] = "--class";
+                        cmd[k++] = image_class_to_string(t->class);
+                }
+
+                if (IN_SET(t->type, TRANSFER_PULL_TAR, TRANSFER_PULL_RAW))
+                        cmd[k++] = FLAGS_SET(t->flags, IMPORT_PULL_KEEP_DOWNLOAD) ?
+                                "--keep-download=yes" : "--keep-download=no";
+
+                if (FLAGS_SET(t->flags, IMPORT_FORCE))
                         cmd[k++] = "--force";
-                if (t->read_only)
+                if (FLAGS_SET(t->flags, IMPORT_READ_ONLY))
                         cmd[k++] = "--read-only";
 
                 if (t->format) {
@@ -474,8 +555,15 @@ static int transfer_start(Transfer *t) {
                         cmd[k++] = t->local;
                 cmd[k] = NULL;
 
-                execv(cmd[0], (char * const *) cmd);
-                log_error_errno(errno, "Failed to execute %s tool: %m", cmd[0]);
+                assert(k < ELEMENTSOF(cmd));
+
+                if (DEBUG_LOGGING) {
+                        _cleanup_free_ char *joined = strv_join((char**) cmd, " ");
+                        log_debug("Calling: %s", strnull(joined));
+                }
+
+                r = invoke_callout_binary(cmd[0], (char * const *) cmd);
+                log_error_errno(r, "Failed to execute %s tool: %m", cmd[0]);
                 _exit(EXIT_FAILURE);
         }
 
@@ -484,8 +572,13 @@ static int transfer_start(Transfer *t) {
 
         t->stdin_fd = safe_close(t->stdin_fd);
 
-        r = sd_event_add_child(t->manager->event, &t->pid_event_source,
-                               t->pid, WEXITED, transfer_on_pid, t);
+        r = event_add_child_pidref(
+                        t->manager->event,
+                        &t->pid_event_source,
+                        &t->pidref,
+                        WEXITED,
+                        transfer_on_pid,
+                        t);
         if (r < 0)
                 return r;
 
@@ -527,9 +620,11 @@ static Manager *manager_unref(Manager *m) {
 
         hashmap_free(m->transfers);
 
-        bus_verify_polkit_async_registry_free(m->polkit_registry);
+        hashmap_free(m->polkit_registry);
 
         m->bus = sd_bus_flush_close_unref(m->bus);
+        m->varlink_server = sd_varlink_server_unref(m->varlink_server);
+
         sd_event_unref(m->event);
 
         return mfree(m);
@@ -538,7 +633,7 @@ static Manager *manager_unref(Manager *m) {
 DEFINE_TRIVIAL_CLEANUP_FUNC(Manager*, manager_unref);
 
 static int manager_on_notify(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
-
+        Manager *m = ASSERT_PTR(userdata);
         char buf[NOTIFY_BUFFER_MAX+1];
         struct iovec iovec = {
                 .iov_base = buf,
@@ -552,35 +647,34 @@ static int manager_on_notify(sd_event_source *s, int fd, uint32_t revents, void 
                 .msg_control = &control,
                 .msg_controllen = sizeof(control),
         };
-        struct ucred *ucred;
-        Manager *m = userdata;
-        Transfer *t;
         ssize_t n;
-        char *p;
         int r;
 
         n = recvmsg_safe(fd, &msghdr, MSG_DONTWAIT|MSG_CMSG_CLOEXEC);
-        if (n < 0) {
-                if (ERRNO_IS_TRANSIENT(n))
-                        return 0;
-                return (int) n;
+        if (ERRNO_IS_NEG_TRANSIENT(n))
+                return 0;
+        if (n == -ECHRNG) {
+                log_warning_errno(n, "Got message with truncated control data (unexpected fds sent?), ignoring.");
+                return 0;
         }
+        if (n == -EXFULL) {
+                log_warning_errno(n, "Got message with truncated payload data, ignoring.");
+                return 0;
+        }
+        if (n < 0)
+                return (int) n;
 
         cmsg_close_all(&msghdr);
 
-        if (msghdr.msg_flags & MSG_TRUNC) {
-                log_warning("Got overly long notification datagram, ignoring.");
-                return 0;
-        }
-
-        ucred = CMSG_FIND_DATA(&msghdr, SOL_SOCKET, SCM_CREDENTIALS, struct ucred);
+        struct ucred *ucred = CMSG_FIND_DATA(&msghdr, SOL_SOCKET, SCM_CREDENTIALS, struct ucred);
         if (!ucred || ucred->pid <= 0) {
                 log_warning("Got notification datagram lacking credential information, ignoring.");
                 return 0;
         }
 
+        Transfer *t;
         HASHMAP_FOREACH(t, m->transfers)
-                if (ucred->pid == t->pid)
+                if (ucred->pid == t->pidref.pid)
                         break;
 
         if (!t) {
@@ -590,7 +684,7 @@ static int manager_on_notify(sd_event_source *s, int fd, uint32_t revents, void 
 
         buf[n] = 0;
 
-        p = find_line_startswith(buf, "X_IMPORT_PROGRESS=");
+        char *p = find_line_startswith(buf, "X_IMPORT_PROGRESS=");
         if (!p)
                 return 0;
 
@@ -605,6 +699,8 @@ static int manager_on_notify(sd_event_source *s, int fd, uint32_t revents, void 
         t->progress_percent = (unsigned) r;
 
         log_debug("Got percentage from client: %u%%", t->progress_percent);
+
+        transfer_send_progress_update(t);
         return 0;
 }
 
@@ -631,17 +727,11 @@ static int manager_new(Manager **ret) {
         if (r < 0)
                 return r;
 
-        (void) sd_event_set_watchdog(m->event, true);
-
-        r = sd_event_add_signal(m->event, NULL, SIGINT, NULL, NULL);
+        r = sd_event_set_signal_exit(m->event, true);
         if (r < 0)
                 return r;
 
-        r = sd_event_add_signal(m->event, NULL, SIGTERM, NULL, NULL);
-        if (r < 0)
-                return r;
-
-        r = sd_event_add_signal(m->event, NULL, SIGRTMIN+18, sigrtmin18_handler, NULL);
+        r = sd_event_add_signal(m->event, NULL, (SIGRTMIN+18)|SD_EVENT_SIGNAL_PROCMASK, sigrtmin18_handler, NULL);
         if (r < 0)
                 return r;
 
@@ -649,9 +739,9 @@ static int manager_new(Manager **ret) {
         if (r < 0)
                 log_debug_errno(r, "Failed allocate memory pressure event source, ignoring: %m");
 
-        r = sd_bus_default_system(&m->bus);
+        r = sd_event_set_watchdog(m->event, true);
         if (r < 0)
-                return r;
+                log_debug_errno(r, "Failed to enable watchdog logic, ignoring: %m");
 
         m->notify_fd = socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
         if (m->notify_fd < 0)
@@ -693,22 +783,20 @@ static Transfer *manager_find(Manager *m, TransferType type, const char *remote)
 
 static int method_import_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
         _cleanup_(transfer_unrefp) Transfer *t = NULL;
-        int fd, force, read_only, r;
-        const char *local, *object;
+        ImageClass class = _IMAGE_CLASS_INVALID;
         Manager *m = ASSERT_PTR(userdata);
+        const char *local;
         TransferType type;
         struct stat st;
-        uint32_t id;
+        uint64_t flags;
+        int fd, r;
 
         assert(msg);
 
         r = bus_verify_polkit_async(
                         msg,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.import1.import",
-                        NULL,
-                        false,
-                        UID_INVALID,
+                        /* details= */ NULL,
                         &m->polkit_registry,
                         error);
         if (r < 0)
@@ -716,7 +804,36 @@ static int method_import_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
         if (r == 0)
                 return 1; /* Will call us back */
 
-        r = sd_bus_message_read(msg, "hsbb", &fd, &local, &force, &read_only);
+        if (endswith(sd_bus_message_get_member(msg), "Ex")) {
+                const char *sclass;
+
+                r = sd_bus_message_read(msg, "hsst", &fd, &local, &sclass, &flags);
+                if (r < 0)
+                        return r;
+
+                class = image_class_from_string(sclass);
+                if (class < 0)
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Image class '%s' not known", sclass);
+
+                if (flags & ~(IMPORT_READ_ONLY|IMPORT_FORCE))
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Flags 0x%" PRIx64 " invalid", flags);
+        } else {
+                int force, read_only;
+
+                r = sd_bus_message_read(msg, "hsbb", &fd, &local, &force, &read_only);
+                if (r < 0)
+                        return r;
+
+                class = IMAGE_MACHINE;
+
+                flags = 0;
+                SET_FLAG(flags, IMPORT_FORCE, force);
+                SET_FLAG(flags, IMPORT_READ_ONLY, read_only);
+        }
+
+        r = fd_verify_safe_flags(fd);
         if (r < 0)
                 return r;
 
@@ -726,15 +843,17 @@ static int method_import_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
         if (!S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode))
                 return -EINVAL;
 
-        if (!hostname_is_valid(local, 0))
+        if (!image_name_is_valid(local))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
-                                         "Local name %s is invalid", local);
+                                         "Local image name %s is invalid", local);
 
-        r = setup_machine_directory(error, m->use_btrfs_subvol, m->use_btrfs_quota);
-        if (r < 0)
-                return r;
+        if (class == IMAGE_MACHINE) {
+                r = setup_machine_directory(error, m->use_btrfs_subvol, m->use_btrfs_quota);
+                if (r < 0)
+                        return r;
+        }
 
-        type = streq_ptr(sd_bus_message_get_member(msg), "ImportTar") ?
+        type = startswith(sd_bus_message_get_member(msg), "ImportTar") ?
                 TRANSFER_IMPORT_TAR : TRANSFER_IMPORT_RAW;
 
         r = transfer_new(m, &t);
@@ -742,8 +861,8 @@ static int method_import_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
                 return r;
 
         t->type = type;
-        t->force_local = force;
-        t->read_only = read_only;
+        t->class = class;
+        t->flags = flags;
 
         t->local = strdup(local);
         if (!t->local)
@@ -757,29 +876,28 @@ static int method_import_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
         if (r < 0)
                 return r;
 
-        object = t->object_path;
-        id = t->id;
-        t = NULL;
+        r = sd_bus_reply_method_return(msg, "uo", t->id, t->object_path);
+        if (r < 0)
+                return r;
 
-        return sd_bus_reply_method_return(msg, "uo", id, object);
+        TAKE_PTR(t);
+        return 1;
 }
 
 static int method_import_fs(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
         _cleanup_(transfer_unrefp) Transfer *t = NULL;
-        int fd, force, read_only, r;
-        const char *local, *object;
+        ImageClass class = _IMAGE_CLASS_INVALID;
         Manager *m = ASSERT_PTR(userdata);
-        uint32_t id;
+        const char *local;
+        uint64_t flags;
+        int fd, r;
 
         assert(msg);
 
         r = bus_verify_polkit_async(
                         msg,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.import1.import",
-                        NULL,
-                        false,
-                        UID_INVALID,
+                        /* details= */ NULL,
                         &m->polkit_registry,
                         error);
         if (r < 0)
@@ -787,7 +905,36 @@ static int method_import_fs(sd_bus_message *msg, void *userdata, sd_bus_error *e
         if (r == 0)
                 return 1; /* Will call us back */
 
-        r = sd_bus_message_read(msg, "hsbb", &fd, &local, &force, &read_only);
+        if (endswith(sd_bus_message_get_member(msg), "Ex")) {
+                const char *sclass;
+
+                r = sd_bus_message_read(msg, "hsst", &fd, &local, &sclass, &flags);
+                if (r < 0)
+                        return r;
+
+                class = image_class_from_string(sclass);
+                if (class < 0)
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Image class '%s' not known", sclass);
+
+                if (flags & ~(IMPORT_READ_ONLY|IMPORT_FORCE))
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Flags 0x%" PRIx64 " invalid", flags);
+        } else {
+                int force, read_only;
+
+                r = sd_bus_message_read(msg, "hsbb", &fd, &local, &force, &read_only);
+                if (r < 0)
+                        return r;
+
+                class = IMAGE_MACHINE;
+
+                flags = 0;
+                SET_FLAG(flags, IMPORT_FORCE, force);
+                SET_FLAG(flags, IMPORT_READ_ONLY, read_only);
+        }
+
+        r = fd_verify_safe_flags_full(fd, O_DIRECTORY);
         if (r < 0)
                 return r;
 
@@ -795,21 +942,23 @@ static int method_import_fs(sd_bus_message *msg, void *userdata, sd_bus_error *e
         if (r < 0)
                 return r;
 
-        if (!hostname_is_valid(local, 0))
+        if (!image_name_is_valid(local))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
-                                         "Local name %s is invalid", local);
+                                         "Local image name %s is invalid", local);
 
-        r = setup_machine_directory(error, m->use_btrfs_subvol, m->use_btrfs_quota);
-        if (r < 0)
-                return r;
+        if (class == IMAGE_MACHINE) {
+                r = setup_machine_directory(error, m->use_btrfs_subvol, m->use_btrfs_quota);
+                if (r < 0)
+                        return r;
+        }
 
         r = transfer_new(m, &t);
         if (r < 0)
                 return r;
 
         t->type = TRANSFER_IMPORT_FS;
-        t->force_local = force;
-        t->read_only = read_only;
+        t->class = class;
+        t->flags = flags;
 
         t->local = strdup(local);
         if (!t->local)
@@ -823,31 +972,30 @@ static int method_import_fs(sd_bus_message *msg, void *userdata, sd_bus_error *e
         if (r < 0)
                 return r;
 
-        object = t->object_path;
-        id = t->id;
-        t = NULL;
+        r = sd_bus_reply_method_return(msg, "uo", t->id, t->object_path);
+        if (r < 0)
+                return r;
 
-        return sd_bus_reply_method_return(msg, "uo", id, object);
+        TAKE_PTR(t);
+        return 1;
 }
 
 static int method_export_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
         _cleanup_(transfer_unrefp) Transfer *t = NULL;
-        int fd, r;
-        const char *local, *object, *format;
+        ImageClass class = _IMAGE_CLASS_INVALID;
         Manager *m = ASSERT_PTR(userdata);
+        const char *local, *format;
         TransferType type;
+        uint64_t flags;
         struct stat st;
-        uint32_t id;
+        int fd, r;
 
         assert(msg);
 
         r = bus_verify_polkit_async(
                         msg,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.import1.export",
-                        NULL,
-                        false,
-                        UID_INVALID,
+                        /* details= */ NULL,
                         &m->polkit_registry,
                         error);
         if (r < 0)
@@ -855,13 +1003,37 @@ static int method_export_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
         if (r == 0)
                 return 1; /* Will call us back */
 
-        r = sd_bus_message_read(msg, "shs", &local, &fd, &format);
+        if (endswith(sd_bus_message_get_member(msg), "Ex")) {
+                const char *sclass;
+
+                r = sd_bus_message_read(msg, "sshst", &local, &sclass, &fd, &format, &flags);
+                if (r < 0)
+                        return r;
+
+                class = image_class_from_string(sclass);
+                if (class < 0)
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Image class '%s' not known", sclass);
+
+                if (flags != 0)
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Flags 0x%" PRIx64 " invalid", flags);
+        } else {
+                r = sd_bus_message_read(msg, "shs", &local, &fd, &format);
+                if (r < 0)
+                        return r;
+
+                class = IMAGE_MACHINE;
+                flags = 0;
+        }
+
+        if (!image_name_is_valid(local))
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                         "Local image name %s is invalid", local);
+
+        r = fd_verify_safe_flags(fd);
         if (r < 0)
                 return r;
-
-        if (!hostname_is_valid(local, 0))
-                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
-                                         "Local name %s is invalid", local);
 
         if (fstat(fd, &st) < 0)
                 return -errno;
@@ -869,7 +1041,7 @@ static int method_export_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
         if (!S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode))
                 return -EINVAL;
 
-        type = streq_ptr(sd_bus_message_get_member(msg), "ExportTar") ?
+        type = startswith(sd_bus_message_get_member(msg), "ExportTar") ?
                 TRANSFER_EXPORT_TAR : TRANSFER_EXPORT_RAW;
 
         r = transfer_new(m, &t);
@@ -877,6 +1049,8 @@ static int method_export_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
                 return r;
 
         t->type = type;
+        t->class = class;
+        t->flags = flags;
 
         if (!isempty(format)) {
                 t->format = strdup(format);
@@ -896,31 +1070,30 @@ static int method_export_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_
         if (r < 0)
                 return r;
 
-        object = t->object_path;
-        id = t->id;
-        t = NULL;
+        r = sd_bus_reply_method_return(msg, "uo", t->id, t->object_path);
+        if (r < 0)
+                return r;
 
-        return sd_bus_reply_method_return(msg, "uo", id, object);
+        TAKE_PTR(t);
+        return 1;
 }
 
 static int method_pull_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
         _cleanup_(transfer_unrefp) Transfer *t = NULL;
-        const char *remote, *local, *verify, *object;
+        ImageClass class = _IMAGE_CLASS_INVALID;
+        const char *remote, *local, *verify;
         Manager *m = ASSERT_PTR(userdata);
-        ImportVerify v;
         TransferType type;
-        int force, r;
-        uint32_t id;
+        uint64_t flags;
+        ImportVerify v;
+        int r;
 
         assert(msg);
 
         r = bus_verify_polkit_async(
                         msg,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.import1.pull",
-                        NULL,
-                        false,
-                        UID_INVALID,
+                        /* details= */ NULL,
                         &m->polkit_registry,
                         error);
         if (r < 0)
@@ -928,9 +1101,33 @@ static int method_pull_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_er
         if (r == 0)
                 return 1; /* Will call us back */
 
-        r = sd_bus_message_read(msg, "sssb", &remote, &local, &verify, &force);
-        if (r < 0)
-                return r;
+        if (endswith(sd_bus_message_get_member(msg), "Ex")) {
+                const char *sclass;
+
+                r = sd_bus_message_read(msg, "sssst", &remote, &local, &sclass, &verify, &flags);
+                if (r < 0)
+                        return r;
+
+                class = image_class_from_string(sclass);
+                if (class < 0)
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Image class '%s' not known", sclass);
+
+                if (flags & ~(IMPORT_FORCE|IMPORT_READ_ONLY|IMPORT_PULL_KEEP_DOWNLOAD))
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Flags 0x%" PRIx64 " invalid", flags);
+        } else {
+                int force;
+
+                r = sd_bus_message_read(msg, "sssb", &remote, &local, &verify, &force);
+                if (r < 0)
+                        return r;
+
+                class = IMAGE_MACHINE;
+
+                flags = 0;
+                SET_FLAG(flags, IMPORT_FORCE, force);
+        }
 
         if (!http_url_is_valid(remote) && !file_url_is_valid(remote))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
@@ -938,9 +1135,9 @@ static int method_pull_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_er
 
         if (isempty(local))
                 local = NULL;
-        else if (!hostname_is_valid(local, 0))
+        else if (!image_name_is_valid(local))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
-                                         "Local name %s is invalid", local);
+                                         "Local image name %s is invalid", local);
 
         if (isempty(verify))
                 v = IMPORT_VERIFY_SIGNATURE;
@@ -950,11 +1147,13 @@ static int method_pull_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_er
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
                                          "Unknown verification mode %s", verify);
 
-        r = setup_machine_directory(error, m->use_btrfs_subvol, m->use_btrfs_quota);
-        if (r < 0)
-                return r;
+        if (class == IMAGE_MACHINE) {
+                r = setup_machine_directory(error, m->use_btrfs_subvol, m->use_btrfs_quota);
+                if (r < 0)
+                        return r;
+        }
 
-        type = streq_ptr(sd_bus_message_get_member(msg), "PullTar") ?
+        type = startswith(sd_bus_message_get_member(msg), "PullTar") ?
                 TRANSFER_PULL_TAR : TRANSFER_PULL_RAW;
 
         if (manager_find(m, type, remote))
@@ -967,7 +1166,8 @@ static int method_pull_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_er
 
         t->type = type;
         t->verify = v;
-        t->force_local = force;
+        t->flags = flags;
+        t->class = class;
 
         t->remote = strdup(remote);
         if (!t->remote)
@@ -983,40 +1183,81 @@ static int method_pull_tar_or_raw(sd_bus_message *msg, void *userdata, sd_bus_er
         if (r < 0)
                 return r;
 
-        object = t->object_path;
-        id = t->id;
-        t = NULL;
+        r = sd_bus_reply_method_return(msg, "uo", t->id, t->object_path);
+        if (r < 0)
+                return r;
 
-        return sd_bus_reply_method_return(msg, "uo", id, object);
+        TAKE_PTR(t);
+        return 1;
 }
 
 static int method_list_transfers(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         Manager *m = ASSERT_PTR(userdata);
+        ImageClass class = _IMAGE_CLASS_INVALID;
         Transfer *t;
         int r;
 
         assert(msg);
 
+        bool ex = endswith(sd_bus_message_get_member(msg), "Ex");
+        if (ex) {
+                const char *sclass;
+                uint64_t flags;
+
+                r = sd_bus_message_read(msg, "st", &sclass, &flags);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                if (!isempty(sclass)) {
+                        class = image_class_from_string(sclass);
+                        if (class < 0)
+                                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                         "Image class '%s' not known", sclass);
+                }
+
+                if (flags != 0)
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Flags 0x%" PRIx64 " invalid", flags);
+        }
+
         r = sd_bus_message_new_method_return(msg, &reply);
         if (r < 0)
                 return r;
 
-        r = sd_bus_message_open_container(reply, 'a', "(usssdo)");
+        if (ex)
+                r = sd_bus_message_open_container(reply, 'a', "(ussssdo)");
+        else
+                r = sd_bus_message_open_container(reply, 'a', "(usssdo)");
         if (r < 0)
                 return r;
 
         HASHMAP_FOREACH(t, m->transfers) {
 
-                r = sd_bus_message_append(
-                                reply,
-                                "(usssdo)",
-                                t->id,
-                                transfer_type_to_string(t->type),
-                                t->remote,
-                                t->local,
-                                transfer_percent_as_double(t),
-                                t->object_path);
+                if (class >= 0 && class != t->class)
+                        continue;
+
+                if (ex)
+                        r = sd_bus_message_append(
+                                        reply,
+                                        "(ussssdo)",
+                                        t->id,
+                                        transfer_type_to_string(t->type),
+                                        t->remote,
+                                        t->local,
+                                        image_class_to_string(t->class),
+                                        transfer_percent_as_double(t),
+                                        t->object_path);
+                else
+                        r = sd_bus_message_append(
+                                        reply,
+                                        "(usssdo)",
+                                        t->id,
+                                        transfer_type_to_string(t->type),
+                                        t->remote,
+                                        t->local,
+                                        transfer_percent_as_double(t),
+                                        t->object_path);
                 if (r < 0)
                         return r;
         }
@@ -1036,11 +1277,8 @@ static int method_cancel(sd_bus_message *msg, void *userdata, sd_bus_error *erro
 
         r = bus_verify_polkit_async(
                         msg,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.import1.pull",
-                        NULL,
-                        false,
-                        UID_INVALID,
+                        /* details= */ NULL,
                         &t->manager->polkit_registry,
                         error);
         if (r < 0)
@@ -1065,11 +1303,8 @@ static int method_cancel_transfer(sd_bus_message *msg, void *userdata, sd_bus_er
 
         r = bus_verify_polkit_async(
                         msg,
-                        CAP_SYS_ADMIN,
-                        "org.freedesktop.import1.pull",
-                        NULL,
-                        false,
-                        UID_INVALID,
+                        "org.freedesktop.import1.cancel",
+                        /* details= */ NULL,
                         &m->polkit_registry,
                         error);
         if (r < 0)
@@ -1092,6 +1327,86 @@ static int method_cancel_transfer(sd_bus_message *msg, void *userdata, sd_bus_er
                 return r;
 
         return sd_bus_reply_method_return(msg, NULL);
+}
+
+static int method_list_images(sd_bus_message *msg, void *userdata, sd_bus_error *error) {
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        ImageClass class = _IMAGE_CLASS_INVALID;
+        int r;
+
+        assert(msg);
+
+        const char *sclass;
+        uint64_t flags;
+
+        r = sd_bus_message_read(msg, "st", &sclass, &flags);
+        if (r < 0)
+                return r;
+
+        if (!isempty(sclass)) {
+                class = image_class_from_string(sclass);
+                if (class < 0)
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                                 "Image class '%s' not known", sclass);
+        }
+
+        if (flags != 0)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                         "Flags 0x%" PRIx64 " invalid", flags);
+
+        r = sd_bus_message_new_method_return(msg, &reply);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_message_open_container(reply, 'a', "(ssssbtttttt)");
+        if (r < 0)
+                return r;
+
+        for (ImageClass c = class < 0 ? 0 : class;
+             class < 0 ? (c < _IMAGE_CLASS_MAX) : (c == class);
+             c++) {
+
+                _cleanup_(hashmap_freep) Hashmap *h = NULL;
+
+                h = hashmap_new(&image_hash_ops);
+                if (!h)
+                        return -ENOMEM;
+
+                r = image_discover(c, /* root= */ NULL, h);
+                if (r < 0) {
+                        if (class >= 0)
+                                return r;
+
+                        log_warning_errno(r, "Failed to discover images of type %s: %m", image_class_to_string(c));
+                        continue;
+                }
+
+                Image *i;
+                HASHMAP_FOREACH(i, h) {
+                        r = sd_bus_message_append(
+                                        reply,
+                                        "(ssssbtttttt)",
+                                        image_class_to_string(i->class),
+                                        i->name,
+                                        image_type_to_string(i->type),
+                                        i->path,
+                                        i->read_only,
+                                        i->crtime,
+                                        i->mtime,
+                                        i->usage,
+                                        i->usage_exclusive,
+                                        i->limit,
+                                        i->limit_exclusive);
+                        if (r < 0)
+                                return r;
+                }
+        }
+
+        r = sd_bus_message_close_container(reply);
+        if (r < 0)
+                return r;
+
+        return sd_bus_send(NULL, reply, NULL);
 }
 
 static int property_get_progress(
@@ -1196,6 +1511,10 @@ static const sd_bus_vtable transfer_vtable[] = {
                                  SD_BUS_PARAM(priority)
                                  SD_BUS_PARAM(line),
                                  0),
+        SD_BUS_SIGNAL_WITH_NAMES("ProgressUpdate",
+                                 "d",
+                                 SD_BUS_PARAM(progress),
+                                 0),
 
         SD_BUS_VTABLE_END,
 };
@@ -1221,12 +1540,34 @@ static const sd_bus_vtable manager_vtable[] = {
                                  SD_BUS_PARAM(transfer_path),
                                  method_import_tar_or_raw,
                                  SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("ImportTarEx",
+                                 "hsst",
+                                 SD_BUS_PARAM(fd)
+                                 SD_BUS_PARAM(local_name)
+                                 SD_BUS_PARAM(class)
+                                 SD_BUS_PARAM(flags),
+                                 "uo",
+                                 SD_BUS_PARAM(transfer_id)
+                                 SD_BUS_PARAM(transfer_path),
+                                 method_import_tar_or_raw,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_NAMES("ImportRaw",
                                  "hsbb",
                                  SD_BUS_PARAM(fd)
                                  SD_BUS_PARAM(local_name)
                                  SD_BUS_PARAM(force)
                                  SD_BUS_PARAM(read_only),
+                                 "uo",
+                                 SD_BUS_PARAM(transfer_id)
+                                 SD_BUS_PARAM(transfer_path),
+                                 method_import_tar_or_raw,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("ImportRawEx",
+                                 "hsst",
+                                 SD_BUS_PARAM(fd)
+                                 SD_BUS_PARAM(local_name)
+                                 SD_BUS_PARAM(class)
+                                 SD_BUS_PARAM(flags),
                                  "uo",
                                  SD_BUS_PARAM(transfer_id)
                                  SD_BUS_PARAM(transfer_path),
@@ -1243,6 +1584,17 @@ static const sd_bus_vtable manager_vtable[] = {
                                  SD_BUS_PARAM(transfer_path),
                                  method_import_fs,
                                  SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("ImportFileSystemEx",
+                                 "hsst",
+                                 SD_BUS_PARAM(fd)
+                                 SD_BUS_PARAM(local_name)
+                                 SD_BUS_PARAM(class)
+                                 SD_BUS_PARAM(flags),
+                                 "uo",
+                                 SD_BUS_PARAM(transfer_id)
+                                 SD_BUS_PARAM(transfer_path),
+                                 method_import_fs,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_NAMES("ExportTar",
                                  "shs",
                                  SD_BUS_PARAM(local_name)
@@ -1253,11 +1605,35 @@ static const sd_bus_vtable manager_vtable[] = {
                                  SD_BUS_PARAM(transfer_path),
                                  method_export_tar_or_raw,
                                  SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("ExportTarEx",
+                                 "sshst",
+                                 SD_BUS_PARAM(local_name)
+                                 SD_BUS_PARAM(class)
+                                 SD_BUS_PARAM(fd)
+                                 SD_BUS_PARAM(format)
+                                 SD_BUS_PARAM(flags),
+                                 "uo",
+                                 SD_BUS_PARAM(transfer_id)
+                                 SD_BUS_PARAM(transfer_path),
+                                 method_export_tar_or_raw,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_NAMES("ExportRaw",
                                  "shs",
                                  SD_BUS_PARAM(local_name)
                                  SD_BUS_PARAM(fd)
                                  SD_BUS_PARAM(format),
+                                 "uo",
+                                 SD_BUS_PARAM(transfer_id)
+                                 SD_BUS_PARAM(transfer_path),
+                                 method_export_tar_or_raw,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("ExportRawEx",
+                                 "sshst",
+                                 SD_BUS_PARAM(local_name)
+                                 SD_BUS_PARAM(class)
+                                 SD_BUS_PARAM(fd)
+                                 SD_BUS_PARAM(format)
+                                 SD_BUS_PARAM(flags),
                                  "uo",
                                  SD_BUS_PARAM(transfer_id)
                                  SD_BUS_PARAM(transfer_path),
@@ -1274,6 +1650,18 @@ static const sd_bus_vtable manager_vtable[] = {
                                  SD_BUS_PARAM(transfer_path),
                                  method_pull_tar_or_raw,
                                  SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("PullTarEx",
+                                 "sssst",
+                                 SD_BUS_PARAM(url)
+                                 SD_BUS_PARAM(local_name)
+                                 SD_BUS_PARAM(class)
+                                 SD_BUS_PARAM(verify_mode)
+                                 SD_BUS_PARAM(flags),
+                                 "uo",
+                                 SD_BUS_PARAM(transfer_id)
+                                 SD_BUS_PARAM(transfer_path),
+                                 method_pull_tar_or_raw,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_NAMES("PullRaw",
                                  "sssb",
                                  SD_BUS_PARAM(url)
@@ -1285,9 +1673,29 @@ static const sd_bus_vtable manager_vtable[] = {
                                  SD_BUS_PARAM(transfer_path),
                                  method_pull_tar_or_raw,
                                  SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("PullRawEx",
+                                 "sssst",
+                                 SD_BUS_PARAM(url)
+                                 SD_BUS_PARAM(local_name)
+                                 SD_BUS_PARAM(class)
+                                 SD_BUS_PARAM(verify_mode)
+                                 SD_BUS_PARAM(flags),
+                                 "uo",
+                                 SD_BUS_PARAM(transfer_id)
+                                 SD_BUS_PARAM(transfer_path),
+                                 method_pull_tar_or_raw,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_NAMES("ListTransfers",
                                  NULL,,
                                  "a(usssdo)",
+                                 SD_BUS_PARAM(transfers),
+                                 method_list_transfers,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("ListTransfersEx",
+                                 "st",
+                                 SD_BUS_PARAM(class)
+                                 SD_BUS_PARAM(flags),
+                                 "a(ussssdo)",
                                  SD_BUS_PARAM(transfers),
                                  method_list_transfers,
                                  SD_BUS_VTABLE_UNPRIVILEGED),
@@ -1296,6 +1704,14 @@ static const sd_bus_vtable manager_vtable[] = {
                                  SD_BUS_PARAM(transfer_id),
                                  NULL,,
                                  method_cancel_transfer,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("ListImages",
+                                 "st",
+                                 SD_BUS_PARAM(class)
+                                 SD_BUS_PARAM(flags),
+                                 "a(ssssbtttttt)",
+                                 SD_BUS_PARAM(images),
+                                 method_list_images,
                                  SD_BUS_VTABLE_UNPRIVILEGED),
 
         SD_BUS_SIGNAL_WITH_NAMES("TransferNew",
@@ -1320,10 +1736,16 @@ static const BusObjectImplementation manager_object = {
         .children = BUS_IMPLEMENTATIONS(&transfer_object),
 };
 
-static int manager_add_bus_objects(Manager *m) {
+static int manager_connect_bus(Manager *m) {
         int r;
 
         assert(m);
+        assert(m->event);
+        assert(!m->bus);
+
+        r = bus_open_system_watch_bind(&m->bus);
+        if (r < 0)
+                return log_error_errno(r, "Failed to get system bus connection: %m");
 
         r = bus_add_implementation(m->bus, &manager_object, m);
         if (r < 0)
@@ -1344,22 +1766,248 @@ static int manager_add_bus_objects(Manager *m) {
         return 0;
 }
 
-static bool manager_check_idle(void *userdata) {
-        Manager *m = userdata;
+static JSON_DISPATCH_ENUM_DEFINE(json_dispatch_image_class, ImageClass, image_class_from_string);
 
-        return hashmap_isempty(m->transfers);
+static int make_transfer_json(Transfer *t, sd_json_variant **ret) {
+        int r;
+
+        assert(t);
+
+        r = sd_json_buildo(ret,
+                           SD_JSON_BUILD_PAIR("id", SD_JSON_BUILD_UNSIGNED(t->id)),
+                           SD_JSON_BUILD_PAIR("type", JSON_BUILD_STRING_UNDERSCORIFY(transfer_type_to_string(t->type))),
+                           SD_JSON_BUILD_PAIR("remote", SD_JSON_BUILD_STRING(t->remote)),
+                           SD_JSON_BUILD_PAIR("local", SD_JSON_BUILD_STRING(t->local)),
+                           SD_JSON_BUILD_PAIR("class", JSON_BUILD_STRING_UNDERSCORIFY(image_class_to_string(t->class))),
+                           SD_JSON_BUILD_PAIR("percent", SD_JSON_BUILD_REAL(transfer_percent_as_double(t))));
+        if (r < 0)
+                return log_error_errno(r, "Failed to build transfer JSON data: %m");
+
+        return 0;
 }
 
-static int manager_run(Manager *m) {
-        assert(m);
+static int vl_method_list_transfers(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
 
-        return bus_event_loop_with_idle(
-                        m->event,
+        struct p {
+                ImageClass class;
+        } p = {
+                .class = _IMAGE_CLASS_INVALID,
+        };
+
+        static const sd_json_dispatch_field dispatch_table[] = {
+                { "class", SD_JSON_VARIANT_STRING, json_dispatch_image_class, offsetof(struct p, class), 0 },
+                {},
+        };
+
+        Manager *m = ASSERT_PTR(userdata);
+        int r;
+
+        assert(link);
+        assert(parameters);
+
+        r = sd_varlink_dispatch(link, parameters, dispatch_table, &p);
+        if (r != 0)
+                return r;
+
+        if (!FLAGS_SET(flags, SD_VARLINK_METHOD_MORE))
+                return sd_varlink_error(link, SD_VARLINK_ERROR_EXPECTED_MORE, NULL);
+
+        Transfer *previous = NULL, *t;
+        HASHMAP_FOREACH(t, m->transfers) {
+
+                if (p.class >= 0 && p.class != t->class)
+                        continue;
+
+                if (previous) {
+                        _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
+
+                        r = make_transfer_json(previous, &v);
+                        if (r < 0)
+                                return r;
+
+                        r = sd_varlink_notify(link, v);
+                        if (r < 0)
+                                return r;
+                }
+
+                previous = t;
+        }
+
+        if (previous) {
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
+
+                r = make_transfer_json(previous, &v);
+                if (r < 0)
+                        return r;
+
+                return sd_varlink_reply(link, v);
+        }
+
+        return sd_varlink_error(link, "io.systemd.Import.NoTransfers", NULL);
+}
+
+static JSON_DISPATCH_ENUM_DEFINE(json_dispatch_import_verify, ImportVerify, import_verify_from_string);
+static JSON_DISPATCH_ENUM_DEFINE(json_dispatch_import_type, ImportType, import_type_from_string);
+
+static int vl_method_pull(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+
+        struct p {
+                const char *remote, *local;
+                ImageClass class;
+                ImportType type;
+                ImportVerify verify;
+                bool force;
+                bool read_only;
+                bool keep_download;
+        } p = {
+                .class = _IMAGE_CLASS_INVALID,
+                .verify = IMPORT_VERIFY_SIGNATURE,
+        };
+
+        static const sd_json_dispatch_field dispatch_table[] = {
+                { "remote",       SD_JSON_VARIANT_STRING,  sd_json_dispatch_const_string, offsetof(struct p, remote),        SD_JSON_MANDATORY },
+                { "local",        SD_JSON_VARIANT_STRING,  sd_json_dispatch_const_string, offsetof(struct p, local),         0                 },
+                { "class",        SD_JSON_VARIANT_STRING,  json_dispatch_image_class,     offsetof(struct p, class),         SD_JSON_MANDATORY },
+                { "type",         SD_JSON_VARIANT_STRING,  json_dispatch_import_type,     offsetof(struct p, type),          SD_JSON_MANDATORY },
+                { "verify",       SD_JSON_VARIANT_STRING,  json_dispatch_import_verify,   offsetof(struct p, verify),        SD_JSON_STRICT    },
+                { "force",        SD_JSON_VARIANT_BOOLEAN, sd_json_dispatch_stdbool,      offsetof(struct p, force),         0                 },
+                { "readOnly",     SD_JSON_VARIANT_BOOLEAN, sd_json_dispatch_stdbool,      offsetof(struct p, read_only),     0                 },
+                { "keepDownload", SD_JSON_VARIANT_BOOLEAN, sd_json_dispatch_stdbool,      offsetof(struct p, keep_download), 0                 },
+                VARLINK_DISPATCH_POLKIT_FIELD,
+                {},
+        };
+
+        Manager *m = ASSERT_PTR(userdata);
+        int r;
+
+        assert(link);
+        assert(parameters);
+
+        r = sd_varlink_dispatch(link, parameters, dispatch_table, &p);
+        if (r != 0)
+                return r;
+
+        if (!http_url_is_valid(p.remote) && !file_url_is_valid(p.remote))
+                return sd_varlink_error_invalid_parameter_name(link, "remote");
+
+        if (p.local && !image_name_is_valid(p.local))
+                return sd_varlink_error_invalid_parameter_name(link, "local");
+
+        uint64_t transfer_flags = (p.force * IMPORT_FORCE) | (p.read_only * IMPORT_READ_ONLY) | (p.keep_download * IMPORT_PULL_KEEP_DOWNLOAD);
+
+        TransferType tt =
+                p.type == IMPORT_TAR ? TRANSFER_PULL_TAR :
+                p.type == IMPORT_RAW ? TRANSFER_PULL_RAW : _TRANSFER_TYPE_INVALID;
+
+        assert(tt >= 0);
+
+        if (manager_find(m, tt, p.remote))
+                return sd_varlink_errorbo(link, "io.systemd.Import.AlreadyInProgress", SD_JSON_BUILD_PAIR_STRING("remote", p.remote));
+
+        r = varlink_verify_polkit_async(
+                        link,
                         m->bus,
-                        "org.freedesktop.import1",
-                        DEFAULT_EXIT_USEC,
-                        manager_check_idle,
-                        m);
+                        "org.freedesktop.import1.pull",
+                        (const char**) STRV_MAKE(
+                                        "remote", p.remote,
+                                        "local",  p.local,
+                                        "class",  image_class_to_string(p.class),
+                                        "type",   import_type_to_string(p.type),
+                                        "verify", import_verify_to_string(p.verify)),
+                        &m->polkit_registry);
+        if (r <= 0)
+                return r;
+
+        _cleanup_(transfer_unrefp) Transfer *t = NULL;
+
+        r = transfer_new(m, &t);
+        if (r < 0)
+                return r;
+
+        t->type = tt;
+        t->verify = p.verify;
+        t->flags = transfer_flags;
+        t->class = p.class;
+
+        t->remote = strdup(p.remote);
+        if (!t->remote)
+                return -ENOMEM;
+
+        if (p.local) {
+                t->local = strdup(p.local);
+                if (!t->local)
+                        return -ENOMEM;
+        }
+
+        r = transfer_start(t);
+        if (r < 0)
+                return r;
+
+        /* If more was not set, just return the download id, and be done with it */
+        if (!FLAGS_SET(flags, SD_VARLINK_METHOD_MORE))
+                return sd_varlink_replybo(link, SD_JSON_BUILD_PAIR("id", SD_JSON_BUILD_UNSIGNED(t->id)));
+
+        /* Otherwise add this connection to the set of subscriptions, return the id, but keep the thing running */
+        r = set_ensure_put(&t->varlink_subscribed, &varlink_hash_ops, link);
+        if (r < 0)
+                return r;
+
+        sd_varlink_ref(link);
+
+        r = sd_varlink_notifybo(link, SD_JSON_BUILD_PAIR("id", SD_JSON_BUILD_UNSIGNED(t->id)));
+        if (r < 0)
+                return r;
+
+        TAKE_PTR(t);
+        return 0;
+}
+
+static int manager_connect_varlink(Manager *m) {
+        int r;
+
+        assert(m);
+        assert(m->event);
+        assert(!m->varlink_server);
+
+        r = varlink_server_new(&m->varlink_server,
+                               SD_VARLINK_SERVER_ACCOUNT_UID|SD_VARLINK_SERVER_INHERIT_USERDATA,
+                               m);
+        if (r < 0)
+                return log_error_errno(r, "Failed to allocate varlink server object: %m");
+
+        r = sd_varlink_server_add_interface(m->varlink_server, &vl_interface_io_systemd_Import);
+        if (r < 0)
+                return log_error_errno(r, "Failed to add Import interface to varlink server: %m");
+
+        r = sd_varlink_server_bind_method_many(
+                        m->varlink_server,
+                        "io.systemd.Import.ListTransfers", vl_method_list_transfers,
+                        "io.systemd.Import.Pull",          vl_method_pull);
+        if (r < 0)
+                return log_error_errno(r, "Failed to bind Varlink method calls: %m");
+
+        r = sd_varlink_server_attach_event(m->varlink_server, m->event, SD_EVENT_PRIORITY_NORMAL);
+        if (r < 0)
+                return log_error_errno(r, "Failed to attach Varlink server to event loop: %m");
+
+        r = sd_varlink_server_listen_auto(m->varlink_server);
+        if (r < 0)
+                return log_error_errno(r, "Failed to bind to passed Varlink sockets: %m");
+        if (r == 0) {
+                r = sd_varlink_server_listen_address(m->varlink_server, "/run/systemd/io.systemd.Import", 0666);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to bind to Varlink socket: %m");
+        }
+
+        return 0;
+}
+
+static bool manager_check_idle(void *userdata) {
+        Manager *m = ASSERT_PTR(userdata);
+
+        return hashmap_isempty(m->transfers) &&
+                hashmap_isempty(m->polkit_registry) &&
+                sd_varlink_server_current_connections(m->varlink_server) == 0;
 }
 
 static void manager_parse_env(Manager *m) {
@@ -1400,7 +2048,7 @@ static int run(int argc, char *argv[]) {
 
         umask(0022);
 
-        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGCHLD, SIGTERM, SIGINT, SIGRTMIN+18, -1) >= 0);
+        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGCHLD) >= 0);
 
         r = manager_new(&m);
         if (r < 0)
@@ -1408,11 +2056,25 @@ static int run(int argc, char *argv[]) {
 
         manager_parse_env(m);
 
-        r = manager_add_bus_objects(m);
+        r = manager_connect_bus(m);
         if (r < 0)
                 return r;
 
-        r = manager_run(m);
+        r = manager_connect_varlink(m);
+        if (r < 0)
+                return r;
+
+        r = sd_notify(false, NOTIFY_READY);
+        if (r < 0)
+                log_warning_errno(r, "Failed to send readiness notification, ignoring: %m");
+
+        r = bus_event_loop_with_idle(
+                        m->event,
+                        m->bus,
+                        "org.freedesktop.import1",
+                        DEFAULT_EXIT_USEC,
+                        manager_check_idle,
+                        m);
         if (r < 0)
                 return log_error_errno(r, "Failed to run event loop: %m");
 

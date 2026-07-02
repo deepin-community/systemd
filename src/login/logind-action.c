@@ -6,11 +6,13 @@
 
 #include "alloc-util.h"
 #include "bus-error.h"
+#include "bus-unit-util.h"
 #include "bus-util.h"
 #include "conf-parser.h"
 #include "format-util.h"
 #include "logind-action.h"
 #include "logind-dbus.h"
+#include "logind-seat-dbus.h"
 #include "logind-session-dbus.h"
 #include "process-util.h"
 #include "special.h"
@@ -133,6 +135,63 @@ const HandleActionData* handle_action_lookup(HandleAction action) {
         return &handle_action_data_table[action];
 }
 
+static bool handle_action_sleep_supported(HandleAction action) {
+        assert(HANDLE_ACTION_IS_SLEEP(action) && action != HANDLE_SLEEP);
+        return sleep_supported(ASSERT_PTR(handle_action_lookup(action))->sleep_operation) > 0;
+}
+
+/* The order in which we try each sleep operation. We should typically prefer operations without a delay,
+ * i.e. s2h and suspend, and use hibernation at last since it requires minimum hardware support.
+ * hybrid-sleep is disabled by default, and thus should be ordered before suspend if manually chosen by user,
+ * since it implies suspend and will probably never be selected by us otherwise. */
+static const HandleAction sleep_actions[] = {
+        HANDLE_SUSPEND_THEN_HIBERNATE,
+        HANDLE_HYBRID_SLEEP,
+        HANDLE_SUSPEND,
+        HANDLE_HIBERNATE,
+};
+
+int handle_action_get_enabled_sleep_actions(HandleActionSleepMask mask, char ***ret) {
+        _cleanup_strv_free_ char **actions = NULL;
+        int r;
+
+        assert(ret);
+
+        FOREACH_ELEMENT(i, sleep_actions)
+                if (FLAGS_SET(mask, 1U << *i)) {
+                        r = strv_extend(&actions, handle_action_to_string(*i));
+                        if (r < 0)
+                                return r;
+                }
+
+        *ret = TAKE_PTR(actions);
+        return 0;
+}
+
+HandleAction handle_action_sleep_select(Manager *m) {
+        assert(m);
+
+        FOREACH_ELEMENT(i, sleep_actions) {
+                HandleActionSleepMask action_mask = 1U << *i;
+                const HandleActionData *a;
+                _cleanup_free_ char *load_state = NULL;
+
+                if (!FLAGS_SET(m->handle_action_sleep_mask, action_mask))
+                        continue;
+
+                a = ASSERT_PTR(handle_action_lookup(*i));
+
+                if (sleep_supported(a->sleep_operation) <= 0)
+                        continue;
+
+                (void) unit_load_state(m->bus, a->target, &load_state);
+                if (streq_ptr(load_state, "loaded"))
+                        return *i;
+        }
+
+        return _HANDLE_ACTION_INVALID;
+}
+
 static int handle_action_execute(
                 Manager *m,
                 HandleAction handle,
@@ -158,6 +217,7 @@ static int handle_action_execute(
         int r;
 
         assert(m);
+        assert(!IN_SET(handle, HANDLE_IGNORE, HANDLE_LOCK, HANDLE_SLEEP));
 
         if (handle == HANDLE_KEXEC && access(KEXEC, X_OK) < 0)
                 return log_warning_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
@@ -165,16 +225,16 @@ static int handle_action_execute(
 
         if (m->delayed_action)
                 return log_debug_errno(SYNTHETIC_ERRNO(EALREADY),
-                                       "Action already in progress (%s), ignoring requested %s operation.",
-                                       inhibit_what_to_string(m->delayed_action->inhibit_what),
+                                       "Action %s already in progress, ignoring requested %s operation.",
+                                       handle_action_to_string(m->delayed_action->handle),
                                        handle_action_to_string(handle));
 
-        inhibit_operation = handle_action_lookup(handle)->inhibit_what;
+        inhibit_operation = ASSERT_PTR(handle_action_lookup(handle))->inhibit_what;
 
         /* If the actual operation is inhibited, warn and fail */
         if (inhibit_what_is_valid(inhibit_operation) &&
             !ignore_inhibited &&
-            manager_is_inhibited(m, inhibit_operation, INHIBIT_BLOCK, NULL, false, false, 0, &offending)) {
+            manager_is_inhibited(m, inhibit_operation, /* block= */ true, NULL, false, false, 0, &offending)) {
                 _cleanup_free_ char *comm = NULL, *u = NULL;
 
                 (void) pidref_get_comm(&offending->pid, &comm);
@@ -208,21 +268,21 @@ static int handle_action_sleep_execute(
                 bool ignore_inhibited,
                 bool is_edge) {
 
-        bool supported;
-
         assert(m);
         assert(HANDLE_ACTION_IS_SLEEP(handle));
 
-        if (handle == HANDLE_SUSPEND)
-                supported = sleep_supported(SLEEP_SUSPEND) > 0;
-        else if (handle == HANDLE_HIBERNATE)
-                supported = sleep_supported(SLEEP_HIBERNATE) > 0;
-        else if (handle == HANDLE_HYBRID_SLEEP)
-                supported = sleep_supported(SLEEP_HYBRID_SLEEP) > 0;
-        else if (handle == HANDLE_SUSPEND_THEN_HIBERNATE)
-                supported = sleep_supported(SLEEP_SUSPEND_THEN_HIBERNATE) > 0;
-        else
-                assert_not_reached();
+        if (handle == HANDLE_SLEEP) {
+                HandleAction a;
+
+                a = handle_action_sleep_select(m);
+                if (a < 0)
+                        return log_warning_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
+                                                 "None of the configured sleep operations are supported, ignoring.");
+
+                return handle_action_sleep_execute(m, a, ignore_inhibited, is_edge);
+        }
+
+        bool supported = handle_action_sleep_supported(handle);
 
         if (!supported && handle != HANDLE_SUSPEND) {
                 supported = sleep_supported(SLEEP_SUSPEND) > 0;
@@ -240,12 +300,55 @@ static int handle_action_sleep_execute(
         return handle_action_execute(m, handle, ignore_inhibited, is_edge);
 }
 
+static int manager_handle_action_secure_attention_key(
+                Manager *m,
+                bool is_edge,
+                const char *seat) {
+
+        int r;
+        Seat *o;
+        _cleanup_free_ char *p = NULL;
+
+        assert(m);
+
+        if (!is_edge)
+                return 0;
+
+        if (!seat)
+                return 0;
+
+        o = hashmap_get(m->seats, seat);
+        if (!o)
+                return 0;
+
+        p = seat_bus_path(o);
+        if (!p)
+                return log_oom();
+
+        log_struct(LOG_INFO,
+                   LOG_MESSAGE("Secure Attention Key sequence pressed on seat %s", seat),
+                   "MESSAGE_ID=" SD_MESSAGE_SECURE_ATTENTION_KEY_PRESS_STR,
+                   "SEAT_ID=%s", seat);
+
+        r = sd_bus_emit_signal(
+                        m->bus,
+                        "/org/freedesktop/login1",
+                        "org.freedesktop.login1.Manager",
+                        "SecureAttentionKey",
+                        "so", seat, p);
+        if (r < 0)
+                log_warning_errno(r, "Failed to emit SecureAttentionKey signal, ignoring: %m");
+
+        return 0;
+}
+
 int manager_handle_action(
                 Manager *m,
                 InhibitWhat inhibit_key,
                 HandleAction handle,
                 bool ignore_inhibited,
-                bool is_edge) {
+                bool is_edge,
+                const char *action_seat) {
 
         assert(m);
         assert(handle_action_valid(handle));
@@ -269,7 +372,7 @@ int manager_handle_action(
 
         /* If the key handling is inhibited, don't do anything */
         if (inhibit_key > 0) {
-                if (manager_is_inhibited(m, inhibit_key, INHIBIT_BLOCK, NULL, true, false, 0, NULL)) {
+                if (manager_is_inhibited(m, inhibit_key, /* block= */ true, NULL, true, false, 0, NULL)) {
                         log_debug("Refusing %s operation, %s is inhibited.",
                                   handle_action_to_string(handle),
                                   inhibit_what_to_string(inhibit_key));
@@ -277,7 +380,7 @@ int manager_handle_action(
                 }
         }
 
-        /* Locking is handled differently from the rest. */
+        /* Locking and greeter activation is handled differently from the rest. */
         if (handle == HANDLE_LOCK) {
                 if (!is_edge)
                         return 0;
@@ -286,6 +389,9 @@ int manager_handle_action(
                 session_send_lock_all(m, true);
                 return 1;
         }
+
+        if (handle == HANDLE_SECURE_ATTENTION_KEY)
+                return manager_handle_action_secure_attention_key(m, is_edge, action_seat);
 
         if (HANDLE_ACTION_IS_SLEEP(handle))
                 return handle_action_sleep_execute(m, handle, ignore_inhibited, is_edge);
@@ -302,10 +408,12 @@ static const char* const handle_action_verb_table[_HANDLE_ACTION_MAX] = {
         [HANDLE_SOFT_REBOOT]            = "soft-reboot",
         [HANDLE_SUSPEND]                = "suspend",
         [HANDLE_HIBERNATE]              = "hibernate",
-        [HANDLE_HYBRID_SLEEP]           = "enter hybrid sleep",
+        [HANDLE_HYBRID_SLEEP]           = "hybrid sleep",
         [HANDLE_SUSPEND_THEN_HIBERNATE] = "suspend and later hibernate",
+        [HANDLE_SLEEP]                  = "sleep",
         [HANDLE_FACTORY_RESET]          = "perform a factory reset",
         [HANDLE_LOCK]                   = "be locked",
+        [HANDLE_SECURE_ATTENTION_KEY]   = "handle the secure attention key",
 };
 
 DEFINE_STRING_TABLE_LOOKUP_TO_STRING(handle_action_verb, HandleAction);
@@ -323,9 +431,67 @@ static const char* const handle_action_table[_HANDLE_ACTION_MAX] = {
         [HANDLE_HIBERNATE]              = "hibernate",
         [HANDLE_HYBRID_SLEEP]           = "hybrid-sleep",
         [HANDLE_SUSPEND_THEN_HIBERNATE] = "suspend-then-hibernate",
+        [HANDLE_SLEEP]                  = "sleep",
         [HANDLE_FACTORY_RESET]          = "factory-reset",
         [HANDLE_LOCK]                   = "lock",
+        [HANDLE_SECURE_ATTENTION_KEY]   = "secure-attention-key",
 };
 
 DEFINE_STRING_TABLE_LOOKUP(handle_action, HandleAction);
-DEFINE_CONFIG_PARSE_ENUM(config_parse_handle_action, handle_action, HandleAction, "Failed to parse handle action setting");
+DEFINE_CONFIG_PARSE_ENUM(config_parse_handle_action, handle_action, HandleAction);
+
+int config_parse_handle_action_sleep(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        HandleActionSleepMask *mask = ASSERT_PTR(data);
+        _cleanup_strv_free_ char **actions = NULL;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        if (isempty(rvalue))
+                goto empty;
+
+        if (strv_split_full(&actions, rvalue, NULL, EXTRACT_UNQUOTE|EXTRACT_RETAIN_ESCAPE) < 0)
+                return log_oom();
+
+        *mask = 0;
+
+        STRV_FOREACH(action, actions) {
+                HandleAction a;
+
+                a = handle_action_from_string(*action);
+                if (a < 0) {
+                        log_syntax(unit, LOG_WARNING, filename, line, a,
+                                   "Failed to parse SleepOperation '%s', ignoring: %m", *action);
+                        continue;
+                }
+
+                if (!HANDLE_ACTION_IS_SLEEP(a) || a == HANDLE_SLEEP) {
+                        log_syntax(unit, LOG_WARNING, filename, line, 0,
+                                   "HandleAction '%s' is not a sleep operation, ignoring: %m", *action);
+                        continue;
+                }
+
+                *mask |= 1U << a;
+        }
+
+        if (*mask == 0)
+                goto empty;
+
+        return 0;
+
+empty:
+        *mask = HANDLE_ACTION_SLEEP_MASK_DEFAULT;
+        return 0;
+}

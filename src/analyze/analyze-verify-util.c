@@ -5,6 +5,7 @@
 #include "all-units.h"
 #include "alloc-util.h"
 #include "analyze-verify-util.h"
+#include "analyze.h"
 #include "bus-error.h"
 #include "bus-util.h"
 #include "log.h"
@@ -55,7 +56,7 @@ int verify_prepare_filename(const char *filename, char **ret) {
                 return -EINVAL;
 
         if (unit_name_is_valid(name, UNIT_NAME_TEMPLATE)) {
-                r = unit_name_replace_instance(name, "i", &with_instance);
+                r = unit_name_replace_instance(name, arg_instance, &with_instance);
                 if (r < 0)
                         return r;
         }
@@ -152,10 +153,10 @@ int verify_set_unit_path(char **filenames) {
          * Treat explicit empty path to mean that nothing should be appended. */
         old = getenv("SYSTEMD_UNIT_PATH");
         if (!streq_ptr(old, "") &&
-            !strextend_with_separator(&joined, ":", old ?: ""))
+            !strextend_with_separator(&joined, ":", strempty(old)))
                 return -ENOMEM;
 
-        assert_se(set_unit_path(joined) >= 0);
+        assert_se(setenv_unit_path(joined) >= 0);
         return 0;
 }
 
@@ -201,19 +202,15 @@ static int verify_executables(Unit *u, const char *root) {
 
         assert(u);
 
-        ExecCommand *exec =
-                u->type == UNIT_SOCKET ? SOCKET(u)->control_command :
-                u->type == UNIT_MOUNT ? MOUNT(u)->control_command :
-                u->type == UNIT_SWAP ? SWAP(u)->control_command : NULL;
-        RET_GATHER(r, verify_executable(u, exec, root));
-
         if (u->type == UNIT_SERVICE)
-                FOREACH_ARRAY(i, SERVICE(u)->exec_command, ELEMENTSOF(SERVICE(u)->exec_command))
-                        RET_GATHER(r, verify_executable(u, *i, root));
+                FOREACH_ELEMENT(i, SERVICE(u)->exec_command)
+                        LIST_FOREACH(command, j, *i)
+                                RET_GATHER(r, verify_executable(u, j, root));
 
         if (u->type == UNIT_SOCKET)
-                FOREACH_ARRAY(i, SOCKET(u)->exec_command, ELEMENTSOF(SOCKET(u)->exec_command))
-                        RET_GATHER(r, verify_executable(u, *i, root));
+                FOREACH_ELEMENT(i, SOCKET(u)->exec_command)
+                        LIST_FOREACH(command, j, *i)
+                                RET_GATHER(r, verify_executable(u, j, root));
 
         return r;
 }
@@ -254,7 +251,7 @@ static int verify_unit(Unit *u, bool check_man, const char *root) {
                 unit_dump(u, stdout, "\t");
 
         log_unit_debug(u, "Creating %s/start job", u->id);
-        r = manager_add_job(u->manager, JOB_START, u, JOB_REPLACE, NULL, &error, NULL);
+        r = manager_add_job(u->manager, JOB_START, u, JOB_REPLACE, &error, /* ret = */ NULL);
         if (r < 0)
                 log_unit_error_errno(u, r, "Failed to create %s/start: %s", u->id, bus_error_message(&error, r));
 

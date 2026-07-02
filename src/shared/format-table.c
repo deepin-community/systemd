@@ -10,6 +10,7 @@
 #include "devnum-util.h"
 #include "fd-util.h"
 #include "fileio.h"
+#include "format-ifname.h"
 #include "format-table.h"
 #include "format-util.h"
 #include "fs-util.h"
@@ -77,7 +78,9 @@ typedef struct TableData {
         unsigned ellipsize_percent; /* 0 … 100, where to place the ellipsis when compression is needed */
         unsigned align_percent;     /* 0 … 100, where to pad with spaces when expanding is needed. 0: left-aligned, 100: right-aligned */
 
-        bool uppercase;             /* Uppercase string on display */
+        bool uppercase:1;           /* Uppercase string on display */
+        bool underline:1;
+        bool rgap_underline:1;
 
         const char *color;          /* ANSI color string to use for this cell. When written to terminal should not move cursor. Will automatically be reset after the cell */
         const char *rgap_color;     /* The ANSI color to use for the gap right of this cell. Usually used to underline entire rows in a gapless fashion */
@@ -401,7 +404,7 @@ static bool table_data_matches(
                 return false;
 
         /* If a color/url is set, refuse to merge */
-        if (d->color || d->rgap_color)
+        if (d->color || d->rgap_color || d->underline || d->rgap_underline)
                 return false;
         if (d->url)
                 return false;
@@ -617,6 +620,8 @@ static int table_dedup_cell(Table *t, TableCell *cell) {
 
         nd->color = od->color;
         nd->rgap_color = od->rgap_color;
+        nd->underline = od->underline;
+        nd->rgap_underline = od->rgap_underline;
         nd->url = TAKE_PTR(curl);
 
         table_data_unref(od);
@@ -759,6 +764,46 @@ int table_set_rgap_color(Table *t, TableCell *cell, const char *color) {
         return 0;
 }
 
+int table_set_underline(Table *t, TableCell *cell, bool b) {
+        TableData *d;
+        int r;
+
+        assert(t);
+        assert(cell);
+
+        r = table_dedup_cell(t, cell);
+        if (r < 0)
+                return r;
+
+        assert_se(d = table_get_data(t, cell));
+
+        if (d->underline == b)
+                return 0;
+
+        d->underline = b;
+        return 1;
+}
+
+int table_set_rgap_underline(Table *t, TableCell *cell, bool b) {
+        TableData *d;
+        int r;
+
+        assert(t);
+        assert(cell);
+
+        r = table_dedup_cell(t, cell);
+        if (r < 0)
+                return r;
+
+        assert_se(d = table_get_data(t, cell));
+
+        if (d->rgap_underline == b)
+                return 0;
+
+        d->rgap_underline = b;
+        return 1;
+}
+
 int table_set_url(Table *t, TableCell *cell, const char *url) {
         _cleanup_free_ char *copy = NULL;
         int r;
@@ -834,6 +879,8 @@ int table_update(Table *t, TableCell *cell, TableDataType type, const void *data
 
         nd->color = od->color;
         nd->rgap_color = od->rgap_color;
+        nd->underline = od->underline;
+        nd->rgap_underline = od->rgap_underline;
         nd->url = TAKE_PTR(curl);
 
         table_data_unref(od);
@@ -1101,6 +1148,31 @@ int table_add_many_internal(Table *t, TableDataType first_type, ...) {
                         goto check;
                 }
 
+                case TABLE_SET_UNDERLINE: {
+                        int u = va_arg(ap, int);
+                        r = table_set_underline(t, last_cell, u);
+                        goto check;
+                }
+
+                case TABLE_SET_RGAP_UNDERLINE: {
+                        int u = va_arg(ap, int);
+                        r = table_set_rgap_underline(t, last_cell, u);
+                        goto check;
+                }
+
+                case TABLE_SET_BOTH_UNDERLINES: {
+                        int u = va_arg(ap, int);
+
+                        r = table_set_underline(t, last_cell, u);
+                        if (r < 0) {
+                                va_end(ap);
+                                return r;
+                        }
+
+                        r = table_set_rgap_underline(t, last_cell, u);
+                        goto check;
+                }
+
                 case TABLE_SET_URL: {
                         const char *u = va_arg(ap, const char*);
                         r = table_set_url(t, last_cell, u);
@@ -1110,6 +1182,20 @@ int table_add_many_internal(Table *t, TableDataType first_type, ...) {
                 case TABLE_SET_UPPERCASE: {
                         int u = va_arg(ap, int);
                         r = table_set_uppercase(t, last_cell, u);
+                        goto check;
+                }
+
+                case TABLE_SET_JSON_FIELD_NAME: {
+                        const char *n = va_arg(ap, const char*);
+                        size_t idx;
+                        if (t->vertical) {
+                                assert(TABLE_CELL_TO_INDEX(last_cell) >= t->n_columns);
+                                idx = TABLE_CELL_TO_INDEX(last_cell) / t->n_columns - 1;
+                        } else {
+                                idx = TABLE_CELL_TO_INDEX(last_cell);
+                                assert(idx < t->n_columns);
+                        }
+                        r = table_set_json_field_name(t, idx, n);
                         goto check;
                 }
 
@@ -1641,7 +1727,7 @@ static const char *table_data_format(Table *t, TableData *d, bool avoid_uppercas
                 if (!p)
                         return NULL;
 
-                if (!format_bytes_full(p, FORMAT_BYTES_MAX, d->size, 0))
+                if (!format_bytes_full(p, FORMAT_BYTES_MAX, d->size, FORMAT_BYTES_BELOW_POINT))
                         return table_ersatz_string(t);
 
                 n = strlen(p);
@@ -1932,7 +2018,7 @@ static const char *table_data_format(Table *t, TableData *d, bool avoid_uppercas
                 if (d->mode == MODE_INVALID)
                         return table_ersatz_string(t);
 
-                return inode_type_to_string(d->mode);
+                return inode_type_to_string(d->mode) ?: table_ersatz_string(t);
 
         case TABLE_DEVNUM:
                 if (devnum_is_zero(d->devnum))
@@ -2130,8 +2216,6 @@ static const char* table_data_color(TableData *d) {
 
         if (d->type == TABLE_FIELD)
                 return ansi_bright_blue();
-        if (d->type == TABLE_HEADER)
-                return ansi_underline();
 
         return NULL;
 }
@@ -2139,11 +2223,29 @@ static const char* table_data_color(TableData *d) {
 static const char* table_data_rgap_color(TableData *d) {
         assert(d);
 
-        if (d->rgap_color)
-                return d->rgap_color;
+        return d->rgap_color ?: d->rgap_color;
+}
+
+static const char* table_data_underline(TableData *d) {
+        assert(d);
+
+        if (d->underline)
+                return /* cescape( */ansi_add_underline_grey()/* ) */;
 
         if (d->type == TABLE_HEADER)
-                return ansi_underline();
+                return ansi_add_underline();
+
+        return NULL;
+}
+
+static const char* table_data_rgap_underline(TableData *d) {
+        assert(d);
+
+        if (d->rgap_underline)
+                return ansi_add_underline_grey();
+
+        if (d->type == TABLE_HEADER)
+                return ansi_add_underline();
 
         return NULL;
 }
@@ -2290,7 +2392,7 @@ int table_print(Table *t, FILE *f) {
                 if (t->width != 0 && t->width != SIZE_MAX)
                         table_effective_width = t->width;
                 else if (t->width == 0 ||
-                         ((pass > 0 || !any_soft) && (pager_have() || !isatty(STDOUT_FILENO))))
+                         ((pass > 0 || !any_soft) && (pager_have() || !isatty_safe(STDOUT_FILENO))))
                         table_effective_width = table_requested_width;
                 else
                         table_effective_width = MIN(table_requested_width, columns());
@@ -2418,13 +2520,13 @@ int table_print(Table *t, FILE *f) {
                         row = t->data + i * t->n_columns;
 
                 do {
-                        const char *gap_color = NULL;
+                        const char *gap_color = NULL, *gap_underline = NULL;
                         more_sublines = false;
 
                         for (size_t j = 0; j < display_columns; j++) {
                                 _cleanup_free_ char *buffer = NULL, *extracted = NULL;
                                 bool lines_truncated = false;
-                                const char *field, *color = NULL;
+                                const char *field, *color = NULL, *underline = NULL;
                                 TableData *d;
                                 size_t l;
 
@@ -2490,6 +2592,7 @@ int table_print(Table *t, FILE *f) {
                                                 /* Drop trailing white spaces of last column when no cosmetics is set. */
                                                 if (j == display_columns - 1 &&
                                                     (!colors_enabled() || !table_data_color(d)) &&
+                                                    (!underline_enabled() || !table_data_underline(d)) &&
                                                     (!urlify_enabled() || !d->url))
                                                         delete_trailing_chars(aligned, NULL);
 
@@ -2511,31 +2614,40 @@ int table_print(Table *t, FILE *f) {
 
                                 if (colors_enabled() && gap_color)
                                         fputs(gap_color, f);
+                                if (underline_enabled() && gap_underline)
+                                        fputs(gap_underline, f);
 
                                 if (j > 0)
                                         fputc(' ', f); /* column separator left of cell */
 
+                                /* Undo gap color/underline */
+                                if ((colors_enabled() && gap_color) ||
+                                    (underline_enabled() && gap_underline))
+                                        fputs(ANSI_NORMAL, f);
+
                                 if (colors_enabled()) {
                                         color = table_data_color(d);
-
-                                        /* Undo gap color */
-                                        if (gap_color)
-                                                fputs(ANSI_NORMAL, f);
-
                                         if (color)
                                                 fputs(color, f);
                                 }
 
+                                if (underline_enabled()) {
+                                        underline = table_data_underline(d);
+                                        if (underline)
+                                                fputs(underline, f);
+                                }
+
                                 fputs(field, f);
 
-                                if (colors_enabled() && color)
+                                if (color || underline)
                                         fputs(ANSI_NORMAL, f);
 
                                 gap_color = table_data_rgap_color(d);
+                                gap_underline = table_data_rgap_underline(d);
                         }
 
                         fputc('\n', f);
-                        n_subline ++;
+                        n_subline++;
                 } while (more_sublines);
         }
 
@@ -2639,27 +2751,27 @@ const void* table_get_at(Table *t, size_t row, size_t column) {
         return table_get(t, cell);
 }
 
-static int table_data_to_json(TableData *d, JsonVariant **ret) {
+static int table_data_to_json(TableData *d, sd_json_variant **ret) {
 
         switch (d->type) {
 
         case TABLE_EMPTY:
-                return json_variant_new_null(ret);
+                return sd_json_variant_new_null(ret);
 
         case TABLE_STRING:
         case TABLE_PATH:
         case TABLE_PATH_BASENAME:
         case TABLE_FIELD:
         case TABLE_HEADER:
-                return json_variant_new_string(ret, d->string);
+                return sd_json_variant_new_string(ret, d->string);
 
         case TABLE_STRV:
         case TABLE_STRV_WRAPPED:
-                return json_variant_new_array_strv(ret, d->strv);
+                return sd_json_variant_new_array_strv(ret, d->strv);
 
         case TABLE_BOOLEAN_CHECKMARK:
         case TABLE_BOOLEAN:
-                return json_variant_new_boolean(ret, d->boolean);
+                return sd_json_variant_new_boolean(ret, d->boolean);
 
         case TABLE_TIMESTAMP:
         case TABLE_TIMESTAMP_UTC:
@@ -2668,134 +2780,155 @@ static int table_data_to_json(TableData *d, JsonVariant **ret) {
         case TABLE_TIMESTAMP_LEFT:
         case TABLE_TIMESTAMP_DATE:
                 if (d->timestamp == USEC_INFINITY)
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_variant_new_unsigned(ret, d->timestamp);
+                return sd_json_variant_new_unsigned(ret, d->timestamp);
 
         case TABLE_TIMESPAN:
         case TABLE_TIMESPAN_MSEC:
         case TABLE_TIMESPAN_DAY:
                 if (d->timespan == USEC_INFINITY)
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_variant_new_unsigned(ret, d->timespan);
+                return sd_json_variant_new_unsigned(ret, d->timespan);
 
         case TABLE_SIZE:
         case TABLE_BPS:
                 if (d->size == UINT64_MAX)
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_variant_new_unsigned(ret, d->size);
+                return sd_json_variant_new_unsigned(ret, d->size);
 
         case TABLE_INT:
-                return json_variant_new_integer(ret, d->int_val);
+                return sd_json_variant_new_integer(ret, d->int_val);
 
         case TABLE_INT8:
-                return json_variant_new_integer(ret, d->int8);
+                return sd_json_variant_new_integer(ret, d->int8);
 
         case TABLE_INT16:
-                return json_variant_new_integer(ret, d->int16);
+                return sd_json_variant_new_integer(ret, d->int16);
 
         case TABLE_INT32:
-                return json_variant_new_integer(ret, d->int32);
+                return sd_json_variant_new_integer(ret, d->int32);
 
         case TABLE_INT64:
-                return json_variant_new_integer(ret, d->int64);
+                return sd_json_variant_new_integer(ret, d->int64);
 
         case TABLE_UINT:
-                return json_variant_new_unsigned(ret, d->uint_val);
+                return sd_json_variant_new_unsigned(ret, d->uint_val);
 
         case TABLE_UINT8:
-                return json_variant_new_unsigned(ret, d->uint8);
+                return sd_json_variant_new_unsigned(ret, d->uint8);
 
         case TABLE_UINT16:
-                return json_variant_new_unsigned(ret, d->uint16);
+                return sd_json_variant_new_unsigned(ret, d->uint16);
 
         case TABLE_UINT32:
         case TABLE_UINT32_HEX:
-                return json_variant_new_unsigned(ret, d->uint32);
+                return sd_json_variant_new_unsigned(ret, d->uint32);
 
         case TABLE_UINT64:
         case TABLE_UINT64_HEX:
-                return json_variant_new_unsigned(ret, d->uint64);
+                return sd_json_variant_new_unsigned(ret, d->uint64);
 
         case TABLE_PERCENT:
-                return json_variant_new_integer(ret, d->percent);
+                return sd_json_variant_new_integer(ret, d->percent);
 
         case TABLE_IFINDEX:
                 if (d->ifindex <= 0)
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_variant_new_integer(ret, d->ifindex);
+                return sd_json_variant_new_integer(ret, d->ifindex);
 
         case TABLE_IN_ADDR:
-                return json_variant_new_array_bytes(ret, &d->address, FAMILY_ADDRESS_SIZE(AF_INET));
+                return sd_json_variant_new_array_bytes(ret, &d->address, FAMILY_ADDRESS_SIZE(AF_INET));
 
         case TABLE_IN6_ADDR:
-                return json_variant_new_array_bytes(ret, &d->address, FAMILY_ADDRESS_SIZE(AF_INET6));
+                return sd_json_variant_new_array_bytes(ret, &d->address, FAMILY_ADDRESS_SIZE(AF_INET6));
 
         case TABLE_ID128:
-                return json_variant_new_id128(ret, d->id128);
+                return sd_json_variant_new_id128(ret, d->id128);
 
         case TABLE_UUID:
-                return json_variant_new_uuid(ret, d->id128);
+                return sd_json_variant_new_uuid(ret, d->id128);
 
         case TABLE_UID:
                 if (!uid_is_valid(d->uid))
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_variant_new_integer(ret, d->uid);
+                return sd_json_variant_new_integer(ret, d->uid);
 
         case TABLE_GID:
                 if (!gid_is_valid(d->gid))
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_variant_new_integer(ret, d->gid);
+                return sd_json_variant_new_integer(ret, d->gid);
 
         case TABLE_PID:
                 if (!pid_is_valid(d->pid))
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_variant_new_integer(ret, d->pid);
+                return sd_json_variant_new_integer(ret, d->pid);
 
         case TABLE_SIGNAL:
                 if (!SIGNAL_VALID(d->int_val))
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_variant_new_integer(ret, d->int_val);
+                return sd_json_variant_new_integer(ret, d->int_val);
 
         case TABLE_MODE:
         case TABLE_MODE_INODE_TYPE:
                 if (d->mode == MODE_INVALID)
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_variant_new_unsigned(ret, d->mode);
+                return sd_json_variant_new_unsigned(ret, d->mode);
 
         case TABLE_DEVNUM:
                 if (devnum_is_zero(d->devnum))
-                        return json_variant_new_null(ret);
+                        return sd_json_variant_new_null(ret);
 
-                return json_build(ret, JSON_BUILD_ARRAY(
-                                                  JSON_BUILD_UNSIGNED(major(d->devnum)),
-                                                  JSON_BUILD_UNSIGNED(minor(d->devnum))));
+                return sd_json_build(ret, SD_JSON_BUILD_ARRAY(
+                                                  SD_JSON_BUILD_UNSIGNED(major(d->devnum)),
+                                                  SD_JSON_BUILD_UNSIGNED(minor(d->devnum))));
 
         default:
                 return -EINVAL;
         }
 }
 
-static char* string_to_json_field_name(const char *f) {
+char* table_mangle_to_json_field_name(const char *str) {
         /* Tries to make a string more suitable as JSON field name. There are no strict rules defined what a
-         * field name can be hence this is a bit vague and black magic. Right now we only convert spaces to
-         * underscores and leave everything as is. */
+         * field name can be hence this is a bit vague and black magic. Here's what we do:
+         *  - Convert spaces to underscores
+         *  - Convert dashes to underscores (some JSON parsers don't like dealing with dashes)
+         *  - Convert most other symbols to underscores (for similar reasons)
+         *  - Make the first letter of each word lowercase (unless it looks like the whole word is uppercase)
+         */
 
-        char *c = strdup(f);
+        bool new_word = true;
+        char *c;
+
+        assert(str);
+
+        c = strdup(str);
         if (!c)
                 return NULL;
 
-        for (char *x = c; *x; x++)
-                if (isspace(*x))
+        for (char *x = c; *x; x++) {
+                if (!strchr(ALPHANUMERICAL, *x)) {
                         *x = '_';
+                        new_word = true;
+                        continue;
+                }
+
+                if (new_word) {
+                        if (ascii_tolower(*(x + 1)) == *(x + 1)) /* Heuristic: if next char is upper-case
+                                                                  * then we assume the whole word is all-caps
+                                                                  * and avoid lowercasing it. */
+                                *x = ascii_tolower(*x);
+                        new_word = false;
+                }
+        }
 
         return c;
 }
@@ -2816,7 +2949,7 @@ static int table_make_json_field_name(Table *t, TableData *d, char **ret) {
                         return -ENOMEM;
         }
 
-        mangled = string_to_json_field_name(n);
+        mangled = table_mangle_to_json_field_name(n);
         if (!mangled)
                 return -ENOMEM;
 
@@ -2830,8 +2963,8 @@ static const char *table_get_json_field_name(Table *t, size_t idx) {
         return idx < t->n_json_fields ? t->json_fields[idx] : NULL;
 }
 
-static int table_to_json_regular(Table *t, JsonVariant **ret) {
-        JsonVariant **rows = NULL, **elements = NULL;
+static int table_to_json_regular(Table *t, sd_json_variant **ret) {
+        sd_json_variant **rows = NULL, **elements = NULL;
         _cleanup_free_ size_t *sorted = NULL;
         size_t n_rows, display_columns;
         int r;
@@ -2865,11 +2998,11 @@ static int table_to_json_regular(Table *t, JsonVariant **ret) {
                 display_columns = t->n_columns;
         assert(display_columns > 0);
 
-        elements = new0(JsonVariant*, display_columns * 2);
+        elements = new0(sd_json_variant*, display_columns * 2);
         if (!elements)
                 return -ENOMEM;
 
-        CLEANUP_ARRAY(elements, (size_t) { display_columns * 2 }, json_variant_unref_many);
+        CLEANUP_ARRAY(elements, (size_t) { display_columns * 2 }, sd_json_variant_unref_many);
 
         for (size_t j = 0; j < display_columns; j++) {
                 _cleanup_free_ char *mangled = NULL;
@@ -2888,16 +3021,16 @@ static int table_to_json_regular(Table *t, JsonVariant **ret) {
                         n = mangled;
                 }
 
-                r = json_variant_new_string(elements + j*2, n);
+                r = sd_json_variant_new_string(elements + j*2, n);
                 if (r < 0)
                         return r;
         }
 
-        rows = new0(JsonVariant*, n_rows-1);
+        rows = new0(sd_json_variant*, n_rows-1);
         if (!rows)
                 return -ENOMEM;
 
-        CLEANUP_ARRAY(rows, (size_t) { n_rows - 1 }, json_variant_unref_many);
+        CLEANUP_ARRAY(rows, (size_t) { n_rows - 1 }, sd_json_variant_unref_many);
 
         for (size_t i = 1; i < n_rows; i++) {
                 TableData **row;
@@ -2914,23 +3047,23 @@ static int table_to_json_regular(Table *t, JsonVariant **ret) {
                         assert_se(d = row[t->display_map ? t->display_map[j] : j]);
 
                         k = j*2+1;
-                        elements[k] = json_variant_unref(elements[k]);
+                        elements[k] = sd_json_variant_unref(elements[k]);
 
                         r = table_data_to_json(d, elements + k);
                         if (r < 0)
                                 return r;
                 }
 
-                r = json_variant_new_object(rows + i - 1, elements, display_columns * 2);
+                r = sd_json_variant_new_object(rows + i - 1, elements, display_columns * 2);
                 if (r < 0)
                         return r;
         }
 
-        return json_variant_new_array(ret, rows, n_rows - 1);
+        return sd_json_variant_new_array(ret, rows, n_rows - 1);
 }
 
-static int table_to_json_vertical(Table *t, JsonVariant **ret) {
-        JsonVariant **elements = NULL;
+static int table_to_json_vertical(Table *t, sd_json_variant **ret) {
+        sd_json_variant **elements = NULL;
         size_t n_elements = 0;
         int r;
 
@@ -2943,11 +3076,11 @@ static int table_to_json_vertical(Table *t, JsonVariant **ret) {
         /* Ensure we have no incomplete rows */
         assert(t->n_cells % t->n_columns == 0);
 
-        elements = new0(JsonVariant *, t->n_cells);
+        elements = new0(sd_json_variant *, t->n_cells);
         if (!elements)
                 return -ENOMEM;
 
-        CLEANUP_ARRAY(elements, n_elements, json_variant_unref_many);
+        CLEANUP_ARRAY(elements, n_elements, sd_json_variant_unref_many);
 
         for (size_t i = t->n_columns; i < t->n_cells; i++) {
 
@@ -2964,7 +3097,7 @@ static int table_to_json_vertical(Table *t, JsonVariant **ret) {
                                 n = mangled;
                         }
 
-                        r = json_variant_new_string(elements + n_elements, n);
+                        r = sd_json_variant_new_string(elements + n_elements, n);
                 } else
                         r = table_data_to_json(t->data[i], elements + n_elements);
                 if (r < 0)
@@ -2973,10 +3106,10 @@ static int table_to_json_vertical(Table *t, JsonVariant **ret) {
                 n_elements++;
         }
 
-        return json_variant_new_object(ret, elements, n_elements);
+        return sd_json_variant_new_object(ret, elements, n_elements);
 }
 
-int table_to_json(Table *t, JsonVariant **ret) {
+int table_to_json(Table *t, sd_json_variant **ret) {
         assert(t);
 
         if (t->vertical)
@@ -2985,13 +3118,13 @@ int table_to_json(Table *t, JsonVariant **ret) {
         return table_to_json_regular(t, ret);
 }
 
-int table_print_json(Table *t, FILE *f, JsonFormatFlags flags) {
-        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+int table_print_json(Table *t, FILE *f, sd_json_format_flags_t flags) {
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
         int r;
 
         assert(t);
 
-        if (flags & JSON_FORMAT_OFF) /* If JSON output is turned off, use regular output */
+        if (!sd_json_format_enabled(flags)) /* If JSON output is turned off, use regular output */
                 return table_print(t, f);
 
         if (!f)
@@ -3001,14 +3134,14 @@ int table_print_json(Table *t, FILE *f, JsonFormatFlags flags) {
         if (r < 0)
                 return r;
 
-        json_variant_dump(v, flags, f, NULL);
+        sd_json_variant_dump(v, flags, f, NULL);
 
         return fflush_and_check(f);
 }
 
 int table_print_with_pager(
                 Table *t,
-                JsonFormatFlags json_format_flags,
+                sd_json_format_flags_t json_format_flags,
                 PagerFlags pager_flags,
                 bool show_header) {
 
@@ -3020,7 +3153,7 @@ int table_print_with_pager(
         /* An all-in-one solution for showing tables, and turning on a pager first. Also optionally suppresses
          * the table header and logs about any error. */
 
-        if (json_format_flags & (JSON_FORMAT_OFF|JSON_FORMAT_PRETTY|JSON_FORMAT_PRETTY_AUTO))
+        if (json_format_flags & (SD_JSON_FORMAT_OFF|SD_JSON_FORMAT_PRETTY|SD_JSON_FORMAT_PRETTY_AUTO))
                 pager_open(pager_flags);
 
         saved_header = t->header;

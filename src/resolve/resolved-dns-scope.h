@@ -18,6 +18,7 @@ typedef struct DnsScope DnsScope;
 
 typedef enum DnsScopeMatch {
         DNS_SCOPE_NO,
+        DNS_SCOPE_LAST_RESORT,
         DNS_SCOPE_MAYBE,
         DNS_SCOPE_YES_BASE, /* Add the number of matching labels to this */
         DNS_SCOPE_YES_END = DNS_SCOPE_YES_BASE + DNS_N_LABELS_MAX,
@@ -44,6 +45,8 @@ struct DnsScope {
         sd_event_source *conflict_event_source;
 
         sd_event_source *announce_event_source;
+
+        sd_event_source *mdns_goodbye_event_source;
 
         RateLimit ratelimit;
 
@@ -76,7 +79,7 @@ int dns_scope_emit_udp(DnsScope *s, int fd, int af, DnsPacket *p);
 int dns_scope_socket_tcp(DnsScope *s, int family, const union in_addr_union *address, DnsServer *server, uint16_t port, union sockaddr_union *ret_socket_address);
 int dns_scope_socket_udp(DnsScope *s, DnsServer *server);
 
-DnsScopeMatch dns_scope_good_domain(DnsScope *s, DnsQuery *q);
+DnsScopeMatch dns_scope_good_domain(DnsScope *s, DnsQuery *q, uint64_t query_flags);
 bool dns_scope_good_key(DnsScope *s, const DnsResourceKey *key);
 
 DnsServer *dns_scope_get_dns_server(DnsScope *s);
@@ -103,6 +106,7 @@ bool dns_scope_name_wants_search_domain(DnsScope *s, const char *name);
 bool dns_scope_network_good(DnsScope *s);
 
 int dns_scope_ifindex(DnsScope *s);
+const char* dns_scope_ifname(DnsScope *s);
 
 int dns_scope_announce(DnsScope *scope, bool goodbye);
 
@@ -111,4 +115,7 @@ int dns_scope_remove_dnssd_services(DnsScope *scope);
 
 bool dns_scope_is_default_route(DnsScope *scope);
 
-int dns_scope_dump_cache_to_json(DnsScope *scope, JsonVariant **ret);
+int dns_scope_dump_cache_to_json(DnsScope *scope, sd_json_variant **ret);
+
+int dns_type_suitable_for_protocol(uint16_t type, DnsProtocol protocol);
+int dns_question_types_suitable_for_protocol(DnsQuestion *q, DnsProtocol protocol);

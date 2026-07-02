@@ -39,16 +39,16 @@ REQUIREMENTS:
                      ≥ 4.17 for cgroup-bpf socket address hooks
                      ≥ 4.20 for PSI (used by systemd-oomd)
                      ≥ 5.3 for bounded loops in BPF program
-                     ≥ 5.4 for signed Verity images
-                     ≥ 5.7 for BPF links and the BPF LSM hook
+                     ≥ 5.4 for pidfd and signed Verity images
+                     ≥ 5.7 for CLONE_INTO_CGROUP, BPF links and the BPF LSM hook
 
         ⛔ Kernel versions below 3.15 ("minimum baseline") are not supported at
         all, and are missing required functionality (e.g. CLOCK_BOOTTIME
         support for timerfd_create()).
 
-        ⚠️ Kernel versions below 4.15 ("recommended baseline") have significant
+        ⚠️ Kernel versions below 5.4 ("recommended baseline") have significant
         gaps in functionality and are not recommended for use with this version
-        of systemd (e.g. lack sufficiently comprehensive and working cgroupv2
+        of systemd (e.g. lack race-free process tracking by pidfd and new mount API
         support). Taint flag 'old-kernel' will be set. systemd will most likely
         still function, but upstream support and testing are limited.
 
@@ -97,7 +97,10 @@ REQUIREMENTS:
           CONFIG_SECCOMP
           CONFIG_SECCOMP_FILTER (required for seccomp support)
           CONFIG_KCMP (for the kcmp() syscall, used to be under
-                       CONFIG_CHECKPOINT_RESTORE before ~5.12)
+                       CONFIG_CHECKPOINT_RESTORE before ~5.12;
+                       not needed after 6.10)
+          CONFIG_NET_SCHED
+          CONFIG_NET_SCH_FQ_CODEL
 
         Required for CPUShares= in resource control unit settings:
           CONFIG_CGROUP_SCHED
@@ -128,9 +131,10 @@ REQUIREMENTS:
 
         Required for signed Verity images support:
           CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG
-        Required to verify signed Verity images using keys enrolled in the MoK
-        (Machine-Owner Key) keyring:
+        Required to verify signed Verity images using keys enrolled in the MOK
+        (Machine-Owner Key) and DB UEFI certificate stores:
           CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG_SECONDARY_KEYRING
+          CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG_PLATFORM_KEYRING
           CONFIG_IMA_ARCH_POLICY
           CONFIG_INTEGRITY_MACHINE_KEYRING
 
@@ -162,10 +166,11 @@ REQUIREMENTS:
         This is shipped by default, see modprobe.d/systemd.conf.
 
         Required for systemd-nspawn:
-          CONFIG_DEVPTS_MULTIPLE_INSTANCES or Linux kernel >= 4.7
+          CONFIG_DEVPTS_MULTIPLE_INSTANCES (removed and unneeded since 4.7)
 
         Required for systemd-oomd:
           CONFIG_PSI
+          CONFIG_MEMCG
 
         Note that kernel auditing is broken when used with systemd's container
         code. When using systemd in conjunction with containers, please make
@@ -217,7 +222,7 @@ REQUIREMENTS:
         pyelftools (optional, required for systemd-boot)
         meson >= 0.60.0
         ninja
-        gcc >= 4.7
+        gcc >= 8.4
         awk, sed, grep, and similar tools
         clang >= 10.0, llvm >= 10.0 (optional, required to build BPF programs
                 from source code in C)
@@ -231,7 +236,6 @@ REQUIREMENTS:
         dbus >= 1.4.0 (strictly speaking optional, but recommended)
                 NOTE: If using dbus < 1.9.18, you should override the default
                 policy directory (--with-dbuspolicydir=/etc/dbus-1/system.d).
-        dracut (optional)
         polkit (optional)
 
         To build in directory build/:
@@ -269,16 +273,8 @@ REQUIREMENTS:
         longer supported, and moving everything under /usr/ is required. Systems
         with a separate /usr/ partition must mount it before transitioning into it
         (i.e.: from the initrd). For more information see:
-        https://www.freedesktop.org/wiki/Software/systemd/separate-usr-is-broken
-        https://www.freedesktop.org/wiki/Software/systemd/TheCaseForTheUsrMerge
-
-        Additional packages are necessary to run some tests:
-        - nc                 (used by test/TEST-12-ISSUE-3171)
-        - python             (test-udev which is installed is in python)
-        - python-pyparsing
-        - python-evdev       (used by hwdb parsing tests)
-        - strace             (used by test/test-functions)
-        - capsh              (optional, used by test-execute)
+        https://systemd.io/SEPARATE_USR_IS_BROKEN
+        https://systemd.io/THE_CASE_FOR_THE_USR_MERGE
 
 POLICY FOR SUPPORT OF DISTRIBUTIONS AND ARCHITECTURES:
         systemd main branch and latest major or stable releases are generally
@@ -445,5 +441,4 @@ STABLE BRANCHES AND BACKPORTS:
         Stable branches are started for certain releases of systemd and named
         after them, e.g. v238-stable. Stable branches are managed by
         distribution maintainers on an as needed basis. See
-        https://www.freedesktop.org/wiki/Software/systemd/Backports for some
-        more information and examples.
+        https://systemd.io/BACKPORTS for some more information and examples.

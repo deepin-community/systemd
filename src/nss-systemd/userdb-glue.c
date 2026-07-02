@@ -14,7 +14,7 @@ UserDBFlags nss_glue_userdb_flags(void) {
         UserDBFlags flags = USERDB_EXCLUDE_NSS;
 
         /* Make sure that we don't go in circles when allocating a dynamic UID by checking our own database */
-        if (getenv_bool_secure("SYSTEMD_NSS_DYNAMIC_BYPASS") > 0)
+        if (secure_getenv_bool("SYSTEMD_NSS_DYNAMIC_BYPASS") > 0)
                 flags |= USERDB_EXCLUDE_DYNAMIC_USER;
 
         return flags;
@@ -345,7 +345,6 @@ enum nss_status userdb_getgrgid(
                 char *buffer,
                 size_t buflen,
                 int *errnop) {
-
 
         _cleanup_(group_record_unrefp) GroupRecord *g = NULL;
         _cleanup_strv_free_ char **members = NULL;

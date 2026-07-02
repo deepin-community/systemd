@@ -139,8 +139,7 @@ static int run(int argc, char *argv[]) {
         _cleanup_(umount_and_freep) char *mounted_dir = NULL;
         int r;
 
-        log_parse_environment();
-        log_open();
+        log_setup();
 
         r = parse_argv(argc, argv);
         if (r <= 0)
@@ -156,7 +155,8 @@ static int run(int argc, char *argv[]) {
                                 DISSECT_IMAGE_VALIDATE_OS |
                                 DISSECT_IMAGE_RELAX_VAR_CHECK |
                                 DISSECT_IMAGE_FSCK |
-                                DISSECT_IMAGE_GROWFS,
+                                DISSECT_IMAGE_GROWFS |
+                                DISSECT_IMAGE_ALLOW_USERSPACE_VERITY,
                                 &mounted_dir,
                                 /* ret_dir_fd= */ NULL,
                                 &loop_device);
@@ -188,7 +188,7 @@ static int run(int argc, char *argv[]) {
         } else {
                 sd_id128_t id;
 
-                r = machine_id_setup(arg_root, false, SD_ID128_NULL, &id);
+                r = machine_id_setup(arg_root, SD_ID128_NULL, /* flags = */ 0, &id);
                 if (r < 0)
                         return r;
 

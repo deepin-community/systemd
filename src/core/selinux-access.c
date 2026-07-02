@@ -193,7 +193,6 @@ int mac_selinux_access_check_internal(
         assert(message);
         assert(permission);
         assert(function);
-        assert(error);
 
         r = access_init(error);
         if (r <= 0)
@@ -248,7 +247,7 @@ int mac_selinux_access_check_internal(
                 tclass = "system";
         }
 
-        sd_bus_creds_get_cmdline(creds, &cmdline);
+        (void) sd_bus_creds_get_cmdline(creds, &cmdline);
         cl = strv_join(cmdline, " ");
 
         struct audit_info audit_info = {
@@ -268,7 +267,7 @@ int mac_selinux_access_check_internal(
 
         log_full_errno_zerook(LOG_DEBUG, r,
                               "SELinux access check scon=%s tcon=%s tclass=%s perm=%s state=%s function=%s path=%s cmdline=%s: %m",
-                              scon, acon, tclass, permission, enforce ? "enforcing" : "permissive", function, strna(unit_path), strna(empty_to_null(cl)));
+                              scon, acon, tclass, permission, enforce ? "enforcing" : "permissive", function, strna(unit_path), empty_to_na(cl));
         return enforce ? r : 0;
 }
 

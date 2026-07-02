@@ -4,18 +4,14 @@
 #include <inttypes.h>
 #include <stdbool.h>
 
+#include "specifier.h"
+
+/* Forward declare this type so that Transfers can point at it */
+typedef struct Context Context;
+
 extern bool arg_sync;
 extern uint64_t arg_instances_max;
 extern char *arg_root;
+extern char *arg_transfer_source;
 
-static inline const char* import_binary_path(void) {
-        return secure_getenv("SYSTEMD_IMPORT_PATH") ?: SYSTEMD_IMPORT_PATH;
-}
-
-static inline const char* import_fs_binary_path(void) {
-        return secure_getenv("SYSTEMD_IMPORT_FS_PATH") ?: SYSTEMD_IMPORT_FS_PATH;
-}
-
-static inline const char *pull_binary_path(void) {
-        return secure_getenv("SYSTEMD_PULL_PATH") ?: SYSTEMD_PULL_PATH;
-}
+extern const Specifier specifier_table[];

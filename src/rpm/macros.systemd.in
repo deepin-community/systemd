@@ -13,6 +13,7 @@
 %_udevhwdbdir {{UDEV_HWDB_DIR}}
 %_udevrulesdir {{UDEV_RULES_DIR}}
 %_journalcatalogdir {{SYSTEMD_CATALOG_DIR}}
+%_kernel_install_dir {{KERNEL_INSTALL_DIR}}
 %_binfmtdir {{BINFMT_DIR}}
 %_sysctldir {{SYSCTL_DIR}}
 %_sysusersdir {{SYSUSERS_DIR}}
@@ -25,10 +26,6 @@
 %_systemdusergeneratordir {{USER_GENERATOR_DIR}}
 %_systemd_system_env_generator_dir {{SYSTEM_ENV_GENERATOR_DIR}}
 %_systemd_user_env_generator_dir {{USER_ENV_GENERATOR_DIR}}
-
-# Because we had one release with a typo...
-# This is temporary (Remove after systemd 240 is released)
-%_environmnentdir %{warn:Use %%_environmentdir instead}%_environmentdir
 
 %systemd_requires \
 Requires(post): systemd \
@@ -112,6 +109,38 @@ fi \
 %systemd_user_postun_with_reload() \
 %{expand:%%{?__systemd_someargs_%#:%%__systemd_someargs_%# systemd_user_postun_with_reload}} \
 if [ $1 -ge 1 ] && [ -x "{{SYSTEMD_UPDATE_HELPER_PATH}}" ]; then \
+    # Package upgrade, not uninstall \
+    {{SYSTEMD_UPDATE_HELPER_PATH}} mark-reload-user-units %{?*} || : \
+fi \
+%{nil}
+
+%systemd_posttrans_with_restart() \
+%{expand:%%{?__systemd_someargs_%#:%%__systemd_someargs_%# systemd_posttrans_with_restart}} \
+if [ $1 -ge 2 ] && [ -x "{{SYSTEMD_UPDATE_HELPER_PATH}}" ]; then \
+    # Package upgrade, not install \
+    {{SYSTEMD_UPDATE_HELPER_PATH}} mark-restart-system-units %{?*} || : \
+fi \
+%{nil}
+
+%systemd_user_posttrans_with_restart() \
+%{expand:%%{?__systemd_someargs_%#:%%__systemd_someargs_%# systemd_user_posttrans_with_restart}} \
+if [ $1 -ge 2 ] && [ -x "{{SYSTEMD_UPDATE_HELPER_PATH}}" ]; then \
+    # Package upgrade, not uninstall \
+    {{SYSTEMD_UPDATE_HELPER_PATH}} mark-restart-user-units %{?*} || : \
+fi \
+%{nil}
+
+%systemd_posttrans_with_reload() \
+%{expand:%%{?__systemd_someargs_%#:%%__systemd_someargs_%# systemd_posttrans_with_reload}} \
+if [ $1 -ge 2 ] && [ -x "{{SYSTEMD_UPDATE_HELPER_PATH}}" ]; then \
+    # Package upgrade, not uninstall \
+    {{SYSTEMD_UPDATE_HELPER_PATH}} mark-reload-system-units %{?*} || : \
+fi \
+%{nil}
+
+%systemd_user_posttrans_with_reload() \
+%{expand:%%{?__systemd_someargs_%#:%%__systemd_someargs_%# systemd_user_posttrans_with_reload}} \
+if [ $1 -ge 2 ] && [ -x "{{SYSTEMD_UPDATE_HELPER_PATH}}" ]; then \
     # Package upgrade, not uninstall \
     {{SYSTEMD_UPDATE_HELPER_PATH}} mark-reload-user-units %{?*} || : \
 fi \

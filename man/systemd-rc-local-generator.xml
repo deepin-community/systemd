@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd" [
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd" [
 <!ENTITY % entities SYSTEM "custom-entities.ent" >
 %entities;
 ]>
@@ -53,8 +53,8 @@ Wants=network-online.target
 After=network-online.target
 </programlisting>
 
-    <para>Support for <filename>&RC_LOCAL_PATH;</filename> is provided for compatibility with specific System
-    V systems only. However, it is strongly recommended to avoid making use of this script today, and instead
+    <para>Support for <filename>&RC_LOCAL_PATH;</filename> is provided for compatibility with specific
+    System V systems only. However, it is strongly recommended to avoid using this script today, and instead
     provide proper unit files with appropriate dependencies for any scripts to run during the boot process.
     Note that the path to the script is set at compile time and varies between distributions.</para>
 
@@ -63,10 +63,18 @@ After=network-online.target
   </refsect1>
 
   <refsect1>
-    <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+    <title>Notes</title>
+
+    <para>On systems with SELinux, when creating the file, make sure to set the appropriate context, e.g.
+    with "<command>sudo restorecon -v &RC_LOCAL_PATH;</command>".
     </para>
+  </refsect1>
+
+  <refsect1>
+    <title>See Also</title>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 </refentry>

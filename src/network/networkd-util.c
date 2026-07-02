@@ -23,7 +23,7 @@ static const char * const network_config_source_table[_NETWORK_CONFIG_SOURCE_MAX
         [NETWORK_CONFIG_SOURCE_RUNTIME] = "runtime",
 };
 
-DEFINE_STRING_TABLE_LOOKUP_TO_STRING(network_config_source, NetworkConfigSource);
+DEFINE_STRING_TABLE_LOOKUP(network_config_source, NetworkConfigSource);
 
 int network_config_state_to_string_alloc(NetworkConfigState s, char **ret) {
         static const char* states[] = {
@@ -110,53 +110,10 @@ AddressFamily link_local_address_family_from_string(const char *s) {
 DEFINE_STRING_TABLE_LOOKUP(routing_policy_rule_address_family, AddressFamily);
 DEFINE_STRING_TABLE_LOOKUP(nexthop_address_family, AddressFamily);
 DEFINE_STRING_TABLE_LOOKUP(duplicate_address_detection_address_family, AddressFamily);
-DEFINE_CONFIG_PARSE_ENUM(config_parse_link_local_address_family, link_local_address_family,
-                         AddressFamily, "Failed to parse option");
+DEFINE_CONFIG_PARSE_ENUM(config_parse_link_local_address_family, link_local_address_family, AddressFamily);
 DEFINE_STRING_TABLE_LOOKUP_FROM_STRING(dhcp_deprecated_address_family, AddressFamily);
 DEFINE_PRIVATE_STRING_TABLE_LOOKUP_FROM_STRING(ip_masquerade_address_family, AddressFamily);
 DEFINE_STRING_TABLE_LOOKUP(dhcp_lease_server_type, sd_dhcp_lease_server_type_t);
-
-int config_parse_address_family_with_kernel(
-                const char* unit,
-                const char *filename,
-                unsigned line,
-                const char *section,
-                unsigned section_line,
-                const char *lvalue,
-                int ltype,
-                const char *rvalue,
-                void *data,
-                void *userdata) {
-
-        AddressFamily *fwd = data, s;
-
-        assert(filename);
-        assert(lvalue);
-        assert(rvalue);
-        assert(data);
-
-        /* This function is mostly obsolete now. It simply redirects
-         * "kernel" to "no". In older networkd versions we used to
-         * distinguish IPForward=off from IPForward=kernel, where the
-         * former would explicitly turn off forwarding while the
-         * latter would simply not touch the setting. But that logic
-         * is gone, hence silently accept the old setting, but turn it
-         * to "no". */
-
-        s = address_family_from_string(rvalue);
-        if (s < 0) {
-                if (streq(rvalue, "kernel"))
-                        s = ADDRESS_FAMILY_NO;
-                else {
-                        log_syntax(unit, LOG_WARNING, filename, line, 0, "Failed to parse IPForward= option, ignoring: %s", rvalue);
-                        return 0;
-                }
-        }
-
-        *fwd = s;
-
-        return 0;
-}
 
 int config_parse_ip_masquerade(
                 const char *unit,

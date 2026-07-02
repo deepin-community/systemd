@@ -46,7 +46,13 @@ echo 'DTBDTBDTBDTB' >"$D/sources/subdir/whatever.dtb"
 
 export KERNEL_INSTALL_CONF_ROOT="$D/sources"
 # We "install" multiple plugins, but control which ones will be active via install.conf.
-export KERNEL_INSTALL_PLUGINS="${ukify_install} ${loaderentry_install} ${uki_copy_install}"
+KERNEL_INSTALL_PLUGINS="'${loaderentry_install}' '${uki_copy_install}'"
+if [[ -n "$ukify_install" ]]; then
+    # shellcheck disable=SC2089
+    KERNEL_INSTALL_PLUGINS="'${ukify_install}' $KERNEL_INSTALL_PLUGINS"
+fi
+# shellcheck disable=SC2090
+export KERNEL_INSTALL_PLUGINS
 export BOOT_ROOT="$D/boot"
 export BOOT_MNT="$D/boot"
 export MACHINE_ID='3e0484f3634a418b8e6a39e8828b03e3'
@@ -125,7 +131,8 @@ grep -qE 'initrd' "$BOOT_ROOT/the-token/1.1.1/initrd"
 
 # Install UKI
 if [ -f "$ukify" ]; then
-    cat >>"$D/sources/install.conf" <<EOF
+    mkdir "$D/sources/install.conf.d"
+    cat >>"$D/sources/install.conf.d/override.conf" <<EOF
 layout=uki
 uki_generator=ukify
 EOF
@@ -146,6 +153,8 @@ EOF
     "$ukify" inspect "$uki" | grep -qE '^.initrd'
     "$ukify" inspect "$uki" | grep -qE '^.linux'
     "$ukify" inspect "$uki" | grep -qE '^.dtb'
+
+    rm "$D/sources/install.conf.d/override.conf"
 fi
 
 # Test bootctl
@@ -302,7 +311,7 @@ diff -u <(echo "$output") - <<EOF
 		"KERNEL_INSTALL_LAYOUT=other",
 		"KERNEL_INSTALL_INITRD_GENERATOR=none",
 		"KERNEL_INSTALL_UKI_GENERATOR=",
-		"KERNEL_INSTALL_STAGING_AREA=/tmp/kernel-install.staging.XXXXXX"
+		"KERNEL_INSTALL_STAGING_AREA=${TMPDIR:-/tmp}/kernel-install.staging.XXXXXX"
 	]
 }
 EOF

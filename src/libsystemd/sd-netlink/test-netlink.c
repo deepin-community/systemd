@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+/* Make sure the net/if.h header is included before any linux/ one */
 #include <net/if.h>
 #include <netinet/ether.h>
 #include <netinet/in.h>
@@ -91,18 +92,24 @@ TEST(message_address) {
         struct in_addr in_data;
         struct ifa_cacheinfo cache;
         const char *label;
+        int r;
 
         assert_se(sd_netlink_open(&rtnl) >= 0);
         ifindex = (int) if_nametoindex("lo");
 
         assert_se(sd_rtnl_message_new_addr(rtnl, &message, RTM_GETADDR, ifindex, AF_INET) >= 0);
         assert_se(sd_netlink_message_set_request_dump(message, true) >= 0);
-        assert_se(sd_netlink_call(rtnl, message, 0, &reply) == 1);
 
-        assert_se(sd_netlink_message_read_in_addr(reply, IFA_LOCAL, &in_data) >= 0);
-        assert_se(sd_netlink_message_read_in_addr(reply, IFA_ADDRESS, &in_data) >= 0);
-        assert_se(sd_netlink_message_read_string(reply, IFA_LABEL, &label) >= 0);
-        assert_se(sd_netlink_message_read_cache_info(reply, IFA_CACHEINFO, &cache) == 0);
+        r = sd_netlink_call(rtnl, message, 0, &reply);
+        assert_se(r >= 0);
+
+        /* If the loopback device is down we won't get any results. */
+        if (r > 0) {
+                assert_se(sd_netlink_message_read_in_addr(reply, IFA_LOCAL, &in_data) >= 0);
+                assert_se(sd_netlink_message_read_in_addr(reply, IFA_ADDRESS, &in_data) >= 0);
+                assert_se(sd_netlink_message_read_string(reply, IFA_LABEL, &label) >= 0);
+                assert_se(sd_netlink_message_read_cache_info(reply, IFA_CACHEINFO, &cache) >= 0);
+        }
 }
 
 TEST(message_route) {
@@ -677,6 +684,23 @@ TEST(rtnl_set_link_name) {
         assert_se(!strv_contains(alternative_names, "testlongalternativename"));
         assert_se(strv_contains(alternative_names, "test-additional-name"));
         assert_se(!strv_contains(alternative_names, "test-shortname"));
+
+        _cleanup_free_ char *resolved = NULL;
+        assert_se(rtnl_resolve_link_alternative_name(&rtnl, "test-additional-name", &resolved) == ifindex);
+        assert_se(streq_ptr(resolved, "test-shortname"));
+        resolved = mfree(resolved);
+
+        assert_se(rtnl_rename_link(&rtnl, "test-shortname", "test-shortname") >= 0);
+        assert_se(rtnl_rename_link(&rtnl, "test-shortname", "test-shortname2") >= 0);
+        assert_se(rtnl_rename_link(NULL, "test-shortname2", "test-shortname3") >= 0);
+
+        assert_se(rtnl_resolve_link_alternative_name(&rtnl, "test-additional-name", &resolved) == ifindex);
+        assert_se(streq_ptr(resolved, "test-shortname3"));
+        resolved = mfree(resolved);
+
+        assert_se(rtnl_resolve_link_alternative_name(&rtnl, "test-shortname3", &resolved) == ifindex);
+        assert_se(streq_ptr(resolved, "test-shortname3"));
+        resolved = mfree(resolved);
 }
 
 DEFINE_TEST_MAIN(LOG_DEBUG);

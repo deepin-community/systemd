@@ -4,6 +4,7 @@
 #include "dirent-util.h"
 #include "fd-util.h"
 #include "fileio.h"
+#include "fs-util.h"
 #include "missing_syscall.h"
 #include "mountpoint-util.h"
 #include "recurse-dir.h"
@@ -130,6 +131,18 @@ int readdir_all(int dir_fd,
                 *ret = TAKE_PTR(de);
 
         return 0;
+}
+
+int readdir_all_at(int fd, const char *path, RecurseDirFlags flags, DirectoryEntries **ret) {
+        _cleanup_close_ int dir_fd = -EBADF;
+
+        assert(fd >= 0 || fd == AT_FDCWD);
+
+        dir_fd = xopenat(fd, path, O_DIRECTORY|O_CLOEXEC);
+        if (dir_fd < 0)
+                return dir_fd;
+
+        return readdir_all(dir_fd, flags, ret);
 }
 
 int recurse_dir(
@@ -308,7 +321,7 @@ int recurse_dir(
                                 if (r < 0) {
                                         log_debug_errno(r, "Failed to stat directory entry '%s': %m", p);
 
-                                        assert(errno <= RECURSE_DIR_SKIP_STAT_INODE_ERROR_MAX - RECURSE_DIR_SKIP_STAT_INODE_ERROR_BASE);
+                                        assert(-r <= RECURSE_DIR_SKIP_STAT_INODE_ERROR_MAX - RECURSE_DIR_SKIP_STAT_INODE_ERROR_BASE);
 
                                         r = func(RECURSE_DIR_SKIP_STAT_INODE_ERROR_BASE + -r,
                                                  p,
@@ -338,7 +351,7 @@ int recurse_dir(
                                          * guarantee that RECURSE_DIR_ENTRY is strictly issued for
                                          * non-directory dirents. */
 
-                                        log_debug_errno(r, "Non-directory entry '%s' suddenly became a directory: %m", p);
+                                        log_debug("Non-directory entry '%s' suddenly became a directory.", p);
 
                                         r = func(RECURSE_DIR_SKIP_STAT_INODE_ERROR_BASE + EISDIR,
                                                  p,
@@ -457,7 +470,6 @@ int recurse_dir(
                                  de->entries[i],
                                  statx_mask != 0 ? &sx : NULL, /* only pass sx if user asked for it */
                                  userdata);
-
 
                 if (r == RECURSE_DIR_LEAVE_DIRECTORY)
                         break;

@@ -99,6 +99,7 @@ void link_allocate_scopes(Link *l);
 DnsServer* link_set_dns_server(Link *l, DnsServer *s);
 DnsServer* link_get_dns_server(Link *l);
 void link_next_dns_server(Link *l, DnsServer *if_current);
+void link_set_default_route(Link *l, bool b);
 
 DnssecMode link_get_dnssec_mode(Link *l);
 bool link_dnssec_supported(Link *l);
@@ -119,7 +120,7 @@ int link_address_new(Link *l,
                 const union in_addr_union *in_addr_broadcast);
 LinkAddress *link_address_free(LinkAddress *a);
 int link_address_update_rtnl(LinkAddress *a, sd_netlink_message *m);
-bool link_address_relevant(LinkAddress *l, bool local_multicast);
+bool link_address_relevant(LinkAddress *l, bool allow_link_local);
 void link_address_add_rrs(LinkAddress *a, bool force_remove);
 
 bool link_negative_trust_anchor_lookup(Link *l, const char *name);

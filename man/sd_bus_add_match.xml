@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 
 <!--
   SPDX-License-Identifier: LGPL-2.1-or-later
@@ -134,7 +134,7 @@
 
     <para>If an error occurs during the callback invocation, the callback should return a negative error number
     (optionally, a more precise error may be returned in <parameter>ret_error</parameter>, as well). If it wants other
-    callbacks that match the same rule to be called, it should return 0. Otherwise it should return a positive integer.
+    callbacks that match the same rule to be called, it should return 0. Otherwise, it should return a positive integer.
     </para>
 
     <para>If the <parameter>bus</parameter> refers to a direct connection (i.e. not a bus connection, as set with
@@ -156,7 +156,7 @@
   <refsect1>
     <title>History</title>
     <para><function>sd_bus_add_match()</function> and
-    <function>sd_bus_message_handler_t()</function> were added in version 231.</para>
+    <function>sd_bus_message_handler_t()</function> were added in version 221.</para>
     <para><function>sd_bus_add_match_async()</function>,
     <function>sd_bus_match_signal()</function>, and
     <function>sd_bus_match_signal_async()</function> were added in version 237.</para>
@@ -165,14 +165,14 @@
   <refsect1>
     <title>See Also</title>
 
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd-bus</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_slot_unref</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_message_ref</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_set_bus_client</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_slot_set_floating</refentrytitle><manvolnum>3</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd-bus</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_slot_unref</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_message_ref</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_set_bus_client</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_slot_set_floating</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

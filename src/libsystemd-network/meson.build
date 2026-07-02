@@ -2,30 +2,37 @@
 
 sources = files(
         'arp-util.c',
-        'dhcp-identifier.c',
         'dhcp-network.c',
         'dhcp-option.c',
         'dhcp-packet.c',
         'dhcp6-network.c',
         'dhcp6-option.c',
         'dhcp6-protocol.c',
+        'icmp6-packet.c',
         'icmp6-util.c',
         'lldp-neighbor.c',
         'lldp-network.c',
-        'ndisc-protocol.c',
-        'ndisc-router.c',
+        'ndisc-option.c',
         'network-common.c',
         'network-internal.c',
+        'sd-dhcp-client-id.c',
         'sd-dhcp-client.c',
+        'sd-dhcp-duid.c',
         'sd-dhcp-lease.c',
+        'sd-dhcp-server-lease.c',
         'sd-dhcp-server.c',
         'sd-dhcp6-client.c',
         'sd-dhcp6-lease.c',
+        'sd-dns-resolver.c',
         'sd-ipv4acd.c',
         'sd-ipv4ll.c',
         'sd-lldp-rx.c',
         'sd-lldp-tx.c',
         'sd-ndisc.c',
+        'sd-ndisc-neighbor.c',
+        'sd-ndisc-redirect.c',
+        'sd-ndisc-router.c',
+        'sd-ndisc-router-solicit.c',
         'sd-radv.c',
 )
 
@@ -85,14 +92,18 @@ executables += [
         network_test_template + {
                 'sources' : files(
                         'test-ndisc-ra.c',
-                        'icmp6-util-unix.c',
+                        'icmp6-test-util.c',
                 ),
         },
         network_test_template + {
                 'sources' : files(
                         'test-ndisc-rs.c',
-                        'icmp6-util-unix.c',
+                        'icmp6-test-util.c',
                 ),
+        },
+        network_test_template + {
+                'sources' : files('test-ndisc-send.c'),
+                'type' : 'manual',
         },
         network_test_template + {
                 'sources' : files('test-sd-dhcp-lease.c'),
@@ -115,7 +126,7 @@ executables += [
         network_fuzz_template + {
                 'sources' : files(
                         'fuzz-ndisc-rs.c',
-                        'icmp6-util-unix.c',
+                        'icmp6-test-util.c',
                 ),
         },
 ]

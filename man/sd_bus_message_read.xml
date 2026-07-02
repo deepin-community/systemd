@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="sd_bus_message_read"
@@ -209,7 +209,7 @@ sd_bus_message_read(m, "x", &amp;x);</programlisting>
     <para>Read a boolean value:</para>
 
     <programlisting>sd_bus_message *m;
-int x; /* Do not use C99 'bool' type here, it's typically smaller
+int x; /* Do not use C99 "bool" type here, it is typically smaller
           in memory and would cause memory corruption */
 
 sd_bus_message_read(m, "b", &amp;x);</programlisting>
@@ -221,8 +221,8 @@ int16_t n;
 uint16_t q;
 int32_t i;
 uint32_t u;
-int32_t x;
-uint32_t t;
+int64_t x;
+uint64_t t;
 double d;
 
 sd_bus_message_read(m, "ynqiuxtd", &amp;y, &amp;n, &amp;q, &amp;i, &amp;u, &amp;x, &amp;t, &amp;d);</programlisting>
@@ -249,7 +249,7 @@ sd_bus_message_read(m, "v", "gt", &amp;s, &amp;v);</programlisting>
 const char *s, *t, *u;
 
 sd_bus_message_read(m, "a{is}", 3, &amp;i, &amp;s, &amp;j, &amp;t, &amp;k, &amp;u);
-     </programlisting>
+</programlisting>
 
      <para>Read a single file descriptor, and duplicate it in order to keep it open after the message is
      freed.</para>
@@ -271,14 +271,14 @@ fd_copy = fcntl(fd, FD_DUPFD_CLOEXEC, 3);</programlisting>
   <refsect1>
     <title>See Also</title>
 
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd-bus</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_message_read_basic</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_message_skip</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_message_append</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_message_enter_container</refentrytitle><manvolnum>3</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd-bus</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_message_read_basic</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_message_skip</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_message_append</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_message_enter_container</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

@@ -128,7 +128,7 @@ int manager_genl_process_nl80211_config(sd_netlink *genl, sd_netlink_message *me
                 return 0;
         }
 
-        r = sd_netlink_message_read_data_suffix0(message, NL80211_ATTR_SSID, &len, (void**) &ssid);
+        r = sd_netlink_message_read_data(message, NL80211_ATTR_SSID, &len, (void**) &ssid);
         if (r < 0 && r != -ENODATA) {
                 log_link_debug_errno(link, r, "nl80211: received %s(%u) message without valid SSID, ignoring: %m",
                                      strna(nl80211_cmd_to_string(cmd)), cmd);
@@ -287,7 +287,7 @@ int manager_genl_process_nl80211_mlme(sd_netlink *genl, sd_netlink_message *mess
                  * To make SSID= or other WiFi related settings in [Match] section work, let's try to
                  * reconfigure the interface. */
                 if (link->ssid && link_has_carrier(link)) {
-                        r = link_reconfigure_impl(link, /* force = */ false);
+                        r = link_reconfigure_impl(link, /* flags = */ 0);
                         if (r < 0) {
                                 log_link_warning_errno(link, r, "Failed to reconfigure interface: %m");
                                 link_enter_failed(link);
@@ -326,7 +326,7 @@ int manager_genl_process_nl80211_mlme(sd_netlink *genl, sd_netlink_message *mess
                 }
 
                 /* If necessary, reconfigure based on those new properties */
-                r = link_reconfigure_impl(link, /* force = */ false);
+                r = link_reconfigure_impl(link, /* flags = */ 0);
                 if (r < 0) {
                         log_link_warning_errno(link, r, "Failed to reconfigure interface: %m");
                         link_enter_failed(link);

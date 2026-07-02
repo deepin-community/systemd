@@ -2,9 +2,9 @@
 #pragma once
 
 #include "sd-bus.h"
+#include "sd-varlink.h"
 
 #include "set.h"
-#include "varlink.h"
 
 typedef struct DnsQueryCandidate DnsQueryCandidate;
 typedef struct DnsQuery DnsQuery;
@@ -18,6 +18,7 @@ typedef struct DnsStubListenerExtra DnsStubListenerExtra;
 struct DnsQueryCandidate {
         unsigned n_ref;
         int error_code;
+        uint64_t generation;
 
         DnsQuery *query;
         DnsScope *scope;
@@ -25,6 +26,7 @@ struct DnsQueryCandidate {
         DnsSearchDomain *search_domain;
 
         Set *transactions;
+        sd_event_source *timeout_event_source;
 
         LIST_FIELDS(DnsQueryCandidate, candidates_by_query);
         LIST_FIELDS(DnsQueryCandidate, candidates_by_scope);
@@ -73,6 +75,8 @@ struct DnsQuery {
         /* Discovered data */
         DnsAnswer *answer;
         int answer_rcode;
+        int answer_ede_rcode;
+        char *answer_ede_msg;
         DnssecResult answer_dnssec_result;
         uint64_t answer_query_flags;
         DnsProtocol answer_protocol;
@@ -95,7 +99,7 @@ struct DnsQuery {
 
         /* Bus + Varlink client information */
         sd_bus_message *bus_request;
-        Varlink *varlink_request;
+        sd_varlink *varlink_request;
         int request_family;
         union in_addr_union request_address;
         unsigned block_all_complete;
@@ -147,7 +151,7 @@ void dns_query_complete(DnsQuery *q, DnsTransactionState state);
 
 DnsQuestion* dns_query_question_for_protocol(DnsQuery *q, DnsProtocol protocol);
 
-const char *dns_query_string(DnsQuery *q);
+const char* dns_query_string(DnsQuery *q);
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(DnsQuery*, dns_query_free);
 

@@ -13,7 +13,15 @@ _update_catalog() {
 }
 
 _update_binfmt() {
-    _systemctl try-restart systemd-binfmt.service || true
+    if [ "$(_systemctl show -P LoadState systemd-binfmt.service)" != "masked" ]; then
+        _systemctl restart systemd-binfmt.service || true
+    fi
+}
+
+_update_sysctl() {
+    if [ "$(_systemctl show -P LoadState systemd-sysctl.service)" != "masked" ]; then
+        _systemctl restart systemd-sysctl.service || true
+    fi
 }
 
 _restart_managers() {
@@ -39,6 +47,9 @@ if [ "$1" = "triggered" ]; then
             /usr/lib/binfmt.d)
                 _update_binfmt
                 ;;
+            /usr/lib/sysctl.d)
+                _update_sysctl
+                ;;
             libc-upgrade)
                 _restart_managers
                 ;;
@@ -51,9 +62,8 @@ fi
 if [ -z "$2" ]; then
     systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable getty@tty1.service || true
     systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable remote-fs.target || true
+    systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable systemd-pstore.service || true
 fi
-
-systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} disable systemd-pstore.service || true
 
 # Create /etc/machine-id
 systemd-machine-id-setup ${DPKG_ROOT:+--root="$DPKG_ROOT"}
@@ -66,13 +76,23 @@ fi
 # Initial update of the Message Catalogs database
 _update_catalog
 
+# begin-remove-after: released:trixie
 # Move the old locale file into /etc. Symlinks will be created by tmpfiles.d later
-if [ -f /etc/default/locale ] && [ ! -L /etc/default/locale ] && [ ! -f /etc/locale.conf ]; then
-    mv /etc/default/locale /etc/locale.conf
+if [ -f "$DPKG_ROOT/etc/default/locale" ] && [ ! -L "$DPKG_ROOT/etc/default/locale" ] && [ ! -f "$DPKG_ROOT/etc/locale.conf" ]; then
+    mv "$DPKG_ROOT/etc/default/locale" "$DPKG_ROOT/etc/locale.conf"
 fi
+
+# On upgrade for now keep the current tmpfiles.d (as it used to be after patches),
+# drop in Forky
+if [ -n "$2" ] && dpkg --compare-versions "$2" lt 256~rc3-3 && [ ! -f "$DPKG_ROOT/etc/tmpfiles.d/tmp.conf" ]; then
+    mkdir -p "$DPKG_ROOT/etc/tmpfiles.d/"
+    echo 'D /tmp 1777 root root -' > "$DPKG_ROOT/etc/tmpfiles.d/tmp.conf"
+fi
+# end-remove-after
 
 #DEBHELPER#
 
-if [ -n "$2" ]; then
+# skip daemon-reexec and try-restarts during shutdown to avoid hitting LP: #1803391
+if [ -n "$2" ] && [ "$(systemctl is-system-running)" != "stopping" ]; then
     _restart_managers
 fi

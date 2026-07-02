@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include "sd-device.h"
+
 #include "alloc-util.h"
+#include "device-private.h"
 #include "netif-naming-scheme.h"
 #include "proc-cmdline.h"
 #include "string-util.h"
@@ -21,6 +24,7 @@ static const NamingScheme naming_schemes[] = {
         { "v253", NAMING_V253 },
         { "v254", NAMING_V254 },
         { "v255", NAMING_V255 },
+        { "v257", NAMING_V257 },
         /* … add more schemes here, as the logic to name devices is updated … */
 
         EXTRA_NET_NAMING_MAP
@@ -31,9 +35,9 @@ const NamingScheme* naming_scheme_from_name(const char *name) {
          * the table like any other name. After iterating through the table, we check for "latest" again,
          * which means that if not mapped explicitly, it maps to the last defined entry, whatever that is. */
 
-        for (size_t i = 0; i < ELEMENTSOF(naming_schemes); i++)
-                if (streq(naming_schemes[i].name, name))
-                        return naming_schemes + i;
+        FOREACH_ELEMENT(scheme, naming_schemes)
+                if (streq(scheme->name, name))
+                        return scheme;
 
         if (streq(name, "latest"))
                 return naming_schemes + ELEMENTSOF(naming_schemes) - 1;
@@ -50,7 +54,7 @@ const NamingScheme* naming_scheme(void) {
                 return cache;
 
         /* Acquire setting from the kernel command line */
-        (void) proc_cmdline_get_key("net.naming-scheme", 0, &buffer);
+        (void) proc_cmdline_get_key("net.naming_scheme", 0, &buffer);
 
         /* Also acquire it from an env var */
         e = getenv("NET_NAMING_SCHEME");
@@ -101,3 +105,81 @@ static const char* const alternative_names_policy_table[_NAMEPOLICY_MAX] = {
 };
 
 DEFINE_STRING_TABLE_LOOKUP(alternative_names_policy, NamePolicy);
+
+static int naming_sysattr_allowed_by_default(sd_device *dev) {
+        int r;
+
+        assert(dev);
+
+        r = device_get_property_bool(dev, "ID_NET_NAME_ALLOW");
+        if (r == -ENOENT)
+                return true;
+
+        return r;
+}
+
+static int naming_sysattr_allowed(sd_device *dev, const char *sysattr) {
+        char *sysattr_property;
+        int r;
+
+        assert(dev);
+        assert(sysattr);
+
+        sysattr_property = strjoina("ID_NET_NAME_ALLOW_", sysattr);
+        ascii_strupper(sysattr_property);
+
+        r = device_get_property_bool(dev, sysattr_property);
+        if (r == -ENOENT)
+                /* If ID_NET_NAME_ALLOW is not set or set to 1 default is to allow */
+                return naming_sysattr_allowed_by_default(dev);
+
+        return r;
+}
+
+int device_get_sysattr_int_filtered(sd_device *device, const char *sysattr, int *ret_value) {
+        int r;
+
+        r = naming_sysattr_allowed(device, sysattr);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -ENOENT;
+
+        return device_get_sysattr_int(device, sysattr, ret_value);
+}
+
+int device_get_sysattr_unsigned_filtered(sd_device *device, const char *sysattr, unsigned *ret_value) {
+        int r;
+
+        r = naming_sysattr_allowed(device, sysattr);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -ENOENT;
+
+        return device_get_sysattr_unsigned(device, sysattr, ret_value);
+}
+
+int device_get_sysattr_bool_filtered(sd_device *device, const char *sysattr) {
+        int r;
+
+        r = naming_sysattr_allowed(device, sysattr);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -ENOENT;
+
+        return device_get_sysattr_bool(device, sysattr);
+}
+
+int device_get_sysattr_value_filtered(sd_device *device, const char *sysattr, const char **ret_value) {
+        int r;
+
+        r = naming_sysattr_allowed(device, sysattr);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -ENOENT;
+
+        return sd_device_get_sysattr_value(device, sysattr, ret_value);
+}

@@ -579,10 +579,7 @@ _public_ int sd_uid_is_on_seat(uid_t uid, int require_active, const char *seat) 
         if (isempty(content))
                 return 0;
 
-        char t[DECIMAL_STR_MAX(uid_t)];
-        xsprintf(t, UID_FMT, uid);
-
-        return string_contains_word(content, NULL, t);
+        return string_contains_word(content, NULL, FORMAT_UID(uid));
 }
 
 static int uid_get_array(uid_t uid, const char *variable, char ***array) {
@@ -1051,9 +1048,8 @@ _public_ int sd_get_sessions(char ***sessions) {
 
 _public_ int sd_get_uids(uid_t **users) {
         _cleanup_closedir_ DIR *d = NULL;
-        int r = 0;
-        unsigned n = 0;
         _cleanup_free_ uid_t *l = NULL;
+        size_t n = 0;
 
         d = opendir("/run/systemd/users/");
         if (!d) {
@@ -1066,38 +1062,31 @@ _public_ int sd_get_uids(uid_t **users) {
         }
 
         FOREACH_DIRENT_ALL(de, d, return -errno) {
-                int k;
                 uid_t uid;
 
                 if (!dirent_is_file(de))
                         continue;
 
-                k = parse_uid(de->d_name, &uid);
-                if (k < 0)
+                if (parse_uid(de->d_name, &uid) < 0)
                         continue;
 
                 if (users) {
-                        if ((unsigned) r >= n) {
-                                uid_t *t;
+                        if (!GREEDY_REALLOC(l, n + 1))
+                                return -ENOMEM;
 
-                                n = MAX(16, 2*r);
-                                t = reallocarray(l, sizeof(uid_t), n);
-                                if (!t)
-                                        return -ENOMEM;
+                        l[n] = uid;
+                }
 
-                                l = t;
-                        }
-
-                        assert((unsigned) r < n);
-                        l[r++] = uid;
-                } else
-                        r++;
+                n++;
         }
+
+        if (n > INT_MAX)
+                return -EOVERFLOW;
 
         if (users)
                 *users = TAKE_PTR(l);
 
-        return r;
+        return (int) n;
 }
 
 _public_ int sd_get_machine_names(char ***machines) {
@@ -1275,7 +1264,7 @@ _public_ int sd_login_monitor_new(const char *category, sd_login_monitor **m) {
 
 _public_ sd_login_monitor* sd_login_monitor_unref(sd_login_monitor *m) {
         if (m)
-                (void) close_nointr(MONITOR_TO_FD(m));
+                (void) close(MONITOR_TO_FD(m));
 
         return NULL;
 }

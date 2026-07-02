@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="systemd-dissect" conditional='HAVE_BLKID'
@@ -24,40 +24,43 @@
 
   <refsynopsisdiv>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--mount</option> <arg choice="plain"><replaceable>IMAGE</replaceable></arg> <arg choice="plain"><replaceable>PATH</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--mount</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg> <arg choice="plain"><replaceable>PATH</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--umount</option> <arg choice="plain"><replaceable>PATH</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--umount</arg> <arg choice="plain"><replaceable>PATH</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--attach</option> <arg choice="plain"><replaceable>IMAGE</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--attach</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--detach</option> <arg choice="plain"><replaceable>PATH</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--detach</arg> <arg choice="plain"><replaceable>PATH</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--list</option> <arg choice="plain"><replaceable>IMAGE</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--list</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--mtree</option> <arg choice="plain"><replaceable>IMAGE</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--mtree</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--with</option> <arg choice="plain"><replaceable>IMAGE</replaceable></arg> <arg choice="opt" rep="repeat"><replaceable>COMMAND</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--with</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg> <arg choice="opt" rep="repeat"><replaceable>COMMAND</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--copy-from</option> <arg choice="plain"><replaceable>IMAGE</replaceable></arg> <arg choice="plain"><replaceable>PATH</replaceable></arg> <arg choice="opt"><replaceable>TARGET</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--copy-from</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg> <arg choice="plain"><replaceable>PATH</replaceable></arg> <arg choice="opt"><replaceable>TARGET</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--copy-to</option> <arg choice="plain"><replaceable>IMAGE</replaceable></arg> <arg choice="opt"><replaceable>SOURCE</replaceable></arg> <arg choice="plain"><replaceable>PATH</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--copy-to</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg> <arg choice="opt"><replaceable>SOURCE</replaceable></arg> <arg choice="plain"><replaceable>PATH</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--discover</option></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--make-archive</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg> <arg choice="opt"><replaceable>TARGET</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
-      <command>systemd-dissect <arg choice="opt" rep="repeat">OPTIONS</arg> <option>--validate</option> <arg choice="plain"><replaceable>IMAGE</replaceable></arg></command>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--discover</arg>
+    </cmdsynopsis>
+    <cmdsynopsis>
+      <command>systemd-dissect</command> <arg choice="opt" rep="repeat">OPTIONS</arg> <arg>--validate</arg> <arg choice="plain"><replaceable>IMAGE</replaceable></arg>
     </cmdsynopsis>
   </refsynopsisdiv>
 
@@ -120,6 +123,8 @@
     mounted directly by <command>mount</command> and <citerefentry
     project='man-pages'><refentrytitle>fstab</refentrytitle><manvolnum>5</manvolnum></citerefentry>. For
     details see below.</para>
+
+    <xi:include href="vpick.xml" xpointer="image"/>
   </refsect1>
 
   <refsect1>
@@ -147,7 +152,7 @@
         unmounted.</para>
 
         <para>The OS image may either be specified as path to an OS image stored in a regular file or may
-        refer to block device node (in the latter case the block device must be the "whole" device, i.e. not
+        refer to block device node (in the latter case, the block device must be the "whole" device, i.e. not
         a partition device). (The other supported commands described here support this, too.)</para>
 
         <para>All mounted file systems are checked with the appropriate <citerefentry
@@ -210,7 +215,7 @@
 
         <listitem><para>Detach the specified disk image from a loopback block device. This undoes the effect
         of <option>--attach</option> above. This expects either a path to a loopback block device as an
-        argument, or the path to the backing image file. In the latter case it will automatically determine
+        argument, or the path to the backing image file. In the latter case, it will automatically determine
         the right device to detach.</para>
 
         <xi:include href="version-info.xml" xpointer="v254"/></listitem>
@@ -272,9 +277,9 @@
         the current working directory, or an absolute path, both outside of the image). If the destination
         path is omitted or specified as dash (<literal>-</literal>), the specified file is written to
         standard output. If the source path in the image file system refers to a regular file it is copied to
-        the destination path. In this case access mode, extended attributes and timestamps are copied as
+        the destination path. In this case, access mode, extended attributes and timestamps are copied as
         well, but file ownership is not. If the source path in the image refers to a directory, it is copied
-        to the destination path, recursively with all containing files and directories. In this case the file
+        to the destination path, recursively with all containing files and directories. In this case, the file
         ownership is copied too.</para>
 
         <xi:include href="version-info.xml" xpointer="v247"/></listitem>
@@ -290,15 +295,30 @@
         image) and a destination path (relative to the image's root directory). If the source path is omitted
         or specified as dash (<literal>-</literal>), the data to write is read from standard input. If the
         source path in the host file system refers to a regular file, it is copied to the destination path.
-        In this case access mode, extended attributes and timestamps are copied as well, but file ownership
+        In this case, access mode, extended attributes and timestamps are copied as well, but file ownership
         is not. If the source path in the host file system refers to a directory it is copied to the
-        destination path, recursively with all containing files and directories. In this case the file
+        destination path, recursively with all containing files and directories. In this case, the file
         ownership is copied too.</para>
 
         <para>As with <option>--mount</option> file system checks are implicitly run before the copy
         operation begins.</para>
 
         <xi:include href="version-info.xml" xpointer="v247"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--make-archive</option></term>
+
+        <listitem><para>Generates an archive file from the specified disk image. Expects two arguments: the
+        path to the disk image and optionally the output archive file path. If the latter is omitted the
+        archive is written to standard output. The archive file format is determined automatically from the
+        specified output archive file name, e.g. any path suffixed with <literal>.tar.xz</literal> will
+        result in an xz compressed UNIX tarball (if the path is omitted an uncompressed UNIX tarball is
+        created). See
+        <citerefentry project='die-net'><refentrytitle>libarchive</refentrytitle><manvolnum>3</manvolnum></citerefentry>
+        for a list of supported archive formats and compression schemes.</para>
+
+        <xi:include href="version-info.xml" xpointer="v256"/></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -324,7 +344,7 @@
         dissection policy into account. Since this operation does not mount file systems, this command –
         unlike all other commands implemented by this tool – requires no privileges other than the ability to
         access the specified file. Prints "OK" and returns zero if the image appears to be in order and
-        matches the specified image dissection policy. Otherwise prints an error message and returns
+        matches the specified image dissection policy. Otherwise, prints an error message and returns
         non-zero.</para>
 
         <xi:include href="version-info.xml" xpointer="v254"/></listitem>
@@ -346,7 +366,7 @@
         <term><option>--read-only</option></term>
         <term><option>-r</option></term>
 
-        <listitem><para>Operate in read-only mode. By default <option>--mount</option> will establish
+        <listitem><para>Operate in read-only mode. By default, <option>--mount</option> will establish
         writable mount points. If this option is specified they are established in read-only mode
         instead.</para>
 
@@ -356,7 +376,7 @@
       <varlistentry>
         <term><option>--fsck=no</option></term>
 
-        <listitem><para>Turn off automatic file system checking. By default when an image is accessed for
+        <listitem><para>Turn off automatic file system checking. By default, when an image is accessed for
         writing (by <option>--mount</option> or <option>--copy-to</option>) the file systems contained in the
         OS image are automatically checked using the appropriate <citerefentry
         project='man-pages'><refentrytitle>fsck</refentrytitle><manvolnum>8</manvolnum></citerefentry>
@@ -370,7 +390,7 @@
         <term><option>--growfs=no</option></term>
 
         <listitem><para>Turn off automatic growing of accessed file systems to their partition size, if
-        marked for that in the GPT partition table. By default when an image is accessed for writing (by
+        marked for that in the GPT partition table. By default, when an image is accessed for writing (by
         <option>--mount</option> or <option>--copy-to</option>) the file systems contained in the OS image
         are automatically grown to their partition sizes, if bit 59 in the GPT partition flags is set for
         partition types that are defined by the <ulink
@@ -531,23 +551,32 @@
     <title>Examples</title>
 
     <example>
-      <title>Generate a tarball from an OS disk image</title>
+      <title>Generate a tarball from an OS disk image (<option>--with</option>)</title>
 
       <programlisting># systemd-dissect --with foo.raw tar cz . >foo.tar.gz</programlisting>
+    </example>
+
+    <para>or alternatively just:</para>
+
+    <example>
+      <title>Generate a tarball from an OS disk image (<option>--make-archive</option>)</title>
+
+      <programlisting># systemd-dissect --make-archive foo.raw foo.tar.gz</programlisting>
     </example>
   </refsect1>
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-nspawn</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <ulink url="https://uapi-group.org/specifications/specs/discoverable_partitions_specification">Discoverable Partitions Specification</ulink>,
-      <citerefentry project='man-pages'><refentrytitle>mount</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>umount</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>fdisk</refentrytitle><manvolnum>8</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-nspawn</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.v</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><ulink url="https://uapi-group.org/specifications/specs/discoverable_partitions_specification">Discoverable Partitions Specification</ulink></member>
+      <member><citerefentry project='man-pages'><refentrytitle>mount</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>umount</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>fdisk</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

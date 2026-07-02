@@ -14,8 +14,8 @@
  *  GNU General Public License for more details.
  */
 
-#ifndef _UAPI__IF_TUN_H
-#define _UAPI__IF_TUN_H
+#ifndef __IF_TUN_H
+#define __IF_TUN_H
 
 #include <linux/types.h>
 #include <linux/if_ether.h>
@@ -93,6 +93,15 @@
 #define TUN_F_USO4	0x20	/* I can handle USO for IPv4 packets */
 #define TUN_F_USO6	0x40	/* I can handle USO for IPv6 packets */
 
+/* I can handle TSO/USO for UDP tunneled packets */
+#define TUN_F_UDP_TUNNEL_GSO		0x080
+
+/*
+ * I can handle TSO/USO for UDP tunneled packets requiring csum offload for
+ * the outer header
+ */
+#define TUN_F_UDP_TUNNEL_GSO_CSUM	0x100
+
 /* Protocol info prepended to the packets (when IFF_NO_PI is not set) */
 #define TUN_PKT_STRIP	0x0001
 struct tun_pi {
@@ -115,4 +124,4 @@ struct tun_filter {
 	__u8   addr[][ETH_ALEN];
 };
 
-#endif /* _UAPI__IF_TUN_H */
+#endif /* __IF_TUN_H */

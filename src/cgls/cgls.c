@@ -115,12 +115,20 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case 'u':
+                        if (arg_show_unit == SHOW_UNIT_USER)
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                "Cannot combine --unit with --user-unit.");
+
                         arg_show_unit = SHOW_UNIT_SYSTEM;
                         if (strv_push(&arg_names, optarg) < 0) /* push optarg if not empty */
                                 return log_oom();
                         break;
 
                 case ARG_USER_UNIT:
+                        if (arg_show_unit == SHOW_UNIT_SYSTEM)
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                "Cannot combine --user-unit with --unit.");
+
                         arg_show_unit = SHOW_UNIT_USER;
                         if (strv_push(&arg_names, optarg) < 0) /* push optarg if not empty */
                                 return log_oom();
@@ -221,13 +229,12 @@ static int run(int argc, char *argv[]) {
                                         return log_error_errno(r, "Failed to mangle unit name: %m");
 
                                 if (!bus) {
+                                        RuntimeScope scope = arg_show_unit == SHOW_UNIT_USER ? RUNTIME_SCOPE_USER : RUNTIME_SCOPE_SYSTEM;
+
                                         /* Connect to the bus only if necessary */
-                                        r = bus_connect_transport_systemd(
-                                                        BUS_TRANSPORT_LOCAL, NULL,
-                                                        arg_show_unit == SHOW_UNIT_USER ? RUNTIME_SCOPE_USER : RUNTIME_SCOPE_SYSTEM,
-                                                        &bus);
+                                        r = bus_connect_transport_systemd(BUS_TRANSPORT_LOCAL, NULL, scope, &bus);
                                         if (r < 0)
-                                                return bus_log_connect_error(r, BUS_TRANSPORT_LOCAL);
+                                                return bus_log_connect_error(r, BUS_TRANSPORT_LOCAL, scope);
                                 }
 
                                 q = show_cgroup_get_unit_path_and_warn(bus, unit_name, &cgroup);

@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="sd_id128_to_string" xmlns:xi="http://www.w3.org/2001/XInclude">
@@ -44,7 +44,7 @@
       </funcprototype>
 
       <funcprototype>
-        <funcdef>char *<function>sd_id128_uuid_string</function></funcdef>
+        <funcdef>char *<function>sd_id128_to_uuid_string</function></funcdef>
         <paramdef>sd_id128_t <parameter>id</parameter>, char <parameter>s</parameter>[static SD_ID128_UUID_STRING_MAX]</paramdef>
       </funcprototype>
 
@@ -113,17 +113,17 @@
     <title>History</title>
     <para><function>sd_id128_to_string()</function> and
     <function>sd_id128_from_string()</function> were added in version 187.</para>
-    <para><function>sd_id128_uuid_string()</function> was added in version 251.</para>
+    <para><function>sd_id128_to_uuid_string()</function> was added in version 251.</para>
   </refsect1>
 
   <refsect1>
     <title>See Also</title>
 
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd-id128</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>printf</refentrytitle><manvolnum>3</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd-id128</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>printf</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

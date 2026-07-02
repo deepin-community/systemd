@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include "dns-domain.h"
+#include "fd-util.h"
 #include "home-util.h"
 #include "libcrypt-util.h"
 #include "memory-util.h"
@@ -8,6 +9,8 @@
 #include "string-util.h"
 #include "strv.h"
 #include "user-util.h"
+
+DEFINE_HASH_OPS_FULL(blob_fd_hash_ops, char, path_hash_func, path_compare, free, void, close_fd_ptr);
 
 bool suitable_user_name(const char *name) {
 
@@ -112,7 +115,7 @@ int split_user_name_realm(const char *t, char **ret_user_name, char **ret_realm)
 
 int bus_message_append_secret(sd_bus_message *m, UserRecord *secret) {
         _cleanup_(erase_and_freep) char *formatted = NULL;
-        JsonVariant *v;
+        sd_json_variant *v;
         int r;
 
         assert(m);
@@ -121,11 +124,11 @@ int bus_message_append_secret(sd_bus_message *m, UserRecord *secret) {
         if (!FLAGS_SET(secret->mask, USER_RECORD_SECRET))
                 return sd_bus_message_append(m, "s", "{}");
 
-        v = json_variant_by_key(secret->json, "secret");
+        v = sd_json_variant_by_key(secret->json, "secret");
         if (!v)
                 return -EINVAL;
 
-        r = json_variant_format(v, 0, &formatted);
+        r = sd_json_variant_format(v, 0, &formatted);
         if (r < 0)
                 return r;
 
@@ -134,6 +137,10 @@ int bus_message_append_secret(sd_bus_message *m, UserRecord *secret) {
         return sd_bus_message_append(m, "s", formatted);
 }
 
-const char *home_record_dir(void) {
+const char* home_record_dir(void) {
         return secure_getenv("SYSTEMD_HOME_RECORD_DIR") ?: "/var/lib/systemd/home/";
+}
+
+const char* home_system_blob_dir(void) {
+        return secure_getenv("SYSTEMD_HOME_SYSTEM_BLOB_DIR") ?: "/var/cache/systemd/home/";
 }

@@ -63,9 +63,9 @@ struct InstallChange {
         char *source;
 };
 
-static inline bool install_changes_have_modification(const InstallChange* changes, size_t n_changes) {
-        for (size_t i = 0; i < n_changes; i++)
-                if (IN_SET(changes[i].type, INSTALL_CHANGE_SYMLINK, INSTALL_CHANGE_UNLINK))
+static inline bool install_changes_have_modification(const InstallChange *changes, size_t n_changes) {
+        FOREACH_ARRAY(i, changes, n_changes)
+                if (IN_SET(i->type, INSTALL_CHANGE_SYMLINK, INSTALL_CHANGE_UNLINK))
                         return true;
         return false;
 }
@@ -106,28 +106,28 @@ int unit_file_enable(
                 RuntimeScope scope,
                 UnitFileFlags flags,
                 const char *root_dir,
-                char **names_or_paths,
+                char * const *names_or_paths,
                 InstallChange **changes,
                 size_t *n_changes);
 int unit_file_disable(
                 RuntimeScope scope,
                 UnitFileFlags flags,
                 const char *root_dir,
-                char **names,
+                char * const *names,
                 InstallChange **changes,
                 size_t *n_changes);
 int unit_file_reenable(
                 RuntimeScope scope,
                 UnitFileFlags flags,
                 const char *root_dir,
-                char **names_or_paths,
+                char * const *names_or_paths,
                 InstallChange **changes,
                 size_t *n_changes);
 int unit_file_preset(
                 RuntimeScope scope,
                 UnitFileFlags flags,
                 const char *root_dir,
-                char **names,
+                char * const *names,
                 UnitFilePresetMode mode,
                 InstallChange **changes,
                 size_t *n_changes);
@@ -142,27 +142,27 @@ int unit_file_mask(
                 RuntimeScope scope,
                 UnitFileFlags flags,
                 const char *root_dir,
-                char **names,
+                char * const *names,
                 InstallChange **changes,
                 size_t *n_changes);
 int unit_file_unmask(
                 RuntimeScope scope,
                 UnitFileFlags flags,
                 const char *root_dir,
-                char **names,
+                char * const *names,
                 InstallChange **changes,
                 size_t *n_changes);
 int unit_file_link(
                 RuntimeScope scope,
                 UnitFileFlags flags,
                 const char *root_dir,
-                char **files,
+                char * const *files,
                 InstallChange **changes,
                 size_t *n_changes);
 int unit_file_revert(
                 RuntimeScope scope,
                 const char *root_dir,
-                char **names,
+                char * const *names,
                 InstallChange **changes,
                 size_t *n_changes);
 int unit_file_set_default(
@@ -175,12 +175,12 @@ int unit_file_set_default(
 int unit_file_get_default(
                 RuntimeScope scope,
                 const char *root_dir,
-                char **name);
+                char **ret);
 int unit_file_add_dependency(
                 RuntimeScope scope,
                 UnitFileFlags flags,
                 const char *root_dir,
-                char **names,
+                char * const *names,
                 const char *target,
                 UnitDependency dep,
                 InstallChange **changes,
@@ -193,15 +193,24 @@ int unit_file_lookup_state(
                 UnitFileState *ret);
 
 int unit_file_get_state(RuntimeScope scope, const char *root_dir, const char *filename, UnitFileState *ret);
-int unit_file_exists(RuntimeScope scope, const LookupPaths *paths, const char *name);
 
-int unit_file_get_list(RuntimeScope scope, const char *root_dir, Hashmap *h, char **states, char **patterns);
+int unit_file_exists_full(RuntimeScope scope, const LookupPaths *paths, const char *name, char **ret_path);
+static inline int unit_file_exists(RuntimeScope scope, const LookupPaths *paths, const char *name) {
+        return unit_file_exists_full(scope, paths, name, NULL);
+}
 
-extern const struct hash_ops unit_file_list_hash_ops_free;
+int unit_file_get_list(RuntimeScope scope, const char *root_dir, char * const *states, char * const *patterns, Hashmap **ret);
 
 InstallChangeType install_changes_add(InstallChange **changes, size_t *n_changes, InstallChangeType type, const char *path, const char *source);
 void install_changes_free(InstallChange *changes, size_t n_changes);
-void install_changes_dump(int r, const char *verb, const InstallChange *changes, size_t n_changes, bool quiet);
+
+int install_change_dump_error(const InstallChange *change, char **ret_errmsg, const char **ret_bus_error);
+void install_changes_dump(
+                int error,
+                const char *verb,
+                const InstallChange *changes,
+                size_t n_changes,
+                bool quiet);
 
 int unit_file_verify_alias(
                 const InstallInfo *info,
@@ -228,17 +237,17 @@ typedef enum PresetAction {
         _PRESET_ACTION_ERRNO_MAX = -ERRNO_MAX, /* Ensure this type covers the whole negative errno range */
 } PresetAction;
 
-const char *preset_action_past_tense_to_string(PresetAction action);
+const char* preset_action_past_tense_to_string(PresetAction action);
 
 void unit_file_presets_done(UnitFilePresets *p);
 PresetAction unit_file_query_preset(RuntimeScope scope, const char *root_dir, const char *name, UnitFilePresets *cached);
 
-const char *unit_file_state_to_string(UnitFileState s) _const_;
+const char* unit_file_state_to_string(UnitFileState s) _const_;
 UnitFileState unit_file_state_from_string(const char *s) _pure_;
 /* from_string conversion is unreliable because of the overlap between -EPERM and -1 for error. */
 
-const char *install_change_type_to_string(InstallChangeType t) _const_;
+const char* install_change_type_to_string(InstallChangeType t) _const_;
 InstallChangeType install_change_type_from_string(const char *s) _pure_;
 
-const char *unit_file_preset_mode_to_string(UnitFilePresetMode m) _const_;
+const char* unit_file_preset_mode_to_string(UnitFilePresetMode m) _const_;
 UnitFilePresetMode unit_file_preset_mode_from_string(const char *s) _pure_;

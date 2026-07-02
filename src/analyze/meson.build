@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 systemd_analyze_sources = files(
+        'analyze-architectures.c',
         'analyze-blame.c',
         'analyze-calendar.c',
         'analyze-capability.c',
@@ -13,6 +14,7 @@ systemd_analyze_sources = files(
         'analyze-exit-status.c',
         'analyze-fdstore.c',
         'analyze-filesystems.c',
+        'analyze-has-tpm2.c',
         'analyze-image-policy.c',
         'analyze-inspect-elf.c',
         'analyze-log-control.c',
@@ -21,6 +23,7 @@ systemd_analyze_sources = files(
         'analyze-plot.c',
         'analyze-security.c',
         'analyze-service-watchdogs.c',
+        'analyze-smbios11.c',
         'analyze-srk.c',
         'analyze-syscall-filter.c',
         'analyze-time.c',

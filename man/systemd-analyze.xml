@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="systemd-analyze" conditional='ENABLE_ANALYZE'
@@ -80,7 +80,16 @@
       <command>systemd-analyze</command>
       <arg choice="opt" rep="repeat">OPTIONS</arg>
       <arg choice="plain">capability</arg>
-      <arg choice="opt" rep="repeat"><replaceable>CAPABILITY</replaceable></arg>
+      <group choice="opt">
+        <arg choice="plain" rep="repeat"><replaceable>CAPABILITY</replaceable></arg>
+        <arg choice="plain">
+          <group choice="req">
+            <arg choice="plain">-m</arg>
+            <arg choice="plain">--mask</arg>
+          </group>
+          <replaceable>MASK</replaceable>
+        </arg>
+      </group>
     </cmdsynopsis>
     <cmdsynopsis>
       <command>systemd-analyze</command>
@@ -136,13 +145,13 @@
       <command>systemd-analyze</command>
       <arg choice="opt" rep="repeat">OPTIONS</arg>
       <arg choice="plain">verify</arg>
-      <arg choice="opt" rep="repeat"><replaceable>FILE</replaceable></arg>
+      <arg choice="plain" rep="repeat"><replaceable>FILE</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
       <command>systemd-analyze</command>
       <arg choice="opt" rep="repeat">OPTIONS</arg>
       <arg choice="plain">security</arg>
-      <arg choice="plain" rep="repeat"><replaceable>UNIT</replaceable></arg>
+      <arg choice="opt" rep="repeat"><replaceable>UNIT</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
       <command>systemd-analyze</command>
@@ -160,7 +169,7 @@
       <command>systemd-analyze</command>
       <arg choice="opt" rep="repeat">OPTIONS</arg>
       <arg choice="plain">fdstore</arg>
-      <arg choice="opt" rep="repeat"><replaceable>UNIT</replaceable></arg>
+      <arg choice="plain" rep="repeat"><replaceable>UNIT</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
       <command>systemd-analyze</command>
@@ -171,13 +180,30 @@
     <cmdsynopsis>
       <command>systemd-analyze</command>
       <arg choice="opt" rep="repeat">OPTIONS</arg>
+      <arg choice="plain">has-tpm2</arg>
+    </cmdsynopsis>
+    <cmdsynopsis>
+      <command>systemd-analyze</command>
+      <arg choice="opt" rep="repeat">OPTIONS</arg>
       <arg choice="plain">pcrs</arg>
       <arg choice="opt" rep="repeat"><replaceable>PCR</replaceable></arg>
     </cmdsynopsis>
     <cmdsynopsis>
       <command>systemd-analyze</command>
       <arg choice="opt" rep="repeat">OPTIONS</arg>
-      <arg choice="plain">srk</arg> &gt;<arg choice="plain"><replaceable>FILE</replaceable></arg>
+      <arg choice="plain">srk</arg>
+      <arg choice="opt"><replaceable>&gt;FILE</replaceable></arg>
+    </cmdsynopsis>
+    <cmdsynopsis>
+      <command>systemd-analyze</command>
+      <arg choice="opt" rep="repeat">OPTIONS</arg>
+      <arg choice="plain">architectures</arg>
+      <arg choice="opt" rep="repeat"><replaceable>NAME</replaceable></arg>
+    </cmdsynopsis>
+    <cmdsynopsis>
+      <command>systemd-analyze</command>
+      <arg choice="opt" rep="repeat">OPTIONS</arg>
+      <arg choice="plain">smbios11</arg>
     </cmdsynopsis>
   </refsynopsisdiv>
 
@@ -224,7 +250,7 @@ multi-user.target reached after 47.820s in userspace
       <para>This command prints a list of all running units, ordered by the time they took to initialize.
       This information may be used to optimize boot-up times. Note that the output might be misleading as the
       initialization of one service might be slow simply because it waits for the initialization of another
-      service to complete.  Also note: <command>systemd-analyze blame</command> doesn't display results for
+      service to complete.  Also note: <command>systemd-analyze blame</command> does not display results for
       services with <varname>Type=simple</varname>, because systemd considers such services to be started
       immediately, hence no measurement of the initialization delays can be done. Also note that this command
       only shows the time units took for starting up, it does not show how long unit jobs spent in the
@@ -245,7 +271,7 @@ multi-user.target reached after 47.820s in userspace
             23ms sysroot.mount
             11ms initrd-udevadm-cleanup-db.service
              3ms sys-kernel-config.mount
-        </programlisting>
+</programlisting>
       </example>
     </refsect2>
 
@@ -260,7 +286,7 @@ multi-user.target reached after 47.820s in userspace
       <command>blame</command> command, this only takes into account the time units spent in
       <literal>activating</literal> state, and hence does not cover units that never went through an
       <literal>activating</literal> state (such as device units that transition directly from
-      <literal>inactive</literal> to <literal>active</literal>). Moreover it does not show information on
+      <literal>inactive</literal> to <literal>active</literal>). Moreover, it does not show information on
       jobs (and in particular not jobs that timed out).</para>
 
       <example>
@@ -340,8 +366,8 @@ $ eog bootup.svg&amp;
 
       <para>Note that this plot is based on the most recent per-unit timing data of loaded units. This means
       that if a unit gets started, then stopped and then started again the information shown will cover the
-      most recent start cycle, not the first one. Thus it's recommended to consult this information only
-      shortly after boot, so that this distinction doesn't matter. Moreover, units that are not referenced by
+      most recent start cycle, not the first one. Thus it is recommended to consult this information only
+      shortly after boot, so that this distinction does not matter. Moreover, units that are not referenced by
       any other unit through a dependency might be unloaded by the service manager once they terminate (and
       did not fail). Such units will not show up in the plot.</para>
     </refsect2>
@@ -408,7 +434,7 @@ $ eog targets.svg</programlisting>
       <title><command>systemd-analyze exit-status <optional><replaceable>STATUS</replaceable>...</optional></command></title>
 
       <para>This command prints a list of exit statuses along with their "class", i.e. the source of the
-      definition (one of <literal>glibc</literal>, <literal>systemd</literal>, <literal>LSB</literal>, or
+      definition (one of <literal>libc</literal>, <literal>systemd</literal>, <literal>LSB</literal>, or
       <literal>BSD</literal>), see the Process Exit Codes section in
       <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
       If no additional arguments are specified, all known statuses are shown. Otherwise, only the
@@ -419,8 +445,8 @@ $ eog targets.svg</programlisting>
 
         <programlisting>$ systemd-analyze exit-status 0 1 {63..65}
 NAME    STATUS CLASS
-SUCCESS 0      glibc
-FAILURE 1      glibc
+SUCCESS 0      libc
+FAILURE 1      libc
 -       63     -
 USAGE   64     BSD
 DATAERR 65     BSD
@@ -429,7 +455,20 @@ DATAERR 65     BSD
     </refsect2>
 
     <refsect2>
-      <title><command>systemd-analyze capability <optional><replaceable>CAPABILITY</replaceable>...</optional></command></title>
+      <title>
+        <command>systemd-analyze capability
+          <group choice="opt">
+            <arg choice="plain" rep="repeat"><replaceable>CAPABILITY</replaceable></arg>
+            <arg choice="plain">
+              <group choice="req">
+                <arg choice="plain">-m</arg>
+                <arg choice="plain">--mask</arg>
+              </group>
+              <replaceable>MASK</replaceable>
+            </arg>
+          </group>
+        </command>
+      </title>
 
       <para>This command prints a list of Linux capabilities along with their numeric IDs. See <citerefentry
       project='man-pages'><refentrytitle>capabilities</refentrytitle><manvolnum>7</manvolnum></citerefentry>
@@ -438,6 +477,11 @@ DATAERR 65     BSD
       as <literal>cap_???</literal>. Optionally, if arguments are specified they may refer to specific
       cabilities by name or numeric ID, in which case only the indicated capabilities are shown in the
       table.</para>
+
+      <para>Alternatively, if <option>--mask</option> is passed, a single numeric argument must be specified,
+      which is interpreted as a hexadecimal capability mask. In this case, only the capabilities present in
+      the mask are shown in the table. This mode is intended to aid in decoding capability sets available
+      via various debugging interfaces (e.g. <literal>/proc/PID/status</literal>).</para>
 
       <example>
         <title><command>Show some example capability names</command></title>
@@ -449,6 +493,18 @@ cap_dac_override       1
 cap_audit_control     30
 cap_setfcap           31
 cap_mac_override      32</programlisting>
+      </example>
+
+      <example>
+        <title><command>Decode a capability mask extracted from /proc</command></title>
+
+        <programlisting>$ systemd-analyze capability -m 0000000000003c00
+NAME                 NUMBER
+cap_net_bind_service     10
+cap_net_broadcast        11
+cap_net_admin            12
+cap_net_raw              13
+</programlisting>
       </example>
     </refsect2>
 
@@ -614,7 +670,7 @@ NAutoVTs=8
 
 # /etc/systemd/logind.conf.d/50-override.conf
 ... some administrator override
-        </programlisting>
+</programlisting>
       </example>
     </refsect2>
 
@@ -627,7 +683,7 @@ NAutoVTs=8
       <para>This command has two distinct modes of operation, depending on whether the operator
       <replaceable>OP</replaceable> is specified.</para>
 
-      <para>In the first mode — when <replaceable>OP</replaceable> is not specified — it will compare the two
+      <para>In the first mode — when <replaceable>OP</replaceable> is not specified —, it will compare the two
       version strings and print either <literal><replaceable>VERSION1</replaceable> &lt;
       <replaceable>VERSION2</replaceable></literal>, or <literal><replaceable>VERSION1</replaceable> ==
       <replaceable>VERSION2</replaceable></literal>, or <literal><replaceable>VERSION1</replaceable> &gt;
@@ -660,7 +716,7 @@ $ systemd-analyze compare-versions 1 lt 2; echo $?
 0
 $ systemd-analyze compare-versions 1 ge 2; echo $?
 1
-        </programlisting>
+</programlisting>
       </example>
     </refsect2>
 
@@ -675,7 +731,9 @@ $ systemd-analyze compare-versions 1 ge 2; echo $?
       augment the compiled in set of unit load paths; see
       <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>. All
       units files present in the directories containing the command line arguments will be used in preference
-      to the other paths.</para>
+      to the other paths. If a template unit without an instance name is specified (e.g.
+      <filename>foo@.service</filename>), <literal>test_instance</literal> will be used as the instance
+      name, which can be controlled by <option>--instance=</option> option.</para>
 
       <para>The following errors are currently detected:</para>
       <itemizedlist>
@@ -710,7 +768,7 @@ Error: org.freedesktop.systemd1.LoadFailed:
    No such file or directory.
 Failed to create user.slice/start: Invalid argument
 user.slice: man nosuchfile(1) command failed with code 16
-        </programlisting>
+</programlisting>
       </example>
 
       <example>
@@ -729,7 +787,7 @@ Accept=yes
 $ systemd-analyze verify ./a.socket ./b.socket
 Service a.service not loaded, a.socket cannot be started.
 Service b@0.service not loaded, b.socket cannot be started.
-        </programlisting>
+</programlisting>
       </example>
 
       <example>
@@ -749,7 +807,7 @@ Failed to prepare filename /tmp/source: Invalid argument
 
 $ systemd-analyze verify /tmp/source:alias.service
 alias.service:7: Unknown key name 'MysteryKey' in section 'Service', ignoring.
-        </programlisting>
+</programlisting>
       </example>
 
     </refsect2>
@@ -828,12 +886,12 @@ alias.service:7: Unknown key name 'MysteryKey' in section 'Service', ignoring.
                 "buildId" : "b5e428254abf14237b0ae70ed85fffbb98a78f88"
         }
 }
-        </programlisting>
+</programlisting>
       </example>
     </refsect2>
 
     <refsect2>
-      <title><command>systemd-analyze fdstore <optional><replaceable>UNIT</replaceable>...</optional></command></title>
+      <title><command>systemd-analyze fdstore <replaceable>UNIT</replaceable>...</command></title>
 
       <para>Lists the current contents of the specified service unit's file descriptor store. This shows
       names, inode types, device numbers, inode numbers, paths and open modes of the open file
@@ -862,7 +920,7 @@ stored sock 0:8   4213190 -      socket:[4213190] ro
     </refsect2>
 
     <refsect2>
-      <title><command>systemd-analyze image-policy <optional><replaceable>POLICY</replaceable>…</optional></command></title>
+      <title><command>systemd-analyze image-policy <replaceable>POLICY</replaceable>…</command></title>
 
       <para>This command analyzes the specified image policy string, as per
       <citerefentry><refentrytitle>systemd.image-policy</refentrytitle><manvolnum>7</manvolnum></citerefentry>. The
@@ -893,6 +951,40 @@ tmp             ignore      -         -
 var             ignore      -         -
 default         ignore      -         -</programlisting>
       </example>
+    </refsect2>
+
+    <refsect2>
+      <title><command>systemd-analyze has-tpm2</command></title>
+
+      <para>Reports whether the system is equipped with a usable TPM2 device. If a TPM2 device has been
+      discovered, is supported, and is being used by firmware, by the OS kernel drivers and by userspace
+      (i.e. systemd) this prints <literal>yes</literal> and exits with exit status zero. If no such device is
+      discovered/supported/used, prints <literal>no</literal>. Otherwise, prints
+      <literal>partial</literal>. In either of these two cases exits with non-zero exit status. It also shows
+      five lines indicating separately whether firmware, drivers, the system, the kernel and libraries
+      discovered/support/use TPM2. Currently, required libraries are <filename>libtss2-esys.so.0</filename>,
+      <filename>libtss2-rc.so.0</filename>, and <filename>libtss2-mu.so.0</filename>. The requirement may be
+      changed in the future release.</para>
+
+      <para>Note, this checks for TPM 2.0 devices only, and does not consider TPM 1.2 at all.</para>
+
+      <para>Combine with <option>--quiet</option> to suppress the output.</para>
+
+      <example>
+        <title>Example Output</title>
+
+        <programlisting>yes
++firmware
++driver
++system
++subsystem
++libraries
+  +libtss2-esys.so.0
+  +libtss2-rc.so.0
+  +libtss2-mu.so.0</programlisting>
+      </example>
+
+      <xi:include href="version-info.xml" xpointer="v257"/>
     </refsect2>
 
     <refsect2>
@@ -933,12 +1025,63 @@ NR NAME                SHA256
     </refsect2>
 
     <refsect2>
-      <title><command>systemd-analyze srk &gt; <replaceable>FILE</replaceable></command></title>
+      <title><command>systemd-analyze srk <optional>&gt;<replaceable>FILE</replaceable></optional></command></title>
 
       <para>This command reads the Storage Root Key (SRK) from the TPM2 device, and writes it in marshalled
-      TPM2B_PUBLIC format to stdout. Example:</para>
+      TPM2B_PUBLIC format to stdout. The output is non-printable data, so it should be redirected to a file
+      or into a pipe.</para>
 
-      <programlisting>systemd-analyze srk &gt; srk.tpm2b_public</programlisting>
+      <example>
+        <title>Save the Storage Root Key to <filename>srk.tpm2b_public</filename></title>
+
+        <programlisting>systemd-analyze srk &gt;srk.tpm2b_public</programlisting>
+      </example>
+    </refsect2>
+
+    <refsect2>
+      <title><command>systemd-analyze architectures <optional><replaceable>NAME</replaceable>...</optional></command></title>
+
+      <para>Lists all known CPU architectures, and which ones are native. The listed architecture names are
+      those <varname>ConditionArchitecture=</varname> supports, see
+      <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry> for
+      details. If architecture names are specified only those specified are listed.</para>
+
+      <example>
+        <title>Table output</title>
+        <programlisting>$ systemd-analyze architectures
+NAME        SUPPORT
+alpha       foreign
+arc         foreign
+arc-be      foreign
+arm         foreign
+arm64       foreign
+…
+sparc       foreign
+sparc64     foreign
+tilegx      foreign
+x86         secondary
+x86-64      native</programlisting>
+      </example>
+    </refsect2>
+
+    <refsect2>
+      <title><command>systemd-analyze smbios11</command></title>
+
+      <para>Shows a list of SMBIOS Type #11 strings passed to the system. Also see
+      <citerefentry><refentrytitle>smbios-type-11</refentrytitle><manvolnum>7</manvolnum></citerefentry>.</para>
+
+      <example>
+        <title>Example output</title>
+        <programlisting>$ systemd-analyze smbios11
+io.systemd.stub.kernel-cmdline-extra=console=ttyS0
+io.systemd.credential.binary:ssh.ephemeral-authorized_keys-all=c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSURGd20xbFp4WlRGclJteG9ZQlozOTYzcE1uYlJCaDMwM1MxVXhLSUM2NmYgbGVubmFydEB6ZXRhCg==
+io.systemd.credential:vmm.notify_socket=vsock-stream:2:254570042
+
+3 SMBIOS Type #11 strings passed.
+</programlisting>
+      </example>
+
+      <xi:include href="version-info.xml" xpointer="v257"/>
     </refsect2>
 
   </refsect1>
@@ -980,16 +1123,12 @@ NR NAME                SHA256
         <term><option>--order</option></term>
         <term><option>--require</option></term>
 
-        <listitem><para>When used in conjunction with the
-        <command>dot</command> command (see above), selects which
-        dependencies are shown in the dependency graph. If
-        <option>--order</option> is passed, only dependencies of type
-        <varname>After=</varname> or <varname>Before=</varname> are
-        shown. If <option>--require</option> is passed, only
-        dependencies of type <varname>Requires=</varname>,
-        <varname>Requisite=</varname>,
-        <varname>Wants=</varname> and <varname>Conflicts=</varname>
-        are shown. If neither is passed, this shows dependencies of
+        <listitem><para>When used in conjunction with the <command>dot</command> command (see above),
+        selects which dependencies are shown in the dependency graph. If <option>--order</option> is passed,
+        only dependencies of type <varname>After=</varname> or <varname>Before=</varname> are shown.
+        If <option>--require</option> is passed, only dependencies of type <varname>Requires=</varname>,
+        <varname>Requisite=</varname>, <varname>BindsTo=</varname>, <varname>Wants=</varname>, and
+        <varname>Conflicts=</varname> are shown. If neither is passed, this shows dependencies of
         all these types.</para>
 
         <xi:include href="version-info.xml" xpointer="v198"/></listitem>
@@ -1022,7 +1161,7 @@ NR NAME                SHA256
       </varlistentry>
 
       <varlistentry>
-        <term><option>--fuzz=</option><replaceable>timespan</replaceable></term>
+        <term><option>--fuzz=<replaceable>timespan</replaceable></option></term>
 
         <listitem><para>When used in conjunction with the
         <command>critical-chain</command> command (see above), also
@@ -1057,6 +1196,20 @@ NR NAME                SHA256
       </varlistentry>
 
       <varlistentry>
+        <term><option>--instance=NAME</option></term>
+
+        <listitem>
+          <para>Specifies fallback instance name for template units. This will be used when one or more
+          template units without an instance name (e.g. <filename>foo@.service</filename>) specified for
+          <command>systemd-analyze condition</command> with <option>--unit=</option>,
+          <command>systemd-analyze security</command>, and <command>systemd-analyze verify</command>.
+          If unspecified, <literal>test_instance</literal> will be used.</para>
+
+          <xi:include href="version-info.xml" xpointer="v257"/>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><option>--recursive-errors=<replaceable>MODE</replaceable></option></term>
 
         <listitem><para>Control verification of units and their dependencies and whether
@@ -1075,8 +1228,10 @@ NR NAME                SHA256
       <varlistentry>
         <term><option>--root=<replaceable>PATH</replaceable></option></term>
 
-        <listitem><para>With <command>cat-files</command> and <command>verify</command>,
-        operate on files underneath the specified root path <replaceable>PATH</replaceable>.</para>
+        <listitem><para>With <command>cat-config</command>, <command>verify</command>,
+        <command>condition</command> and <command>security</command> when used with
+        <option>--offline=</option>, operate on files underneath the specified root path
+        <replaceable>PATH</replaceable>.</para>
 
         <xi:include href="version-info.xml" xpointer="v239"/></listitem>
       </varlistentry>
@@ -1084,8 +1239,10 @@ NR NAME                SHA256
       <varlistentry>
         <term><option>--image=<replaceable>PATH</replaceable></option></term>
 
-        <listitem><para>With <command>cat-files</command> and <command>verify</command>,
-        operate on files inside the specified image path <replaceable>PATH</replaceable>.</para>
+        <listitem><para>With <command>cat-config</command>, <command>verify</command>,
+        <command>condition</command> and <command>security</command> when used with
+        <option>--offline=</option>, operate on files inside the specified image path
+        <replaceable>PATH</replaceable>.</para>
 
         <xi:include href="version-info.xml" xpointer="v250"/></listitem>
       </varlistentry>
@@ -1437,7 +1594,7 @@ NR NAME                SHA256
         <term><option>--base-time=<replaceable>TIMESTAMP</replaceable></option></term>
 
         <listitem><para>When used with the <command>calendar</command> command, show next iterations relative
-        to the specified point in time. If not specified defaults to the current time.</para>
+        to the specified point in time. If not specified, defaults to the current time.</para>
 
         <xi:include href="version-info.xml" xpointer="v244"/></listitem>
       </varlistentry>
@@ -1453,7 +1610,9 @@ NR NAME                SHA256
         compiled in set of unit load paths; see
         <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>. All
         units files present in the directory containing the specified unit will be used in preference to the
-        other paths.</para>
+        other paths. If a template unit without an instance name is specified (e.g.
+        <filename>foo@.service</filename>), <literal>test_instance</literal> will be used as the instance
+        name, which can be controlled by <option>--instance=</option> option.</para>
 
         <xi:include href="version-info.xml" xpointer="v250"/></listitem>
       </varlistentry>
@@ -1481,6 +1640,7 @@ NR NAME                SHA256
       <xi:include href="user-system-options.xml" xpointer="machine" />
 
       <varlistentry>
+        <term><option>-q</option></term>
         <term><option>--quiet</option></term>
 
         <listitem><para>Suppress hints and other non-essential output.</para>
@@ -1498,6 +1658,24 @@ NR NAME                SHA256
         <xi:include href="version-info.xml" xpointer="v255"/></listitem>
       </varlistentry>
 
+      <varlistentry>
+        <term><option>--scale-svg=<replaceable>FACTOR</replaceable></option></term>
+
+        <listitem><para>When used with the <command>plot</command> command, the x-axis of the plot
+        can be stretched by FACTOR (default: 1.0).</para>
+
+        <xi:include href="version-info.xml" xpointer="v257"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--detailed</option></term>
+
+        <listitem><para>When used with the <command>plot</command> command, activation timestamps
+        details can be seen in SVG plot.</para>
+
+        <xi:include href="version-info.xml" xpointer="v257"/></listitem>
+      </varlistentry>
+
       <xi:include href="standard-options.xml" xpointer="help" />
       <xi:include href="standard-options.xml" xpointer="version" />
       <xi:include href="standard-options.xml" xpointer="no-pager" />
@@ -1508,12 +1686,21 @@ NR NAME                SHA256
   <refsect1>
     <title>Exit status</title>
 
-    <para>For most commands, 0 is returned on success, and a non-zero failure code otherwise.</para>
+    <para>For most verbs, <constant>0</constant> is returned on success, and a non-zero failure code
+    otherwise.</para>
 
-    <para>With the verb <command>compare-versions</command>, in the two-argument form,
-    <constant>12</constant>, <constant>0</constant>, <constant>11</constant> is returned if the second
-    version string is respectively larger, equal, or smaller to the first. In the three-argument form,
-    <constant>0</constant> or <constant>1</constant> if the condition is respectively true or false.</para>
+    <para>For the verb <command>compare-versions</command>, in the two-argument form,
+    <constant>12</constant>, <constant>0</constant>, or <constant>11</constant> are returned if the second
+    version string is respectively larger than, equal to, or smaller than the first. In the three-argument
+    form, <constant>0</constant> or <constant>1</constant> are returned when the condition is respectively
+    true or false.</para>
+
+    <para>For the verb <command>has-tpm2</command>, <constant>0</constant> is returned if a TPM2 device is
+    discovered, supported, and used by firmware, driver, and userspace (i.e. <command>systemd</command>).
+    Otherwise, the OR combination of the value <constant>1</constant> (in case firmware support is missing),
+    <constant>2</constant> (in case driver support is missing), and <constant>4</constant> (in case userspace
+    support is missing). If no TPM2 support is available at all, value <constant>7</constant> is hence
+    returned.</para>
   </refsect1>
 
   <xi:include href="common-variables.xml" />
@@ -1578,16 +1765,16 @@ NR NAME                SHA256
     "range": 1
     }
 }
-      </programlisting>
+</programlisting>
     </example>
   </refsect1>
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

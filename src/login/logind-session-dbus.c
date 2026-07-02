@@ -109,6 +109,40 @@ static int property_get_idle_hint(
         return sd_bus_message_append(reply, "b", session_get_idle_hint(s, NULL) > 0);
 }
 
+static int property_get_can_idle(
+                sd_bus *bus,
+                const char *path,
+                const char *interface,
+                const char *property,
+                sd_bus_message *reply,
+                void *userdata,
+                sd_bus_error *error) {
+
+        Session *s = ASSERT_PTR(userdata);
+
+        assert(bus);
+        assert(reply);
+
+        return sd_bus_message_append(reply, "b", SESSION_CLASS_CAN_IDLE(s->class));
+}
+
+static int property_get_can_lock(
+                sd_bus *bus,
+                const char *path,
+                const char *interface,
+                const char *property,
+                sd_bus_message *reply,
+                void *userdata,
+                sd_bus_error *error) {
+
+        Session *s = ASSERT_PTR(userdata);
+
+        assert(bus);
+        assert(reply);
+
+        return sd_bus_message_append(reply, "b", SESSION_CLASS_CAN_LOCK(s->class));
+}
+
 static int property_get_idle_since_hint(
                 sd_bus *bus,
                 const char *path,
@@ -158,13 +192,12 @@ int bus_session_method_terminate(sd_bus_message *message, void *userdata, sd_bus
 
         assert(message);
 
-        r = bus_verify_polkit_async(
+        r = bus_verify_polkit_async_full(
                         message,
-                        CAP_KILL,
                         "org.freedesktop.login1.manage",
-                        NULL,
-                        false,
+                        /* details= */ NULL,
                         s->user->user_record->uid,
+                        /* flags= */ 0,
                         &s->manager->polkit_registry,
                         error);
         if (r < 0)
@@ -204,13 +237,12 @@ int bus_session_method_lock(sd_bus_message *message, void *userdata, sd_bus_erro
 
         assert(message);
 
-        r = bus_verify_polkit_async(
+        r = bus_verify_polkit_async_full(
                         message,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.login1.lock-sessions",
-                        NULL,
-                        false,
+                        /* details= */ NULL,
                         s->user->user_record->uid,
+                        /* flags= */ 0,
                         &s->manager->polkit_registry,
                         error);
         if (r < 0)
@@ -218,7 +250,9 @@ int bus_session_method_lock(sd_bus_message *message, void *userdata, sd_bus_erro
         if (r == 0)
                 return 1; /* Will call us back */
 
-        r = session_send_lock(s, strstr(sd_bus_message_get_member(message), "Lock"));
+        r = session_send_lock(s, /* lock= */ strstr(sd_bus_message_get_member(message), "Lock"));
+        if (r == -ENOTTY)
+                return sd_bus_error_set(error, SD_BUS_ERROR_NOT_SUPPORTED, "Session does not support lock screen.");
         if (r < 0)
                 return r;
 
@@ -250,7 +284,7 @@ static int method_set_idle_hint(sd_bus_message *message, void *userdata, sd_bus_
 
         r = session_set_idle_hint(s, b);
         if (r == -ENOTTY)
-                return sd_bus_error_set(error, SD_BUS_ERROR_NOT_SUPPORTED, "Idle hint control is not supported on non-graphical sessions.");
+                return sd_bus_error_set(error, SD_BUS_ERROR_NOT_SUPPORTED, "Idle hint control is not supported on non-graphical and non-user sessions.");
         if (r < 0)
                 return r;
 
@@ -280,42 +314,45 @@ static int method_set_locked_hint(sd_bus_message *message, void *userdata, sd_bu
         if (uid != 0 && uid != s->user->user_record->uid)
                 return sd_bus_error_set(error, SD_BUS_ERROR_ACCESS_DENIED, "Only owner of session may set locked hint");
 
-        session_set_locked_hint(s, b);
+        r = session_set_locked_hint(s, b);
+        if (r == -ENOTTY)
+                return sd_bus_error_set(error, SD_BUS_ERROR_NOT_SUPPORTED, "Session does not support lock screen.");
+        if (r < 0)
+                return r;
 
         return sd_bus_reply_method_return(message, NULL);
 }
 
 int bus_session_method_kill(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         Session *s = ASSERT_PTR(userdata);
-        const char *swho;
+        const char *swhom;
         int32_t signo;
-        KillWho who;
+        KillWhom whom;
         int r;
 
         assert(message);
 
-        r = sd_bus_message_read(message, "si", &swho, &signo);
+        r = sd_bus_message_read(message, "si", &swhom, &signo);
         if (r < 0)
                 return r;
 
-        if (isempty(swho))
-                who = KILL_ALL;
+        if (isempty(swhom))
+                whom = KILL_ALL;
         else {
-                who = kill_who_from_string(swho);
-                if (who < 0)
-                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid kill parameter '%s'", swho);
+                whom = kill_whom_from_string(swhom);
+                if (whom < 0)
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid kill parameter '%s'", swhom);
         }
 
         if (!SIGNAL_VALID(signo))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid signal %i", signo);
 
-        r = bus_verify_polkit_async(
+        r = bus_verify_polkit_async_full(
                         message,
-                        CAP_KILL,
                         "org.freedesktop.login1.manage",
-                        NULL,
-                        false,
+                        /* details= */ NULL,
                         s->user->user_record->uid,
+                        /* flags= */ 0,
                         &s->manager->polkit_registry,
                         error);
         if (r < 0)
@@ -323,7 +360,7 @@ int bus_session_method_kill(sd_bus_message *message, void *userdata, sd_bus_erro
         if (r == 0)
                 return 1; /* Will call us back */
 
-        r = session_kill(s, who, signo);
+        r = session_kill(s, whom, signo, error);
         if (r < 0)
                 return r;
 
@@ -390,12 +427,71 @@ static int method_set_type(sd_bus_message *message, void *userdata, sd_bus_error
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
                                          "Invalid session type '%s'", t);
 
+        if (!SESSION_CLASS_CAN_CHANGE_TYPE(s->class))
+                return sd_bus_error_set(error, SD_BUS_ERROR_NOT_SUPPORTED, "Session class doesn't support changing type.");
+
         if (!session_is_controller(s, sd_bus_message_get_sender(message)))
                 return sd_bus_error_set(error, BUS_ERROR_NOT_IN_CONTROL, "You must be in control of this session to set type");
 
         session_set_type(s, type);
 
         return sd_bus_reply_method_return(message, NULL);
+}
+
+static int method_set_class(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
+        Session *s = ASSERT_PTR(userdata);
+        SessionClass class;
+        const char *c;
+        uid_t uid;
+        int r;
+
+        assert(message);
+
+        r = sd_bus_message_read(message, "s", &c);
+        if (r < 0)
+                return r;
+
+        class = session_class_from_string(c);
+        if (class < 0)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                         "Invalid session class '%s'", c);
+
+        /* For now, we'll allow only upgrades user-incomplete → user */
+        if (class != SESSION_USER)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                         "Class may only be set to 'user'");
+
+        if (s->class == SESSION_USER) /* No change, shortcut */
+                return sd_bus_reply_method_return(message, NULL);
+        if (s->class != SESSION_USER_INCOMPLETE)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                         "Only sessions with class 'user-incomplete' may change class");
+
+        if (s->upgrade_message)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                         "Set session class operation already in progress");
+
+        r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_EUID, &creds);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_creds_get_euid(creds, &uid);
+        if (r < 0)
+                return r;
+
+        if (uid != 0 && uid != s->user->user_record->uid)
+                return sd_bus_error_set(error, SD_BUS_ERROR_ACCESS_DENIED, "Only owner of session may change its class");
+
+        session_set_class(s, class);
+
+        s->upgrade_message = sd_bus_message_ref(message);
+
+        r = session_send_upgrade_reply(s, /* error= */ NULL);
+        if (r < 0)
+                return r;
+
+        return 1;
 }
 
 static int method_set_display(sd_bus_message *message, void *userdata, sd_bus_error *error) {
@@ -472,6 +568,9 @@ static int method_take_device(sd_bus_message *message, void *userdata, sd_bus_er
 
         if (!DEVICE_MAJOR_VALID(major) || !DEVICE_MINOR_VALID(minor))
                 return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "Device major/minor is not valid.");
+
+        if (!SESSION_CLASS_CAN_TAKE_DEVICE(s->class))
+                return sd_bus_error_set(error, SD_BUS_ERROR_NOT_SUPPORTED, "Session class doesn't support taking device control.");
 
         if (!session_is_controller(s, sd_bus_message_get_sender(message)))
                 return sd_bus_error_set(error, BUS_ERROR_NOT_IN_CONTROL, "You are not in control of this session");
@@ -648,7 +747,7 @@ static int session_object_find(sd_bus *bus, const char *path, const char *interf
         return 1;
 }
 
-char *session_bus_path(Session *s) {
+char* session_bus_path(Session *s) {
         _cleanup_free_ char *t = NULL;
 
         assert(s);
@@ -768,6 +867,9 @@ int session_send_lock(Session *s, bool lock) {
 
         assert(s);
 
+        if (!SESSION_CLASS_CAN_LOCK(s->class))
+                return -ENOTTY;
+
         p = session_bus_path(s);
         if (!p)
                 return -ENOMEM;
@@ -787,30 +889,33 @@ int session_send_lock_all(Manager *m, bool lock) {
         assert(m);
 
         HASHMAP_FOREACH(session, m->sessions) {
-                int k;
 
-                k = session_send_lock(session, lock);
-                if (k < 0)
-                        r = k;
+                if (!SESSION_CLASS_CAN_LOCK(session->class))
+                        continue;
+
+                RET_GATHER(r, session_send_lock(session, lock));
         }
 
         return r;
 }
 
-static bool session_ready(Session *s) {
+static bool session_job_pending(Session *s) {
         assert(s);
+        assert(s->user);
 
-        /* Returns true when the session is ready, i.e. all jobs we enqueued for it are done (regardless if successful or not) */
+        /* Check if we have some jobs enqueued and not finished yet. Each time we get JobRemoved signal about
+         * relevant units, session_send_create_reply and hence us is called (see match_job_removed).
+         * Note that we don't care about job result here. */
 
-        return !s->scope_job &&
-                !s->user->service_job;
+        return s->scope_job ||
+               s->user->runtime_dir_job ||
+               (SESSION_CLASS_WANTS_SERVICE_MANAGER(s->class) && s->user->service_manager_job);
 }
 
 int session_send_create_reply(Session *s, sd_bus_error *error) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *c = NULL;
         _cleanup_close_ int fifo_fd = -EBADF;
         _cleanup_free_ char *p = NULL;
-        int r;
 
         assert(s);
 
@@ -820,7 +925,9 @@ int session_send_create_reply(Session *s, sd_bus_error *error) {
         if (!s->create_message)
                 return 0;
 
-        if (!sd_bus_error_is_set(error) && !session_ready(s))
+        /* If error occurred, return it immediately. Otherwise let's wait for all jobs to finish before
+         * continuing. */
+        if (!sd_bus_error_is_set(error) && session_job_pending(s))
                 return 0;
 
         c = TAKE_PTR(s->create_message);
@@ -830,10 +937,6 @@ int session_send_create_reply(Session *s, sd_bus_error *error) {
         fifo_fd = session_create_fifo(s);
         if (fifo_fd < 0)
                 return fifo_fd;
-
-        r = session_watch_pidfd(s);
-        if (r < 0)
-                return r;
 
         /* Update the session state file before we notify the client about the result. */
         session_save(s);
@@ -865,6 +968,26 @@ int session_send_create_reply(Session *s, sd_bus_error *error) {
                         false);
 }
 
+int session_send_upgrade_reply(Session *s, sd_bus_error *error) {
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *c = NULL;
+        assert(s);
+
+        if (!s->upgrade_message)
+                return 0;
+
+        /* See comments in session_send_create_reply */
+        if (!sd_bus_error_is_set(error) && session_job_pending(s))
+                return 0;
+
+        c = TAKE_PTR(s->upgrade_message);
+        if (error)
+                return sd_bus_reply_method_error(c, error);
+
+        session_save(s);
+
+        return sd_bus_reply_method_return(c, NULL);
+}
+
 static const sd_bus_vtable session_vtable[] = {
         SD_BUS_VTABLE_START(0),
 
@@ -885,12 +1008,14 @@ static const sd_bus_vtable session_vtable[] = {
         SD_BUS_PROPERTY("Leader", "u", bus_property_get_pid, offsetof(Session, leader.pid), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("Audit", "u", NULL, offsetof(Session, audit_id), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("Type", "s", property_get_type, offsetof(Session, type), SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
-        SD_BUS_PROPERTY("Class", "s", property_get_class, offsetof(Session, class), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("Class", "s", property_get_class, offsetof(Session, class), SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("Active", "b", property_get_active, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("State", "s", property_get_state, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("IdleHint", "b", property_get_idle_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("IdleSinceHint", "t", property_get_idle_since_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("IdleSinceHintMonotonic", "t", property_get_idle_since_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+        SD_BUS_PROPERTY("CanIdle", "b", property_get_can_idle, 0, SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("CanLock", "b", property_get_can_lock, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LockedHint", "b", property_get_locked_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
 
         SD_BUS_METHOD("Terminate",
@@ -924,7 +1049,7 @@ static const sd_bus_vtable session_vtable[] = {
                                 method_set_locked_hint,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("Kill",
-                                SD_BUS_ARGS("s", who, "i", signal_number),
+                                SD_BUS_ARGS("s", whom, "i", signal_number),
                                 SD_BUS_NO_RESULT,
                                 bus_session_method_kill,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
@@ -942,6 +1067,11 @@ static const sd_bus_vtable session_vtable[] = {
                                 SD_BUS_ARGS("s", type),
                                 SD_BUS_NO_RESULT,
                                 method_set_type,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_ARGS("SetClass",
+                                SD_BUS_ARGS("s", class),
+                                SD_BUS_NO_RESULT,
+                                method_set_class,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("SetDisplay",
                                 SD_BUS_ARGS("s", display),

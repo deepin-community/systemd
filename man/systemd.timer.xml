@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="systemd.timer" xmlns:xi="http://www.w3.org/2001/XInclude">
@@ -198,7 +198,7 @@
         it is subject to the <varname>AccuracySec=</varname> setting below.</para>
 
         <para>May be specified more than once, in which case the timer unit will trigger whenever any of the
-        specified expressions elapse. Moreover calendar timers and monotonic timers (see above) may be
+        specified expressions elapse. Moreover, calendar timers and monotonic timers (see above) may be
         combined within the same timer unit.</para>
 
         <para>If the empty string is assigned to any of these options, the list of timers is reset (both
@@ -266,9 +266,9 @@
 
         <listitem><para>Delay the timer by a randomly selected, evenly distributed amount of time between 0
         and the specified time value. Defaults to 0, indicating that no randomized delay shall be applied.
-        Each timer unit will determine this delay randomly before each iteration, and the delay will simply
-        be added on top of the next determined elapsing time, unless modified with
-        <varname>FixedRandomDelay=</varname>, see below.</para>
+        Each timer unit will determine this delay randomly before each iteration, unless modified with
+        <varname>FixedRandomDelay=</varname>, see below. The delay is added on top of the next determined
+        elapsing time or the service manager's startup time, whichever is later.</para>
 
         <para>This setting is useful to stretch dispatching of similarly configured timer events over a
         certain time interval, to prevent them from firing all at the same time, possibly resulting in
@@ -292,17 +292,36 @@
       <varlistentry>
         <term><varname>FixedRandomDelay=</varname></term>
 
-        <listitem><para>Takes a boolean argument. When enabled, the randomized offset specified by
-        <varname>RandomizedDelaySec=</varname> is reused for all firings of the same timer. For a given timer
-        unit, the offset depends on the machine ID, user identifier and timer name, which means that it is
-        stable between restarts of the manager. This effectively creates a fixed offset for an individual
-        timer, reducing the jitter in firings of this timer, while still avoiding firing at the same time as
-        other similarly configured timers.</para>
+        <listitem><para>Takes a boolean argument. When enabled, the randomized delay specified by
+        <varname>RandomizedDelaySec=</varname> is chosen deterministically, and remains stable between all
+        firings of the same timer, even if the manager is restarted. The delay is derived from the machine
+        ID, the manager's user identifier, and the timer unit's name. This effectively creates a unique fixed
+        offset for each timer, reducing the jitter in firings of an individual timer while still avoiding
+        firing at the same time as other similarly configured timers.</para>
 
-        <para>This setting has no effect if <varname>RandomizedDelaySec=</varname> is set to 0. Defaults to
+        <para>This setting has an effect only if <varname>RandomizedDelaySec=</varname> is not 0. Defaults to
         <option>false</option>.</para>
 
         <xi:include href="version-info.xml" xpointer="v247"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>DeferReactivation=</varname></term>
+
+        <listitem><para>Takes a boolean argument. When enabled, the timer schedules the next elapse based on
+        the trigger unit entering inactivity, instead of the last trigger time.
+        This is most apparent in the case where the service unit takes longer to run than the timer interval.
+        With this setting enabled, the timer will schedule the next elapse based on when the service finishes
+        running, and so it will have to wait until the next realtime elapse time to trigger.
+        Otherwise, the default behavior is for the timer unit to immediately trigger again once the service
+        finishes running. This happens because the timer schedules the next elapse based on the previous trigger
+        time, and since the interval is shorter than the service runtime, that elapse will be in the past,
+        causing it to immediately trigger once done.</para>
+
+        <para>This setting has an effect only if a realtime timer has been specified with
+        <varname>OnCalendar=</varname>. Defaults to <option>false</option>.</para>
+
+        <xi:include href="version-info.xml" xpointer="v257"/></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -401,16 +420,16 @@
       <literal>Environment Variables Set or Propagated by the Service Manager</literal> section in
       <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>
       for more details.</para>
-      <para>
-        <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd.service</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>prctl</refentrytitle><manvolnum>2</manvolnum></citerefentry>
-      </para>
+      <para><simplelist type="inline">
+        <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemd.service</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>prctl</refentrytitle><manvolnum>2</manvolnum></citerefentry></member>
+      </simplelist></para>
   </refsect1>
 
 </refentry>

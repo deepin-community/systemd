@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "ansi-color.h"
 #include "chattr-util.h"
 #include "fd-util.h"
 #include "iovec-util.h"
@@ -47,7 +48,7 @@ static int raw_verify(const char *fn, const char *verification_key) {
         assert_se(m != NULL);
 
         r = journal_file_open(
-                        /* fd= */ -1,
+                        /* fd= */ -EBADF,
                         fn,
                         O_RDONLY,
                         JOURNAL_COMPRESS|(verification_key ? JOURNAL_SEAL : 0),
@@ -92,7 +93,7 @@ static int run_test(const char *verification_key, ssize_t max_iterations) {
         log_info("Generating a test journal");
 
         assert_se(journal_file_open(
-                                /* fd= */ -1,
+                                /* fd= */ -EBADF,
                                 "test.journal",
                                 O_RDWR|O_CREAT,
                                 JOURNAL_COMPRESS|(verification_key ? JOURNAL_SEAL : 0),
@@ -128,7 +129,7 @@ static int run_test(const char *verification_key, ssize_t max_iterations) {
         log_info("Verifying with key: %s", strna(verification_key));
 
         assert_se(journal_file_open(
-                                /* fd= */ -1,
+                                /* fd= */ -EBADF,
                                 "test.journal",
                                 O_RDONLY,
                                 JOURNAL_COMPRESS|(verification_key ? JOURNAL_SEAL : 0),

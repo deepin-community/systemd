@@ -17,6 +17,7 @@
 #include "devnum-util.h"
 #include "errno-util.h"
 #include "fd-util.h"
+#include "shutdown.h"
 #include "string-util.h"
 
 typedef struct RaidDevice {
@@ -130,13 +131,21 @@ static int delete_md(RaidDevice *m) {
         assert(m->path);
 
         fd = open(m->path, O_RDONLY|O_CLOEXEC|O_EXCL);
-        if (fd < 0)
-                return -errno;
+        if (fd < 0) {
+                if (ERRNO_IS_DEVICE_ABSENT(errno)) {
+                        log_debug_errno(errno, "Tried to open MD device '%s', but device disappeared by now, ignoring: %m", m->path);
+                        return 0;
+                }
 
-        if (fsync(fd) < 0)
-                log_debug_errno(errno, "Failed to sync MD block device %s, ignoring: %m", m->path);
+                return log_debug_errno(errno, "Failed to open MD device '%s': %m", m->path);
+        }
 
-        return RET_NERRNO(ioctl(fd, STOP_ARRAY, NULL));
+        (void) sync_with_progress(fd);
+
+        if (ioctl(fd, STOP_ARRAY, NULL) < 0)
+                return log_debug_errno(errno, "Failed to issue STOP_ARRAY on MD device '%s': %m", m->path);
+
+        return 1;
 }
 
 static int md_points_list_detach(RaidDevice **head, bool *changed, bool last_try) {
@@ -153,7 +162,7 @@ static int md_points_list_detach(RaidDevice **head, bool *changed, bool last_try
                 if ((major(rootdev) != 0 && rootdev == m->devnum) ||
                     (major(usrdev) != 0 && usrdev == m->devnum)) {
                         log_debug("Not detaching MD %s that backs the OS itself, skipping.", m->path);
-                        n_failed ++;
+                        n_failed++;
                         continue;
                 }
 
@@ -164,8 +173,9 @@ static int md_points_list_detach(RaidDevice **head, bool *changed, bool last_try
                         n_failed++;
                         continue;
                 }
+                if (r > 0)
+                        *changed = true;
 
-                *changed = true;
                 raid_device_free(head, m);
         }
 

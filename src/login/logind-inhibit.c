@@ -29,13 +29,13 @@
 
 static void inhibitor_remove_fifo(Inhibitor *i);
 
-int inhibitor_new(Inhibitor **ret, Manager *m, const char* id) {
+int inhibitor_new(Manager *m, const char* id, Inhibitor **ret) {
         _cleanup_(inhibitor_freep) Inhibitor *i = NULL;
         int r;
 
-        assert(ret);
         assert(m);
         assert(id);
+        assert(ret);
 
         i = new(Inhibitor, 1);
         if (!i)
@@ -43,6 +43,8 @@ int inhibitor_new(Inhibitor **ret, Manager *m, const char* id) {
 
         *i = (Inhibitor) {
                 .manager = m,
+                .id = strdup(id),
+                .state_file = path_join("/run/systemd/inhibit/", id),
                 .what = _INHIBIT_WHAT_INVALID,
                 .mode = _INHIBIT_MODE_INVALID,
                 .uid = UID_INVALID,
@@ -50,11 +52,8 @@ int inhibitor_new(Inhibitor **ret, Manager *m, const char* id) {
                 .pid = PIDREF_NULL,
         };
 
-        i->state_file = path_join("/run/systemd/inhibit", id);
-        if (!i->state_file)
+        if (!i->id || !i->state_file)
                 return -ENOMEM;
-
-        i->id = basename(i->state_file);
 
         r = hashmap_put(m->inhibitors, i->id, i);
         if (r < 0)
@@ -79,8 +78,9 @@ Inhibitor* inhibitor_free(Inhibitor *i) {
 
         /* Note that we don't remove neither the state file nor the fifo path here, since we want both to
          * survive daemon restarts */
-        free(i->state_file);
         free(i->fifo_path);
+        free(i->state_file);
+        free(i->id);
 
         pidref_done(&i->pid);
 
@@ -165,7 +165,7 @@ static int bus_manager_send_inhibited_change(Inhibitor *i) {
 
         assert(i);
 
-        property = i->mode == INHIBIT_BLOCK ? "BlockInhibited" : "DelayInhibited";
+        property = IN_SET(i->mode, INHIBIT_BLOCK, INHIBIT_BLOCK_WEAK) ? "BlockInhibited" : "DelayInhibited";
 
         return manager_send_changed(i->manager, property, NULL);
 }
@@ -270,7 +270,7 @@ int inhibitor_load(Inhibitor *i) {
         if (i->fifo_path) {
                 _cleanup_close_ int fd = -EBADF;
 
-                /* Let's re-open the FIFO on both sides, and close the writing side right away */
+                /* Let's reopen the FIFO on both sides, and close the writing side right away */
                 fd = inhibitor_create_fifo(i);
                 if (fd < 0)
                         return log_error_errno(fd, "Failed to reopen FIFO: %m");
@@ -363,14 +363,14 @@ bool inhibitor_is_orphan(Inhibitor *i) {
         return false;
 }
 
-InhibitWhat manager_inhibit_what(Manager *m, InhibitMode mm) {
+InhibitWhat manager_inhibit_what(Manager *m, InhibitMode mode) {
         Inhibitor *i;
         InhibitWhat what = 0;
 
         assert(m);
 
         HASHMAP_FOREACH(i, m->inhibitors)
-                if (i->mode == mm && i->started)
+                if (i->started && i->mode == mode)
                         what |= i->what;
 
         return what;
@@ -399,14 +399,14 @@ static int pidref_is_active_session(Manager *m, const PidRef *pid) {
 bool manager_is_inhibited(
                 Manager *m,
                 InhibitWhat w,
-                InhibitMode mm,
+                bool block,
                 dual_timestamp *since,
                 bool ignore_inactive,
                 bool ignore_uid,
                 uid_t uid,
-                Inhibitor **offending) {
+                Inhibitor **ret_offending) {
 
-        Inhibitor *i;
+        Inhibitor *i, *offending = NULL;
         struct dual_timestamp ts = DUAL_TIMESTAMP_NULL;
         bool inhibited = false;
 
@@ -421,13 +421,14 @@ bool manager_is_inhibited(
                 if (!(i->what & w))
                         continue;
 
-                if (i->mode != mm)
+                if ((block && !IN_SET(i->mode, INHIBIT_BLOCK, INHIBIT_BLOCK_WEAK)) ||
+                    (!block && i->mode != INHIBIT_DELAY))
                         continue;
 
                 if (ignore_inactive && pidref_is_active_session(m, &i->pid) <= 0)
                         continue;
 
-                if (ignore_uid && i->uid == uid)
+                if (i->mode == INHIBIT_BLOCK_WEAK && ignore_uid && i->uid == uid)
                         continue;
 
                 if (!inhibited ||
@@ -436,17 +437,21 @@ bool manager_is_inhibited(
 
                 inhibited = true;
 
-                if (offending)
-                        *offending = i;
+                /* Stronger inhibitor wins */
+                if (!offending || (i->mode < offending->mode))
+                        offending = i;
         }
 
         if (since)
                 *since = ts;
 
+        if (ret_offending)
+                *ret_offending = offending;
+
         return inhibited;
 }
 
-const char *inhibit_what_to_string(InhibitWhat w) {
+const char* inhibit_what_to_string(InhibitWhat w) {
         static thread_local char buffer[STRLEN(
             "shutdown:"
             "sleep:"
@@ -525,8 +530,9 @@ int inhibit_what_from_string(const char *s) {
 }
 
 static const char* const inhibit_mode_table[_INHIBIT_MODE_MAX] = {
-        [INHIBIT_BLOCK] = "block",
-        [INHIBIT_DELAY] = "delay"
+        [INHIBIT_BLOCK]      = "block",
+        [INHIBIT_BLOCK_WEAK] = "block-weak",
+        [INHIBIT_DELAY]      = "delay",
 };
 
 DEFINE_STRING_TABLE_LOOKUP(inhibit_mode, InhibitMode);

@@ -30,8 +30,8 @@ int switch_root(const char *new_root,
                 const char *old_root_after,   /* path below the new root, where to place the old root after the transition; may be NULL to unmount it */
                 SwitchRootFlags flags) {
 
-        /* Stuff mounted below /run/ we don't save on soft reboot, as it might have lost its relevance, i.e.
-         * credentials, removable media and such, we rather want that the new boot mounts this fresh.  But on
+        /* Stuff mounted below /run/ we don't save on soft reboot, as it might have lost its relevance,
+         * e.g. removable media and such. We rather want that the new boot mounts this fresh. But on
          * the switch from initrd we do use MS_REC, as it is expected that mounts set up in /run/ are
          * maintained. */
         static const struct {
@@ -39,13 +39,12 @@ int switch_root(const char *new_root,
                 unsigned long mount_flags;                 /* Flags to apply if SWITCH_ROOT_RECURSIVE_RUN is unset */
                 unsigned long mount_flags_recursive_run;   /* Flags to apply if SWITCH_ROOT_RECURSIVE_RUN is set (0 if shall be skipped) */
         } transfer_table[] = {
-                { "/dev",                                 MS_BIND|MS_REC,  MS_BIND|MS_REC }, /* Recursive, because we want to save the original /dev/shm/ + /dev/pts/ and similar */
-                { "/sys",                                 MS_BIND|MS_REC,  MS_BIND|MS_REC }, /* Similar, we want to retain various API VFS, or the cgroupv1 /sys/fs/cgroup/ tree */
-                { "/proc",                                MS_BIND|MS_REC,  MS_BIND|MS_REC }, /* Similar */
-                { "/run",                                 MS_BIND,         MS_BIND|MS_REC }, /* Recursive except on soft reboot, see above */
-                { SYSTEM_CREDENTIALS_DIRECTORY,           MS_BIND,         0 /* skip! */  }, /* Credentials passed into the system should survive */
-                { ENCRYPTED_SYSTEM_CREDENTIALS_DIRECTORY, MS_BIND,         0 /* skip! */  },  /* Similar */
-                { "/run/host",                            MS_BIND|MS_REC,  0 /* skip! */  },  /* Host supplied hierarchy should also survive */
+                { "/dev",             MS_BIND|MS_REC,  MS_BIND|MS_REC }, /* Recursive, because we want to save the original /dev/shm/ + /dev/pts/ and similar */
+                { "/sys",             MS_BIND|MS_REC,  MS_BIND|MS_REC }, /* Similar, we want to retain various API VFS, or the cgroupv1 /sys/fs/cgroup/ tree */
+                { "/proc",            MS_BIND|MS_REC,  MS_BIND|MS_REC }, /* Similar */
+                { "/run",             MS_BIND,         MS_BIND|MS_REC }, /* Recursive except on soft reboot, see above */
+                { "/run/credentials", MS_BIND|MS_REC,  0 /* skip! */  }, /* Credential mounts should survive */
+                { "/run/host",        MS_BIND|MS_REC,  0 /* skip! */  }, /* Host supplied hierarchy should also survive */
         };
 
         _cleanup_close_ int old_root_fd = -EBADF, new_root_fd = -EBADF;
@@ -59,15 +58,15 @@ int switch_root(const char *new_root,
         if (old_root_fd < 0)
                 return log_error_errno(errno, "Failed to open root directory: %m");
 
-        new_root_fd = open(new_root, O_DIRECTORY|O_CLOEXEC);
+        new_root_fd = open(new_root, O_PATH|O_DIRECTORY|O_CLOEXEC);
         if (new_root_fd < 0)
                 return log_error_errno(errno, "Failed to open target directory '%s': %m", new_root);
 
-        r = inode_same_at(old_root_fd, "", new_root_fd, "", AT_EMPTY_PATH);
+        r = fds_are_same_mount(old_root_fd, new_root_fd);
         if (r < 0)
-                return log_error_errno(r, "Failed to determine if old and new root directory are the same: %m");
+                return log_error_errno(r, "Failed to check if old and new root directory/mount are the same: %m");
         if (r > 0) {
-                log_debug("Skipping switch root, as old and new root directory are the same.");
+                log_debug("Skipping switch root, as old and new root directories/mounts are the same.");
                 return 0;
         }
 
@@ -126,7 +125,7 @@ int switch_root(const char *new_root,
          * and switch_root() nevertheless. */
         (void) base_filesystem_create_fd(new_root_fd, new_root, UID_INVALID, GID_INVALID);
 
-        FOREACH_ARRAY(transfer, transfer_table, ELEMENTSOF(transfer_table)) {
+        FOREACH_ELEMENT(transfer, transfer_table) {
                 _cleanup_free_ char *chased = NULL;
                 unsigned long mount_flags;
 
@@ -144,7 +143,7 @@ int switch_root(const char *new_root,
                         return log_error_errno(r, "Failed to resolve %s/%s: %m", new_root, transfer->path);
 
                 /* Let's see if it is a mount point already. */
-                r = path_is_mount_point(chased, NULL, 0);
+                r = path_is_mount_point(chased);
                 if (r < 0)
                         return log_error_errno(r, "Failed to determine whether %s is a mount point: %m", chased);
                 if (r > 0) /* If it is already mounted, then do nothing */

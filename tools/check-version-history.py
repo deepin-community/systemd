@@ -3,7 +3,12 @@
 
 import os
 import sys
-import lxml.etree as tree
+
+try:
+    import lxml.etree as tree
+except ImportError as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(77)
 
 _parser = tree.XMLParser(resolve_entities=False)
 tree.set_default_parser(_parser)
@@ -18,8 +23,8 @@ def find_undocumented_functions(pages, ignorelist):
         assert pagetree.getroot().tag == "refentry"
 
         hist_section = pagetree.find("refsect1[title='History']")
-        for func in pagetree.findall("//funcprototype/funcdef/function"):
-            path = f"/refsynopsisdiv/funcsynopsis/funcprototype/funcdef/function[.='{func.text}']"
+        for func in pagetree.findall(".//funcprototype/funcdef/function"):
+            path = f"./refsynopsisdiv/funcsynopsis/funcprototype/funcdef/function[.='{func.text}']"
             assert pagetree.findall(path) == [func]
 
             if (
@@ -35,7 +40,7 @@ def construct_path(element):
     tag = element.tag
 
     if tag == "refentry":
-        return ""
+        return "."
 
     predicate = ""
     if tag == "varlistentry":

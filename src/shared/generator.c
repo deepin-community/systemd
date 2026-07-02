@@ -15,6 +15,8 @@
 #include "log.h"
 #include "macro.h"
 #include "mkdir-label.h"
+#include "mountpoint-util.h"
+#include "parse-util.h"
 #include "path-util.h"
 #include "process-util.h"
 #include "special.h"
@@ -24,11 +26,20 @@
 #include "tmpfile-util.h"
 #include "unit-name.h"
 
+static int symlink_unless_exists(const char *to, const char *from) {
+        (void) mkdir_parents(from, 0755);
+
+        if (symlink(to, from) < 0 && errno != EEXIST)
+                return log_error_errno(errno, "Failed to create symlink %s: %m", from);
+        return 0;
+}
+
 int generator_open_unit_file_full(
                 const char *dir,
                 const char *source,
                 const char *fn,
                 FILE **ret_file,
+                char **ret_final_path,
                 char **ret_temp_path) {
 
         _cleanup_free_ char *p = NULL;
@@ -72,9 +83,12 @@ int generator_open_unit_file_full(
                 program_invocation_short_name);
 
         *ret_file = f;
+
+        if (ret_final_path)
+                *ret_final_path = TAKE_PTR(p);
+
         return 0;
 }
-
 
 int generator_add_symlink_full(
                 const char *dir,
@@ -88,11 +102,13 @@ int generator_add_symlink_full(
 
         assert(dir);
         assert(dst);
-        assert(dep_type);
         assert(src);
 
-        /* Adds a symlink from <dst>.<dep_type>/ to <src> (if src is absolute) or ../<src> (otherwise). If
-         * <instance> is specified, then <src> must be a template unit name, and we'll instantiate it. */
+        /* If 'dep_type' is specified adds a symlink from <dst>.<dep_type>/ to <src> (if src is absolute) or ../<src> (otherwise).
+         *
+         * If 'dep_type' is NULL, it will create a symlink to <src> (i.e. create an alias.
+         *
+         * If <instance> is specified, then <src> must be a template unit name, and we'll instantiate it. */
 
         r = path_extract_directory(src, &dn);
         if (r < 0 && r != -EDESTADDRREQ) /* EDESTADDRREQ → just a file name was passed */
@@ -110,20 +126,23 @@ int generator_add_symlink_full(
                         return log_error_errno(r, "Failed to instantiate '%s' for '%s': %m", fn, instance);
         }
 
-        from = path_join(dn ?: "..", fn);
-        if (!from)
-                return log_oom();
+        if (dep_type) { /* Create a .wants/ style dep */
+                from = path_join(dn ?: "..", fn);
+                if (!from)
+                        return log_oom();
 
-        to = strjoin(dir, "/", dst, ".", dep_type, "/", instantiated ?: fn);
+                to = strjoin(dir, "/", dst, ".", dep_type, "/", instantiated ?: fn);
+        } else { /* or create an alias */
+                from = dn ? path_join(dn, fn) : strdup(fn);
+                if (!from)
+                        return log_oom();
+
+                to = strjoin(dir, "/", dst);
+        }
         if (!to)
                 return log_oom();
 
-        (void) mkdir_parents_label(to, 0755);
-
-        if (symlink(from, to) < 0 && errno != EEXIST)
-                return log_error_errno(errno, "Failed to create symlink \"%s\": %m", to);
-
-        return 0;
+        return symlink_unless_exists(from, to);
 }
 
 static int generator_add_ordering(
@@ -296,19 +315,16 @@ int generator_write_fsck_deps(
         }
 
         if (path_equal(where, "/")) {
-                const char *lnk;
-
                 /* We support running the fsck instance for the root fs while it is already mounted, for
                  * compatibility with non-initrd boots. It's ugly, but it is how it is. Since – unlike for
                  * regular file systems – this means the ordering is reversed (i.e. mount *before* fsck) we
                  * have a separate fsck unit for this, independent of systemd-fsck@.service. */
 
-                lnk = strjoina(dir, "/" SPECIAL_LOCAL_FS_TARGET ".wants/" SPECIAL_FSCK_ROOT_SERVICE);
+                const char *lnk = strjoina(dir, "/" SPECIAL_LOCAL_FS_TARGET ".wants/" SPECIAL_FSCK_ROOT_SERVICE);
 
-                (void) mkdir_parents(lnk, 0755);
-                if (symlink(SYSTEM_DATA_UNIT_DIR "/" SPECIAL_FSCK_ROOT_SERVICE, lnk) < 0)
-                        return log_error_errno(errno, "Failed to create symlink %s: %m", lnk);
-
+                r = symlink_unless_exists(SYSTEM_DATA_UNIT_DIR "/" SPECIAL_FSCK_ROOT_SERVICE, lnk);
+                if (r < 0)
+                        return r;
         } else {
                 _cleanup_free_ char *_fsck = NULL;
                 const char *fsck, *dep;
@@ -694,6 +710,77 @@ int generator_hook_up_pcrfs(
         return generator_add_symlink_full(dir, where_unit, "wants", pcrfs_unit_path, instance);
 }
 
+int generator_hook_up_quotacheck(
+                const char *dir,
+                const char *what,
+                const char *where,
+                const char *target,
+                const char *fstype) {
+
+        _cleanup_free_ char *where_unit = NULL, *instance = NULL;
+        int r;
+
+        assert(dir);
+        assert(where);
+
+        if (isempty(fstype) || streq(fstype, "auto"))
+                return log_warning_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Couldn't determine filesystem type for %s, quota cannot be activated", what);
+        if (!fstype_needs_quota(fstype))
+                return log_warning_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Quota was requested for %s, but not supported, ignoring: %s", what, fstype);
+
+        /* quotacheck unit for system root */
+        if (path_equal(where, "/"))
+                return generator_add_symlink(dir, SPECIAL_LOCAL_FS_TARGET, "wants", SYSTEM_DATA_UNIT_DIR "/" SPECIAL_QUOTACHECK_ROOT_SERVICE);
+
+        r = unit_name_path_escape(where, &instance);
+        if (r < 0)
+                return log_error_errno(r, "Failed to escape path '%s': %m", where);
+
+        if (target) {
+                r = generator_add_ordering(dir, target, "After", SPECIAL_QUOTACHECK_SERVICE, instance);
+                if (r < 0)
+                        return r;
+        }
+
+        r = unit_name_from_path(where, ".mount", &where_unit);
+        if (r < 0)
+                return log_error_errno(r, "Failed to make unit name from path '%s': %m", where);
+
+        return generator_add_symlink_full(dir, where_unit, "wants", SYSTEM_DATA_UNIT_DIR "/" SPECIAL_QUOTACHECK_SERVICE, instance);
+}
+
+int generator_hook_up_quotaon(
+                const char *dir,
+                const char *where,
+                const char *target) {
+
+        _cleanup_free_ char *where_unit = NULL, *instance = NULL;
+        int r;
+
+        assert(dir);
+        assert(where);
+
+        /* quotaon unit for system root is not instantiated */
+        if (path_equal(where, "/"))
+                return generator_add_symlink(dir,  SPECIAL_LOCAL_FS_TARGET, "wants", SYSTEM_DATA_UNIT_DIR "/" SPECIAL_QUOTAON_ROOT_SERVICE);
+
+        r = unit_name_path_escape(where, &instance);
+        if (r < 0)
+                return log_error_errno(r, "Failed to escape path '%s': %m", where);
+
+        if (target) {
+                r = generator_add_ordering(dir, target, "After", SPECIAL_QUOTAON_SERVICE, instance);
+                if (r < 0)
+                        return r;
+        }
+
+        r = unit_name_from_path(where, ".mount", &where_unit);
+        if (r < 0)
+                return log_error_errno(r, "Failed to make unit name from path '%s': %m", where);
+
+        return generator_add_symlink_full(dir, where_unit, "wants", SYSTEM_DATA_UNIT_DIR "/" SPECIAL_QUOTAON_SERVICE, instance);
+}
+
 int generator_enable_remount_fs_service(const char *dir) {
         /* Pull in systemd-remount-fs.service */
         return generator_add_symlink(dir, SPECIAL_LOCAL_FS_TARGET, "wants",
@@ -790,6 +877,7 @@ int generator_write_cryptsetup_service_section(
                 "TimeoutSec=infinity\n"   /* The binary handles timeouts on its own */
                 "KeyringMode=shared\n"    /* Make sure we can share cached keys among instances */
                 "OOMScoreAdjust=500\n"    /* Unlocking can allocate a lot of memory if Argon2 is used */
+                "ImportCredential=cryptsetup.*\n"
                 "ExecStart=" SYSTEMD_CRYPTSETUP_PATH " attach '%s' '%s' '%s' '%s'\n"
                 "ExecStop=" SYSTEMD_CRYPTSETUP_PATH " detach '%s'\n",
                 name_escaped, what_escaped, strempty(key_file_escaped), strempty(options_escaped),
@@ -881,8 +969,31 @@ void log_setup_generator(void) {
 
                 /* This effectively means: journal for per-user generators, kmsg otherwise */
                 log_set_target(LOG_TARGET_JOURNAL_OR_KMSG);
-        }
+        } else
+                log_set_target(LOG_TARGET_AUTO);
 
         log_parse_environment();
-        (void) log_open();
+        log_open();
+}
+
+bool generator_soft_rebooted(void) {
+        static int cached = -1;
+        int r;
+
+        if (cached >= 0)
+                return cached;
+
+        const char *e = secure_getenv("SYSTEMD_SOFT_REBOOTS_COUNT");
+        if (!e)
+                return (cached = false);
+
+        unsigned u;
+
+        r = safe_atou(e, &u);
+        if (r < 0) {
+                log_debug_errno(r, "Failed to parse $SYSTEMD_SOFT_REBOOTS_COUNT, assuming the system hasn't soft-rebooted: %m");
+                return (cached = false);
+        }
+
+        return (cached = (u > 0));
 }

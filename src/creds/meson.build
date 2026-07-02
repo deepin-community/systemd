@@ -6,6 +6,7 @@ executables += [
                 'public' : true,
                 'sources' : files('creds.c'),
                 'dependencies' : [
+                        libmount,
                         libopenssl,
                         threads,
                 ],
@@ -23,3 +24,6 @@ if install_sysconfdir
         install_emptydir(sysconfdir / 'credstore.encrypted',
                          install_mode : 'rwx------')
 endif
+
+install_data('io.systemd.credentials.policy',
+             install_dir : polkitpolicydir)

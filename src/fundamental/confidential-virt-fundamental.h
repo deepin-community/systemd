@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+#pragma once
 
 #include <stdint.h>
 
@@ -65,6 +66,7 @@
 
 #define CPUID_HYPERV_ISOLATION_TYPE_MASK UINT32_C(0xf)
 #define CPUID_HYPERV_ISOLATION_TYPE_SNP 2
+#define CPUID_HYPERV_ISOLATION_TYPE_TDX 3
 
 #define EAX_SEV     (UINT32_C(1) << 1)
 #define MSR_SEV     (UINT64_C(1) << 0)

@@ -9,7 +9,7 @@
 #include "dlfcn-util.h"
 #include "env-util.h"
 #include "errno-list.h"
-#include "format-util.h"
+#include "format-ifname.h"
 #include "hexdecoct.h"
 #include "hostname-util.h"
 #include "in-addr-util.h"
@@ -140,7 +140,7 @@ static void test_gethostbyname4_r(void *handle, const char *module, const char *
                         assert_se(status == NSS_STATUS_SUCCESS);
                         assert_se(n == socket_ipv6_is_enabled() + 1);
 
-                } else if (streq(module, "resolve") && getenv_bool_secure("SYSTEMD_NSS_RESOLVE_SYNTHESIZE") != 0) {
+                } else if (streq(module, "resolve") && secure_getenv_bool("SYSTEMD_NSS_RESOLVE_SYNTHESIZE") != 0) {
                         assert_se(status == NSS_STATUS_SUCCESS);
                         if (socket_ipv6_is_enabled())
                                 assert_se(n == 2);
@@ -380,7 +380,7 @@ static int test_one_module(const char *dir,
 
         log_info("======== %s ========", module);
 
-        _cleanup_(dlclosep) void *handle = nss_open_handle(dir, module, RTLD_LAZY|RTLD_NODELETE);
+        _cleanup_(dlclosep) void *handle = nss_open_handle(dir, module, RTLD_NOW|RTLD_NODELETE);
         if (!handle)
                 return -EINVAL;
 
@@ -451,7 +451,11 @@ static int parse_argv(int argc, char **argv,
         } else {
                 _cleanup_free_ char *hostname = NULL;
                 assert_se(hostname = gethostname_malloc());
-                assert_se(names = strv_new("localhost", "_gateway", "_outbound", "foo_no_such_host", hostname));
+                assert_se(names = strv_new("localhost",
+                                           "_gateway",
+                                           "_outbound",
+                                           hostname,
+                                           slow_tests_enabled() ? "foo_no_such_host" : NULL));
 
                 n = make_addresses(&addrs);
                 assert_se(n >= 0);

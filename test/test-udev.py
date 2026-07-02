@@ -122,7 +122,7 @@ class Device:
         print(f'check_add {self.devpath}')
 
         devnode = self.get_devnode()
-        st = devnode.stat(follow_symlinks=False)
+        st = devnode.lstat()
         assert stat.S_ISCHR(st.st_mode) or stat.S_ISBLK(st.st_mode)
         self.check_permissions(st)
         self.check_major_minor(st)
@@ -2312,6 +2312,17 @@ SUBSYSTEMS=="scsi", PROGRAM=="/bin/sh -c \"printf %%s 'foo1 foo2' | grep 'foo1 f
         rules  = r"""
         SUBSYSTEM=="block", SUBSYSTEMS=="scsi", KERNEL=="sd*", SYMLINK+="blockdev"
         KERNEL=="sda6", OPTIONS+="link_priority=10"
+        """),
+
+    Rules.new(
+        "case insensitive match",
+        Device(
+            "/devices/pci0000:00/0000:00:1f.2/host0/target0:0:0/0:0:0:0/block/sda/sda1",
+            exp_links     = ["ok"],
+        ),
+
+        rules = r"""
+        KERNEL==i"SDA1", SUBSYSTEMS==i"SCSI", ATTRS{vendor}==i"a?a", SYMLINK+="ok"
         """),
 ]
 

@@ -47,7 +47,6 @@ resolvectl_sources = files(
 ############################################################
 
 dns_type_list_txt = custom_target(
-        'dns_type-list.txt',
         input : ['generate-dns_type-list.sed', 'dns-type.h'],
         output : 'dns_type-list.txt',
         command : [sed, '-n', '-r', '-f', '@INPUT0@', '@INPUT1@'],
@@ -56,14 +55,12 @@ dns_type_list_txt = custom_target(
 generate_dns_type_gperf = find_program('generate-dns_type-gperf.py')
 
 gperf_file = custom_target(
-        'dns_type-from-name.gperf',
         input : dns_type_list_txt,
         output : 'dns_type-from-name.gperf',
         command : [generate_dns_type_gperf, 'dns_type', 'DNS_TYPE_', '@INPUT@'],
         capture : true)
 
 basic_dns_sources += custom_target(
-        'dns_type-from-name.h',
         input : gperf_file,
         output : 'dns_type-from-name.h',
         command : [gperf,
@@ -75,7 +72,6 @@ basic_dns_sources += custom_target(
         capture : true)
 
 basic_dns_sources += custom_target(
-        'dns_type-to-name.h',
         input : ['dns_type-to-name.awk', dns_type_list_txt],
         output : 'dns_type-to-name.h',
         command : [awk, '-f', '@INPUT0@', '@INPUT1@'],
@@ -89,13 +85,11 @@ libsystemd_resolve_core = static_library(
         build_by_default : false)
 
 systemd_resolved_sources += custom_target(
-        'resolved_gperf.c',
         input : 'resolved-gperf.gperf',
         output : 'resolved-gperf.c',
         command : [gperf, '@INPUT@', '--output-file', '@OUTPUT@'])
 
 systemd_resolved_sources += custom_target(
-        'resolved_dnssd_gperf.c',
         input : 'resolved-dnssd-gperf.gperf',
         output : 'resolved-dnssd-gperf.c',
         command : [gperf, '@INPUT@', '--output-file', '@OUTPUT@'])
@@ -118,7 +112,6 @@ if conf.get('ENABLE_DNS_OVER_TLS') == 1
 endif
 
 link_with = [
-        libbasic_gcrypt,
         libshared,
         libsystemd_resolve_core,
 ]
@@ -164,7 +157,28 @@ executables += [
                 'sources' : files('test-resolve-tables.c'),
         },
         resolve_test_template + {
+                'sources' : files('test-dns-answer.c'),
+        },
+        resolve_test_template + {
+                'sources' : files(
+                        'test-dns-cache.c',
+                        'resolved-dns-cache.c'
+                ),
+        },
+        resolve_test_template + {
                 'sources' : files('test-dns-packet.c'),
+        },
+        resolve_test_template + {
+                'sources' : files('test-dns-packet-append.c'),
+        },
+        resolve_test_template + {
+                'sources' : files('test-dns-packet-extract.c'),
+        },
+        resolve_test_template + {
+                'sources' : files('test-dns-rr.c'),
+        },
+        resolve_test_template + {
+                'sources' : files('test-dns-question.c'),
         },
         resolve_test_template + {
                 'sources' : files(
@@ -185,6 +199,63 @@ executables += [
         },
         test_template + {
                 'sources' : [
+                        files('test-dns-search-domain.c'),
+                        basic_dns_sources,
+                        systemd_resolved_sources,
+                ],
+                'dependencies' : [
+                        lib_openssl_or_gcrypt,
+                        libm,
+                        systemd_resolved_dependencies,
+                ],
+                'include_directories' : resolve_includes,
+        },
+        test_template + {
+                'sources' : [
+                        files('test-dns-synthesize.c'),
+                        basic_dns_sources,
+                        systemd_resolved_sources,
+                ],
+                'dependencies' : [
+                        systemd_resolved_dependencies,
+                ],
+                'include_directories' : resolve_includes,
+        },
+        test_template + {
+                'sources' : [
+                        files('test-dns-zone.c'),
+                        basic_dns_sources,
+                        systemd_resolved_sources,
+                ],
+                'dependencies' : [
+                        systemd_resolved_dependencies,
+                ],
+                'include_directories' : resolve_includes,
+        },
+        test_template + {
+                'sources' : [
+                        files('test-resolved-link.c'),
+                        basic_dns_sources,
+                        systemd_resolved_sources,
+                ],
+                'dependencies' : [
+                        systemd_resolved_dependencies,
+                ],
+                'include_directories' : resolve_includes,
+        },
+        test_template + {
+                'sources' : [
+                        files('test-dns-query.c'),
+                        basic_dns_sources,
+                        systemd_resolved_sources,
+                ],
+                'dependencies' : [
+                        systemd_resolved_dependencies,
+                ],
+                'include_directories' : resolve_includes,
+        },
+        test_template + {
+                'sources' : [
                         files('test-resolved-stream.c'),
                         basic_dns_sources,
                         systemd_resolved_sources,
@@ -195,6 +266,20 @@ executables += [
                         systemd_resolved_dependencies,
                 ],
                 'include_directories' : resolve_includes,
+        },
+        test_template + {
+                'sources' : [
+                        files('test-resolved-dummy-server.c'),
+                        basic_dns_sources,
+                        systemd_resolved_sources,
+                ],
+                'dependencies' : [
+                        lib_openssl_or_gcrypt,
+                        libm,
+                        systemd_resolved_dependencies,
+                ],
+                'include_directories' : resolve_includes,
+                'type' : 'manual',
         },
         resolve_fuzz_template + {
                 'sources' : files('fuzz-dns-packet.c'),
@@ -232,7 +317,6 @@ if conf.get('ENABLE_RESOLVE') == 1
 endif
 
 custom_target(
-        'resolved.conf',
         input : 'resolved.conf.in',
         output : 'resolved.conf',
         command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],

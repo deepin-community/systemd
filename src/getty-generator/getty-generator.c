@@ -94,9 +94,8 @@ static int verify_tty(const char *name) {
         if (fd < 0)
                 return -errno;
 
-        errno = 0;
-        if (isatty(fd) <= 0)
-                return errno_or_else(EIO);
+        if (!isatty_safe(fd))
+                return -ENOTTY;
 
         return 0;
 }
@@ -151,7 +150,7 @@ static int add_credential_gettys(void) {
         };
         int r;
 
-        FOREACH_ARRAY(t, table, ELEMENTSOF(table)) {
+        FOREACH_ELEMENT(t, table) {
                 _cleanup_free_ char *b = NULL;
                 size_t sz = 0;
 
@@ -271,17 +270,17 @@ static int run(const char *dest, const char *dest_early, const char *dest_late) 
                         return r;
         }
 
-        /* Automatically add in a serial getty on the first virtualizer console */
+        /* Automatically add a serial getty to each available virtualizer console. */
         FOREACH_STRING(j,
                        "hvc0",
                        "xvc0",
                        "hvsi0",
                        "sclp_line0",
                        "ttysclp0",
-                       "3270!tty1") {
+                       "3270/tty1") {
                 _cleanup_free_ char *p = NULL;
 
-                p = path_join("/sys/class/tty", j);
+                p = path_join("/dev", j);
                 if (!p)
                         return log_oom();
                 if (access(p, F_OK) < 0)

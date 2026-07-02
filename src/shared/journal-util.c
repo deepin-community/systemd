@@ -34,7 +34,7 @@ static int access_check_var_log_journal(sd_journal *j, bool want_other_users) {
         _cleanup_strv_free_ char **g = NULL;
         const char* dir;
 
-        if (laccess("/run/log/journal", F_OK) >= 0)
+        if (access_nofollow("/run/log/journal", F_OK) >= 0)
                 dir = "/run/log/journal";
         else
                 dir = "/var/log/journal";
@@ -58,8 +58,7 @@ static int access_check_var_log_journal(sd_journal *j, bool want_other_users) {
                 if (r < 0)
                         return log_oom();
 
-                strv_sort(g);
-                strv_uniq(g);
+                strv_sort_uniq(g);
 
                 s = strv_join(g, "', '");
                 if (!s)
@@ -145,7 +144,7 @@ int journal_access_check_and_warn(sd_journal *j, bool quiet, bool want_other_use
         return r;
 }
 
-int journal_open_machine(sd_journal **ret, const char *machine) {
+int journal_open_machine(sd_journal **ret, const char *machine, int flags) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -178,7 +177,7 @@ int journal_open_machine(sd_journal **ret, const char *machine) {
         if (machine_fd < 0)
                 return log_error_errno(errno, "Failed to duplicate file descriptor: %m");
 
-        r = sd_journal_open_directory_fd(&j, machine_fd, SD_JOURNAL_OS_ROOT | SD_JOURNAL_TAKE_DIRECTORY_FD);
+        r = sd_journal_open_directory_fd(&j, machine_fd, SD_JOURNAL_OS_ROOT | SD_JOURNAL_TAKE_DIRECTORY_FD | flags);
         if (r < 0)
                 return log_error_errno(r, "Failed to open journal in machine '%s': %m", machine);
 

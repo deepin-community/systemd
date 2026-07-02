@@ -43,7 +43,7 @@ typedef enum NFTSetSource {
         NFT_SET_SOURCE_GROUP,
         _NFT_SET_SOURCE_MAX,
         _NFT_SET_SOURCE_INVALID = -EINVAL,
-}  NFTSetSource;
+} NFTSetSource;
 
 typedef struct NFTSet {
         NFTSetSource source;
@@ -60,10 +60,10 @@ typedef struct NFTSetContext {
 void nft_set_context_clear(NFTSetContext *s);
 int nft_set_context_dup(const NFTSetContext *src, NFTSetContext *dst);
 
-const char *nfproto_to_string(int i) _const_;
+const char* nfproto_to_string(int i) _const_;
 int nfproto_from_string(const char *s) _pure_;
 
-const char *nft_set_source_to_string(int i) _const_;
+const char* nft_set_source_to_string(int i) _const_;
 int nft_set_source_from_string(const char *s) _pure_;
 
 int nft_set_element_modify_iprange(

@@ -23,17 +23,17 @@ All tools:
 * `$SYSTEMD_OFFLINE=[0|1]` — if set to `1`, then `systemctl` will refrain from
   talking to PID 1; this has the same effect as the historical detection of
   `chroot()`. Setting this variable to `0` instead has a similar effect as
-  `$SYSTEMD_IGNORE_CHROOT=1`; i.e. tools will try to communicate with PID 1
+  `$SYSTEMD_IN_CHROOT=0`; i.e. tools will try to communicate with PID 1
   even if a `chroot()` environment is detected. You almost certainly want to
   set this to `1` if you maintain a package build system or similar and are
   trying to use a modern container system and not plain `chroot()`.
 
-* `$SYSTEMD_IGNORE_CHROOT=1` — if set, don't check whether being invoked in a
-  `chroot()` environment. This is particularly relevant for systemctl, as it
-  will not alter its behaviour for `chroot()` environments if set. Normally it
-  refrains from talking to PID 1 in such a case; turning most operations such
-  as `start` into no-ops.  If that's what's explicitly desired, you might
-  consider setting `$SYSTEMD_OFFLINE=1`.
+* `$SYSTEMD_IN_CHROOT=0|1` — takes a boolean. If set, overrides chroot detection.
+  This is particularly relevant for systemctl, as it will not alter its behaviour
+  for `chroot()` environments if `SYSTEMD_IN_CHROOT=0`. Normally it refrains from
+  talking to PID 1 in such a case; turning most operations such as `start` into
+  no-ops. If that's what's explicitly desired, you might consider setting
+  `$SYSTEMD_OFFLINE=1`.
 
 * `$SYSTEMD_FIRST_BOOT=0|1` — if set, assume "first boot" condition to be false
   or true, instead of checking the flag file created by PID 1.
@@ -126,6 +126,9 @@ All tools:
 * `$SYSTEMD_NETLINK_DEFAULT_TIMEOUT` — specifies the default timeout of waiting
   replies for netlink messages from the kernel. Defaults to 25 seconds.
 
+* `$SYSTEMD_VERITY_SHARING=0` — if set, sharing dm-verity devices by
+  using a stable `<ROOTHASH>-verity` device mapper name will be disabled.
+
 `systemctl`:
 
 * `$SYSTEMCTL_FORCE_BUS=1` — if set, do not connect to PID 1's private D-Bus
@@ -179,6 +182,17 @@ All tools:
   generating a random one. It is effective when used with `--network-veth`. The
   expected format is six groups of two hexadecimal digits separated by colons,
   e.g. `SYSTEMD_NSPAWN_NETWORK_MAC=12:34:56:78:90:AB`
+
+`systemd-vmspawn`:
+
+* `$SYSTEMD_VMSPAWN_NETWORK_MAC=...` — if set, allows users to set a specific MAC
+  address for a VM, ensuring that it uses the provided value instead of
+  generating a random one. It is effective when used with `--network-tap`. The
+  expected format is six groups of two hexadecimal digits separated by colons,
+  e.g. `SYSTEMD_VMSPAWN_NETWORK_MAC=12:34:56:78:90:AB`
+
+* `$SYSTEMD_VMSPAWN_QEMU_EXTRA=…` – may contain additional command line
+  arguments to append the qemu command line.
 
 `systemd-logind`:
 
@@ -241,13 +255,28 @@ All tools:
   when determining stable network interface names. This may be used to revert
   to naming schemes of older udev versions, in order to provide more stable
   naming across updates. This environment variable takes precedence over the
-  kernel command line option `net.naming-scheme=`, except if the value is
+  kernel command line option `net.naming_scheme=`, except if the value is
   prefixed with `:` in which case the kernel command line option takes
   precedence, if it is specified as well.
 
 * `$SYSTEMD_DEVICE_VERIFY_SYSFS` — if set to "0", disables verification that
   devices sysfs path are actually backed by sysfs. Relaxing this verification
   is useful for testing purposes.
+
+* `$SYSTEMD_UDEV_EXTRA_TIMEOUT_SEC=` — Specifies an extra timespan that the
+  udev manager process waits for a worker process kills slow programs specified
+  by IMPORT{program}=, PROGRAM=, or RUN=, and finalizes the processing event.
+  If the worker process cannot finalize the event within the specified timespan,
+  the worker process is killed by the manager process. Defaults to 10 seconds,
+  maximum allowed is 5 hours.
+
+`udevadm` and `systemd-hwdb`:
+
+* `SYSTEMD_HWDB_UPDATE_BYPASS=` — If set to "1", execution of hwdb updates is skipped
+  when `udevadm hwdb --update` or `systemd-hwdb update` are invoked. This can
+  be useful if either of these tools are invoked unconditionally as a child
+  process by another tool, such as package managers running either of these
+  tools in a postinstall script.
 
 `nss-systemd`:
 
@@ -312,7 +341,7 @@ All tools:
   for cases where we don't need to track given unit type, e.g. `--user` manager
   often doesn't need to deal with device or swap units because they are
   handled by the `--system` manager (PID 1). Note that setting certain unit
-  type as unsupported may not prevent loading some units of that type if they
+  type as unsupported might not prevent loading some units of that type if they
   are referenced by other units of another supported type.
 
 * `$SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_BURST` — can be set to override the mount
@@ -322,6 +351,14 @@ All tools:
   default is not appropriate for a given system. Defaults to `5`, accepts
   positive integers.
 
+* `$SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_INTERVAL_SEC` — can be set to override the
+  mount units interval rate limit for parsing `/proc/self/mountinfo`. Similar
+  to `$SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_BURST`, the interval limit maybe
+  adjusted when the default is not appropriate for a given system. The default
+  value is 1, the default application time unit is second, and the time unit
+  can be overridden as usual by specifying it explicitly, see the
+  systemd.time(7) man page.
+
 `systemd-remount-fs`:
 
 * `$SYSTEMD_REMOUNT_ROOT_RW=1` — if set and no entry for the root directory
@@ -330,16 +367,22 @@ All tools:
   `systemd-gpt-auto-generator` to ensure the root partition is mounted writable
   in accordance to the GPT partition flags.
 
-`systemd-firstboot` and `localectl`:
+`systemd-firstboot`, `localectl`, and `systemd-localed`:
 
 * `$SYSTEMD_LIST_NON_UTF8_LOCALES=1` — if set, non-UTF-8 locales are listed among
   the installed ones. By default non-UTF-8 locales are suppressed from the
   selection, since we are living in the 21st century.
 
+* `$SYSTEMD_KEYMAP_DIRECTORIES=` — takes a colon (`:`) separated list of keymap
+  directories. The directories must be absolute and normalized. If unset, the
+  default keymap directories (/usr/share/keymaps/, /usr/share/kbd/keymaps/, and
+  /usr/lib/kbd/keymaps/) will be used.
+
 `systemd-resolved`:
 
 * `$SYSTEMD_RESOLVED_SYNTHESIZE_HOSTNAME` — if set to "0", `systemd-resolved`
-  won't synthesize system hostname on both regular and reverse lookups.
+  won't synthesize A/AAAA/PTR RRs for the system hostname on either regular nor
+  reverse lookups.
 
 `systemd-sysext`:
 
@@ -354,6 +397,13 @@ All tools:
   `$SYSTEMD_CONFEXT_HIERARCHIES` works for confext images and supports the
   systemd-confext multi-call functionality of sysext.
 
+* `$SYSTEMD_SYSEXT_MUTABLE_MODE` — this variable may be used to override the
+  default mutability mode for hierarchies managed by `systemd-sysext`. It takes
+  the same values the `--mutable=` command line switch does. Note that the
+  command line still overrides the effect of the environment
+  variable. Similarly, `$SYSTEMD_CONFEXT_MUTABLE_MODE` works for confext images
+  and supports the systemd-confext multi-call functionality of sysext.
+
 `systemd-tmpfiles`:
 
 * `$SYSTEMD_TMPFILES_FORCE_SUBVOL` — if unset, `v`/`q`/`Q` lines will create
@@ -362,7 +412,7 @@ All tools:
   subvolumes if the backing filesystem supports them. If set to `0`, these
   lines will always create directories.
 
-`systemd-sysusers`
+`systemd-sysusers`:
 
 * `$SOURCE_DATE_EPOCH` — if unset, the field of the date of last password change
   in `/etc/shadow` will be the number of days from Jan 1, 1970 00:00 UTC until
@@ -462,6 +512,12 @@ disk images with `--image=` or similar:
   devices when opening them. Defaults to on, set this to "0" to disable this
   feature.
 
+* `$SYSTEMD_ALLOW_USERSPACE_VERITY` — takes a boolean, which controls whether
+  to consider the userspace Verity public key store in `/etc/verity.d/` (and
+  related directories) to authenticate signatures on Verity hashes of disk
+  images. Defaults to true, i.e. userspace signature validation is allowed. If
+  false, authentication can be done only via the kernel's internal keyring.
+
 `systemd-cryptsetup`:
 
 * `$SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE` – takes a boolean, which controls
@@ -533,6 +589,14 @@ SYSTEMD_HOME_DEBUG_SUFFIX=foo \
   `mkfs` when formatting LUKS home directories. There's one variable for each
   of the supported file systems for the LUKS home directory backend.
 
+* `$SYSTEMD_HOME_LOCK_FREEZE_SESSION` - Takes a boolean. When false, the user's
+  session will not be frozen when the home directory is locked. Note that the kernel
+  may still freeze any task that tries to access data from the user's locked home
+  directory. This can lead to data loss, security leaks, or other undesired behavior
+  caused by parts of the session becoming unresponsive due to disk I/O while other
+  parts of the session continue running. Thus, we highly recommend that this variable
+  isn't used unless necessary. Defaults to true.
+
 `kernel-install`:
 
 * `$KERNEL_INSTALL_BYPASS` – If set to "1", execution of kernel-install is skipped
@@ -554,6 +618,10 @@ SYSTEMD_HOME_DEBUG_SUFFIX=foo \
   compression mode of existing journal files are not changed. To make the
   specified algorithm takes an effect immediately, you need to explicitly run
   `journalctl --rotate`.
+
+* `$SYSTEMD_JOURNAL_FD_SIZE_MAX` – Takes a size with the usual suffixes (K, M, ...) in
+  string format. Overrides the default maximum allowed size for a file-descriptor
+  based input record to be stored in the journal.
 
 * `$SYSTEMD_CATALOG` – path to the compiled catalog database file to use for
   `journalctl -x`, `journalctl --update-catalog`, `journalctl --list-catalog`
@@ -578,12 +646,23 @@ SYSTEMD_HOME_DEBUG_SUFFIX=foo \
 
 * `$SYSTEMD_REPART_OVERRIDE_FSTYPE` – if set the value will override the file
   system type specified in Format= lines in partition definition files.
+  Additionally, the filesystem for all partitions with a specific designator can
+  be overridden via a correspondingly named environment variable. For example,
+  to override the filesystem type for all partitions with `Type=root`, you can
+  set `SYSTEMD_REPART_OVERRIDE_FSTYPE_ROOT=ext4`.
 
 `systemd-nspawn`, `systemd-networkd`:
 
 * `$SYSTEMD_FIREWALL_BACKEND` – takes a string, either `iptables` or
   `nftables`. Selects the firewall backend to use. If not specified tries to
   use `nftables` and falls back to `iptables` if that's not available.
+
+`systemd-networkd`:
+
+* `$SYSTEMD_NETWORK_PERSISTENT_STORAGE_READY` – takes a boolean. If true,
+  systemd-networkd tries to open the persistent storage on start. To make this
+  work, ProtectSystem=strict in systemd-networkd.service needs to be downgraded
+  or disabled.
 
 `systemd-storagetm`:
 
@@ -595,3 +674,82 @@ SYSTEMD_HOME_DEBUG_SUFFIX=foo \
   latter two via the environment variable unless `systemd-storagetm` is invoked
   to expose a single device only, since those identifiers better should be kept
   unique.
+
+`systemd-pcrlock`, `systemd-pcrextend`:
+
+* `$SYSTEMD_MEASURE_LOG_USERSPACE` – the path to the `tpm2-measure.log` file
+  (containing userspace measurement data) to read. This allows overriding the
+  default of `/run/log/systemd/tpm2-measure.log`.
+
+* `$SYSTEMD_MEASURE_LOG_FIRMWARE` – the path to the `binary_bios_measurements`
+  file (containing firmware measurement data) to read. This allows overriding
+  the default of `/sys/kernel/security/tpm0/binary_bios_measurements`.
+
+`systemd-sleep`:
+
+* `$SYSTEMD_SLEEP_FREEZE_USER_SESSIONS` - Takes a boolean. When true (the default),
+  `user.slice` will be frozen during sleep. When false it will not be. We recommend
+  against using this variable, because it can lead to undesired behavior, especially
+  for systems that use home directory encryption and for
+  `systemd-suspend-then-hibernate.service`.
+
+Tools using the Varlink protocol (such as `varlinkctl`) or sd-bus (such as
+`busctl`):
+
+* `$SYSTEMD_SSH` – the ssh binary to invoke when the `ssh:` transport is
+  used. May be a filename (which is searched for in `$PATH`) or absolute path.
+
+* `$SYSTEMD_VARLINK_LISTEN` – interpreted by some tools that provide a Varlink
+  service. Takes a file system path: if specified the tool will listen on an
+  `AF_UNIX` stream socket on the specified path in addition to whatever else it
+  would listen on. If set to "-" the tool will turn stdin/stdout into a Varlink
+  connection.
+
+`systemd-mountfsd`:
+
+* `$SYSTEMD_MOUNTFSD_TRUSTED_DIRECTORIES` – takes a boolean argument. If true
+  disk images from the usual disk image directories (`/var/lib/machines/`,
+  `/var/lib/confexts/`, …) will be considered "trusted", i.e. are validated
+  with a more relaxed image policy (typically not requiring Verity signature
+  checking) than those from other directories (where Verity signature checks
+  are mandatory). If false all images are treated the same, regardless if
+  placed in the usual disk image directories or elsewhere. If not set defaults
+  to a compile time setting.
+
+* `$SYSTEMD_MOUNTFSD_IMAGE_POLICY_TRUSTED`,
+  `$SYSTEMD_MOUNTFSD_IMAGE_POLICY_UNTRUSTED` – the default image policy to
+  apply to trusted and untrusted disk images. An image is considered trusted if
+  placed in a trusted disk image directory (see above), or if suitable polkit
+  authentication was acquired. See `systemd.image-policy(7)` for the valid
+  syntax for image policy strings.
+
+`systemd-run`, `run0`, `systemd-nspawn`, `systemd-vmspawn`:
+
+* `$SYSTEMD_TINT_BACKGROUND` – Takes a boolean. When false the automatic
+  tinting of the background for containers, VMs, and interactive `systemd-run`
+  and `run0` invocations is turned off. Note that this environment variable has
+  no effect if the background color is explicitly selected via the relevant
+  `--background=` switch of the tool.
+
+* `$SYSTEMD_ADJUST_TERMINAL_TITLE` – Takes a boolean. When false the terminal
+  window title will not be updated for interactive invocation of the mentioned
+  tools.
+
+`systemd-hostnamed`, `systemd-importd`, `systemd-localed`, `systemd-machined`,
+`systemd-portabled`, `systemd-timedated`:
+
+* `SYSTEMD_EXIT_ON_IDLE` – Takes a boolean. When false, the exit-on-idle logic
+  of these services is disabled, making it easier to debug them.
+
+`systemd-ask-password`:
+
+* `$SYSTEMD_ASK_PASSWORD_KEYRING_TIMEOUT_SEC` - takes a timespan, which controls
+  the expiration time of keys stored in the kernel keyring by `systemd-ask-password`.
+  If unset, the default expiration of 150 seconds is used. If set to `0`, keys are
+  not cached in the kernel keyring. If set to `infinity`, keys are cached without an
+  expiration time in the kernel keyring.
+
+* `SYSTEMD_ASK_PASSWORD_KEYRING_TYPE` - takes a keyring ID or one of `thread`,
+  `process`, `session`, `user`, `user-session`, or `group`. Controls the kernel
+  keyring in which `systemd-ask-password` caches the queried password. Defaults
+  to `user`.

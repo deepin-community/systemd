@@ -25,12 +25,11 @@
 #include "pager.h"
 #include "parse-argument.h"
 #include "parse-util.h"
+#include "polkit-agent.h"
 #include "pretty-print.h"
 #include "process-util.h"
 #include "rlimit-util.h"
-#include "sigbus.h"
 #include "signal-util.h"
-#include "spawn-polkit-agent.h"
 #include "string-table.h"
 #include "strv.h"
 #include "sysfs-show.h"
@@ -44,6 +43,7 @@ static BusPrintPropertyFlags arg_print_flags = 0;
 static bool arg_full = false;
 static PagerFlags arg_pager_flags = 0;
 static bool arg_legend = true;
+static sd_json_format_flags_t arg_json_format_flags = SD_JSON_FORMAT_OFF;
 static const char *arg_kill_whom = NULL;
 static int arg_signal = SIGTERM;
 static BusTransport arg_transport = BUS_TRANSPORT_LOCAL;
@@ -113,80 +113,115 @@ static OutputFlags get_output_flags(void) {
                 colors_enabled() * OUTPUT_COLOR;
 }
 
-static int show_table(Table *table, const char *word) {
+static int list_table_print(Table *table, const char *type) {
         int r;
 
         assert(table);
-        assert(word);
+        assert(type);
 
-        if (table_get_rows(table) > 1 || OUTPUT_MODE_IS_JSON(arg_output)) {
-                r = table_set_sort(table, (size_t) 0);
-                if (r < 0)
-                        return table_log_sort_error(r);
+        r = table_set_sort(table, (size_t) 0);
+        if (r < 0)
+                return table_log_sort_error(r);
 
-                table_set_header(table, arg_legend);
-
-                if (OUTPUT_MODE_IS_JSON(arg_output))
-                        r = table_print_json(table, NULL, output_mode_to_json_format_flags(arg_output) | JSON_FORMAT_COLOR_AUTO);
-                else
-                        r = table_print(table, NULL);
-                if (r < 0)
-                        return table_log_print_error(r);
-        }
+        r = table_print_with_pager(table, arg_json_format_flags, arg_pager_flags, arg_legend);
+        if (r < 0)
+                return r;
 
         if (arg_legend) {
-                if (table_get_rows(table) > 1)
-                        printf("\n%zu %s listed.\n", table_get_rows(table) - 1, word);
+                if (table_isempty(table))
+                        printf("No %s.\n", type);
                 else
-                        printf("No %s.\n", word);
+                        printf("\n%zu %s listed.\n", table_get_rows(table) - 1, type);
         }
 
         return 0;
 }
 
-static int list_sessions(int argc, char *argv[], void *userdata) {
+static int list_sessions_table_add(Table *table, sd_bus_message *reply) {
+        int r;
+
+        assert(table);
+        assert(reply);
+
+        r = sd_bus_message_enter_container(reply, 'a', "(sussussbto)");
+        if (r < 0)
+                return bus_log_parse_error(r);
+
+        for (;;) {
+                const char *session_id, *user, *seat, *class, *tty;
+                uint32_t uid, leader_pid;
+                int idle;
+                uint64_t idle_timestamp_monotonic;
+
+                r = sd_bus_message_read(reply, "(sussussbto)",
+                                        &session_id,
+                                        &uid,
+                                        &user,
+                                        &seat,
+                                        &leader_pid,
+                                        &class,
+                                        &tty,
+                                        &idle,
+                                        &idle_timestamp_monotonic,
+                                        /* object = */ NULL);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+                if (r == 0)
+                        break;
+
+                r = table_add_many(table,
+                                   TABLE_STRING, session_id,
+                                   TABLE_UID, (uid_t) uid,
+                                   TABLE_STRING, user,
+                                   TABLE_STRING, empty_to_null(seat),
+                                   TABLE_PID, (pid_t) leader_pid,
+                                   TABLE_STRING, class,
+                                   TABLE_STRING, empty_to_null(tty),
+                                   TABLE_BOOLEAN, idle);
+                if (r < 0)
+                        return table_log_add_error(r);
+
+                if (idle)
+                        r = table_add_cell(table, NULL, TABLE_TIMESTAMP_RELATIVE_MONOTONIC, &idle_timestamp_monotonic);
+                else
+                        r = table_add_cell(table, NULL, TABLE_EMPTY, NULL);
+                if (r < 0)
+                        return table_log_add_error(r);
+        }
+
+        r = sd_bus_message_exit_container(reply);
+        if (r < 0)
+                return bus_log_parse_error(r);
+
+        return 0;
+}
+
+static int list_sessions_table_add_fallback(Table *table, sd_bus_message *reply, sd_bus *bus) {
 
         static const struct bus_properties_map map[] = {
+                { "Leader",                 "u", NULL, offsetof(SessionStatusInfo, leader)                        },
+                { "Class",                  "s", NULL, offsetof(SessionStatusInfo, class)                         },
+                { "TTY",                    "s", NULL, offsetof(SessionStatusInfo, tty)                           },
                 { "IdleHint",               "b", NULL, offsetof(SessionStatusInfo, idle_hint)                     },
                 { "IdleSinceHintMonotonic", "t", NULL, offsetof(SessionStatusInfo, idle_hint_timestamp.monotonic) },
-                { "State",                  "s", NULL, offsetof(SessionStatusInfo, state)                         },
-                { "TTY",                    "s", NULL, offsetof(SessionStatusInfo, tty)                           },
                 {},
         };
 
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
-        _cleanup_(table_unrefp) Table *table = NULL;
-        sd_bus *bus = ASSERT_PTR(userdata);
         int r;
 
-        assert(argv);
-
-        pager_open(arg_pager_flags);
-
-        r = bus_call_method(bus, bus_login_mgr, "ListSessions", &error, &reply, NULL);
-        if (r < 0)
-                return log_error_errno(r, "Failed to list sessions: %s", bus_error_message(&error, r));
+        assert(table);
+        assert(reply);
+        assert(bus);
 
         r = sd_bus_message_enter_container(reply, 'a', "(susso)");
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        table = table_new("session", "uid", "user", "seat", "tty", "state", "idle", "since");
-        if (!table)
-                return log_oom();
-
-        /* Right-align the first two fields (since they are numeric) */
-        (void) table_set_align_percent(table, TABLE_HEADER_CELL(0), 100);
-        (void) table_set_align_percent(table, TABLE_HEADER_CELL(1), 100);
-
-        (void) table_set_ersatz_string(table, TABLE_ERSATZ_DASH);
-
         for (;;) {
                 _cleanup_(sd_bus_error_free) sd_bus_error e = SD_BUS_ERROR_NULL;
+                _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
                 const char *id, *user, *seat, *object;
                 uint32_t uid;
-                _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
                 SessionStatusInfo i = {};
 
                 r = sd_bus_message_read(reply, "(susso)", &id, &uid, &user, &seat, &object);
@@ -209,8 +244,9 @@ static int list_sessions(int argc, char *argv[], void *userdata) {
                                    TABLE_UID, (uid_t) uid,
                                    TABLE_STRING, user,
                                    TABLE_STRING, empty_to_null(seat),
+                                   TABLE_PID, i.leader,
+                                   TABLE_STRING, i.class,
                                    TABLE_STRING, empty_to_null(i.tty),
-                                   TABLE_STRING, i.state,
                                    TABLE_BOOLEAN, i.idle_hint);
                 if (r < 0)
                         return table_log_add_error(r);
@@ -227,7 +263,49 @@ static int list_sessions(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        return show_table(table, "sessions");
+        return 0;
+}
+
+static int list_sessions(int argc, char *argv[], void *userdata) {
+        sd_bus *bus = ASSERT_PTR(userdata);
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(table_unrefp) Table *table = NULL;
+        bool use_ex = true;
+        int r;
+
+        assert(argv);
+
+        r = bus_call_method(bus, bus_login_mgr, "ListSessionsEx", &error, &reply, NULL);
+        if (r < 0) {
+                if (sd_bus_error_has_name(&error, SD_BUS_ERROR_UNKNOWN_METHOD)) {
+                        sd_bus_error_free(&error);
+
+                        use_ex = false;
+                        r = bus_call_method(bus, bus_login_mgr, "ListSessions", &error, &reply, NULL);
+                }
+                if (r < 0)
+                        return log_error_errno(r, "Failed to list sessions: %s", bus_error_message(&error, r));
+        }
+
+        table = table_new("session", "uid", "user", "seat", "leader", "class", "tty", "idle", "since");
+        if (!table)
+                return log_oom();
+
+        /* Right-align the first two fields (since they are numeric) */
+        (void) table_set_align_percent(table, TABLE_HEADER_CELL(0), 100);
+        (void) table_set_align_percent(table, TABLE_HEADER_CELL(1), 100);
+
+        (void) table_set_ersatz_string(table, TABLE_ERSATZ_DASH);
+
+        if (use_ex)
+                r = list_sessions_table_add(table, reply);
+        else
+                r = list_sessions_table_add_fallback(table, reply, bus);
+        if (r < 0)
+                return r;
+
+        return list_table_print(table, "sessions");
 }
 
 static int list_users(int argc, char *argv[], void *userdata) {
@@ -245,8 +323,6 @@ static int list_users(int argc, char *argv[], void *userdata) {
         int r;
 
         assert(argv);
-
-        pager_open(arg_pager_flags);
 
         r = bus_call_method(bus, bus_login_mgr, "ListUsers", &error, &reply, NULL);
         if (r < 0)
@@ -305,7 +381,7 @@ static int list_users(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        return show_table(table, "users");
+        return list_table_print(table, "users");
 }
 
 static int list_seats(int argc, char *argv[], void *userdata) {
@@ -316,8 +392,6 @@ static int list_seats(int argc, char *argv[], void *userdata) {
         int r;
 
         assert(argv);
-
-        pager_open(arg_pager_flags);
 
         r = bus_call_method(bus, bus_login_mgr, "ListSeats", &error, &reply, NULL);
         if (r < 0)
@@ -351,7 +425,7 @@ static int list_seats(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        return show_table(table, "seats");
+        return list_table_print(table, "seats");
 }
 
 static int show_unit_cgroup(
@@ -547,7 +621,6 @@ static int print_session_status_info(sd_bus *bus, const char *path) {
                         return table_log_add_error(r);
         }
 
-
         if (!isempty(i.seat)) {
                 r = table_add_cell(table, NULL, TABLE_FIELD, "Seat");
                 if (r < 0)
@@ -658,16 +731,15 @@ static int print_session_status_info(sd_bus *bus, const char *path) {
                         show_journal_by_unit(
                                         stdout,
                                         i.scope,
-                                        NULL,
+                                        /* namespace = */ NULL,
                                         arg_output,
-                                        0,
+                                        /* n_columns = */ 0,
                                         i.timestamp.monotonic,
                                         arg_lines,
-                                        0,
                                         get_output_flags() | OUTPUT_BEGIN_NEWLINE,
                                         SD_JOURNAL_LOCAL_ONLY,
-                                        true,
-                                        NULL);
+                                        /* system_unit = */ true,
+                                        /* ellipsized = */ NULL);
         }
 
         return 0;
@@ -764,16 +836,15 @@ static int print_user_status_info(sd_bus *bus, const char *path) {
                         show_journal_by_unit(
                                         stdout,
                                         i.slice,
-                                        NULL,
+                                        /* namespace = */ NULL,
                                         arg_output,
-                                        0,
+                                        /* n_columns = */ 0,
                                         i.timestamp.monotonic,
                                         arg_lines,
-                                        0,
                                         get_output_flags() | OUTPUT_BEGIN_NEWLINE,
                                         SD_JOURNAL_LOCAL_ONLY,
-                                        true,
-                                        NULL);
+                                        /* system_unit = */ true,
+                                        /* ellipsized = */ NULL);
         }
 
         return 0;
@@ -953,7 +1024,6 @@ static int get_bus_path_by_id(
 
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
-        _cleanup_free_ char *p = NULL;
         const char *path;
         int r;
 
@@ -972,12 +1042,7 @@ static int get_bus_path_by_id(
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        p = strdup(path);
-        if (!p)
-                return log_oom();
-
-        *ret = TAKE_PTR(p);
-        return 0;
+        return strdup_to(ret, path);
 }
 
 static int show_session(int argc, char *argv[], void *userdata) {
@@ -1130,7 +1195,7 @@ static int activate(int argc, char *argv[], void *userdata) {
 
         assert(argv);
 
-        polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
+        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         if (argc < 2) {
                 r = sd_bus_call_method(
@@ -1173,7 +1238,7 @@ static int kill_session(int argc, char *argv[], void *userdata) {
 
         assert(argv);
 
-        polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
+        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         if (!arg_kill_whom)
                 arg_kill_whom = "all";
@@ -1201,7 +1266,7 @@ static int enable_linger(int argc, char *argv[], void *userdata) {
 
         assert(argv);
 
-        polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
+        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         b = streq(argv[0], "enable-linger");
 
@@ -1247,7 +1312,7 @@ static int terminate_user(int argc, char *argv[], void *userdata) {
 
         assert(argv);
 
-        polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
+        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         for (int i = 1; i < argc; i++) {
                 uid_t uid;
@@ -1277,7 +1342,7 @@ static int kill_user(int argc, char *argv[], void *userdata) {
 
         assert(argv);
 
-        polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
+        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         if (!arg_kill_whom)
                 arg_kill_whom = "all";
@@ -1315,7 +1380,7 @@ static int attach(int argc, char *argv[], void *userdata) {
 
         assert(argv);
 
-        polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
+        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         for (int i = 2; i < argc; i++) {
 
@@ -1339,7 +1404,7 @@ static int flush_devices(int argc, char *argv[], void *userdata) {
 
         assert(argv);
 
-        polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
+        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         r = bus_call_method(bus, bus_login_mgr, "FlushDevices", &error, NULL, "b", true);
         if (r < 0)
@@ -1355,7 +1420,7 @@ static int lock_sessions(int argc, char *argv[], void *userdata) {
 
         assert(argv);
 
-        polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
+        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         r = bus_call_method(
                         bus,
@@ -1376,7 +1441,7 @@ static int terminate_seat(int argc, char *argv[], void *userdata) {
 
         assert(argv);
 
-        polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
+        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         for (int i = 1; i < argc; i++) {
 
@@ -1442,7 +1507,10 @@ static int help(int argc, char *argv[], void *userdata) {
                "     --kill-whom=WHOM      Whom to send signal to\n"
                "  -s --signal=SIGNAL       Which signal to send\n"
                "  -n --lines=INTEGER       Number of journal entries to show\n"
-               "  -o --output=STRING       Change journal output mode (short, short-precise,\n"
+               "     --json=MODE           Generate JSON output for list-sessions/users/seats\n"
+               "                             (takes one of pretty, short, or off)\n"
+               "  -j                       Same as --json=pretty on tty, --json=short otherwise\n"
+               "  -o --output=MODE         Change journal output mode (short, short-precise,\n"
                "                             short-iso, short-iso-precise, short-full,\n"
                "                             short-monotonic, short-unix, short-delta,\n"
                "                             json, json-pretty, json-sse, json-seq, cat,\n"
@@ -1464,6 +1532,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_VALUE,
                 ARG_NO_PAGER,
                 ARG_NO_LEGEND,
+                ARG_JSON,
                 ARG_KILL_WHOM,
                 ARG_NO_ASK_PASSWORD,
         };
@@ -1477,6 +1546,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "full",            no_argument,       NULL, 'l'                 },
                 { "no-pager",        no_argument,       NULL, ARG_NO_PAGER        },
                 { "no-legend",       no_argument,       NULL, ARG_NO_LEGEND       },
+                { "json",            required_argument, NULL, ARG_JSON            },
                 { "kill-whom",       required_argument, NULL, ARG_KILL_WHOM       },
                 { "signal",          required_argument, NULL, 's'                 },
                 { "host",            required_argument, NULL, 'H'                 },
@@ -1492,7 +1562,7 @@ static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 0);
         assert(argv);
 
-        while ((c = getopt_long(argc, argv, "hp:P:als:H:M:n:o:", options, NULL)) >= 0)
+        while ((c = getopt_long(argc, argv, "hp:P:als:H:M:n:o:j", options, NULL)) >= 0)
 
                 switch (c) {
 
@@ -1546,7 +1616,19 @@ static int parse_argv(int argc, char *argv[]) {
                         if (arg_output < 0)
                                 return log_error_errno(arg_output, "Unknown output '%s'.", optarg);
 
-                        if (OUTPUT_MODE_IS_JSON(arg_output))
+                        break;
+
+                case 'j':
+                        arg_json_format_flags = SD_JSON_FORMAT_PRETTY_AUTO|SD_JSON_FORMAT_COLOR_AUTO;
+                        arg_legend = false;
+                        break;
+
+                case ARG_JSON:
+                        r = parse_json_argument(optarg, &arg_json_format_flags);
+                        if (r <= 0)
+                                return r;
+
+                        if (sd_json_format_enabled(arg_json_format_flags))
                                 arg_legend = false;
 
                         break;
@@ -1632,18 +1714,15 @@ static int run(int argc, char *argv[]) {
         setlocale(LC_ALL, "");
         log_setup();
 
-        /* The journal merging logic potentially needs a lot of fds. */
-        (void) rlimit_nofile_bump(HIGH_RLIMIT_NOFILE);
-
-        sigbus_install();
-
         r = parse_argv(argc, argv);
         if (r <= 0)
                 return r;
 
+        journal_browse_prepare();
+
         r = bus_connect_transport(arg_transport, arg_host, RUNTIME_SCOPE_SYSTEM, &bus);
         if (r < 0)
-                return bus_log_connect_error(r, arg_transport);
+                return bus_log_connect_error(r, arg_transport, RUNTIME_SCOPE_SYSTEM);
 
         (void) sd_bus_set_allow_interactive_authorization(bus, arg_ask_password);
 

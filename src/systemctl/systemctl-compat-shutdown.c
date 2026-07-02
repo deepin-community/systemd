@@ -6,6 +6,7 @@
 #include "pretty-print.h"
 #include "reboot-util.h"
 #include "systemctl-compat-shutdown.h"
+#include "systemctl-logind.h"
 #include "systemctl-sysv-compat.h"
 #include "systemctl.h"
 #include "terminal-util.h"
@@ -35,7 +36,7 @@ static int shutdown_help(void) {
                "     --no-wall   Don't send wall message before halt/power-off/reboot\n"
                "  -c             Cancel a pending shutdown\n"
                "     --show      Show pending shutdown\n"
-               "\n%sThis is a compatibility interface, please use the more powerful 'systemctl reboot',\n"
+               "\n%sThis is a compatibility interface, please use the more powerful 'systemctl halt',\n"
                "'systemctl poweroff', 'systemctl reboot' commands instead.%s\n"
                "\nSee the %s for details.\n",
                program_invocation_short_name,
@@ -137,7 +138,7 @@ int shutdown_parse_argv(int argc, char *argv[]) {
                         return r;
                 }
         } else
-                arg_when = now(CLOCK_REALTIME) + USEC_PER_MINUTE;
+                arg_when = USEC_INFINITY; /* logind chooses on server side */
 
         if (argc > optind && arg_action == ACTION_CANCEL_SHUTDOWN)
                 /* No time argument for shutdown cancel */

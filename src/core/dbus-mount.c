@@ -6,10 +6,32 @@
 #include "dbus-kill.h"
 #include "dbus-mount.h"
 #include "dbus-util.h"
+#include "fstab-util.h"
 #include "mount.h"
 #include "string-util.h"
 #include "unit.h"
 #include "utf8.h"
+
+static int property_get_where(
+                sd_bus *bus,
+                const char *path,
+                const char *interface,
+                const char *property,
+                sd_bus_message *reply,
+                void *userdata,
+                sd_bus_error *error) {
+
+        Mount *m = ASSERT_PTR(userdata);
+
+        assert(bus);
+        assert(reply);
+
+        _cleanup_free_ char *escaped = mount_get_where_escaped(m);
+        if (!escaped)
+                return -ENOMEM;
+
+        return sd_bus_message_append_basic(reply, 's', escaped);
+}
 
 static int property_get_what(
                 sd_bus *bus,
@@ -60,9 +82,9 @@ static BUS_DEFINE_PROPERTY_GET_ENUM(property_get_result, mount_result, MountResu
 
 const sd_bus_vtable bus_mount_vtable[] = {
         SD_BUS_VTABLE_START(0),
-        SD_BUS_PROPERTY("Where", "s", NULL, offsetof(Mount, where), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("Where", "s", property_get_where, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("What", "s", property_get_what, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
-        SD_BUS_PROPERTY("Options","s", property_get_options, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+        SD_BUS_PROPERTY("Options", "s", property_get_options, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("Type", "s", property_get_type, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("TimeoutUSec", "t", bus_property_get_usec, offsetof(Mount, timeout_usec), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("ControlPID", "u", bus_property_get_pid, offsetof(Mount, control_pid.pid), SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
@@ -88,6 +110,7 @@ static int bus_mount_set_transient_property(
                 sd_bus_error *error) {
 
         Unit *u = UNIT(m);
+        int r;
 
         assert(m);
         assert(name);
@@ -98,8 +121,31 @@ static int bus_mount_set_transient_property(
         if (streq(name, "Where"))
                 return bus_set_transient_path(u, name, &m->where, message, flags, error);
 
-        if (streq(name, "What"))
-                return bus_set_transient_string(u, name, &m->parameters_fragment.what, message, flags, error);
+        if (streq(name, "What")) {
+                _cleanup_free_ char *path = NULL;
+                const char *v;
+
+                r = sd_bus_message_read(message, "s", &v);
+                if (r < 0)
+                        return r;
+
+                if (!isempty(v)) {
+                        path = fstab_node_to_udev_node(v);
+                        if (!path)
+                                return -ENOMEM;
+
+                        /* path_is_valid is not used - see the comment for config_parse_mount_node */
+                        if (strlen(path) >= PATH_MAX)
+                                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Resolved What=%s too long", path);
+                }
+
+                if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
+                        free_and_replace(m->parameters_fragment.what, path);
+                        unit_write_settingf(u, flags|UNIT_ESCAPE_SPECIFIERS, name, "What=%s", strempty(m->parameters_fragment.what));
+                }
+
+                return 1;
+        }
 
         if (streq(name, "Options"))
                 return bus_set_transient_string(u, name, &m->parameters_fragment.options, message, flags, error);
@@ -168,7 +214,7 @@ int bus_mount_set_property(
 int bus_mount_commit_properties(Unit *u) {
         assert(u);
 
-        unit_realize_cgroup(u);
+        (void) unit_realize_cgroup(u);
 
         return 0;
 }

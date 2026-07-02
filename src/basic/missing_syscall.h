@@ -22,6 +22,7 @@
 
 #include "macro.h"
 #include "missing_keyctl.h"
+#include "missing_sched.h"
 #include "missing_stat.h"
 #include "missing_syscall_def.h"
 
@@ -412,23 +413,14 @@ static inline int missing_execveat(int dirfd, const char *pathname,
 /* ======================================================================= */
 
 #if !HAVE_CLOSE_RANGE
-static inline int missing_close_range(int first_fd, int end_fd, unsigned flags) {
+static inline int missing_close_range(unsigned first_fd, unsigned end_fd, unsigned flags) {
 #  ifdef __NR_close_range
         /* Kernel-side the syscall expects fds as unsigned integers (just like close() actually), while
-         * userspace exclusively uses signed integers for fds. We don't know just yet how glibc is going to
-         * wrap this syscall, but let's assume it's going to be similar to what they do for close(),
-         * i.e. make the same unsigned → signed type change from the raw kernel syscall compared to the
-         * userspace wrapper. There's only one caveat for this: unlike for close() there's the special
-         * UINT_MAX fd value for the 'end_fd' argument. Let's safely map that to -1 here. And let's refuse
-         * any other negative values. */
-        if ((first_fd < 0) || (end_fd < 0 && end_fd != -1)) {
-                errno = -EBADF;
-                return -1;
-        }
-
+         * userspace exclusively uses signed integers for fds. glibc chose to expose it 1:1 however, hence we
+         * do so here too, even if we end up passing signed fds to it most of the time. */
         return syscall(__NR_close_range,
-                       (unsigned) first_fd,
-                       end_fd == -1 ? UINT_MAX : (unsigned) end_fd, /* Of course, the compiler should figure out that this is the identity mapping IRL */
+                       first_fd,
+                       end_fd,
                        flags);
 #  else
         errno = ENOSYS;
@@ -672,6 +664,22 @@ static inline ssize_t missing_getdents64(int fd, void *buffer, size_t length) {
 }
 
 #  define getdents64 missing_getdents64
+#endif
+
+/* ======================================================================= */
+
+#if !HAVE_SCHED_SETATTR
+
+static inline ssize_t missing_sched_setattr(pid_t pid, struct sched_attr *attr, unsigned int flags) {
+#  if defined __NR_sched_setattr
+        return syscall(__NR_sched_setattr, pid, attr, flags);
+#  else
+        errno = ENOSYS;
+        return -1;
+#  endif
+}
+
+#  define sched_setattr missing_sched_setattr
 #endif
 
 /* ======================================================================= */

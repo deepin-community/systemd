@@ -6,6 +6,7 @@
 
 #include "alloc-util.h"
 #include "conf-files.h"
+#include "env-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
@@ -75,18 +76,15 @@ static int trie_children_cmp(const struct trie_child_entry *a, const struct trie
 }
 
 static int node_add_child(struct trie *trie, struct trie_node *node, struct trie_node *node_child, uint8_t c) {
-        struct trie_child_entry *child;
-
         /* extend array, add new entry, sort for bisection */
-        child = reallocarray(node->children, node->children_count + 1, sizeof(struct trie_child_entry));
-        if (!child)
+        if (!GREEDY_REALLOC(node->children, node->children_count + 1))
                 return -ENOMEM;
 
-        node->children = child;
         trie->children_count++;
-        node->children[node->children_count].c = c;
-        node->children[node->children_count].child = node_child;
-        node->children_count++;
+        node->children[node->children_count++] = (struct trie_child_entry) {
+                .c = c,
+                .child = node_child,
+        };
         typesafe_qsort(node->children, node->children_count, trie_children_cmp);
         trie->nodes_count++;
 
@@ -135,17 +133,16 @@ static int trie_node_add_value(struct trie *trie, struct trie_node *node,
                                const char *key, const char *value,
                                const char *filename, uint16_t file_priority, uint32_t line_number, bool compat) {
         ssize_t k, v, fn = 0;
-        struct trie_value_entry *val;
 
-        k = strbuf_add_string(trie->strings, key, strlen(key));
+        k = strbuf_add_string(trie->strings, key);
         if (k < 0)
                 return k;
-        v = strbuf_add_string(trie->strings, value, strlen(value));
+        v = strbuf_add_string(trie->strings, value);
         if (v < 0)
                 return v;
 
         if (!compat) {
-                fn = strbuf_add_string(trie->strings, filename, strlen(filename));
+                fn = strbuf_add_string(trie->strings, filename);
                 if (fn < 0)
                         return fn;
         }
@@ -154,7 +151,7 @@ static int trie_node_add_value(struct trie *trie, struct trie_node *node,
                 struct trie_value_entry search = {
                         .key_off = k,
                         .value_off = v,
-                };
+                }, *val;
 
                 val = typesafe_bsearch_r(&search, node->values, node->values_count, trie_values_cmp, trie);
                 if (val) {
@@ -169,19 +166,17 @@ static int trie_node_add_value(struct trie *trie, struct trie_node *node,
         }
 
         /* extend array, add new entry, sort for bisection */
-        val = reallocarray(node->values, node->values_count + 1, sizeof(struct trie_value_entry));
-        if (!val)
+        if (!GREEDY_REALLOC(node->values, node->values_count + 1))
                 return -ENOMEM;
+
         trie->values_count++;
-        node->values = val;
-        node->values[node->values_count] = (struct trie_value_entry) {
+        node->values[node->values_count++] = (struct trie_value_entry) {
                 .key_off = k,
                 .value_off = v,
                 .filename_off = fn,
                 .file_priority = file_priority,
                 .line_number = line_number,
         };
-        node->values_count++;
         typesafe_qsort_r(node->values, node->values_count, trie_values_cmp, trie);
         return 0;
 }
@@ -223,7 +218,7 @@ static int trie_insert(struct trie *trie, struct trie_node *node, const char *se
                         if (!s)
                                 return -ENOMEM;
 
-                        off = strbuf_add_string(trie->strings, s, p);
+                        off = strbuf_add_string_full(trie->strings, s, p);
                         if (off < 0)
                                 return off;
 
@@ -253,7 +248,7 @@ static int trie_insert(struct trie *trie, struct trie_node *node, const char *se
                         if (!new_child)
                                 return -ENOMEM;
 
-                        off = strbuf_add_string(trie->strings, search + i+1, strlen(search + i+1));
+                        off = strbuf_add_string(trie->strings, search + i+1);
                         if (off < 0)
                                 return off;
 
@@ -466,7 +461,7 @@ static int import_file(struct trie *trie, const char *filename, uint16_t file_pr
         _cleanup_fclose_ FILE *f = NULL;
         _cleanup_strv_free_ char **match_list = NULL;
         uint32_t line_number = 0;
-        int r, err;
+        int r;
 
         f = fopen(filename, "re");
         if (!f)
@@ -483,7 +478,7 @@ static int import_file(struct trie *trie, const char *filename, uint16_t file_pr
                 if (r == 0)
                         break;
 
-                line_number ++;
+                line_number++;
 
                 /* comment line */
                 if (line[0] == '#')
@@ -506,24 +501,23 @@ static int import_file(struct trie *trie, const char *filename, uint16_t file_pr
                                 break;
 
                         if (line[0] == ' ') {
-                                r = log_syntax(NULL, LOG_WARNING, filename, line_number, SYNTHETIC_ERRNO(EINVAL),
-                                               "Match expected but got indented property \"%s\", ignoring line.", line);
+                                log_syntax(NULL, LOG_WARNING, filename, line_number, 0,
+                                           "Match expected but got indented property \"%s\", ignoring line.", line);
                                 break;
                         }
 
                         /* start of record, first match */
                         state = HW_MATCH;
 
-                        err = strv_extend(&match_list, line);
-                        if (err < 0)
-                                return err;
-
+                        r = strv_extend(&match_list, line);
+                        if (r < 0)
+                                return r;
                         break;
 
                 case HW_MATCH:
                         if (len == 0) {
-                                r = log_syntax(NULL, LOG_WARNING, filename, line_number, SYNTHETIC_ERRNO(EINVAL),
-                                               "Property expected, ignoring record with no properties.");
+                                log_syntax(NULL, LOG_WARNING, filename, line_number, 0,
+                                           "Property expected, ignoring record with no properties.");
                                 state = HW_NONE;
                                 match_list = strv_free(match_list);
                                 break;
@@ -531,18 +525,15 @@ static int import_file(struct trie *trie, const char *filename, uint16_t file_pr
 
                         if (line[0] != ' ') {
                                 /* another match */
-                                err = strv_extend(&match_list, line);
-                                if (err < 0)
-                                        return err;
-
+                                r = strv_extend(&match_list, line);
+                                if (r < 0)
+                                        return r;
                                 break;
                         }
 
                         /* first data */
                         state = HW_DATA;
-                        err = insert_data(trie, match_list, line, filename, file_priority, line_number, compat);
-                        if (err < 0)
-                                r = err;
+                        (void) insert_data(trie, match_list, line, filename, file_priority, line_number, compat);
                         break;
 
                 case HW_DATA:
@@ -554,16 +545,14 @@ static int import_file(struct trie *trie, const char *filename, uint16_t file_pr
                         }
 
                         if (line[0] != ' ') {
-                                r = log_syntax(NULL, LOG_WARNING, filename, line_number, SYNTHETIC_ERRNO(EINVAL),
-                                               "Property or empty line expected, got \"%s\", ignoring record.", line);
+                                log_syntax(NULL, LOG_WARNING, filename, line_number, 0,
+                                           "Property or empty line expected, got \"%s\", ignoring record.", line);
                                 state = HW_NONE;
                                 match_list = strv_free(match_list);
                                 break;
                         }
 
-                        err = insert_data(trie, match_list, line, filename, file_priority, line_number, compat);
-                        if (err < 0)
-                                r = err;
+                        (void) insert_data(trie, match_list, line, filename, file_priority, line_number, compat);
                         break;
                 };
         }
@@ -666,7 +655,7 @@ int hwdb_query(const char *modalias, const char *root) {
         assert(modalias);
 
         if (!isempty(root))
-                NULSTR_FOREACH(p, hwdb_bin_paths) {
+                NULSTR_FOREACH(p, HWDB_BIN_PATHS) {
                         _cleanup_free_ char *hwdb_bin = NULL;
 
                         hwdb_bin = path_join(root, p);
@@ -698,7 +687,7 @@ bool hwdb_should_reload(sd_hwdb *hwdb) {
                 return false;
 
         /* if hwdb.bin doesn't exist anywhere, we need to update */
-        NULSTR_FOREACH(p, hwdb_bin_paths)
+        NULSTR_FOREACH(p, HWDB_BIN_PATHS)
                 if (stat(p, &st) >= 0) {
                         found = true;
                         break;
@@ -709,4 +698,17 @@ bool hwdb_should_reload(sd_hwdb *hwdb) {
         if (timespec_load(&hwdb->st.st_mtim) != timespec_load(&st.st_mtim))
                 return true;
         return false;
+}
+
+int hwdb_bypass(void) {
+        int r;
+
+        r = getenv_bool("SYSTEMD_HWDB_UPDATE_BYPASS");
+        if (r < 0 && r != -ENXIO)
+                log_debug_errno(r, "Failed to parse $SYSTEMD_HWDB_UPDATE_BYPASS, assuming no.");
+        if (r <= 0)
+                return false;
+
+        log_debug("$SYSTEMD_HWDB_UPDATE_BYPASS is enabled, skipping execution.");
+        return true;
 }

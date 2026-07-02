@@ -16,8 +16,10 @@
 #include "networkd-conf.h"
 #include "networkd-manager-bus.h"
 #include "networkd-manager.h"
+#include "networkd-serialize.h"
 #include "service-util.h"
 #include "signal-util.h"
+#include "strv.h"
 #include "user-util.h"
 
 static int run(int argc, char *argv[]) {
@@ -61,7 +63,9 @@ static int run(int argc, char *argv[]) {
                                     (1ULL << CAP_NET_ADMIN) |
                                     (1ULL << CAP_NET_BIND_SERVICE) |
                                     (1ULL << CAP_NET_BROADCAST) |
-                                    (1ULL << CAP_NET_RAW));
+                                    (1ULL << CAP_NET_RAW) |
+                                    (1ULL << CAP_SYS_ADMIN) |
+                                    (1ULL << CAP_BPF));
                 if (r < 0)
                         return log_error_errno(r, "Failed to drop privileges: %m");
         }
@@ -69,17 +73,13 @@ static int run(int argc, char *argv[]) {
         /* Always create the directories people can create inotify watches in.
          * It is necessary to create the following subdirectories after drop_privileges()
          * to support old kernels not supporting AmbientCapabilities=. */
-        r = mkdir_safe_label("/run/systemd/netif/links", 0755, UID_INVALID, GID_INVALID, MKDIR_WARN_MODE);
-        if (r < 0)
-                log_warning_errno(r, "Could not create runtime directory 'links': %m");
-
-        r = mkdir_safe_label("/run/systemd/netif/leases", 0755, UID_INVALID, GID_INVALID, MKDIR_WARN_MODE);
-        if (r < 0)
-                log_warning_errno(r, "Could not create runtime directory 'leases': %m");
-
-        r = mkdir_safe_label("/run/systemd/netif/lldp", 0755, UID_INVALID, GID_INVALID, MKDIR_WARN_MODE);
-        if (r < 0)
-                log_warning_errno(r, "Could not create runtime directory 'lldp': %m");
+        FOREACH_STRING(p,
+                       "/run/systemd/netif/links/",
+                       "/run/systemd/netif/leases/") {
+                r = mkdir_safe_label(p, 0755, UID_INVALID, GID_INVALID, MKDIR_WARN_MODE);
+                if (r < 0)
+                        log_warning_errno(r, "Could not create directory '%s': %m", p);
+        }
 
         r = manager_new(&m, /* test_mode = */ false);
         if (r < 0)
@@ -101,11 +101,13 @@ static int run(int argc, char *argv[]) {
         if (r < 0)
                 return r;
 
+        r = manager_deserialize(m);
+        if (r < 0)
+                log_warning_errno(r, "Failed to deserialize the previous invocation, ignoring: %m");
+
         r = manager_start(m);
         if (r < 0)
                 return log_error_errno(r, "Could not start manager: %m");
-
-        log_info("Enumeration completed");
 
         notify_message = notify_start(NOTIFY_READY, NOTIFY_STOPPING);
 

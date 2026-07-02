@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <linux/ipv6.h>
 #include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,7 +63,7 @@ int parse_tristate_full(const char *v, const char *third, int *ret) {
         return 0;
 }
 
-int parse_pid(const char *s, pid_t* ret_pid) {
+int parse_pid(const char *s, pid_t *ret) {
         unsigned long ul = 0;
         pid_t pid;
         int r;
@@ -81,8 +82,8 @@ int parse_pid(const char *s, pid_t* ret_pid) {
         if (!pid_is_valid(pid))
                 return -ERANGE;
 
-        if (ret_pid)
-                *ret_pid = pid;
+        if (ret)
+                *ret = pid;
         return 0;
 }
 
@@ -633,7 +634,7 @@ int parse_fractional_part_u(const char **p, size_t digits, unsigned *res) {
         s = *p;
 
         /* accept any number of digits, strtoull is limited to 19 */
-        for (size_t i = 0; i < digits; i++,s++) {
+        for (size_t i = 0; i < digits; i++, s++) {
                 if (!ascii_isdigit(*s)) {
                         if (i == 0)
                                 return -EINVAL;
@@ -691,7 +692,7 @@ int parse_ip_port(const char *s, uint16_t *ret) {
         return 0;
 }
 
-int parse_ip_port_range(const char *s, uint16_t *low, uint16_t *high) {
+int parse_ip_port_range(const char *s, uint16_t *low, uint16_t *high, bool allow_zero) {
         unsigned l, h;
         int r;
 
@@ -699,7 +700,10 @@ int parse_ip_port_range(const char *s, uint16_t *low, uint16_t *high) {
         if (r < 0)
                 return r;
 
-        if (l <= 0 || l > 65535 || h <= 0 || h > 65535)
+        if (l > 65535 || h > 65535)
+                return -EINVAL;
+
+        if (!allow_zero && (l == 0 || h == 0))
                 return -EINVAL;
 
         if (h < l)
@@ -707,22 +711,6 @@ int parse_ip_port_range(const char *s, uint16_t *low, uint16_t *high) {
 
         *low = l;
         *high = h;
-
-        return 0;
-}
-
-int parse_ip_prefix_length(const char *s, int *ret) {
-        unsigned l;
-        int r;
-
-        r = safe_atou(s, &l);
-        if (r < 0)
-                return r;
-
-        if (l > 128)
-                return -ERANGE;
-
-        *ret = (int) l;
 
         return 0;
 }

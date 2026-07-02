@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="systemd"
@@ -62,33 +62,44 @@
     <filename>user.conf.d</filename> directories. See
     <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
     for more information.</para>
+
+    <para><command>systemd</command> contains native implementations of various tasks that need to be
+    executed as part of the boot process. For example, it sets the hostname or configures the loopback
+    network device. It also sets up and mounts various API file systems, such as <filename>/sys/</filename>,
+    <filename>/proc/</filename>, and <filename>/dev/</filename>.</para>
+
+    <para><command>systemd</command> will also reset the system clock during early boot if it appears to be
+    set incorrectly. See "System clock epoch" section below.</para>
+
+    <para>Note that some but not all interfaces provided by systemd are covered by the
+    <ulink url="https://systemd.io/PORTABILITY_AND_STABILITY/">Interface Portability and Stability Promise</ulink>.</para>
+
+    <para>The D-Bus API of <command>systemd</command> is described in
+    <citerefentry><refentrytitle>org.freedesktop.systemd1</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+    and
+    <citerefentry><refentrytitle>org.freedesktop.LogControl1</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+    </para>
+
+    <para>Systems which invoke systemd in a container or initrd environment should implement the <ulink
+    url="https://systemd.io/CONTAINER_INTERFACE">Container Interface</ulink> or
+    <ulink url="https://systemd.io/INITRD_INTERFACE/">initrd Interface</ulink>
+    specifications, respectively.</para>
   </refsect1>
 
   <refsect1>
-    <title>Concepts</title>
+    <title>Units</title>
 
-    <para>systemd provides a dependency system between various
-    entities called "units" of 11 different types. Units encapsulate
-    various objects that are relevant for system boot-up and
-    maintenance. The majority of units are configured in unit
-    configuration files, whose syntax and basic set of options is
+    <para>systemd provides a dependency system between various entities called "units" of 11 different
+    types. Units encapsulate various objects that are relevant for system boot-up and maintenance. The
+    majority of units are configured in unit configuration files, whose syntax and basic set of options is
     described in
     <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-    however some are created automatically from other configuration
-    files, dynamically from system state or programmatically at runtime.
-    Units may be "active" (meaning started, bound, plugged in, …,
-    depending on the unit type, see below), or "inactive" (meaning
-    stopped, unbound, unplugged, …), as well as in the process of
-    being activated or deactivated, i.e. between the two states (these
-    states are called "activating", "deactivating"). A special
-    "failed" state is available as well, which is very similar to
-    "inactive" and is entered when the service failed in some way
-    (process returned error code on exit, or crashed, an operation
-    timed out, or after too many restarts). If this state is entered,
-    the cause will be logged, for later reference. Note that the
-    various unit types may have a number of additional substates,
-    which are mapped to the five generalized unit states described
-    here.</para>
+    however some are created automatically from other configuration files, dynamically from system state or
+    programmatically at runtime. Units may be in a number of states, described in the following table. Note
+    that the various unit types may have a number of additional substates, which are mapped to the
+    generalized unit states described here.</para>
+
+    <xi:include href="unit-states.xml" xpointer="table"/>
 
     <para>The following unit types are available:</para>
 
@@ -261,34 +272,10 @@
     example, start jobs for any of those inactive units getting queued as
     well.</para>
 
-    <para>systemd contains native implementations of various tasks
-    that need to be executed as part of the boot process. For example,
-    it sets the hostname or configures the loopback network device. It
-    also sets up and mounts various API file systems, such as
-    <filename>/sys/</filename> or <filename>/proc/</filename>.</para>
-
-    <para>For more information about the concepts and
-    ideas behind systemd, please refer to the
-    <ulink url="https://0pointer.de/blog/projects/systemd.html">Original Design Document</ulink>.</para>
-
-    <para>Note that some but not all interfaces provided by systemd are covered by the
-    <ulink url="https://systemd.io/PORTABILITY_AND_STABILITY/">Interface Portability and Stability Promise</ulink>.</para>
-
     <para>Units may be generated dynamically at boot and system
     manager reload time, for example based on other configuration
     files or parameters passed on the kernel command line. For details, see
     <citerefentry><refentrytitle>systemd.generator</refentrytitle><manvolnum>7</manvolnum></citerefentry>.</para>
-
-    <para>The D-Bus API of <command>systemd</command> is described in
-    <citerefentry><refentrytitle>org.freedesktop.systemd1</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-    and
-    <citerefentry><refentrytitle>org.freedesktop.LogControl1</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
-    </para>
-
-    <para>Systems which invoke systemd in a container or initrd environment should implement the <ulink
-    url="https://systemd.io/CONTAINER_INTERFACE">Container Interface</ulink> or
-    <ulink url="https://systemd.io/INITRD_INTERFACE/">initrd Interface</ulink>
-    specifications, respectively.</para>
   </refsect1>
 
   <refsect1>
@@ -371,6 +358,14 @@
 
   <refsect1>
     <title>Signals</title>
+
+    <para>The service listens to various UNIX process signals that can be used to request various actions
+    asynchronously. The signal handling is enabled very early during boot, before any further processes are
+    invoked. However, a supervising container manager or similar that intends to request these operations via
+    this mechanism must take into consideration that this functionality is not available during the earliest
+    initialization phase. An <function>sd_notify()</function> notification message carrying the
+    <varname>X_SYSTEMD_SIGNALS_LEVEL=2</varname> field is emitted once the signal handlers are enabled, see
+    below. This may be used to schedule submission of these signals correctly.</para>
 
     <variablelist>
       <varlistentry>
@@ -568,7 +563,11 @@
         <listitem><para>Enables display of status messages on the
         console, as controlled via
         <varname>systemd.show_status=1</varname> on the kernel command
-        line.</para></listitem>
+        line.</para>
+        <para>You may want to use <function>SetShowStatus()</function> instead of
+        <constant>SIGRTMIN+20</constant> in order to prevent race conditions. See
+        <citerefentry project="man-pages"><refentrytitle>org.freedesktop.systemd1</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+        </para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -579,7 +578,11 @@
         controlled via
         <varname>systemd.show_status=0</varname>
         on the kernel command
-        line.</para></listitem>
+        line.</para>
+        <para>You may want to use <function>SetShowStatus()</function> instead of
+        <constant>SIGRTMIN+21</constant> in order to prevent race conditions. See
+        <citerefentry project="man-pages"><refentrytitle>org.freedesktop.systemd1</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+        </para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -769,10 +772,11 @@
       <varlistentry>
         <term><varname>$NOTIFY_SOCKET</varname></term>
 
-        <listitem><para>Set by systemd for supervised processes for
-        status and start-up completion notification. See
-        <citerefentry><refentrytitle>sd_notify</refentrytitle><manvolnum>3</manvolnum></citerefentry>
-        for more information.</para></listitem>
+        <listitem><para>Set by service manager for its services for status and readiness notifications. Also
+        consumed by service manager for notifying supervising container managers or service managers up the
+        stack about its own progress. See
+        <citerefentry><refentrytitle>sd_notify</refentrytitle><manvolnum>3</manvolnum></citerefentry> and the
+        relevant section below for more information.</para></listitem>
       </varlistentry>
     </variablelist>
 
@@ -836,24 +840,25 @@
 
         <listitem><para>Takes a boolean argument or enables the option if specified
         without an argument. If enabled, the system manager (PID 1) spawns a shell
-        when it crashes, after a 10s delay. Otherwise, no shell is spawned. Defaults
-        to disabled, for security reasons, as the shell is not protected by password
-        authentication.</para>
+        when it crashes. Otherwise, no shell is spawned. Defaults to disabled, for
+        security reasons, as the shell is not protected by password authentication.</para>
 
         <xi:include href="version-info.xml" xpointer="v233"/></listitem>
       </varlistentry>
 
       <varlistentry>
-        <term><varname>systemd.crash_reboot</varname></term>
+        <term><varname>systemd.crash_action=</varname></term>
 
-        <listitem><para>Takes a boolean argument or enables the option if specified
-        without an argument. If enabled, the system manager (PID 1) will reboot the
-        machine automatically when it crashes, after a 10s delay.  Otherwise, the
-        system will hang indefinitely. Defaults to disabled, in order to avoid a
-        reboot loop. If combined with <varname>systemd.crash_shell</varname>, the
-        system is rebooted after the shell exits.</para>
+        <listitem><para>Takes one of <literal>freeze</literal>, <literal>reboot</literal> or
+        <literal>poweroff</literal>. Defaults to <literal>freeze</literal>. If set to
+        <literal>freeze</literal>, the system will hang indefinitely when the system manager (PID 1) crashes.
+        If set to <literal>reboot</literal>, the system manager (PID 1) will reboot the machine automatically
+        when it crashes, after a 10s delay. If set to <literal>poweroff</literal>, the system manager (PID 1)
+        will power off the machine immediately when it crashes. If combined with
+        <varname>systemd.crash_shell</varname>, the configured crash action is executed after the shell
+        exits.</para>
 
-        <xi:include href="version-info.xml" xpointer="v227"/></listitem>
+        <xi:include href="version-info.xml" xpointer="v256"/></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -1064,12 +1069,9 @@
         <term><varname>5</varname></term>
 
         <listitem><para>Boot into the specified legacy SysV runlevel.
-        These are equivalent to
-        <varname>systemd.unit=runlevel2.target</varname>,
-        <varname>systemd.unit=runlevel3.target</varname>,
-        <varname>systemd.unit=runlevel4.target</varname>, and
-        <varname>systemd.unit=runlevel5.target</varname>,
-        respectively, and provided for compatibility reasons and to be
+        <varname>2</varname>, <varname>3</varname>, and <varname>4</varname> are equivalent to
+        <varname>systemd.unit=multi-user.target</varname>; and <varname>5</varname> is equivalent to
+        <varname>systemd.unit=graphical.target</varname>, and provided for compatibility reasons and to be
         easier to type.</para>
 
         <xi:include href="version-info.xml" xpointer="v186"/></listitem>
@@ -1109,7 +1111,7 @@
   </refsect1>
 
   <refsect1>
-    <title>System credentials</title>
+    <title>System Credentials</title>
 
     <para>During initialization the service manager will import credentials from various sources into the
     system's set of credentials, which can then be propagated into services and consumed by
@@ -1151,14 +1153,18 @@
         <term><varname>vmm.notify_socket</varname></term>
         <listitem>
           <para>Contains a <constant>AF_VSOCK</constant> or <constant>AF_UNIX</constant> address where to
-          send a <constant>READY=1</constant> notification datagram when the system has finished booting. See
-          <citerefentry><refentrytitle>sd_notify</refentrytitle><manvolnum>3</manvolnum></citerefentry> for
-          more information. Note that in case the hypervisor does not support <constant>SOCK_DGRAM</constant>
-          over <constant>AF_VSOCK</constant>, <constant>SOCK_SEQPACKET</constant> will be tried instead. The
-          credential payload for <constant>AF_VSOCK</constant> should be in the form
-          <literal>vsock:CID:PORT</literal>.</para>
+          send a <constant>READY=1</constant> notification message when the service manager has completed
+          booting. See
+          <citerefentry><refentrytitle>sd_notify</refentrytitle><manvolnum>3</manvolnum></citerefentry> and
+          the next section for more information. Note that in case the hypervisor does not support
+          <constant>SOCK_DGRAM</constant> over <constant>AF_VSOCK</constant>,
+          <constant>SOCK_SEQPACKET</constant> will be tried instead. The credential payload for
+          <constant>AF_VSOCK</constant> should be a string in the form
+          <literal>vsock:CID:PORT</literal>. <literal>vsock-stream</literal>, <literal>vsock-dgram</literal>
+          and <literal>vsock-seqpacket</literal> can be used instead of <literal>vsock</literal> to force
+          usage of the corresponding socket type.</para>
 
-          <para>This feature is useful for hypervisors/VMMs or other processes on the host to receive a
+          <para>This feature is useful for machine managers or other processes on the host to receive a
           notification via VSOCK when a virtual machine has finished booting.</para>
 
           <xi:include href="version-info.xml" xpointer="v254"/>
@@ -1177,6 +1183,90 @@
         </listitem>
       </varlistentry>
     </variablelist>
+
+    <para>For a list of system credentials various other components of systemd consume, see
+    <citerefentry><refentrytitle>systemd.system-credentials</refentrytitle><manvolnum>7</manvolnum></citerefentry>.</para>
+  </refsect1>
+
+  <refsect1>
+    <title>Readiness Protocol</title>
+
+    <para>The service manager implements a readiness notification protocol both between the manager and its
+    services (i.e. down the stack), and between the manager and a potential supervisor further up the stack
+    (the latter could be a machine or container manager, or in case of a per-user service manager the system
+    service manager instance). The basic protocol (and the suggested API for it) is described in
+    <citerefentry><refentrytitle>sd_notify</refentrytitle><manvolnum>3</manvolnum></citerefentry>.</para>
+
+    <para>The notification socket the service manager (including PID 1) uses for reporting readiness to its
+    own supervisor is set via the usual <varname>$NOTIFY_SOCKET</varname> environment variable (see
+    above). Since this is directly settable only for container managers and for the per-user instance of the
+    service manager, an additional mechanism to configure this is available, in particular intended for use
+    in VM environments: the <varname>vmm.notify_socket</varname> system credential (see above) may be set to
+    a suitable socket (typically an <constant>AF_VSOCK</constant> one) via SMBIOS Type 11 vendor strings. For
+    details see above.</para>
+
+    <para>The notification protocol from the service manager up the stack towards a supervisor supports a
+    number of extension fields that allow a supervisor to learn about specific properties of the system and
+    track its boot progress. Specifically the following fields are sent:</para>
+
+    <itemizedlist>
+      <listitem><para>An <varname>X_SYSTEMD_HOSTNAME=…</varname> message will be sent out once the initial
+      hostname for the system has been determined. Note that during later runtime the hostname might be
+      changed again programmatically, and (currently) no further notifications are sent out in that case.</para>
+
+      <xi:include href="version-info.xml" xpointer="v256"/></listitem>
+
+      <listitem><para>An <varname>X_SYSTEMD_MACHINE_ID=…</varname> message will be sent out once the machine
+      ID of the system has been determined. See
+      <citerefentry><refentrytitle>machine-id</refentrytitle><manvolnum>5</manvolnum></citerefentry> for
+      details.</para>
+
+      <xi:include href="version-info.xml" xpointer="v256"/></listitem>
+
+      <listitem><para>An <varname>X_SYSTEMD_SIGNALS_LEVEL=…</varname> message will be sent out once the
+      service manager installed the various UNIX process signal handlers described above. The field's value
+      is an unsigned integer formatted as decimal string, and indicates the supported UNIX process signal
+      feature level of the service manager. Currently, only a single feature level is defined:</para>
+
+      <itemizedlist>
+        <listitem><para><varname>X_SYSTEMD_SIGNALS_LEVEL=2</varname> covers the various UNIX process signals
+        documented above – which are a superset of those supported by the historical SysV init
+        system.</para></listitem>
+      </itemizedlist>
+
+      <para>Signals sent to PID 1 before this message is sent might not be handled correctly yet. A consumer
+      of these messages should parse the value as an unsigned integer that indicates the level of support.
+      For now only the mentioned level 2 is defined, but later on additional levels might be defined with
+      higher integers, that will implement a superset of the currently defined behaviour.</para>
+
+      <xi:include href="version-info.xml" xpointer="v256"/></listitem>
+
+      <listitem><para><varname>X_SYSTEMD_UNIT_ACTIVE=…</varname> and
+      <varname>X_SYSTEMD_UNIT_INACTIVE=…</varname> messages will be sent out for each target unit as it
+      becomes active or stops being active. This is useful to track boot progress and functionality. For
+      example, once the <filename>ssh-access.target</filename> unit is reported started SSH access is
+      typically available, see
+      <citerefentry><refentrytitle>systemd.special</refentrytitle><manvolnum>7</manvolnum></citerefentry> for
+      details.</para>
+
+      <xi:include href="version-info.xml" xpointer="v256"/></listitem>
+
+      <listitem><para>An <varname>X_SYSTEMD_SHUTDOWN=…</varname> message will be sent out very shortly before
+      the system shuts down. The value is one of the strings <literal>reboot</literal>,
+      <literal>halt</literal>, <literal>poweroff</literal>, <literal>kexec</literal> and indicates which kind
+      of shutdown is being executed.</para>
+
+      <xi:include href="version-info.xml" xpointer="v256"/></listitem>
+
+      <listitem><para>An <varname>X_SYSTEMD_REBOOT_PARAMETER=…</varname> message will also be sent out very
+      shortly before the system shuts down. Its value is the reboot argument as configured with
+      <command>systemctl --reboot-argument=…</command>.</para>
+
+      <xi:include href="version-info.xml" xpointer="v256"/></listitem>
+    </itemizedlist>
+
+    <para>Note that these extension fields are sent in addition to the regular <literal>READY=1</literal> and
+    <literal>RELOADING=1</literal> notifications.</para>
   </refsect1>
 
   <refsect1>
@@ -1276,7 +1366,7 @@
         </varlistentry>
 
         <varlistentry>
-          <term><option>--crash-vt=</option><replaceable>VT</replaceable></term>
+          <term><option>--crash-vt=<replaceable>VT</replaceable></option></term>
 
           <listitem><para>Switch to a specific virtual console (VT) on crash. This switch has no effect when
           running as user instance. Same as <varname>systemd.crash_chvt=</varname> above (but not the
@@ -1293,12 +1383,13 @@
         </varlistentry>
 
         <varlistentry>
-          <term><option>--crash-reboot</option></term>
+          <term><option>--crash-action=</option></term>
 
-          <listitem><para>Automatically reboot the system on crash. This switch has no effect when running as
-          user instance. See <varname>systemd.crash_reboot</varname> above.</para>
+          <listitem><para>Specify what to do when the system manager (PID 1) crashes. This switch has no
+          effect when <command>systemd</command> is running as user instance. See
+          <varname>systemd.crash_action=</varname> above.</para>
 
-          <xi:include href="version-info.xml" xpointer="v227"/></listitem>
+          <xi:include href="version-info.xml" xpointer="v256"/></listitem>
         </varlistentry>
 
         <varlistentry>
@@ -1387,7 +1478,26 @@
   </refsect1>
 
   <refsect1>
-    <title>Sockets and FIFOs</title>
+    <title>System clock epoch</title>
+
+    <para>When <command>systemd</command> is started or restarted, it may set the system clock to the
+    "epoch". This mechanism is used to ensure that the system clock remains somewhat reasonably initialized
+    and roughly monotonic across reboots, in case no battery-backed local RTC is available or it does not
+    work correctly.</para>
+
+    <para>The epoch is the lowest date above which the system clock time is assumed to be set correctly. When
+    initializing, the local clock is <emphasis>advanced</emphasis> to the epoch if it was set to a lower
+    value. As a special case, if the local clock is sufficiently far in the future (by default 15 years, but
+    this can be configured at build time), the hardware clock is assumed to be broken, and the system clock
+    is <emphasis>rewound</emphasis> to the epoch.</para>
+
+    <para>The epoch is set to the highest of: the build time of <filename>systemd</filename>, the
+    modification time ("mtime") of <filename>/usr/lib/clock-epoch</filename>, and the modification time of
+    <filename>/var/lib/systemd/timesync/clock</filename>.</para>
+  </refsect1>
+
+  <refsect1>
+    <title>Files</title>
 
     <variablelist>
       <varlistentry>
@@ -1421,6 +1531,26 @@
         named pipe in the file system. This interface is obsolete and
         should not be used in new applications.</para></listitem>
       </varlistentry>
+
+      <varlistentry>
+        <term><filename>/usr/lib/clock-epoch</filename></term>
+
+        <listitem><para>The modification time ("mtime") of this file is used for the time epoch, see previous
+        section.</para>
+
+        <xi:include href="version-info.xml" xpointer="v247"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><filename>/var/lib/systemd/timesync/clock</filename></term>
+
+        <listitem><para>The modification time ("mtime") of this file is updated by
+        <citerefentry><refentrytitle>systemd-timesyncd.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>.
+        If present, the modification time of file is used for the epoch, see previous section.
+        </para>
+
+        <xi:include href="version-info.xml" xpointer="v257"/></listitem>
+      </varlistentry>
     </variablelist>
   </refsect1>
 
@@ -1441,23 +1571,28 @@
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      The <ulink url="https://systemd.io/">systemd Homepage</ulink>,
-      <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>locale.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>journalctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-notify</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>daemon</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd-daemon</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>org.freedesktop.systemd1</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.special</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry project='die-net'><refentrytitle>pkg-config</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>kernel-command-line</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>bootup</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member>The <ulink url="https://systemd.io/">systemd Homepage</ulink></member>
+      <member><citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>locale.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>journalctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-notify</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>daemon</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd-daemon</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>org.freedesktop.systemd1</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.special</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry project='die-net'><refentrytitle>pkg-config</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>kernel-command-line</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>bootup</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>org.freedesktop.systemd1</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+    </simplelist></para>
+
+    <para>For more information about the concepts and
+    ideas behind systemd, please refer to the
+    <ulink url="https://0pointer.de/blog/projects/systemd.html">Original Design Document</ulink>.</para>
   </refsect1>
 
 </refentry>

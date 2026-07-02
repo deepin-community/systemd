@@ -7,8 +7,10 @@
 #include "capability-util.h"
 #include "copy.h"
 #include "dirent-util.h"
+#include "discover-image.h"
 #include "escape.h"
 #include "fd-util.h"
+#include "hexdecoct.h"
 #include "hostname-util.h"
 #include "io-util.h"
 #include "memory-util.h"
@@ -37,10 +39,8 @@ int pull_find_old_etags(
         int r;
 
         assert(url);
+        assert(image_root);
         assert(etags);
-
-        if (!image_root)
-                image_root = "/var/lib/machines";
 
         _cleanup_free_ char *escaped_url = xescape(url, FILENAME_ESCAPE);
         if (!escaped_url)
@@ -128,10 +128,8 @@ int pull_make_path(const char *url, const char *etag, const char *image_root, co
         char *path;
 
         assert(url);
+        assert(image_root);
         assert(ret);
-
-        if (!image_root)
-                image_root = "/var/lib/machines";
 
         escaped_url = xescape(url, FILENAME_ESCAPE);
         if (!escaped_url)
@@ -321,7 +319,6 @@ int pull_make_verification_jobs(
 
 static int verify_one(PullJob *checksum_job, PullJob *job) {
         _cleanup_free_ char *fn = NULL;
-        const char *line, *p;
         int r;
 
         assert(checksum_job);
@@ -354,17 +351,23 @@ static int verify_one(PullJob *checksum_job, PullJob *job) {
                 return log_error_errno(SYNTHETIC_ERRNO(ELOOP),
                                        "Cannot verify checksum/signature files via themselves.");
 
-        line = strjoina(job->checksum, " *", fn, "\n"); /* string for binary mode */
-        p = memmem_safe(checksum_job->payload,
-                        checksum_job->payload_size,
-                        line,
-                        strlen(line));
-        if (!p) {
-                line = strjoina(job->checksum, "  ", fn, "\n"); /* string for text mode */
+        const char *p = NULL;
+        FOREACH_STRING(separator,
+                       " *", /* separator for binary mode */
+                       "  ", /* separator for text mode */
+                       " "   /* non-standard separator used by linuxcontainers.org */) {
+                _cleanup_free_ char *line = NULL;
+
+                line = strjoin(job->checksum, separator, fn, "\n");
+                if (!line)
+                        return log_oom();
+
                 p = memmem_safe(checksum_job->payload,
                                 checksum_job->payload_size,
                                 line,
                                 strlen(line));
+                if (p)
+                        break;
         }
 
         /* Only counts if found at beginning of a line */
@@ -550,7 +553,6 @@ int pull_verify(ImportVerify verify,
                 log_debug("Main download is a checksum file, can't validate its checksum with itself, skipping.");
                 verify_job = main_job;
         } else {
-                PullJob *j;
                 assert(main_job->calc_checksum);
                 assert(main_job->checksum);
                 assert(checksum_job);
@@ -560,7 +562,8 @@ int pull_verify(ImportVerify verify,
                         return log_error_errno(SYNTHETIC_ERRNO(EBADMSG),
                                                "Checksum is empty, cannot verify.");
 
-                FOREACH_POINTER(j, main_job, settings_job, roothash_job, roothash_signature_job, verity_job) {
+                PullJob *j;
+                FOREACH_ARGUMENT(j, main_job, settings_job, roothash_job, roothash_signature_job, verity_job) {
                         r = verify_one(checksum_job, j);
                         if (r < 0)
                                 return r;
@@ -643,12 +646,12 @@ int pull_job_restart_with_sha256sum(PullJob *j, char **ret) {
         return 1;
 }
 
-bool pull_validate_local(const char *name, PullFlags flags) {
+bool pull_validate_local(const char *name, ImportFlags flags) {
 
-        if (FLAGS_SET(flags, PULL_DIRECT))
+        if (FLAGS_SET(flags, IMPORT_DIRECT))
                 return path_is_valid(name);
 
-        return hostname_is_valid(name, 0);
+        return image_name_is_valid(name);
 }
 
 int pull_url_needs_checksum(const char *url) {

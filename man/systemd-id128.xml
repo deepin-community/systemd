@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="systemd-id128" xmlns:xi="http://www.w3.org/2001/XInclude">
@@ -48,6 +48,12 @@
     <cmdsynopsis>
       <command>systemd-id128</command>
       <arg choice="opt" rep="repeat">OPTIONS</arg>
+      <arg choice="plain">var-partition-uuid</arg>
+    </cmdsynopsis>
+
+    <cmdsynopsis>
+      <command>systemd-id128</command>
+      <arg choice="opt" rep="repeat">OPTIONS</arg>
       <arg choice="plain">show</arg>
       <arg choice="opt" rep="repeat">NAME|UUID</arg>
     </cmdsynopsis>
@@ -88,6 +94,12 @@
     <citerefentry><refentrytitle>sd_id128_get_machine</refentrytitle><manvolnum>3</manvolnum></citerefentry>
     for the discussion when this is useful. Support for <command>show --app-specific=</command> was added in
     version 255.</para>
+
+    <para><command>var-partition-uuid</command> prints a UUID which, following the <ulink
+    url="https://uapi-group.org/specifications/specs/discoverable_partitions_specification">Discoverable
+    Partitions Specification</ulink>, should be used as the GPT partition UUID for
+    <filename>/var/</filename>, being derived from the GPT partition type, keyed by the local
+    <filename>/etc/machine-id</filename>. Added in version 257.</para>
   </refsect1>
 
   <refsect1>
@@ -144,6 +156,10 @@
         <xi:include href="version-info.xml" xpointer="v244"/></listitem>
       </varlistentry>
 
+      <xi:include href="standard-options.xml" xpointer="no-pager" />
+      <xi:include href="standard-options.xml" xpointer="no-legend" />
+      <xi:include href="standard-options.xml" xpointer="json" />
+      <xi:include href="standard-options.xml" xpointer="j" />
       <xi:include href="standard-options.xml" xpointer="help" />
       <xi:include href="standard-options.xml" xpointer="version" />
     </variablelist>
@@ -170,7 +186,7 @@ $ systemd-id128 show --value --uuid user-home
 $ systemd-id128 show 773f91ef-66d4-49b5-bd83-d683bf40ad16
 NAME      ID
 user-home 773f91ef66d449b5bd83d683bf40ad16
-      </programlisting>
+</programlisting>
     </example>
 
     <example>
@@ -189,7 +205,7 @@ $ systemd-id128 machine-id -u -a 1fb8f24b-02df-458d-9659-cc8ace68e28a
 $ systemd-id128 -Pu show 3a9d668b-4db7-4939-8a4a-5e78a03bffb7 \
     -a 1fb8f24b-02df-458d-9659-cc8ace68e28a
 47b82cb1-5339-43da-b2a6-1c350aef1bd1
-      </programlisting>
+</programlisting>
 
       <para>On a given machine with the ID 3a9d668b-4db7-4939-8a4a-5e78a03bffb7, for the application
       1fb8f24b-02df-458d-9659-cc8ace68e28a, we generate an application-specific machine ID
@@ -201,11 +217,11 @@ $ systemd-id128 -Pu show 3a9d668b-4db7-4939-8a4a-5e78a03bffb7 \
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd-id128</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_id128_get_machine</refentrytitle><manvolnum>3</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd-id128</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_id128_get_machine</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

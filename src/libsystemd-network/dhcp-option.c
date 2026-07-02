@@ -10,6 +10,8 @@
 #include "alloc-util.h"
 #include "dhcp-option.h"
 #include "dhcp-server-internal.h"
+#include "dns-domain.h"
+#include "hostname-util.h"
 #include "memory-util.h"
 #include "ordered-set.h"
 #include "strv.h"
@@ -58,6 +60,11 @@ static int option_append(uint8_t options[], size_t size, size_t *offset,
                 break;
 
         case SD_DHCP_OPTION_USER_CLASS: {
+                /* When called with raw data (optlen > 0), e.g. from SendOption=, append as a plain TLV.
+                 * The structured handling below expects optval to be a strv. */
+                if (optlen > 0)
+                        return dhcp_option_append_tlv(options, size, offset, code, optlen, optval);
+
                 size_t total = 0;
 
                 if (strv_isempty((char **) optval))
@@ -102,6 +109,11 @@ static int option_append(uint8_t options[], size_t size, size_t *offset,
 
                 break;
         case SD_DHCP_OPTION_VENDOR_SPECIFIC: {
+                /* When called with raw data (optlen > 0), e.g. from SendOption=, append as a plain TLV.
+                 * The structured handling below expects optval to be an OrderedSet*. */
+                if (optlen > 0)
+                        return dhcp_option_append_tlv(options, size, offset, code, optlen, optval);
+
                 OrderedSet *s = (OrderedSet *) optval;
                 struct sd_dhcp_option *p;
                 size_t l = 0;
@@ -124,6 +136,11 @@ static int option_append(uint8_t options[], size_t size, size_t *offset,
                 break;
         }
         case SD_DHCP_OPTION_RELAY_AGENT_INFORMATION: {
+                /* When called with raw data (optlen > 0), e.g. from SendOption=, append as a plain TLV.
+                 * The structured handling below expects optval to be an sd_dhcp_server*. */
+                if (optlen > 0)
+                        return dhcp_option_append_tlv(options, size, offset, code, optlen, optval);
+
                 sd_dhcp_server *server = (sd_dhcp_server *) optval;
                 size_t current_offset = *offset + 2;
 
@@ -283,7 +300,7 @@ static int parse_options(const uint8_t options[], size_t buflen, uint8_t *overlo
         int r;
 
         while (offset < buflen) {
-                code = options[offset ++];
+                code = options[offset++];
 
                 switch (code) {
                 case SD_DHCP_OPTION_PAD:
@@ -296,7 +313,7 @@ static int parse_options(const uint8_t options[], size_t buflen, uint8_t *overlo
                 if (buflen < offset + 1)
                         return -ENOBUFS;
 
-                len = options[offset ++];
+                len = options[offset++];
 
                 if (buflen < offset + len)
                         return -EINVAL;
@@ -396,27 +413,56 @@ int dhcp_option_parse(DHCPMessage *message, size_t len, dhcp_option_callback_t c
 }
 
 int dhcp_option_parse_string(const uint8_t *option, size_t len, char **ret) {
+        _cleanup_free_ char *string = NULL;
         int r;
 
         assert(option);
         assert(ret);
 
-        if (len <= 0)
-                *ret = mfree(*ret);
-        else {
-                char *string;
-
-                /*
-                 * One trailing NUL byte is OK, we don't mind. See:
-                 * https://github.com/systemd/systemd/issues/1337
-                 */
-                r = make_cstring((const char *) option, len, MAKE_CSTRING_ALLOW_TRAILING_NUL, &string);
-                if (r < 0)
-                        return r;
-
-                free_and_replace(*ret, string);
+        if (len <= 0) {
+                *ret = NULL;
+                return 0;
         }
 
+        /* One trailing NUL byte is OK, we don't mind. See:
+         * https://github.com/systemd/systemd/issues/1337 */
+        r = make_cstring((const char *) option, len, MAKE_CSTRING_ALLOW_TRAILING_NUL, &string);
+        if (r < 0)
+                return r;
+
+        if (!string_is_safe(string) || !utf8_is_valid(string))
+                return -EINVAL;
+
+        *ret = TAKE_PTR(string);
+        return 0;
+}
+
+int dhcp_option_parse_hostname(const uint8_t *option, size_t len, char **ret) {
+        _cleanup_free_ char *hostname = NULL;
+        int r;
+
+        assert(option);
+        assert(ret);
+
+        r = dhcp_option_parse_string(option, len, &hostname);
+        if (r < 0)
+                return r;
+
+        if (!hostname) {
+                *ret = NULL;
+                return 0;
+        }
+
+        if (!hostname_is_valid(hostname, 0))
+                return -EINVAL;
+
+        r = dns_name_is_valid(hostname);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -EINVAL;
+
+        *ret = TAKE_PTR(hostname);
         return 0;
 }
 

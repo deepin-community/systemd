@@ -8,6 +8,7 @@
 
 #include "sd-bus.h"
 #include "sd-journal.h"
+#include "sd-json.h"
 #include "sd-messages.h"
 
 #include "alloc-util.h"
@@ -26,7 +27,9 @@
 #include "glob-util.h"
 #include "journal-internal.h"
 #include "journal-util.h"
+#include "json-util.h"
 #include "log.h"
+#include "logs-show.h"
 #include "macro.h"
 #include "main-func.h"
 #include "mount-util.h"
@@ -37,7 +40,6 @@
 #include "pretty-print.h"
 #include "process-util.h"
 #include "rlimit-util.h"
-#include "sigbus.h"
 #include "signal-util.h"
 #include "string-util.h"
 #include "strv.h"
@@ -56,7 +58,7 @@ static const char *arg_directory = NULL;
 static char *arg_root = NULL;
 static char *arg_image = NULL;
 static char **arg_file = NULL;
-static JsonFormatFlags arg_json_format_flags = JSON_FORMAT_OFF;
+static sd_json_format_flags_t arg_json_format_flags = SD_JSON_FORMAT_OFF;
 static PagerFlags arg_pager_flags = 0;
 static int arg_legend = true;
 static size_t arg_rows_max = SIZE_MAX;
@@ -67,34 +69,38 @@ static bool arg_all = false;
 static ImagePolicy *arg_image_policy = NULL;
 
 STATIC_DESTRUCTOR_REGISTER(arg_debugger_args, strv_freep);
+STATIC_DESTRUCTOR_REGISTER(arg_root, freep);
+STATIC_DESTRUCTOR_REGISTER(arg_image, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_file, strv_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_image_policy, image_policy_freep);
 
 static int add_match(sd_journal *j, const char *match) {
         _cleanup_free_ char *p = NULL;
-        const char* prefix, *pattern;
-        pid_t pid;
+        const char *field;
         int r;
 
         if (strchr(match, '='))
-                prefix = "";
-        else if (strchr(match, '/')) {
+                field = NULL;
+        else if (is_path(match)) {
                 r = path_make_absolute_cwd(match, &p);
                 if (r < 0)
                         return log_error_errno(r, "path_make_absolute_cwd(\"%s\"): %m", match);
 
                 match = p;
-                prefix = "COREDUMP_EXE=";
-        } else if (parse_pid(match, &pid) >= 0)
-                prefix = "COREDUMP_PID=";
+                field = "COREDUMP_EXE";
+        } else if (parse_pid(match, NULL) >= 0)
+                field = "COREDUMP_PID";
         else
-                prefix = "COREDUMP_COMM=";
+                field = "COREDUMP_COMM";
 
-        pattern = strjoina(prefix, match);
-        log_debug("Adding match: %s", pattern);
-        r = sd_journal_add_match(j, pattern, 0);
+        log_debug("Adding match: %s%s%s", strempty(field), field ? "=" : "", match);
+        if (field)
+                r = journal_add_match_pair(j, field, match);
+        else
+                r = sd_journal_add_match(j, match, SIZE_MAX);
         if (r < 0)
-                return log_error_errno(r, "Failed to add match \"%s\": %m", match);
+                return log_error_errno(r, "Failed to add match \"%s%s%s\": %m",
+                                       strempty(field), field ? "=" : "", match);
 
         return 0;
 }
@@ -102,11 +108,11 @@ static int add_match(sd_journal *j, const char *match) {
 static int add_matches(sd_journal *j, char **matches) {
         int r;
 
-        r = sd_journal_add_match(j, "MESSAGE_ID=" SD_MESSAGE_COREDUMP_STR, 0);
+        r = sd_journal_add_match(j, "MESSAGE_ID=" SD_MESSAGE_COREDUMP_STR, SIZE_MAX);
         if (r < 0)
                 return log_error_errno(r, "Failed to add match \"%s\": %m", "MESSAGE_ID=" SD_MESSAGE_COREDUMP_STR);
 
-        r = sd_journal_add_match(j, "MESSAGE_ID=" SD_MESSAGE_BACKTRACE_STR, 0);
+        r = sd_journal_add_match(j, "MESSAGE_ID=" SD_MESSAGE_BACKTRACE_STR, SIZE_MAX);
         if (r < 0)
                 return log_error_errno(r, "Failed to add match \"%s\": %m", "MESSAGE_ID=" SD_MESSAGE_BACKTRACE_STR);
 
@@ -126,19 +132,19 @@ static int acquire_journal(sd_journal **ret, char **matches) {
         assert(ret);
 
         if (arg_directory) {
-                r = sd_journal_open_directory(&j, arg_directory, 0);
+                r = sd_journal_open_directory(&j, arg_directory, SD_JOURNAL_ASSUME_IMMUTABLE);
                 if (r < 0)
                         return log_error_errno(r, "Failed to open journals in directory: %s: %m", arg_directory);
         } else if (arg_root) {
-                r = sd_journal_open_directory(&j, arg_root, SD_JOURNAL_OS_ROOT);
+                r = sd_journal_open_directory(&j, arg_root, SD_JOURNAL_OS_ROOT | SD_JOURNAL_ASSUME_IMMUTABLE);
                 if (r < 0)
                         return log_error_errno(r, "Failed to open journals in root directory: %s: %m", arg_root);
         } else if (arg_file) {
-                r = sd_journal_open_files(&j, (const char**)arg_file, 0);
+                r = sd_journal_open_files(&j, (const char**)arg_file, SD_JOURNAL_ASSUME_IMMUTABLE);
                 if (r < 0)
                         return log_error_errno(r, "Failed to open journal files: %m");
         } else {
-                r = sd_journal_open(&j, arg_all ? 0 : SD_JOURNAL_LOCAL_ONLY);
+                r = sd_journal_open(&j, arg_all ? 0 : SD_JOURNAL_LOCAL_ONLY | SD_JOURNAL_ASSUME_IMMUTABLE);
                 if (r < 0)
                         return log_error_errno(r, "Failed to open journal: %m");
         }
@@ -532,7 +538,7 @@ static int resolve_filename(const char *root, char **p) {
 static int print_list(FILE* file, sd_journal *j, Table *t) {
         _cleanup_free_ char
                 *mid = NULL, *pid = NULL, *uid = NULL, *gid = NULL,
-                *sgnl = NULL, *exe = NULL, *comm = NULL, *cmdline = NULL,
+                *sgnl = NULL, *exe = NULL, *comm = NULL,
                 *filename = NULL, *truncated = NULL, *coredump = NULL;
         const void *d;
         size_t l;
@@ -557,14 +563,16 @@ static int print_list(FILE* file, sd_journal *j, Table *t) {
                 RETRIEVE(d, l, "COREDUMP_SIGNAL", sgnl);
                 RETRIEVE(d, l, "COREDUMP_EXE", exe);
                 RETRIEVE(d, l, "COREDUMP_COMM", comm);
-                RETRIEVE(d, l, "COREDUMP_CMDLINE", cmdline);
                 RETRIEVE(d, l, "COREDUMP_FILENAME", filename);
                 RETRIEVE(d, l, "COREDUMP_TRUNCATED", truncated);
                 RETRIEVE(d, l, "COREDUMP", coredump);
         }
 
-        if (!pid && !uid && !gid && !sgnl && !exe && !comm && !cmdline && !filename)
-                return log_warning_errno(SYNTHETIC_ERRNO(EINVAL), "Empty coredump log entry");
+        if (!pid || !uid || !gid || !sgnl || !comm) {
+                log_warning("Found a coredump entry without mandatory fields (PID=%s, UID=%s, GID=%s, SIGNAL=%s, COMM=%s), ignoring.",
+                            strna(pid), strna(uid), strna(gid), strna(sgnl), strna(comm));
+                return 0;
+        }
 
         (void) parse_uid(uid, &uid_as_int);
         (void) parse_gid(gid, &gid_as_int);
@@ -603,7 +611,7 @@ static int print_list(FILE* file, sd_journal *j, Table *t) {
                         TABLE_SIGNAL, normal_coredump ? signal_as_int : 0,
                         TABLE_STRING, present,
                         TABLE_SET_COLOR, color,
-                        TABLE_STRING, exe ?: comm ?: cmdline,
+                        TABLE_STRING, exe ?: comm,
                         TABLE_SIZE, size);
         if (r < 0)
                 return table_log_add_error(r);
@@ -800,26 +808,26 @@ static int print_info(FILE *file, sd_journal *j, bool need_space) {
         /* Print out the build-id of the 'main' ELF module, by matching the JSON key
          * with the 'exe' field. */
         if (exe && pkgmeta_json) {
-                _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
 
-                r = json_parse(pkgmeta_json, 0, &v, NULL, NULL);
+                r = sd_json_parse(pkgmeta_json, 0, &v, NULL, NULL);
                 if (r < 0) {
                         _cleanup_free_ char *esc = cescape(pkgmeta_json);
                         log_warning_errno(r, "json_parse on \"%s\" failed, ignoring: %m", strnull(esc));
                 } else {
                         const char *module_name;
-                        JsonVariant *module_json;
+                        sd_json_variant *module_json;
 
                         JSON_VARIANT_OBJECT_FOREACH(module_name, module_json, v) {
-                                JsonVariant *build_id;
+                                sd_json_variant *build_id;
 
                                 /* We only print the build-id for the 'main' ELF module */
                                 if (!path_equal_filename(module_name, exe))
                                         continue;
 
-                                build_id = json_variant_by_key(module_json, "buildId");
+                                build_id = sd_json_variant_by_key(module_json, "buildId");
                                 if (build_id)
-                                        fprintf(file, "      build-id: %s\n", json_variant_string(build_id));
+                                        fprintf(file, "      build-id: %s\n", sd_json_variant_string(build_id));
 
                                 break;
                         }
@@ -875,7 +883,7 @@ static int dump_list(int argc, char **argv, void *userdata) {
 
         verb_is_info = argc >= 1 && streq(argv[0], "info");
 
-        r = acquire_journal(&j, argv + 1);
+        r = acquire_journal(&j, strv_skip(argv, 1));
         if (r < 0)
                 return r;
 
@@ -1126,7 +1134,7 @@ static int dump_core(int argc, char **argv, void *userdata) {
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "Option --field/-F only makes sense with list");
 
-        r = acquire_journal(&j, argv + 1);
+        r = acquire_journal(&j, strv_skip(argv, 1));
         if (r < 0)
                 return r;
 
@@ -1199,7 +1207,7 @@ static int run_debug(int argc, char **argv, void *userdata) {
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "Option --field/-F only makes sense with list");
 
-        r = acquire_journal(&j, argv + 1);
+        r = acquire_journal(&j, strv_skip(argv, 1));
         if (r < 0)
                 return r;
 
@@ -1240,7 +1248,7 @@ static int run_debug(int argc, char **argv, void *userdata) {
         if (r < 0)
                 return r;
 
-        r = strv_extend_strv(&debugger_call, STRV_MAKE(exe, "-c", path), false);
+        r = strv_extend_many(&debugger_call, exe, "-c", path);
         if (r < 0)
                 return log_oom();
 
@@ -1249,14 +1257,14 @@ static int run_debug(int argc, char **argv, void *userdata) {
                         const char *sysroot_cmd;
                         sysroot_cmd = strjoina("set sysroot ", arg_root);
 
-                        r = strv_extend_strv(&debugger_call, STRV_MAKE("-iex", sysroot_cmd), false);
+                        r = strv_extend_many(&debugger_call, "-iex", sysroot_cmd);
                         if (r < 0)
                                 return log_oom();
                 } else if (streq(arg_debugger, "lldb")) {
                         const char *sysroot_cmd;
                         sysroot_cmd = strjoina("platform select --sysroot ", arg_root, " host");
 
-                        r = strv_extend_strv(&debugger_call, STRV_MAKE("-O", sysroot_cmd), false);
+                        r = strv_extend_many(&debugger_call, "-O", sysroot_cmd);
                         if (r < 0)
                                 return log_oom();
                 }
@@ -1372,14 +1380,11 @@ static int run(int argc, char *argv[]) {
         setlocale(LC_ALL, "");
         log_setup();
 
-        /* The journal merging logic potentially needs a lot of fds. */
-        (void) rlimit_nofile_bump(HIGH_RLIMIT_NOFILE);
-
         r = parse_argv(argc, argv);
         if (r <= 0)
                 return r;
 
-        sigbus_install();
+        journal_browse_prepare();
 
         units_active = check_units_active(); /* error is treated the same as 0 */
 
@@ -1392,7 +1397,8 @@ static int run(int argc, char *argv[]) {
                                 DISSECT_IMAGE_GENERIC_ROOT |
                                 DISSECT_IMAGE_REQUIRE_ROOT |
                                 DISSECT_IMAGE_RELAX_VAR_CHECK |
-                                DISSECT_IMAGE_VALIDATE_OS,
+                                DISSECT_IMAGE_VALIDATE_OS |
+                                DISSECT_IMAGE_ALLOW_USERSPACE_VERITY,
                                 &mounted_dir,
                                 /* ret_dir_fd= */ NULL,
                                 &loop_device);

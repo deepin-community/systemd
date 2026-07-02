@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "alloc-util.h"
+#include "ansi-color.h"
 #include "build.h"
 #include "extract-word.h"
 #include "macro.h"
@@ -42,6 +43,12 @@ const char* const systemd_features =
         " +IMA"
 #else
         " -IMA"
+#endif
+
+#if ENABLE_IPE
+        " +IPE"
+#else
+        " -IPE"
 #endif
 
 #if ENABLE_SMACK
@@ -138,6 +145,12 @@ const char* const systemd_features =
         " -LIBCRYPTSETUP"
 #endif
 
+#if HAVE_LIBCRYPTSETUP_PLUGINS
+        " +LIBCRYPTSETUP_PLUGINS"
+#else
+        " -LIBCRYPTSETUP_PLUGINS"
+#endif
+
 #if HAVE_LIBFDISK
         " +LIBFDISK"
 #else
@@ -214,6 +227,12 @@ const char* const systemd_features =
         " -BPF_FRAMEWORK"
 #endif
 
+#if HAVE_VMLINUX_H
+        " +BTF"
+#else
+        " -BTF"
+#endif
+
 #if HAVE_XKBCOMMON
         " +XKBCOMMON"
 #else
@@ -232,10 +251,15 @@ const char* const systemd_features =
         " -SYSVINIT"
 #endif
 
-        " default-hierarchy=" DEFAULT_HIERARCHY_NAME
+#if HAVE_LIBARCHIVE
+        " +LIBARCHIVE"
+#else
+        " -LIBARCHIVE"
+#endif
+
         ;
 
-static char *systemd_features_with_color(void) {
+static char* systemd_features_with_color(void) {
         const char *p = systemd_features;
         _cleanup_free_ char *ret = NULL;
         int r;
@@ -276,8 +300,8 @@ int version(void) {
         if (colors_enabled())
                 b = systemd_features_with_color();
 
-        printf("%ssystemd " STRINGIFY(PROJECT_VERSION) "%s (" GIT_VERSION ")\n%s\n",
-               ansi_highlight(), ansi_normal(),
+        printf("%ssystemd %i%s (" GIT_VERSION ")\n%s\n",
+               ansi_highlight(), PROJECT_VERSION, ansi_normal(),
                b ?: systemd_features);
         return 0;
 }

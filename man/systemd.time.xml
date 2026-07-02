@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="systemd.time">
@@ -101,7 +101,7 @@
     <para>In some cases timestamps are shown in the UTC timezone instead of the local timezone, which is indicated via
     the <literal>UTC</literal> timezone specifier in the output.</para>
 
-    <para>In some cases timestamps are shown with microsecond granularity. In this case the sub-second remainder is
+    <para>In some cases timestamps are shown with microsecond granularity. In this case, the sub-second remainder is
     separated by a full stop from the seconds component.</para>
   </refsect1>
 
@@ -120,9 +120,8 @@
     <para>The timezone defaults to the current timezone if not specified explicitly.
     It may be given after a space, like above, in which case it can be:
     <literal>UTC</literal>,
-    an entry in the installed IANA timezone database (<literal>CET</literal>, <literal>Asia/Tokyo</literal>, &amp;c.;
-    complete list obtainable with <literal>timedatectl
-    list-timezones</literal> (see
+    an entry in the installed IANA timezone database (e.g. <literal>CET</literal>, <literal>Asia/Tokyo</literal>,
+    where the complete list can be obtained with <command>timedatectl list-timezones</command> (see
     <citerefentry><refentrytitle>timedatectl</refentrytitle><manvolnum>1</manvolnum></citerefentry>)),
     or <literal>±<replaceable>05</replaceable></literal>,
     <literal>±<replaceable>05</replaceable><replaceable>30</replaceable></literal>,
@@ -140,7 +139,7 @@
     <para>A timestamp can start with a field containing a weekday, which can be in an abbreviated
     (<literal>Wed</literal>) or non-abbreviated (<literal>Wednesday</literal>) English language form (case
     does not matter), regardless of the locale.
-    However, if a weekday <emphasis>is</emphasis> specified and doesn't match the date, the timestamp is rejected.</para>
+    However, if a weekday <emphasis>is</emphasis> specified and does not match the date, the timestamp is rejected.</para>
 
     <para>If the date is omitted, it defaults to today. If the time is omitted, it defaults to 00:00:00.
     Fractional seconds can be specified down to 1µs precision. The seconds field can also be omitted, defaulting to 0.</para>
@@ -248,7 +247,7 @@ tomorrow Pacific/Auckland → Thu 2012-11-23 19:00:00
     decimal places.</para>
 
     <para>Either time or date specification may be omitted, in which
-    case *-*-* and 00:00:00 is implied, respectively. If the
+    case 00:00:00 and *-*-* is implied, respectively. If the
     seconds component is not specified, <literal>:00</literal> is
     assumed.</para>
 
@@ -266,7 +265,7 @@ tomorrow Pacific/Auckland → Thu 2012-11-23 19:00:00
       yearly → *-01-01 00:00:00
    quarterly → *-01,04,07,10-01 00:00:00
 semiannually → *-01,07-01 00:00:00
-   </programlisting>
+</programlisting>
 
     <para>Examples for valid timestamps and their
     normalized form:</para>
@@ -317,14 +316,14 @@ Wed..Sat,Tue 12-10-15 1:2:3 → Tue..Sat 2012-10-15 01:02:03
 
   <refsect1>
       <title>See Also</title>
-      <para>
-        <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>journalctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd.timer</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd-analyze</refentrytitle><manvolnum>1</manvolnum></citerefentry>
-      </para>
+      <para><simplelist type="inline">
+        <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>journalctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemd.timer</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+        <member><citerefentry><refentrytitle>systemd-analyze</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      </simplelist></para>
   </refsect1>
 
 </refentry>

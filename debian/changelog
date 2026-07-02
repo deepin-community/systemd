@@ -1,251 +1,1118 @@
-systemd (255.2-4deepin37) unstable; urgency=medium
+systemd (257.13-1~deb13u1) trixie; urgency=medium
+
+  [ Luca Boccassi ]
+  * preinst: ensure /tmp workaround does not override local unit/fstab
+    (Closes: #1116344)
+  * preinst: ensure /tmp/ workaround is only attempted on first trixie upgrade
+  * Explicitly disable bpf-framework for stage1 builds
+
+  [ Tobias Deiminger ]
+  * CVE-2026-40226 (In nspawn in systemd 233 through 259 before 260, an
+    escape-to-host act ...)
+  * CVE-2026-40225 (In udev in systemd before 260, local root execution can
+    occur via mali ...)
+  * CVE-2026-29111 (systemd, a system and service manager, (as PID 1) hits an
+    assert and f ...)
+  * CVE-2026-4105 (A flaw was found in systemd. The systemd-machined service
+    contains an  ...)
+  * Update upstream source from tag 'upstream/257.13'
+    Update to upstream version '257.13'
+    with Debian dir 608373bc40f1a965a842a0c61f9d1fb40c3dfc82
+
+ -- Tobias Deiminger <tobias.deiminger@linutronix.de>  Mon, 13 Apr 2026 21:38:05 +0200
+
+systemd (257.9-1~deb13u1) trixie; urgency=medium
+
+  * Update upstream source from tag 'upstream/257.9' Update to upstream
+    version '257.9' with Debian dir
+    9b05cb6904e089147c1521b0ced983a575d8abe4
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 03 Sep 2025 19:38:20 +0100
+
+systemd (257.8-1~deb13u1) trixie; urgency=medium
+
+  * ukify: recommend sbsigntool | pesign for signing (Closes: #1108803)
+  * Move bootctl zsh completion file too to new package
+  * systemd-boot-tools: change architecture to linux-any. The tool can be
+    used for cross-building, and it's available on all architectures, not
+    just EFI ones
+  * systemd-boot: fix initramfs post-update hook for uncompressed kernels
+    (Closes: #1109098)
+  * systemd-boot: register interest in systemd-boot-signed trigger
+    (Closes: #1109984)
+  * NEWS: fix typo (Closes: #1109979)
+  * systemd-boot: fix registering/removing uncompressed kernels
+  * d/t/control: prefer systemd-boot-tools if available
+  * Update upstream source from tag 'upstream/257.8' Update to upstream
+    version '257.8' with Debian dir
+    7153da4dd3bde82b88c5f48d704826e431373076
+
+ -- Luca Boccassi <bluca@debian.org>  Sun, 10 Aug 2025 15:04:51 +0100
+
+systemd (257.7-1) unstable; urgency=medium
+
+  * udev: add 'clock' system group for PTP rules
+  * systemd-boot: remove fb too on removal
+  * systemd-boot: reduce harmless noise on cleanup (Closes: #1108264)
+  * Update upstream source from tag 'upstream/257.7' Update to upstream
+    version '257.7' with Debian dir
+    ef416841c96628293f494812ad2d395cf865f7b5
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 25 Jun 2025 13:40:07 +0100
+
+systemd (257.6-1) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * d/copyright: use GPL URL instead of old FSF postal address.
+  * d/signing-template/copyright: use GPL URL instead of old FSF postal
+    address.
+  * d/control: bump Standards-Version to 4.7.2, no changes
+  * Add version to systemd-boot-efi-signed virtual package. Otherwise
+    dependency on systemd-boot-efi-signed (>= 257.5-2) is not satisfiable
+    (Closes: #1104663)
+  * systemd-homed: add dependency on polkitd (Closes: #1105743)
+  * systemd-boot: fix BOOT.CSV usage (Closes: #1106024)
+  * Update upstream source from tag 'upstream/257.6' Update to upstream
+    version '257.6' with Debian dir
+    907f7fd2ae07adbab0ffd7b9235fc25435f12bab
+    (Fixes CVE-2025-4598)
+  * Drop patches, merged upstream
+
+  [ Tim Small ]
+  * document requirement to sync *.link files with initrd (Closes:
+    #1005282)
+
+  [ Kirill Rekhov ]
+  * Set upstream metadata fields: Security-Contact
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 29 May 2025 17:52:48 +0100
+
+systemd (257.5-2) unstable; urgency=medium
+
+  * Backport new patch to workaround /lib64 symlink incompatibility
+    (Closes: #1079329)
+
+ -- Luca Boccassi <bluca@debian.org>  Mon, 07 Apr 2025 18:39:22 +0100
+
+systemd (257.5-1) unstable; urgency=medium
+
+  * Add NEWS entry to warn about network connectivity loss due to mDNS,
+    and workaround
+  * Use Conflicts instead of Breaks/Replaces for file move (Closes:
+    #1101965)
+  * Update upstream source from tag 'upstream/257.5' Update to upstream
+    version '257.5' with Debian dir
+    2218d137fd911b8d5c2849535b066d27f01406b2
+  * Drop backports, included in 257.5
+  * Remove conflicts with dracut:arm64 and build nspawn:arm64 again. A
+    mutually satisfactory solution for #1079329 has been agreed and is
+    being worked on, so temporarily reintroduce #1079329 until it's ready
+    in a few days as per agreement with ctte.
+
+ -- Luca Boccassi <bluca@debian.org>  Sun, 06 Apr 2025 18:41:17 +0100
+
+systemd (257.4-9) unstable; urgency=medium
+
+  * resolved: break mDNS, remove conflict with avahi. Feedback from users
+    is to prefer breaking mDNS rather than avoiding avahi. Ship a drop-in
+    to disable mDNS by default, so that users relying on mDNS for
+    reachability can hopefully notice it and mask it before upgrading
+    (Closes: #1098914)
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 02 Apr 2025 11:19:09 +0100
+
+systemd (257.4-8) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * systemd.preinst: do not use systemctl libsystemd-shared might not be
+    unpacked yet, so check things manually (Closes: #1101698)
+  * systemd.preinst: fix shellcheck warnings
+  * d/t/boot-and-services: skip gdm3 test in nested LXD run. It is flaky
+    and fails half the times, not much value in checking a desktop session
+    inside a nested container
+  * reintroduce systemd-resolved, with conflict on avahi-daemon. It turns
+    out the cloud images have a hard dependency on resolved. In order to
+    avoid having to change them, reintroduce the package, with a hard
+    conflict on avahi-daemon to avoid reintroducing #1098914 (Closes:
+    #1101532)
+
+  [ Yu Watanabe ]
+  * d/rules: drop nscd meson option. The meson option was deprecated by
+    28f1f1a5e652508d6e61ace8918e8b831e4b62b4 (v257).
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 01 Apr 2025 21:43:18 +0100
+
+systemd (257.4-7) unstable; urgency=medium
+
+  * autopkgtest: when nested tests-in-lxd skips don't fail outer run
+  * Backport patches to fix integration tests skipping
+  * autopkgtest: re-enable integration tests
+
+ -- Luca Boccassi <bluca@debian.org>  Sat, 29 Mar 2025 19:07:36 +0000
+
+systemd (257.4-6) unstable; urgency=medium
+
+  * systemd: conflict with dracut on arm64. Same as the systemd-
+    nspawn/arm64 changes of 257.4-4. As correctly pointed out on the
+    reopened #1079329 this combination also creates incompatibilities, so
+    add an explicit package conflict to fix this occurrence too as
+    requested by the reporter. (Closes: #1079329)
+  * d/control: fix systemd-boot and systemd-boot-tools descriptions
+  * Add Lintian override for 'unknown-field Protected'
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 28 Mar 2025 23:33:26 +0000
+
+systemd (257.4-5) unstable; urgency=medium
+
+  * Add missing dh-exec shbang to d/systemd-tests.install
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 28 Mar 2025 10:28:09 +0000
+
+systemd (257.4-4) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * Update tzdata-legacy version constraint for new bookworm-p-u tzdata
+    version
+  * systemd-boot: do case-insensitive parsing of efibootmgr output
+    (Closes: #1100653)
+  * userdbd: use wildcard to install units
+  * systemd-container: use more wildcards to install files
+  * Handle new tmp mount on upgrade in preinst rather than postinst. Avoid
+    race with new units being activated and pulling it in at the same time
+    (Closes: #1101175)
+  * autopkgtest: remove workaround for 'meson compiile mkosi' and use
+    'mkosi -f' instead to avoid slow rebuilds
+  * autopkgtest: drop versioning constraints on tzdata. These do not seem
+    to be necessary in order for autopkgtest to pull in the package, so
+    drop them as they need to be constantly updated due to p-u uploads
+  * Move leftover resolved files to its own package. A few files were
+    mistakenly shipping in the main systemd package even though they are
+    part of resolved, due to a refactor from some time ago. Move them
+    over.
+  * Drop systemd-resolved package. The ctte has declared that the way the
+    systemd-resolved tool works is incompatible with their decision to
+    prioritize avahi in Debian. Furthermore, the resolved tool is being
+    used to inflict pain on the maintainer, and induce burnout.
+    Regrettably, the only safe solution to ensure this package is
+    compliant with this decision is to drop it, as all reasonable
+    alternatives put forward have been rejected:
+    https://salsa.debian.org/systemd-team/systemd/-/merge_requests/289
+    (Closes: #1098914)
+  * Drop systemd-nspawn on arm64. The ctte has declared that the way the
+    systemd-nspawn binary works on arm64 is incompatible with their
+    decision to leave in place a recently introduced change in the debian-
+    specific base-files package, which caused a dpkg regression.
+    Furthermore, the nspawn tool is being used to inflict pain on the
+    maintainer, and induce burnout. Regrettably, the only safe solution to
+    ensure this package is compliant with this decision is to drop the
+    binary on arm64, as all reasonable alternatives put forward have been
+    rejected:
+    https://salsa.debian.org/systemd-team/systemd/-/merge_requests/289
+    (Closes: #1079329)
+
+  [ Nick Rosbrook ]
+  * Add myself to Uploaders
+
+  [ Andrea Pappacoda ]
+  * d/control: only conflict against opensysusers << 0.7.3-4.1~
+    opensysusers 0.7.3-4.1 is no longer co-installable with systemd as it
+    conflicts with systemd-sysusers, so it is no longer needed to conflict
+    against it systemd-side.
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 28 Mar 2025 01:24:32 +0000
+
+systemd (257.4-3) unstable; urgency=medium
+
+  * Fix versioned breaks/replaces for sd-boot-tools (Closes: #1100412)
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 13 Mar 2025 15:25:54 +0000
+
+systemd (257.4-2) unstable; urgency=medium
+
+  * Split bootctl to new systemd-boot-tools package (Closes: #1086860)
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 11 Mar 2025 14:48:10 +0000
+
+systemd (257.4-1) unstable; urgency=medium
+
+  [ Nick Rosbrook ]
+  * d/rules: fix bpftool path discovery on ubuntu
+  * initramfs-tools: copy hwdb.bin to initramfs. The contents of hwdb.bin
+    may influence udev during early boot. E.g., this may change network
+    interface naming decisions. Hence, make sure it is available in the
+    initrd. This adds about 2MB to the size of the compressed initrd.
+  * d/t/tests-in-lxd: skip test on any setup error. When this test fails
+    becacuse of snap install, or lxd tools, we prefer to skip because we
+    never reached the stage where we are actually testing systemd.
+
+  [ Luca Boccassi ]
+  * Set tty device node mode to 0600 (Closes: #1093870)
+  * d/rules: ignore more blhc false positives
+  * systemd-resolved: recommend libidn2-0. Without it in some cases
+    hostname resolution fails (Closes: #1097699)
+  * README: add note about out-of-tree patches being forbidden. Prompted
+    by #1098221
+  * systemd-sysv: add Protected: yes (Closes: #1098260)
+  * Update upstream source from tag 'upstream/257.4' Update to upstream
+    version '257.4' with Debian dir
+    2121ac2e2a87e081b31f819aea969e38b6147ce3
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 06 Mar 2025 14:52:08 +0000
+
+systemd (257.3-1) unstable; urgency=medium
+
+  * d/t/control: do not pull in gdm3 on loong64. Not installable, skip it
+    like s390x/riscv/armel
+  * systemd-boot: warn if efibootmgr is not installed. As it means the
+    boot entry won't be created, since it's a recommends
+  * systemd-boot: fix creating bootvar on arm64
+  * systemd-boot: check that bootvar really points to sd-boot. Otherwise
+    it could be a leftover with another second stage. Check both encoded
+    and decoded strings.
+  * Drop fallback for missing linux-bpf-dev package
+  * ukify: depend on python3-zstandard and recommend python3-lz4 arm64
+    kernels are getting zboot+zstd so zstandard will be required for uname
+    probing. lz4 might be used externally so just recommend it.
+  * Update upstream source from tag 'upstream/257.3' Update to upstream
+    version '257.3' with Debian dir
+    1531e0bcaea1d2bf600be6d542bae876d1829da9
+  * autopkgtest: fix mkosi config section
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 13 Feb 2025 19:54:00 +0000
+
+systemd (257.2-3) unstable; urgency=medium
+
+  * signing template: add override for executable-not-elf-or-script
+  * libsystemd-dev/libudev-dev: depend on libcap-dev. These libraries link
+    with libcap, so a dependency is needed for static builds
+  * systemd-boot: use boot entry argument instead of installing as
+    grub.efi on ESP. It turns out Shim can load sd-boot if the boot entry
+    is set correctly.
+  * systemd-boot: always check that the boot entry is set, even with Shim
+    is already installed
+  * libudev1: add udeb back to shlibs. Without this, packages building
+    udebs against libudev-dev will end up depending on libudev1 instead of
+    libudev1-udeb.
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 23 Jan 2025 15:17:08 +0000
+
+systemd (257.2-2) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * Enable libseccomp on loong64 and hppa
+  * Enable UEFI on loong64
+  * Do not install sd-resolved and drop breaks-testbed from fast tests.
+  * d/t/control: remove 'flaky' from tests-in-lxd
+  * d/t/upstream: take into account autopkgtest pinning
+  * signing template: fix Lintian warnings and errors
+  * Link systemctl against libsystemd-shared. This was disabled when we
+    did not have a libsystemd-shared package, but it's now available so we
+    can change this again. This makes the stripped systemctl binary size
+    go from 1.6M down to 291K.
+  * signing template: always set urgency to 'high' The main package has
+    autopkgtest so gets a bonus, make sure the signed package also
+    migrates fast by default. It will always be blocked by the main
+    package anyway due to the dependency.
+  * Drop udeb packages. The udeb packages will be moved to a new systemd-
+    udeb repository, to reduce udeb churn and to unblock changes in the
+    main packages, such as building udev without static linking libudev
+    and libsystemd-shared, which shrinks the size of the binary from 1.6M
+    down to 611K
+
+  [ Philipp Kern ]
+  * Update README.source in the signing-template. This previously referred
+    to fwupd, which is where it was copied from.
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 17 Jan 2025 09:53:01 +0000
+
+systemd (257.2-1) unstable; urgency=medium
+
+  * Update upstream source from tag 'upstream/257.2' (Closes: #1092125)
+  * Drop all patches, merged upstream
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 07 Jan 2025 20:48:25 +0000
+
+systemd (257.1-7) unstable; urgency=medium
+
+  * Add missing d/copyright file to signed template packages
+  * d/t/tests-in-lxd: more fixes for debci compatibility
+
+ -- Luca Boccassi <bluca@debian.org>  Sat, 04 Jan 2025 01:55:59 +0000
+
+systemd (257.1-6) unstable; urgency=medium
+
+  * d/t/tests-in-lxd: drop auto-apt-proxy.conf from container
+  * Drop build dependency on libxen-dev on armhf, no longer available
+    (Closes: #1091545)
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 03 Jan 2025 11:39:41 +0000
+
+systemd (257.1-5) unstable; urgency=medium
+
+  * d/t/tests-in-lxd: install auto-apt-proxy in the nested container.
+  * d/t/upstream: do not use --verbose with 'meson test'
+  * d/t/upstream: do not mask machined and instead use mkosi workaround
+  * d/t/upstream: switch from btrfs to ext4 and use nspawn again. Kernel
+    6.12 broke mounting btrfs volumes from loop devices, switch to ext4 as
+    a workaround and use nspawn again, as it's faster
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 26 Dec 2024 18:59:19 +0000
+
+systemd (257.1-4) unstable; urgency=medium
+
+  * d/t/upstream: decrease parallelism to nproc - 1
+  * d/t/upstream: do not use nspawn for tests
+  * d/t/upstream: disable homed/userdbd in the test runner
+  * d/t/upstream: mask systemd-machined
+  * Backport patch to workaround issue in new mdadm
+
+ -- Luca Boccassi <bluca@debian.org>  Sun, 22 Dec 2024 13:57:12 +0000
+
+systemd (257.1-3) unstable; urgency=medium
+
+  * autopkgtest: mark tests-in-lxd as flaky
+
+ -- Luca Boccassi <bluca@debian.org>  Sat, 21 Dec 2024 01:19:14 +0000
+
+systemd (257.1-2) unstable; urgency=medium
+
+  * Various fixes for d/t/tests-in-lxd
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 20 Dec 2024 15:27:15 +0000
+
+systemd (257.1-1) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * test: fix flaky boot-and-services test.
+  * d/t/upstream: fix mkosi syntax warnings
+  * systemd-ukify: recommend python3-cryptography. One of the verbs uses
+    it, so add a recommend to pull it in by default (Closes: #1090759)
+  * d/watch: restrict to v257.x series
+  * Update upstream source from tag 'upstream/257.1' (Closes: #1087616)
+  * Drop patches, merged upstream
+  * Install systemd-creds bash completion
+
+  [ Nick Rosbrook ]
+  * d/t/tests-in-lxd: run some tests under LXD
+  * debian/tests/boot-and-services: drop test_no_failed
+  * debian/control: add Breaks: systemd (<< ${binary:Version}) for udev.
+    This ensures that systemd is also upgraded whenever udev is upgraded.
+  * d/control: make systemd-sysv Depends: on matching version of systemd
+  * d/systemd-resolved.postinst: copy existing /etc/resolv.conf on new
+    installs
+
+  [ Balint Reczey ]
+  * debian/systemd.postinst: Skip daemon-reexec and try-restarts during
+    shutdown. LP #1803391
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 19 Dec 2024 21:41:25 +0000
+
+systemd (257-2) unstable; urgency=medium
+
+  [ Aurelien Jarno ]
+  * udev: install dmi_memory_id and its rules on riscv64.
+
+  [ Luca Boccassi ]
+  * Backport patches to fix test failures
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 11 Dec 2024 18:31:08 +0000
+
+systemd (257-1) unstable; urgency=medium
+
+  * Update to new upstream version v257. For a full list of changes:
+    https://github.com/systemd/systemd/releases/tag/v257-rc1
+  * Update symbols file for v257
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 10 Dec 2024 19:57:21 +0000
+
+systemd (257~rc3-1) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * systemd-ukify: recommend systemd-boot-efi for the stub (Closes:
+    #1087808)
+  * Increase minimum sections in stub PE header on arm64/armhf/riscv64 to
+    500. Allows riscv64 to include all current DTBs with some room to grow
+    (Closes: #1087817)
+  * Bump version in tzdata dependency due to p-u upload
+  * Update to new upstream version v257~rc3. For a full list of changes:
+    https://github.com/systemd/systemd/releases/tag/v257-rc3
+  * Drop patches, merged upstream
+  * Update symbols for 257~rc3
+
+  [ Ben Hutchings ]
+  * sysctl: Add file trigger on /usr/lib/sysctl.d to restart systemd-
+    sysctl. (Closes: #1085160)
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 27 Nov 2024 21:21:02 +0000
+
+systemd (257~rc2-3) unstable; urgency=low
+
+  * Backport patch to remove faulty unit test assertion
+
+ -- Luca Boccassi <bluca@debian.org>  Sat, 16 Nov 2024 10:13:56 +0000
+
+systemd (257~rc2-2) unstable; urgency=low
+
+  * Backport patch to fix FTBFS due to failing unit test
+
+ -- Luca Boccassi <bluca@debian.org>  Sat, 16 Nov 2024 00:36:08 +0000
+
+systemd (257~rc2-1) unstable; urgency=low
 
-  * improve swap feat.
-  * https://github.com/systemd/systemd/pull/42632
+  * d/t/control: add more packages to dummy hint-testsuite-triggers. A
+    regression was introduced by nvme-cli in testing because the testsuite
+    doesn't depend on it anymore directly, as mkosi builds it in the
+    image. Add back all the tools/libraries that are only part of the
+    mkosi guest image, so that autopkgtest triggers when they get updated,
+    and regressions can be flagged before they migrate to testing.
+  * Update upstream source from tag 'upstream/257_rc2'
+  * Drop all patches, merged upstream
+  * Install new systemd-keyutil binary in the systemd-repart package
+  * systemd-ukify: downgrade dependency on systemd, not mandatory. It is
+    necessary for the systemd-measure binary, but its usage is optional
+    behind a specific argument, so the dependency can be downgraded
+    (Closes: #1087322)
+  * systemd-ukify: recommend systemd-repart. Needed for the systemd-sbsign
+    and systemd-keyutil binaries
+  * d/rules: adjust blhc override to account for source files being moved
+  * Update lintian override to ignore false positive typos
 
- -- dongshengyuan <dongshengyuan@uniontech.com>  Wed, 24 Jun 2026 15:09:14 +0800
+ -- Luca Boccassi <bluca@debian.org>  Fri, 15 Nov 2024 19:49:02 +0000
 
-systemd (255.2-4deepin36) unstable; urgency=medium
+systemd (257~rc1-4) unstable; urgency=medium
+
+  * Backport patch to fix TEST-07-PID1 integration test
 
-  * fix wrong error variable in log_error_errno()
-  * https://github.com/systemd/systemd/pull/42592
+ -- Luca Boccassi <bluca@debian.org>  Fri, 08 Nov 2024 01:09:19 +0000
 
- -- dongshengyuan <dongshengyuan@uniontech.com>  Tue, 16 Jun 2026 12:05:16 +0800
+systemd (257~rc1-3) unstable; urgency=low
 
-systemd (255.2-4deepin35) unstable; urgency=medium
+  * Backport another patch to fix test failure on buildd
 
-  * fix double-free in normalize_portable_changes()
-  * https://github.com/systemd/systemd/pull/42588
+ -- Luca Boccassi <bluca@debian.org>  Thu, 07 Nov 2024 11:13:25 +0000
 
- -- dongshengyuan <dongshengyuan@uniontech.com>  Tue, 16 Jun 2026 11:17:14 +0800
+systemd (257~rc1-2) unstable; urgency=low
 
-systemd (255.2-4deepin34) unstable; urgency=medium
+  * Backport patch to fix unit test failure on buildd
 
-  * update-ug.po-and-bo.po
+ -- Luca Boccassi <bluca@debian.org>  Thu, 07 Nov 2024 09:35:17 +0000
 
- -- dongshengyuan <dongshengyuan@uniontech.com>  Mon, 15 Jun 2026 13:51:50 +0800
+systemd (257~rc1-1) unstable; urgency=low
 
-systemd (255.2-4deepin33) unstable; urgency=medium
-
-  * head_data_offset is declared as le64_t in journal-def.h, so it must be assigned with htole64(p).
-  * https://github.com/systemd/systemd/pull/42569
-
- -- dongshengyuan <dongshengyuan@uniontech.com>  Mon, 15 Jun 2026 13:09:42 +0800
-
-systemd (255.2-4deepin32) unstable; urgency=medium
-
-  * sleep: fix spurious "Failed to lock home directories" error when
-    systemd-homed is not running by using sd_bus_open_system() instead
-    of bus_connect_system_systemd(), ensuring the call reaches homed
-    on the standard system D-Bus rather than PID1's private bus.
-
- -- dongshengyuan <dongshengyuan@uniontech.com>  Mon, 15 Jun 2026 10:41:55 +0800
-
-systemd (255.2-4deepin31) unstable; urgency=medium
-
-  * Optimize udev trigger priority and replace full settle with
-  * root-device-only wait.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 12 Jun 2026 17:31:08 +0800
-
-systemd (255.2-4deepin30) unstable; urgency=medium
-
-  * Fix tmpfiles x11 socket age-based cleanup causing unexpected removal
-    of live X11 sockets
-
- -- jiabowen <jiabowen@uniontech.com>  Wed, 03 Jun 2026 14:20:24 +0800
-
-systemd (255.2-4deepin29) unstable; urgency=medium
-
-  * Skip clock restore for timesyncd.
-
- -- dongshengyuan <dongshengyuan@uniontech.com>  Mon, 01 Jun 2026 17:06:06 +0800
-
-systemd (255.2-4deepin28) stable; urgency=medium
-
-  * Backport upstream critical security vulnerability patches:
-  * aa76d811: resolved: add missing polkit checks for
-    FlushCaches/ResetServerFeatures
-  * e7cd836d: resolved: cap pre-allocation for questions/RRs to prevent
-    DNS memory exhaustion
-  * 9b217384: sd-bus: add depth limit to message_skip_fields() to
-    prevent stack overflow via variant recursion
-  * b45a897e: sd-hwdb: reject out-of-bounds fnmatch prefixes to prevent
-    OOB read
-  * 4e02162a: core/exec-invoke: chdir after chroot to prevent CWD escape
-
- -- jiabowen <jiabowen@uniontech.com>  Mon, 25 May 2026 17:32:05 +0800
-
-systemd (255.2-4deepin27) unstable; urgency=medium
-
-  * systemctl: disable wall messages by default (set arg_no_wall to true)
-    to suppress broadcast notifications on shutdown/reboot.
-
- -- zengwei <zengwei1@uniontech.com>  Tue, 13 May 2026 00:00:00 +0800
-
-systemd (255.2-4deepin26) unstable; urgency=medium
-
-  * Disable wall broadcast messages by default, suppress "Broadcast message
-    from" and "The system will" notifications on scheduled shutdown/reboot.
-
- -- zengwei <zengwei1@uniontech.com>  Wed, 30 Apr 2026 00:00:00 +0800
-
-systemd (255.2-4deepin25) unstable; urgency=medium
-
-  * libnss-myhostname.nss: Install after `files`.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 17 Apr 2026 11:38:02 +0800
-
-systemd (255.2-4deepin24) unstable; urgency=medium
-
-  * Optimized reverse DNS lookup timeout for 192.168.0.0/16 and link-local ranges.
-  * Fixed hangs in tools like route when running in virtualized environments
-    (e.g. VMware) with non-responsive DNS gateways.
-
- -- 王鑫鹏 <ut003726@PEN202512100003>  Tue, 10 Mar 2026 10:11:38 +0800
-
-systemd (255.2-4deepin23) unstable; urgency=medium
-
-  * add libusec.so to support USEC.
-
- -- zhouzilong <zhouzilong@uniontech.com>  Thu, 05 Mar 2026 13:33:51 +0800
-
-systemd (255.2-4deepin22) unstable; urgency=medium
-
-  * Adjust default MulticastDNS setting to 'no' in meson_options.txt.
-  * Add idempotent check for uniontech-add-tpmfs.patch to prevent
-    build failures on re-compilation.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Thu, 05 Mar 2026 11:21:05 +0800
-
-systemd (255.2-4deepin21) unstable; urgency=medium
-
-  * fix dbus read sysuser passwd
-
- -- shengyuan.dong <dongshengyuan@uniontech.com>  Wed, 25 Feb 2026 14:49:34 +0800
-
-systemd (255.2-4deepin20) unstable; urgency=medium
-
-  * Service Security Hardening.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 19 Dec 2025 18:26:18 +0800
-
-systemd (255.2-4deepin19) unstable; urgency=medium
-
-  * dealing with a space bug at the end of a folder
-
- -- shengyuan.dong <dongshengyuan@uniontech.com>  Thu, 30 Oct 2025 13:40:47 +0800
-
-systemd (255.2-4deepin18) unstable; urgency=medium
-
-  * make only uos support TPMFS_SUPER_MAGIC.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Thu, 30 Oct 2025 10:24:19 +0800
-
-systemd (255.2-4deepin17) unstable; urgency=medium
-
-  *add ug and bo translation
-
- -- shengyuan.dong <dongshengyuan@uniontech.com>  Wed, 15 Oct 2025 11:41:38 +0800
-
-systemd (255.2-4deepin16) unstable; urgency=medium
-
-  * fix zh_HK zh_TW translation
-
- -- shengyuan.dong <dongshengyuan@uniontech.com>  Tue, 14 Oct 2025 19:22:32 +0800
-
-systemd (255.2-4deepin15) unstable; urgency=medium
-
-  * add zh_HK translation.
-
- -- jiahe.liu <liujiahe@uniontech.com>  Sun, 28 Sep 2025 14:52:28 +0800
-
-systemd (255.2-4deepin14) unstable; urgency=medium
-
-  * support TPMFS_SUPER_MAGIC.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 26 Sep 2025 17:13:54 +0800
-
-systemd (255.2-4deepin13) unstable; urgency=medium
-
-  * In Uos, the debug-shell should require a login to access.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Thu, 25 Sep 2025 13:13:12 +0800
-
-systemd (255.2-4deepin12) unstable; urgency=medium
-  
-  * feat: add sw64 support
-
- -- Deepin Packages Builder <packages@deepin.org>  Tue, 20 May 2025 14:47:36 +0800
-
-systemd (255.2-4deepin11) unstable; urgency=medium
-
-  * Improve boot performance.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Wed, 28 May 2025 13:46:21 +0800
-
-systemd (255.2-4deepin10) unstable; urgency=medium
-
-  * Disable seccomp support on loong64&sw64.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Thu, 08 May 2025 13:33:56 +0800
-
-systemd (255.2-4deepin9) unstable; urgency=medium
-
-  * add shutdown service.
-  * add enable wol rule.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Tue, 29 Apr 2025 17:20:47 +0800
-
-systemd (255.2-4deepin8) unstable; urgency=medium
-
-  * Disable seccomp support on mips64el.
-  * disable systemd-pstore.service.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 28 Mar 2025 11:54:35 +0800
-
-systemd (255.2-4deepin7) unstable; urgency=medium
-
-  * enable log trace default.
-
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Mon, 20 Jan 2025 15:18:01 +0800
-
-systemd (255.2-4deepin6) unstable; urgency=medium
-
-  * fix usec status incorrect in umac_use().
-
- -- zhouzilong <zhouzilong@uniontech.com>  Wed, 11 Dec 2024 10:17:43 +0800
-
-systemd (255.2-4deepin5) unstable; urgency=medium
-
-  * Restart managers on libc-upgrade dpkg trigger
-
- -- Tianyu Chen <sweetyfish@deepin.org>  Fri, 06 Dec 2024 16:08:42 +0800
-
-systemd (255.2-4deepin4) unstable; urgency=medium
-
-  * change security.selinux2 to security.usec_proc attr.
-  * systemd default usid context is "root:object_r:deepin_usec_t:s0"
-
- -- zhouzilong <zhouzilong@uniontech.com>  Sat, 30 Nov 2024 11:30:33 +0800
-
-systemd (255.2-4deepin3) unstable; urgency=medium
-
-  * add usecfs magic.
-
- -- zhouzilong <zhouzilong@uniontech.com>  Tue, 29 Oct 2024 21:43:21 +0800
-
-systemd (255.2-4deepin2) unstable; urgency=medium
-
-  * Cancel the fsckd check prompt at boot time.
-
- -- liujianqiang <liujianqiang@uniontech.com>  Mon, 23 Sep 2024 18:01:23 +0800
-
-systemd (255.2-4deepin1) sid; urgency=medium
-
-  * Adapt UOS mandatory access control.
-
- -- luxinyou <luxinyou@uniontech.com>  Wed, 04 Sep 2024 19:05:00 +0800
+  * gbp.conf: switch upstream branch to full upstream history
+  * Update to new upstream version v257~rc1. For a full list of changes:
+    https://github.com/systemd/systemd/releases/tag/v257-rc1
+  * Drop all patches, merged upstream
+  * Install new files
+  * List new libsystemd0 symbols
+  * Ignore Lintian warning dh-exec-script-without-dh-exec-features
+  * d/copyright: remove pattern for directory that is no longer present
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 06 Nov 2024 23:58:55 +0000
+
+systemd (256.7-3) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * Backport patch to fix test failures with tzdata 2024b-1
+  * systemd-boot: provide provisional integration with shim. Not yet
+    used, will be active once the signed packages are available.
+    https://wiki.debian.org/SecureBoot#Secure_Boot_setup_with_systemd-boot
+
+  [ Kirill Rekhov ]
+  * d/systemd.postrm: delete more internal state directories on purge
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 01 Nov 2024 18:13:09 +0000
+
+systemd (256.7-2) unstable; urgency=medium
+
+  [ Nick Rosbrook ]
+  * d/systemd.postinst: do not restart systemd-binfmt.service if masked
+    (LP: #2077869)
+
+  [ Luca Boccassi ]
+  * systemd-boot: depend on systemd for kernel-install (Closes: #1085012)
+  * Disable utmp support, not y2038 safe. utmp support in tmux has been
+    disabled, so autopkgtest should no longer break
+  * Backport fixes for upstream autopkgtest suite
+
+  [ Benjamin Drung ]
+  * initramfs-tools: support missing /etc/udev/udev.conf. Installing
+    initramfs-tools fails in case `/etc/udev/udev.conf` is removed
+    (LP: #2084592)
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 18 Oct 2024 15:47:12 +0100
+
+systemd (256.7-1) unstable; urgency=medium
+
+  * autopkgtest: skip gdm3 on armel for smoke tests. Gnome is no longer
+    built for armel. (Closes: #1082516)
+  * New upstream version 256.7
+  * Mark dependencies on clang and bpftool as :native (Closes: #1083064)
+  * Revert "autopkgtest: skip TEST-64-UDEV-STORAGE due to qemu crash". The
+    qemu crash is now detected in the upstream integration test script.
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 08 Oct 2024 18:37:53 +0100
+
+systemd (256.6-1) unstable; urgency=medium
+
+  [ Helmut Grohne ]
+  * salsa-ci: test the stage1 build profile
+
+  [ Simon Chopin ]
+  * Filter out zdev rules in the initramfs hook (LP: #2044104). s390-tools
+    has its own initramfs customization logic that deals with those files.
+
+  [ Luca Boccassi ]
+  * Re-enable utmp support, tmux's autopkgtests require it. This will
+    break as logind writing into utmp will wrap around, so Trixie won't be
+    y2038 ready after all
+  * New upstream version 256.6
+  * Note systemd-cryptsetup package split in NEWS (Closes: #1079644)
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 10 Sep 2024 18:28:21 +0200
+
+systemd (256.5-2) unstable; urgency=medium
+
+  [ Helmut Grohne ]
+  * Fix stage1 build (Closes: #1078821)
+
+  [ Luca Boccassi ]
+  * Disable utmp support, replaced by wtmpdb. utmp is not y2038-safe, util-
+    linux has now turned it off and relies on logind, so disable utmp
+    support in logind too, as it is no longer necessary. wtmpdb replaces
+    the functionality.
+
+ -- Luca Boccassi <bluca@debian.org>  Sun, 01 Sep 2024 22:03:06 +0100
+
+systemd (256.5-1) unstable; urgency=medium
+
+  * New upstream version 256.5
+  * Drop patch merged upstream
+  * autopkgtest: skip TEST-64-UDEV-STORAGE due to qemu crash. This tests
+    randomly causes qemu to crash, making it very flaky, skip it
+    downstream
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 15 Aug 2024 22:00:36 +0100
+
+systemd (256.4-3) unstable; urgency=medium
+
+  * Drop redundant pot build. This was added many years ago, when
+    apparently the upstream pot generation wasn't run or wasn't working.
+    This is not the case anymore, pot files are regenerated upstream and
+    checked in on every release, so this manual step just updates the
+    timestamp in the existing template and nothing else. Drop it.
+  * Use debian/clean instead of override in d/rules
+  * Stop shipping empty /etc/init.d directory. We do not have any need for
+    it, and will soon stop supporting legacy init files, so stop shipping
+    it
+  * Use d/not-installed instead of manual removals. We no longer install
+    in the main package with a wildcard so we do not need to manually
+    delete files, listing them in d/not-installed is sufficient. The only
+    exceptions are files picked up by directory/wildcard entries in
+    dh_install that have to be deleted.
+  * autopkgtest: run upstream test last. It is the most complex and thus
+    the most likely to show temporary failures, so move it last so that
+    it's easier to read the logs
+  * autopkgtest: use hint-testsuite-triggers to ensure other packages
+    changes trigger our testsuite
+  * Depend on new linux-bpf-dev package where available
+
+ -- Luca Boccassi <bluca@debian.org>  Sun, 11 Aug 2024 11:53:32 +0100
+
+systemd (256.4-2) unstable; urgency=medium
+
+  * autopkgtest: allow localectl in localed tests.
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 25 Jul 2024 13:18:09 +0100
+
+systemd (256.4-1) unstable; urgency=medium
+
+  [ Nick Rosbrook ]
+  * Move systemd-time-wait-sync to systemd-timesyncd package
+    (LP: #1938058)
+  * d/t/boot-and-services: skip test_tmp_cleanup if tmp.mount is
+    overridden
+  * d/t/upstream: ensure correct ubuntu codename is used
+  * d/t/control: add Depends: lib{systemd,udev}-dev for upstream
+
+  [ Luca Boccassi ]
+  * Drop /etc/sysctl.d/99-sysctl.conf symlink procps no longer ships
+    /etc/sysctl.conf (Closes: #1076190)
+  * autopkgtest: add allow-stderr to timedated test
+  * autopkgtest: set Release= in mkosi.local.conf to distinguish testing
+    vs unstable
+  * Drop out-of-tree localed patch and use D-Bus policy instead. We can
+    forbid changing locale/keymap/keyboard via a D-Bus policy instead of
+    an out-of-tree patch.
+  * New upstream version 256.4 (Closes: #1074789)
+  * Install varlinkctl zsh completion file
+  * Drop last patch, all merged upstream
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 24 Jul 2024 14:23:56 +0100
+
+systemd (256.2-1) unstable; urgency=medium
+
+  * d/not-installed: fix shutdown.standalone path
+  * autopkgtest: skip qemu tests on arm64
+  * Add recommends on linux-sysctl-defaults. This package contains the
+    default sysctl settings, and is maintained by the kernel team. This is
+    not available in Ubuntu so keep it as a recommends for now, to avoid
+    breaking the upstream CI.
+    (Closes: #1027773)
+  * initramfs-tools: copy network drop-ins too (Closes: #1074564)
+  * d/e/checkout-upstream: fix shellcheck warnings
+  * d/e/checkout-upstream: do not fail if rebase fails
+  * d/e/checkout-upstream: switch packaging branch on upstream stable PRs.
+  * New upstream version 256.2 (Closes: #1074789)
+  * Install run0 zsh completion file
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 05 Jul 2024 19:15:59 +0100
+
+systemd (256.1-2) unstable; urgency=medium
+
+  * Bump breaks/replaces to conflicts for DEP17. Breaks/replaces are not
+    enough when moving files between packages and between locations as per
+    DEP17, so bump to Conflicts. (Closes: #1073922)
+  * autopkgtest: add dependency on libcryptsetup-dev in unit-tests suite
+
+ -- Luca Boccassi <bluca@debian.org>  Sun, 23 Jun 2024 13:33:33 +0100
+
+systemd (256.1-1) unstable; urgency=medium
+
+  * Bump versioned breaks against dracut to 102-2 (Closes: #1073290)
+  * autopkgtest: switch upstream suite to mkosi-based builds
+  * Add conflict against sysv-rc, insserv and startpar in systemd-sysv.
+    They are not needed, and having them installed causes problems.
+    (Closes: #1072562)
+  * New upstream version 256.1
+  * Drop section from binary packages where it matches the source package
+  * Override Lintian false positives about spare manpages
+  * Deduplicate template packages descriptions
+  * Add Lintian override for template package false positives
+  * Rename EFI architecture variable to avoid dpkg clash. Fixes Lintian
+    warning: debian-rules-sets-dpkg-architecture-variable
+  * Upload to unstable.
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 18 Jun 2024 23:19:16 +0100
+
+systemd (256-2) experimental; urgency=medium
+
+  * Add templated packages for UEFI Secure Boot signing of systemd-boot.
+  * Add systemd-standalone-shutdown package for exitrds. Allows building
+    minimal exitrd images, used to gracefully cleanup complex root
+    filesystems storage. Not intended for normal systems.
+  * Add systemd-repart package to reduce dependencies sd-repart pulls in
+    several libraries that binaries in the main systemd package do not
+    need, so split it out to reduce the dependencies of the main package
+  * Add systemd-cryptsetup package to reduce dependencies sd-
+    cryptsetup/integritysetup/veritysetup pull in several libraries that
+    other files in the main systemd package do not need, so split them out
+    to reduce the dependencies of the main package
+  * Move sd-sysupdate to systemd-container
+  * Move importd manpages to systemd-container, where the binaries are.
+    Left behind when importd was moved
+  * Move systemd-boot/stub manpages to systemd-boot. The EFI packages
+    should just have the EFI binaries, no point in duplicating the docs.
+    And the stub manpage should also be in the boot package, not the main
+    package.
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 12 Jun 2024 01:30:51 +0100
+
+systemd (256-1) unstable; urgency=medium
+
+  [ Kevin Fleming ]
+  * Additional workaround for links to legacy /usr/share/systemd/tmp.mount
+    placeholder
+
+  [ Yu Watanabe ]
+  * debian/extra/network: use NamePolicy=mac only when ID_NET_NAME_MAC is
+    set.
+
+  [ Luca Boccassi ]
+  * New upstream version 256. For a full list of changes, see:
+    https://github.com/systemd/systemd/releases/tag/v256
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 11 Jun 2024 22:59:12 +0100
+
+systemd (256~rc4-1) unstable; urgency=high
+
+  [ Luca Boccassi ]
+  * Restart managers on libc-upgrade dpkg trigger (Closes: #1072373)
+  * LimitCORE: restore default hard limit to infinity. The intention was
+    to change the soft limit, but by default it applies to both unless
+    specified, so fix it.
+  * New upstream version 256~rc4
+  * Drop patches merged upstream
+
+  [ Nick Rosbrook ]
+  * debian/extra: set ManagedOOMSwap=auto on -.slice. This has the effect
+    of disabling swap kill by default, so cgroups will only be monitored
+    for memory pressure, and not swap usage.
+  * debian/extra: use a drop-in resolved.conf to configure Cache=no-
+    negative. Only ship this on Ubuntu.
+  * debian/extra: use a dropin to configure Nice=-1 on systemd-
+    journald.service. Only ship this on Ubuntu.
+
+  [ Dan Streetman ]
+  * debian/tests/storage: without scsi_debug, skip test
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 06 Jun 2024 20:49:17 +0100
+
+systemd (256~rc3-7) unstable; urgency=medium
+
+  * NEWS: note that any leftover file in /tmp/ will be invisible due to
+    the tmpfs and other clarifications (Closes: #1072249)
+  * Add pkg.systemd.noukify profile. Will be useful for i386 reduced
+    builds
+  * d/rules: be more robust against non-existing dirs when deleting files
+  * Allow setting GENSYMBOLS_LEVEL from the environment. Needed when
+    building with llvm to work around #986746
+
+ -- Luca Boccassi <bluca@debian.org>  Sat, 01 Jun 2024 12:30:39 +0100
+
+systemd (256~rc3-6) unstable; urgency=medium
+
+  * NEWS: clarify tmpfiles.d entry (Closes: #1072155)
+  * Override false positive Lintian warning
+  * Add workaround for links to legacy /usr/share/systemd/tmp.mount
+    placeholder. Some users apparently link to the placeholder in
+    /usr/share/ so delete any such links, given we don't ship it anymore
+    (Closes: #1072187)
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 30 May 2024 18:11:19 +0100
+
+systemd (256~rc3-5) unstable; urgency=medium
+
+  * homed: fixup pam-auth-update file via trigger pam-auth-update assumes
+    nothing comes after a password module, but this is not true for
+    pam_systemd_home, which is a no-op for users not managed by homed.
+    Fixup common-password accordingly, using a trigger watching for pam-
+    auth-update files being installed.
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 29 May 2024 01:04:53 +0100
+
+systemd (256~rc3-4) unstable; urgency=medium
+
+  * autopkgtest: take into account compat tmp.conf in tmpfiles.d test.
+  * Backport patch to fix TEST-64-UDEV-STORAGE autopkgtest.
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 28 May 2024 12:11:36 +0100
+
+systemd (256~rc3-3) unstable; urgency=medium
+
+  [ Zbigniew Jędrzejewski-Szmek ]
+  * tests/boot-and-services: don't wait for systemd-tmpfiles-clean.service
+    to finish. It's a oneshot service, so the 'start' call above is
+    effectively synchronous.
+  * test/boot-and-services: use pidof instead of ps -C
+
+  [ Chris Hofstaedtler ]
+  * autopkgtest: install open-iscsi and tgt for upstream suite
+
+  [ Gioele Barabucci ]
+  * d/libnss-mymachines.nss: Install before `resolve` and `dns`. Installing
+    `mymachines` before `dns` and `resolve` (whatever comes first) is
+    suggested in the manpage. It also avoids leaking information about
+    local machines to the DNS resolver. (Closes: #825438, #851314)
+  * d/libnss-myhostname.nss: Install after `files`
+
+  [ Luca Boccassi ]
+  * Drop /bin/systemd legacy symlink. The systemd binary should not be in
+    the default PATH. This symlink was created due to some old
+    documentation (long since corrected) suggesting to use
+    init=/bin/systemd to test switching to systemd. (Closes: #913061)
+  * initramfs: call udevadm settle before control --exit to ensure workers
+    have stopped. Otherwise there might be lock files left under /run/
+    which will break 'nuke' and cause the boot to fail. (Closes: #1056564)
+  * Restore open files limit bump on boot. Broken packages ought to have
+    been fixed by now. (Closes: #1029152)
+  * Set default core limit to 0 via PAM for users. Otherwise it only
+    applies to services.
+  * Cleanup /var/tmp/ and /tmp/ on a timer by default. Remove the
+    downstream patch and restore the upstream behaviour set by the
+    tmpfiles.d which is to cleanup /var/tmp/ once a month and /tmp/ once
+    every 10 days. Can be overridden via: touch /etc/tmpfiles.d/tmp.conf
+    (Closes: #966621)
+  * Make /tmp/ a tmpfs by default. Restore the upstream default and make
+    /tmp/ a tmpfs. Can be overridden with: touch
+    /etc/systemd/system/tmp.mount or: systemctl mask tmp.mount
+  * Drop out-of-tree /run/lock patch and use a mount unit and tmpfiles.d
+    instead. Only lvm2 and open-iscsi have mentions of /run/lock and an
+    early-boot unit, so it's trivial to add ordering in those units
+    instead of maintaining an out-of-tree patch.
+  * homed: use standalone pam config file instead of pam-auth-config
+    pam_unix.so assumes that if anything comes before it then the password
+    has already been queried for sure. This doesn't work for homed, so
+    passwd breaks. pam-auth-config has this hard-coded assumption and it
+    cannot be disabled. Use an upstream standard pam config file instead.
+    (Closes: #1056166)
+  * NEWS: note recent changes
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 28 May 2024 00:07:57 +0100
+
+systemd (256~rc3-2) unstable; urgency=medium
+
+  * autopkgtest: do not install gdm3 on riscv64 tests. gnome-shell hasn't
+    built since last year for riscv64 due to #1058687 so the test fails as
+    it cannot be installed, skip it like on s390x.
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 23 May 2024 16:31:42 +0100
+
+systemd (256~rc3-1) unstable; urgency=medium
+
+  * Bump Breaks on dracut, on request of the maintainer (Closes: #1071278)
+  * autopkgtest: reboot before logind test
+  * Disable D-Bus introspection XML generation with nodoc profile
+  * autopkgtest: install systemd-dev for upstream suite too
+  * New upstream version 256~rc3
+  * Drop patches merged upstream
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 22 May 2024 23:24:02 +0100
+
+systemd (256~rc2-3) unstable; urgency=medium
+
+  * Explicitly enable systemd-boot only on supported architectures
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 16 May 2024 22:51:08 +0100
+
+systemd (256~rc2-2) unstable; urgency=medium
+
+  * Build depend on dh-dlopenlibdeps and dynamically generate dlopen
+    dependencies
+  * Backport patches to fix journald asserts Compress=yes (Closes:
+    #1071201)
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 16 May 2024 17:40:43 +0100
+
+systemd (256~rc2-1) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * report-bug: add presubj template to recommend opening functionality
+    bugs upstream first
+  * report-bug: include runtime taints
+  * Recommend libzstd1 and suggest liblz4-1, liblzma5, libgcrypt20
+  * autopkgtest: install polkitd in upstream suite
+  * Build depend on rsync or meson >= 1.3.0 for follow-symlink workaround.
+  * Change links from freedesktop.org to systemd.io (Closes: #1070499)
+  * Add dependency on python3-psutil to systemd-tests, needed by networkd
+    test suite
+  * d/t/boot-and-services: drop tmp check. LXC now sets up a tmpfs on /tmp
+    as per upstream recommendation, so we cannot detect it via fstab
+    anymore. Just drop this test, as we are about to make /tmp a tmpfs
+    ourselves anyway.
+  * Set SBAT distro URL to tracker.d.o as suggested by EFI team
+  * Drop out-of-tree coredump patch and use config drop-ins instead. As
+    per: https://github.com/systemd/systemd/pull/27066 instead of carrying
+    an out-of-tree patch, use drop-ins to set the default pattern to
+    'core' and the default core limit to '0' in the systemd package, and a
+    higher priority drop-in to set the default core limit to 'infinity' in
+    the systemd-coredump package (it already ships a sysctl to set the
+    pattern). The end result is the same, but with config drop-ins instead
+    of patches.
+  * Drop out-of-tree fsckd daemon patch. This was dropped upstream long
+    ago, and Plymouth on Debian doesn't actually use this. A different
+    upstream change provides the required functionality.
+  * Drop out-of-tree systemctl scheduled shutdown fallback. This patch was
+    rejected upstream and there's no path to have it merged, so drop it
+    and restore the default behaviour in case of error.
+  * Drop out-of-tree fsck skip patch and use drop-in instead. Non-root
+    filesystems are only checked when mounted, so the other change is not
+    needed. The root one can be fixed with a drop-in instead of a patch.
+  * d/t/control: explicitly depend on systemd-dev for tests that run pkg-
+    config
+  * systemd.postinst: use DPKG_ROOT in one more place.
+  * NEWS: note scheduled shutdown failure case changes
+  * New upstream version 256~rc2
+  * Drop patches merged upstream
+  * Refresh patches for v256~rc2
+  * Install new files from v256~rc2
+  * Drop Lintian overrides for false positives that have been fixed
+  * Upload to unstable
+
+  [ Michael Marley ]
+  * Use absolute path when including libkmod in initramfs. The relative
+    path works fine when the hook is executed during a normal APT
+    install/update, but if the user runs "update-initramfs -u" from any
+    directory other than /, the relative path doesn't match anything,
+    libkmod is not included, and the system fails to boot due to not
+    loading the storage driver(s).
+
+  [ Michael Biebl ]
+  * Stop setting the build system explicitly. No longer necessary since
+    https://github.com/systemd/systemd/pull/31530
+  * Remove systemd-dev dependency from systemd and udev. This was a
+    temporary measure to ease the migration.
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 15 May 2024 00:40:56 +0100
+
+systemd (256~rc1-1~exp2) experimental; urgency=medium
+
+  * Backport patch to fix test-build-path on RISC-V/MIPS
+  * Backport patch to fix build reproducibility
+  * Backport patch to fix BPF build on s390x
+
+ -- Luca Boccassi <bluca@debian.org>  Sat, 27 Apr 2024 18:14:25 +0100
+
+systemd (256~rc1-1~exp) experimental; urgency=medium
+
+  * d/watch: switch to main repository
+  * New upstream version 256~rc1
+  * Drop Downgrade-a-couple-of-warnings-to-debug.patch. It is time to
+    start noticeably warning about these legacy setups
+  * Refresh patches for v256
+  * Build depend on libarchive-dev
+  * Install new tools, units and manpages
+  * Enable bpf and new nsresourced/mountfsd services. Requires vmlinux.h
+    from linux-headers-$ARCH, disable if not found
+  * Backport patch to fix unit test failure in build environment
+  * Update libsystemd symbols file
+  * Update Lintian overrides
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 26 Apr 2024 12:22:04 +0100
+
+systemd (255.5-1) sid; urgency=medium
+
+  [ Michael Biebl ]
+  * autopkgtest: depend on pkgconf rather than pkg-config
+  * Stop setting default-hierarchy to unified explicitly. It is already
+    the default and the meson option has been deprecated and is expected
+    to be removed in a future release. See https://github.com/systemd/syst
+    emd/commit/31323f21bb0ae7c712f43500c42997c91a6d20bf
+  * Replace Skip-flaky-test_resolved_domain_restricted_dns-in-
+    network.patch with a proper upstream fix.
+  * Remove myself from Uploaders
+
+  [ Luca Boccassi ]
+  * autopkgtest: add dhcpcd5 as alternative dependency to dhcpcd-base
+    dhcpcd-base is not available in Jammy
+  * d/e/checkout-upstream: stop overriding sshconfdir. It actually works
+    after some upstream test fixes, and it is necessary for TEST-46-HOMED
+    to work
+  * autopkgtest: install systemd-resolved for all suites. Necessary to
+    avoid breaking the network on Ubuntu, in the upstream jammy-based CI
+    jobs. Can be dropped once jammy is no longer tested.
+  * autopkgtest: add breaks-testbed to more tests. Given resolved is
+    installed, the testbed needs to be reset to switch back to the default
+    network stack, otherwise installing packages in the salsa-ci
+    autopkgtest job fails
+  * autopkgtest: restrict systemd-boot-efi to architectures where it's
+    built
+  * Enable libpwquality support. Suggest it from systemd (used by
+    firstboot and cryptenroll) and depend on it from homed (user creation
+    is a core part of it). It's a dlopen() dependency. (Closes: #1063391)
+  * d/e/checkout-upstream: do not initialize submodules. They are used by
+    mkosi, not needed for CI builds
+  * Autopkgtest: add dependency on libkmod-dev to upstream suite.
+  * Switch build-depend form liblz4-tool to lz4. The former is deprecated
+    and now dropped, the latter is available since buster. (Closes: #1068730)
+  * initramfs hooks: pull in libkmod manually udev now opens it with
+    dlopen, so the ldd-based resolver will not see it, pull it in the
+    initramfs manually
+  * New upstream version 255.5
+  * Drop resolve-skip-IP_UNICAST_IF-for-local-sockets.patch, merged
+    upstream
+  * Refresh patches for v255.5
+  * Bump Standards-Version to 4.7.0, no changes
+
+  [ Daan De Meyer ]
+  * Build in developer mode when building for upstream. Developer mode
+    enables some helpful debugging options and enables various
+    experimental components such as systemd-vmspawn which we want to be
+    enabled when testing upstream.
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 24 Apr 2024 16:34:40 +0100
+
+systemd (255.4-1) sid; urgency=medium
+
+  [ Luca Boccassi ]
+  * Drop override for deprecated package-supports-alternative-init-but-no-
+    init.d-script warning
+  * Build-depend on pkgconf pkg-config is deprecated
+  * Move kernel-install initrd script to slightly later prefix
+    afea8e1a35e15382977d459241e8c56c180c862d moved it from 85 to 50, but
+    this conflicts with the upstream mkosi job, which also runs at 50 and
+    needs to run first. Move it back up slightly to 55 to fix the mkosi
+    builds, eg: https://github.com/systemd/systemd-
+    stable/actions/runs/7863691120/job/21454589626?pr=366
+  * Mark python3-pefile build dependency as native. As suggested in
+    #1063393
+  * Skip python3-pefile build dependency only if both nocheck and
+    noinsttests are set (Closes: #1063393)
+  * Build with -Dtests=false if nocheck and noinsttest profiles are set.
+    The required build dependencies will not be installed, so the tests
+    won't build.
+  * systemd-binfmt: use restart instead of try-restart on upgrade. It's
+    not a long-running service so it doesn't matter, and it fixes
+    installing a new binfmt provider (Closes: #1061960)
+  * d/e/checkout-upstream: do not rebase when building on systemd-stable
+    repo. We do rebase only pulls in the stable repo, and it's too much
+    hassle to figure out the right parent branch, given the webhook is
+    configured per repository rather than per branch, so just skip it
+  * d/e/checkout-upstream: build with default-timeout-sec=180. Helps with
+    slow daemon-reload on some CI runs. As requested by:
+    https://github.com/systemd/systemd/pull/27182
+  * d/e/checkout-upstream: enable log-trace by default. Its abscence
+    appears to cause TEST-10-ISSUE-2467 to reliably fail. Enable it while
+    we figure it out. Also probably it is helpful to have it always turned
+    on for the CI, to get more info out of test runs. See:
+    https://github.com/systemd/systemd/issues/19154
+  * d/e/checkout-upstream: do not install userdbd sshd config drop-in.
+    Breaks booting testbed in Jammy. Can be dropped after rebasing to
+    Noble.
+  * d/t/upstream: add dependencies on openssh, gnutls-bin, opensc and
+    softhsm2. Required for https://github.com/systemd/systemd/pull/28658
+    and https://github.com/systemd/systemd/pull/30777
+  * d/t/upstream: fix shellcheck warning. SC2086 (info): Double quote to
+    prevent globbing and word splitting.
+  * Add dependency on libkmod2 on udev, and suggestion on systemd dlopen()
+    dependency since https://github.com/systemd/systemd/pull/31131 but the
+    system can't boot without it, so add it as a dependency on udev which
+    is also needed outside of containers
+  * Update tzdata build dependency constraint to 2024a-1
+  * Drop libarchive-dev build dependency. Not useful for now, we'll re-add
+    it after the next release
+  * New upstream version 255.4
+  * Drop patches merged upstream
+
+  [ Daan De Meyer ]
+  * Fix libtss2-mu dependency. This package recently changed name so let's
+    update the Suggests to account for that.
+  * Add Suggests for libtss2-tcti-device systemd wants to use this library
+    when tpm2 support is enabled so let's make sure we list it in
+    Suggests. (https://github.com/systemd/systemd/blob/db11bab38ccf1ed257f
+    310d29070843d4c58ea01/meson.build#L1341)
+  * Make sure awk only matches PROJECT|PACKAGE_VERSION
+  * Use DEB_BUILD_MAINT_OPTIONS instead of meson options.
+  * Don't put debian revision in version tag when building for upstream.
+  * Allow users to configure DH_MISSING.
+
+  [ Frantisek Sumsal ]
+  * d/t/storage: ignore credential mounts when checking /proc/mounts.
+
+  [ Daniel P. Berrangé ]
+  * debian/rules: don't override default telinit-path. The 'telinit-path'
+    meson option is to be used to point to a non-systemd telinit binary
+    path. When systemctl is invoked as 'telinit', it will exec this binary
+    when it detects the current environment is not running under systemd.
+    If 'telinit-path' points back to 'systemctl', that would result in an
+    infinite re-execve() loop. (Closes: #1063147)
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 27 Feb 2024 17:43:55 +0000
+
+systemd (255.3-2) sid; urgency=medium
+
+  * Backport patches to fix reproducibility issues
+  * Salsa: re-enable reprotest
+
+ -- Luca Boccassi <bluca@debian.org>  Mon, 29 Jan 2024 10:46:19 +0000
+
+systemd (255.3-1) sid; urgency=medium
+
+  * New upstream version 255.3
+  * Drop patches merged upstream
+  * Refresh patches
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 24 Jan 2024 20:03:15 +0000
 
 systemd (255.2-4) sid; urgency=medium
 

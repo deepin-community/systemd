@@ -235,12 +235,12 @@ static void strip_localhost(EtcHosts *hosts) {
          * This way our regular synthesizing can take over, but only if it would result in the exact same
          * mappings.  */
 
-        for (size_t j = 0; j < ELEMENTSOF(local_in_addrs); j++) {
+        FOREACH_ELEMENT(local_in_addr, local_in_addrs) {
                 bool all_localhost, all_local_address;
                 EtcHostsItemByAddress *item;
                 const char *name;
 
-                item = hashmap_get(hosts->by_address, local_in_addrs + j);
+                item = hashmap_get(hosts->by_address, local_in_addr);
                 if (!item)
                         continue;
 
@@ -284,7 +284,7 @@ static void strip_localhost(EtcHosts *hosts) {
                 SET_FOREACH(name, item->names)
                         etc_hosts_item_by_name_free(hashmap_remove(hosts->by_name, name));
 
-                assert_se(hashmap_remove(hosts->by_address, local_in_addrs + j) == item);
+                assert_se(hashmap_remove(hosts->by_address, local_in_addr) == item);
                 etc_hosts_item_by_address_free(item);
         }
 }
@@ -342,7 +342,7 @@ static int manager_etc_hosts_read(Manager *m) {
 
         m->etc_hosts_last = ts;
 
-        if (m->etc_hosts_stat.st_mode != 0) {
+        if (stat_is_set(&m->etc_hosts_stat)) {
                 if (stat("/etc/hosts", &st) < 0) {
                         if (errno != ENOENT)
                                 return log_error_errno(errno, "Failed to stat /etc/hosts: %m");
@@ -491,7 +491,7 @@ static int etc_hosts_lookup_by_name(
                 const char *name,
                 DnsAnswer **answer) {
 
-        bool found_a = false, found_aaaa = false;
+        bool question_for_a = false, question_for_aaaa = false;
         const struct in_addr_data *a;
         EtcHostsItemByName *item;
         DnsResourceKey *t;
@@ -513,6 +513,7 @@ static int etc_hosts_lookup_by_name(
                         return 0;
         }
 
+        /* Determine whether we are looking for A and/or AAAA RRs */
         DNS_QUESTION_FOREACH(t, q) {
                 if (!IN_SET(t->type, DNS_TYPE_A, DNS_TYPE_AAAA, DNS_TYPE_ANY))
                         continue;
@@ -526,20 +527,20 @@ static int etc_hosts_lookup_by_name(
                         continue;
 
                 if (IN_SET(t->type, DNS_TYPE_A, DNS_TYPE_ANY))
-                        found_a = true;
+                        question_for_a = true;
                 if (IN_SET(t->type, DNS_TYPE_AAAA, DNS_TYPE_ANY))
-                        found_aaaa = true;
+                        question_for_aaaa = true;
 
-                if (found_a && found_aaaa)
-                        break;
+                if (question_for_a && question_for_aaaa)
+                        break; /* We are looking for both, no need to continue loop */
         }
 
         SET_FOREACH(a, item ? item->addresses : NULL) {
                 EtcHostsItemByAddress *item_by_addr;
                 const char *canonical_name;
 
-                if ((!found_a && a->family == AF_INET) ||
-                    (!found_aaaa && a->family == AF_INET6))
+                if ((!question_for_a && a->family == AF_INET) ||
+                    (!question_for_aaaa && a->family == AF_INET6))
                         continue;
 
                 item_by_addr = hashmap_get(hosts->by_address, a);
@@ -559,7 +560,7 @@ static int etc_hosts_lookup_by_name(
                         return r;
         }
 
-        return found_a || found_aaaa;
+        return true; /* We consider ourselves authoritative for the whole name, all RR types, not just A/AAAA */
 }
 
 int manager_etc_hosts_lookup(Manager *m, DnsQuestion *q, DnsAnswer **answer) {

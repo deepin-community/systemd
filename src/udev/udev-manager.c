@@ -84,7 +84,7 @@ typedef struct Worker {
         Manager *manager;
         pid_t pid;
         sd_event_source *child_event_source;
-        sd_device_monitor *monitor;
+        union sockaddr_union address;
         WorkerState state;
         Event *event;
 } Worker;
@@ -125,7 +125,6 @@ static Worker *worker_free(Worker *worker) {
                 hashmap_remove(worker->manager->workers, PID_TO_PTR(worker->pid));
 
         sd_event_source_unref(worker->child_event_source);
-        sd_device_monitor_unref(worker->monitor);
         event_free(worker->event);
 
         return mfree(worker);
@@ -154,8 +153,6 @@ Manager* manager_free(Manager *manager) {
 
         sd_event_source_unref(manager->inotify_event);
         sd_event_source_unref(manager->kill_workers_event);
-        sd_event_source_unref(manager->memory_pressure_event_source);
-        sd_event_source_unref(manager->sigrtmin18_event_source);
         sd_event_unref(manager->event);
 
         free(manager->cgroup);
@@ -173,17 +170,17 @@ static int worker_new(Worker **ret, Manager *manager, sd_device_monitor *worker_
         assert(worker_monitor);
         assert(pid > 1);
 
-        /* close monitor, but keep address around */
-        device_monitor_disconnect(worker_monitor);
-
         worker = new(Worker, 1);
         if (!worker)
                 return -ENOMEM;
 
         *worker = (Worker) {
-                .monitor = sd_device_monitor_ref(worker_monitor),
                 .pid = pid,
         };
+
+        r = device_monitor_get_address(worker_monitor, &worker->address);
+        if (r < 0)
+                return r;
 
         r = sd_event_add_child(manager->event, &worker->child_event_source, pid, WEXITED, on_sigchld, worker);
         if (r < 0)
@@ -274,15 +271,9 @@ static void manager_reload(Manager *manager, bool force) {
                         return;
 
                 /* If we eat this up, then tell our service manager to just continue */
-                (void) sd_notifyf(/* unset= */ false,
-                                  "RELOADING=1\n"
-                                  "STATUS=Skipping configuration reloading, nothing changed.\n"
-                                  "MONOTONIC_USEC=" USEC_FMT, now(CLOCK_MONOTONIC));
+                (void) notify_reloading_full("Skipping configuration reloading, nothing changed.");
         } else {
-                (void) sd_notifyf(/* unset= */ false,
-                                  "RELOADING=1\n"
-                                  "STATUS=Flushing configuration...\n"
-                                  "MONOTONIC_USEC=" USEC_FMT, now(CLOCK_MONOTONIC));
+                (void) notify_reloading();
 
                 manager_kill_workers(manager, false);
 
@@ -302,7 +293,7 @@ static void manager_reload(Manager *manager, bool force) {
 static int on_kill_workers_event(sd_event_source *s, uint64_t usec, void *userdata) {
         Manager *manager = ASSERT_PTR(userdata);
 
-        log_debug("Cleanup idle workers");
+        log_debug("Cleaning up idle workers.");
         manager_kill_workers(manager, false);
 
         return 1;
@@ -332,12 +323,38 @@ static int on_event_timeout_warning(sd_event_source *s, uint64_t usec, void *use
         return 1;
 }
 
-static void worker_attach_event(Worker *worker, Event *event) {
-        Manager *manager;
-        sd_event *e;
+static usec_t extra_timeout_usec(void) {
+        static usec_t saved = 10 * USEC_PER_SEC;
+        static bool parsed = false;
+        usec_t timeout;
+        const char *e;
+        int r;
 
-        assert(worker);
-        assert(worker->manager);
+        if (parsed)
+                return saved;
+
+        parsed = true;
+
+        e = secure_getenv("SYSTEMD_UDEV_EXTRA_TIMEOUT_SEC");
+        if (!e)
+                return saved;
+
+        r = parse_sec(e, &timeout);
+        if (r < 0)
+                log_debug_errno(r, "Failed to parse $SYSTEMD_UDEV_EXTRA_TIMEOUT_SEC=%s, ignoring: %m", e);
+
+        if (timeout > 5 * USEC_PER_HOUR) /* Add an arbitrary upper bound */
+                log_debug("Parsed $SYSTEMD_UDEV_EXTRA_TIMEOUT_SEC=%s is too large, ignoring.", e);
+        else
+                saved = timeout;
+
+        return saved;
+}
+
+static void worker_attach_event(Worker *worker, Event *event) {
+        Manager *manager = ASSERT_PTR(ASSERT_PTR(worker)->manager);
+        sd_event *e = ASSERT_PTR(manager->event);
+
         assert(event);
         assert(!event->worker);
         assert(!worker->event);
@@ -347,15 +364,16 @@ static void worker_attach_event(Worker *worker, Event *event) {
         event->state = EVENT_RUNNING;
         event->worker = worker;
 
-        manager = worker->manager;
-        e = manager->event;
-
         (void) sd_event_add_time_relative(e, &event->timeout_warning_event, CLOCK_MONOTONIC,
                                           udev_warn_timeout(manager->timeout_usec), USEC_PER_SEC,
                                           on_event_timeout_warning, event);
 
+        /* Manager.timeout_usec is also used as the timeout for running programs specified in
+         * IMPORT{program}=, PROGRAM=, or RUN=. Here, let's add an extra time before the manager
+         * kills a worker, to make it possible that the worker detects timed out of spawned programs,
+         * kills them, and finalizes the event. */
         (void) sd_event_add_time_relative(e, &event->timeout_event, CLOCK_MONOTONIC,
-                                          manager->timeout_usec, USEC_PER_SEC,
+                                          usec_add(manager->timeout_usec, extra_timeout_usec()), USEC_PER_SEC,
                                           on_event_timeout, event);
 }
 
@@ -376,10 +394,6 @@ static int worker_spawn(Manager *manager, Event *event) {
         r = device_monitor_allow_unicast_sender(worker_monitor, manager->monitor);
         if (r < 0)
                 return log_error_errno(r, "Worker: Failed to set unicast sender: %m");
-
-        r = device_monitor_enable_receiving(worker_monitor);
-        if (r < 0)
-                return log_error_errno(r, "Worker: Failed to enable receiving of device: %m");
 
         r = safe_fork("(udev-worker)", FORK_DEATHSIG_SIGTERM, &pid);
         if (r < 0) {
@@ -434,7 +448,7 @@ static int event_run(Event *event) {
                 if (worker->state != WORKER_IDLE)
                         continue;
 
-                r = device_monitor_send_device(manager->monitor, worker->monitor, event->dev);
+                r = device_monitor_send(manager->monitor, &worker->address, event->dev);
                 if (r < 0) {
                         log_device_error_errno(event->dev, r, "Worker ["PID_FMT"] did not accept message, killing the worker: %m",
                                                worker->pid);
@@ -568,9 +582,6 @@ static int event_queue_start(Manager *manager) {
 
         if (!manager->events || manager->exit || manager->stop_exec_queue)
                 return 0;
-
-        /* To make the stack directory /run/udev/links cleaned up later. */
-        manager->udev_node_needs_cleanup = true;
 
         r = event_source_disable(manager->kill_workers_event);
         if (r < 0)
@@ -713,7 +724,7 @@ static int event_queue_insert(Manager *manager, sd_device *dev) {
         if (r < 0 && r != -ENOENT)
                 return r;
 
-        r = device_get_device_id(dev, &id);
+        r = sd_device_get_device_id(dev, &id);
         if (r < 0 && r != -ENOENT)
                 return r;
 
@@ -864,7 +875,7 @@ static int on_ctrl_msg(UdevCtrl *uctrl, UdevCtrlMessageType type, const UdevCtrl
 
         switch (type) {
         case UDEV_CTRL_SET_LOG_LEVEL:
-                if ((value->intval & LOG_PRIMASK) != value->intval) {
+                if (LOG_PRI(value->intval) != value->intval) {
                         log_debug("Received invalid udev control message (SET_LOG_LEVEL, %i), ignoring.", value->intval);
                         break;
                 }
@@ -1154,7 +1165,7 @@ static int on_post(sd_event_source *s, void *userdata) {
                 if (errno != ENOENT)
                         log_warning_errno(errno, "Failed to unlink /run/udev/queue, ignoring: %m");
         } else
-                log_debug("No events are queued, removing /run/udev/queue.");
+                log_debug("No events are queued, removed /run/udev/queue.");
 
         if (!hashmap_isempty(manager->workers)) {
                 /* There are idle workers */
@@ -1166,11 +1177,6 @@ static int on_post(sd_event_source *s, void *userdata) {
         }
 
         /* There are no idle workers. */
-
-        if (manager->udev_node_needs_cleanup) {
-                (void) udev_node_cleanup();
-                manager->udev_node_needs_cleanup = false;
-        }
 
         if (manager->exit)
                 return sd_event_exit(manager->event, 0);
@@ -1194,11 +1200,31 @@ Manager* manager_new(void) {
                 .worker_watch = EBADF_PAIR,
                 .log_level = LOG_INFO,
                 .resolve_name_timing = RESOLVE_NAME_EARLY,
-                .timeout_usec = 180 * USEC_PER_SEC,
+                .timeout_usec = DEFAULT_WORKER_TIMEOUT_USEC,
                 .timeout_signal = SIGKILL,
         };
 
         return manager;
+}
+
+void manager_adjust_arguments(Manager *manager) {
+        assert(manager);
+
+        if (manager->timeout_usec < MIN_WORKER_TIMEOUT_USEC) {
+                log_debug("Timeout (%s) for processing event is too small, using the default: %s",
+                          FORMAT_TIMESPAN(manager->timeout_usec, 1),
+                          FORMAT_TIMESPAN(DEFAULT_WORKER_TIMEOUT_USEC, 1));
+
+                manager->timeout_usec = DEFAULT_WORKER_TIMEOUT_USEC;
+        }
+
+        if (manager->exec_delay_usec >= manager->timeout_usec) {
+                log_debug("Delay (%s) for executing RUN= commands is too large compared with the timeout (%s) for event execution, ignoring the delay.",
+                          FORMAT_TIMESPAN(manager->exec_delay_usec, 1),
+                          FORMAT_TIMESPAN(manager->timeout_usec, 1));
+
+                manager->exec_delay_usec = 0;
+        }
 }
 
 int manager_init(Manager *manager, int fd_ctrl, int fd_uevent) {
@@ -1220,10 +1246,6 @@ int manager_init(Manager *manager, int fd_ctrl, int fd_uevent) {
                 return log_error_errno(r, "Failed to initialize device monitor: %m");
 
         (void) sd_device_monitor_set_description(manager->monitor, "manager");
-
-        r = device_monitor_enable_receiving(manager->monitor);
-        if (r < 0)
-                return log_error_errno(r, "Failed to bind netlink socket: %m");
 
         manager->log_level = log_get_max_level();
 
@@ -1260,22 +1282,22 @@ int manager_main(Manager *manager) {
 
         udev_watch_restore(manager->inotify_fd);
 
-        /* block and listen to all signals on signalfd */
-        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGTERM, SIGINT, SIGHUP, SIGCHLD, SIGRTMIN+18, -1) >= 0);
+        /* block SIGCHLD for listening child events. */
+        assert_se(sigprocmask_many(SIG_BLOCK, NULL, SIGCHLD) >= 0);
 
         r = sd_event_default(&manager->event);
         if (r < 0)
                 return log_error_errno(r, "Failed to allocate event loop: %m");
 
-        r = sd_event_add_signal(manager->event, NULL, SIGINT, on_sigterm, manager);
+        r = sd_event_add_signal(manager->event, NULL, SIGINT | SD_EVENT_SIGNAL_PROCMASK, on_sigterm, manager);
         if (r < 0)
                 return log_error_errno(r, "Failed to create SIGINT event source: %m");
 
-        r = sd_event_add_signal(manager->event, NULL, SIGTERM, on_sigterm, manager);
+        r = sd_event_add_signal(manager->event, NULL, SIGTERM | SD_EVENT_SIGNAL_PROCMASK, on_sigterm, manager);
         if (r < 0)
                 return log_error_errno(r, "Failed to create SIGTERM event source: %m");
 
-        r = sd_event_add_signal(manager->event, NULL, SIGHUP, on_sighup, manager);
+        r = sd_event_add_signal(manager->event, NULL, SIGHUP | SD_EVENT_SIGNAL_PROCMASK, on_sighup, manager);
         if (r < 0)
                 return log_error_errno(r, "Failed to create SIGHUP event source: %m");
 
@@ -1320,12 +1342,13 @@ int manager_main(Manager *manager) {
                 return log_error_errno(r, "Failed to create post event source: %m");
 
         /* Eventually, we probably want to do more here on memory pressure, for example, kill idle workers immediately */
-        r = sd_event_add_memory_pressure(manager->event, &manager->memory_pressure_event_source, NULL, NULL);
+        r = sd_event_add_memory_pressure(manager->event, /* ret_event_source= */ NULL, /* callback= */ NULL, /* userdata= */ NULL);
         if (r < 0)
                 log_full_errno(ERRNO_IS_NOT_SUPPORTED(r) || ERRNO_IS_PRIVILEGE(r) || (r == -EHOSTDOWN) ? LOG_DEBUG : LOG_WARNING, r,
                                "Failed to allocate memory pressure watch, ignoring: %m");
 
-        r = sd_event_add_signal(manager->event, &manager->memory_pressure_event_source, SIGRTMIN+18, sigrtmin18_handler, NULL);
+        r = sd_event_add_signal(manager->event, /* ret_event_source= */ NULL,
+                                (SIGRTMIN+18) | SD_EVENT_SIGNAL_PROCMASK, sigrtmin18_handler, /* userdata= */ NULL);
         if (r < 0)
                 return log_error_errno(r, "Failed to allocate SIGRTMIN+18 event source, ignoring: %m");
 

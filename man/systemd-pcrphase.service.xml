@@ -1,9 +1,9 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
-<refentry id="systemd-pcrphase.service" conditional='ENABLE_BOOTLOADER'
+<refentry id="systemd-pcrphase.service" conditional='ENABLE_BOOTLOADER HAVE_OPENSSL HAVE_TPM2'
           xmlns:xi="http://www.w3.org/2001/XInclude">
 
   <refentryinfo>
@@ -73,7 +73,8 @@
 
       <listitem><para><literal>leave-initrd</literal> — when the initrd is about to transition into the host
       file system. It acts as barrier between initrd code and host OS code. (This extension happens when the
-      <filename>systemd-pcrphase-initrd.service</filename> service is stopped.)</para></listitem>
+      <citerefentry><refentrytitle>systemd-pcrphase-sysinit.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+      service is stopped.)</para></listitem>
 
       <listitem><para><literal>sysinit</literal> — when basic system initialization is complete (which
       includes local file systems having been mounted), and the system begins starting regular system
@@ -85,7 +86,9 @@
       activated (i.e. after <filename>remote-fs.target</filename>), but before users are permitted to log in
       (i.e. before <filename>systemd-user-sessions.service</filename>). It acts as barrier between the time
       where unprivileged regular users are still prohibited to log in and where they are allowed to log in.
-      (This extension happens when the <filename>systemd-pcrphase.service</filename> service is started.)
+      (This extension happens when the
+      <citerefentry><refentrytitle>systemd-pcrphase-sysinit.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+      service is started.)
       </para></listitem>
 
       <listitem><para><literal>shutdown</literal> — when the system shutdown begins. It acts as barrier
@@ -141,7 +144,7 @@
       <varlistentry>
         <term><option>--bank=</option></term>
 
-        <listitem><para>Takes the PCR banks to extend the specified word into. If not specified the tool
+        <listitem><para>Takes the PCR banks to extend the specified word into. If not specified, the tool
         automatically determines all enabled PCR banks and measures the word into all of
         them.</para>
 
@@ -158,7 +161,7 @@
       </varlistentry>
 
       <varlistentry>
-        <term><option>--tpm2-device=</option><replaceable>PATH</replaceable></term>
+        <term><option>--tpm2-device=<replaceable>PATH</replaceable></option></term>
 
         <listitem><para>Controls which TPM2 device to use. Expects a device node path referring to the TPM2
         chip (e.g. <filename>/dev/tpmrm0</filename>). Alternatively the special value <literal>auto</literal>
@@ -173,7 +176,7 @@
         <term><option>--graceful</option></term>
 
         <listitem><para>If no TPM2 firmware, kernel subsystem, kernel driver or device support is found, exit
-        with exit status 0 (i.e. indicate success). If this is not specified any attempt to measure without a
+        with exit status 0 (i.e. indicate success). If this is not specified, any attempt to measure without a
         TPM2 device will cause the invocation to fail.</para>
 
         <xi:include href="version-info.xml" xpointer="v253"/></listitem>
@@ -215,7 +218,7 @@
         <filename>/run/log/systemd/tpm2-measure.log</filename>, which contains a <ulink
         url="https://www.rfc-editor.org/rfc/rfc7464.html">JSON-SEQ</ulink> series of objects that follow the
         general structure of the <ulink
-        url="https://trustedcomputinggroup.org/resource/canonical-event-log-format/">TCG Common Event Log
+        url="https://trustedcomputinggroup.org/resource/canonical-event-log-format/">TCG Canonical Event Log
         Format (CEL-JSON)</ulink> event objects (but lack the <literal>recnum</literal>
         field).</para>
 
@@ -232,14 +235,14 @@
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-stub</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-measure</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-gpt-auto-generator</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-fstab-generator</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-      <ulink url="https://systemd.io/TPM2_PCR_MEASUREMENTS">TPM2 PCR Measurements Made by systemd</ulink>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-stub</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-measure</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-gpt-auto-generator</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-fstab-generator</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+      <member><ulink url="https://systemd.io/TPM2_PCR_MEASUREMENTS">TPM2 PCR Measurements Made by systemd</ulink></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

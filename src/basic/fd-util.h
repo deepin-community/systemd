@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 
 #include "macro.h"
+#include "missing_fcntl.h"
 #include "stdio-util.h"
 
 /* maximum length of fdname */
@@ -32,8 +33,8 @@ static inline int safe_close_above_stdio(int fd) {
         return safe_close(fd);
 }
 
-void close_many(const int fds[], size_t n_fd);
-void close_many_unset(int fds[], size_t n_fd);
+void close_many(const int fds[], size_t n_fds);
+void close_many_unset(int fds[], size_t n_fds);
 void close_many_and_free(int *fds, size_t n_fds);
 
 int fclose_nointr(FILE *f);
@@ -52,6 +53,11 @@ static inline void fclosep(FILE **f) {
         safe_fclose(*f);
 }
 
+static inline void* close_fd_ptr(void *p) {
+        safe_close(PTR_TO_FD(p));
+        return NULL;
+}
+
 DEFINE_TRIVIAL_CLEANUP_FUNC_FULL(FILE*, pclose, NULL);
 DEFINE_TRIVIAL_CLEANUP_FUNC_FULL(DIR*, closedir, NULL);
 
@@ -62,6 +68,8 @@ DEFINE_TRIVIAL_CLEANUP_FUNC_FULL(DIR*, closedir, NULL);
 #define _cleanup_close_pair_ _cleanup_(close_pairp)
 
 int fd_nonblock(int fd, bool nonblock);
+int stdio_disable_nonblock(void);
+
 int fd_cloexec(int fd, bool cloexec);
 int fd_cloexec_many(const int fds[], size_t n_fds, bool cloexec);
 
@@ -70,6 +78,9 @@ int get_max_fd(void);
 int close_all_fds(const int except[], size_t n_except);
 int close_all_fds_without_malloc(const int except[], size_t n_except);
 
+int pack_fds(int fds[], size_t n);
+
+int fd_validate(int fd);
 int same_fd(int a, int b);
 
 void cmsg_close_all(struct msghdr *mh);
@@ -101,8 +112,16 @@ static inline int make_null_stdio(void) {
         })
 
 int fd_reopen(int fd, int flags);
+int fd_reopen_propagate_append_and_position(int fd, int flags);
 int fd_reopen_condition(int fd, int flags, int mask, int *ret_new_fd);
+
 int fd_is_opath(int fd);
+
+int fd_verify_safe_flags_full(int fd, int extra_flags);
+static inline int fd_verify_safe_flags(int fd) {
+        return fd_verify_safe_flags_full(fd, 0);
+}
+
 int read_nr_open(void);
 int fd_get_diskseq(int fd, uint64_t *ret);
 
@@ -117,11 +136,13 @@ static inline int dir_fd_is_root_or_cwd(int dir_fd) {
         return dir_fd == AT_FDCWD ? true : path_is_root_at(dir_fd, NULL);
 }
 
+int fds_are_same_mount(int fd1, int fd2);
+
 /* The maximum length a buffer for a /proc/self/fd/<fd> path needs */
 #define PROC_FD_PATH_MAX \
         (STRLEN("/proc/self/fd/") + DECIMAL_STR_MAX(int))
 
-static inline char *format_proc_fd_path(char buf[static PROC_FD_PATH_MAX], int fd) {
+static inline char* format_proc_fd_path(char buf[static PROC_FD_PATH_MAX], int fd) {
         assert(buf);
         assert(fd >= 0);
         assert_se(snprintf_ok(buf, PROC_FD_PATH_MAX, "/proc/self/fd/%i", fd));
@@ -135,13 +156,15 @@ static inline char *format_proc_fd_path(char buf[static PROC_FD_PATH_MAX], int f
 #define PROC_PID_FD_PATH_MAX \
         (STRLEN("/proc//fd/") + DECIMAL_STR_MAX(pid_t) + DECIMAL_STR_MAX(int))
 
-char *format_proc_pid_fd_path(char buf[static PROC_PID_FD_PATH_MAX], pid_t pid, int fd);
+char* format_proc_pid_fd_path(char buf[static PROC_PID_FD_PATH_MAX], pid_t pid, int fd);
 
 /* Kinda the same as FORMAT_PROC_FD_PATH(), but goes by PID rather than "self" symlink */
 #define FORMAT_PROC_PID_FD_PATH(pid, fd)                                \
         format_proc_pid_fd_path((char[PROC_PID_FD_PATH_MAX]) {}, (pid), (fd))
 
-const char *accmode_to_string(int flags);
+int proc_fd_enoent_errno(void);
+
+const char* accmode_to_string(int flags);
 
 /* Like ASSERT_PTR, but for fds */
 #define ASSERT_FD(fd)                           \

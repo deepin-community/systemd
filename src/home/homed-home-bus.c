@@ -5,6 +5,8 @@
 #include "bus-common-errors.h"
 #include "bus-polkit.h"
 #include "fd-util.h"
+#include "format-util.h"
+#include "home-util.h"
 #include "homed-bus.h"
 #include "homed-home-bus.h"
 #include "homed-home.h"
@@ -53,7 +55,7 @@ static int property_get_state(
         return sd_bus_message_append(reply, "s", home_state_to_string(home_get_state(h)));
 }
 
-int bus_home_client_is_trusted(Home *h, sd_bus_message *message) {
+static int bus_home_client_is_trusted(Home *h, sd_bus_message *message, bool strict) {
         _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
         uid_t euid;
         int r;
@@ -71,7 +73,35 @@ int bus_home_client_is_trusted(Home *h, sd_bus_message *message) {
         if (r < 0)
                 return r;
 
-        return euid == 0 || h->uid == euid;
+        return (!strict && euid == 0) || h->uid == euid;
+}
+
+static int home_verify_polkit_async(
+                Home *h,
+                sd_bus_message *message,
+                const char *action,
+                uid_t good_uid,
+                sd_bus_error *error) {
+
+        assert(h);
+        assert(message);
+        assert(action);
+        assert(error);
+
+        const char *details[] = {
+                "uid", FORMAT_UID(h->uid),
+                "username", h->user_name,
+                NULL
+        };
+
+        return bus_verify_polkit_async_full(
+                        message,
+                        action,
+                        details,
+                        good_uid,
+                        /* flags= */ 0,
+                        &h->manager->polkit_registry,
+                        error);
 }
 
 int bus_home_get_record_json(
@@ -87,7 +117,7 @@ int bus_home_get_record_json(
         assert(h);
         assert(ret);
 
-        trusted = bus_home_client_is_trusted(h, message);
+        trusted = bus_home_client_is_trusted(h, message, /* strict= */ false);
         if (trusted < 0) {
                 log_warning_errno(trusted, "Failed to determine whether client is trusted, assuming untrusted.");
                 trusted = false;
@@ -103,7 +133,7 @@ int bus_home_get_record_json(
         if (r < 0)
                 return r;
 
-        r = json_variant_format(augmented->json, 0, ret);
+        r = sd_json_variant_format(augmented->json, 0, ret);
         if (r < 0)
                 return r;
 
@@ -144,15 +174,31 @@ int bus_home_method_activate(
 
         _cleanup_(user_record_unrefp) UserRecord *secret = NULL;
         Home *h = ASSERT_PTR(userdata);
+        bool if_referenced;
         int r;
 
         assert(message);
+
+        if_referenced = endswith(sd_bus_message_get_member(message), "IfReferenced");
+
+        r = bus_verify_polkit_async_full(
+                        message,
+                        "org.freedesktop.home1.activate-home",
+                        /* details= */ NULL,
+                        h->uid,
+                        /* flags= */ 0,
+                        &h->manager->polkit_registry,
+                        error);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return 1; /* Will call us back */
 
         r = bus_message_read_secret(message, &secret, error);
         if (r < 0)
                 return r;
 
-        r = home_activate(h, secret, error);
+        r = home_activate(h, if_referenced, secret, error);
         if (r < 0)
                 return r;
 
@@ -201,14 +247,11 @@ int bus_home_method_unregister(
 
         assert(message);
 
-        r = bus_verify_polkit_async(
+        r = home_verify_polkit_async(
+                        h,
                         message,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.home1.remove-home",
-                        NULL,
-                        true,
                         UID_INVALID,
-                        &h->manager->polkit_registry,
                         error);
         if (r < 0)
                 return r;
@@ -241,21 +284,18 @@ int bus_home_method_realize(
         if (r < 0)
                 return r;
 
-        r = bus_verify_polkit_async(
+        r = home_verify_polkit_async(
+                        h,
                         message,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.home1.create-home",
-                        NULL,
-                        true,
                         UID_INVALID,
-                        &h->manager->polkit_registry,
                         error);
         if (r < 0)
                 return r;
         if (r == 0)
                 return 1; /* Will call us back */
 
-        r = home_create(h, secret, error);
+        r = home_create(h, secret, NULL, 0, error);
         if (r < 0)
                 return r;
 
@@ -281,14 +321,11 @@ int bus_home_method_remove(
 
         assert(message);
 
-        r = bus_verify_polkit_async(
+        r = home_verify_polkit_async(
+                        h,
                         message,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.home1.remove-home",
-                        NULL,
-                        true,
                         UID_INVALID,
-                        &h->manager->polkit_registry,
                         error);
         if (r < 0)
                 return r;
@@ -354,14 +391,11 @@ int bus_home_method_authenticate(
         if (r < 0)
                 return r;
 
-        r = bus_verify_polkit_async(
+        r = home_verify_polkit_async(
+                        h,
                         message,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.home1.authenticate-home",
-                        NULL,
-                        true,
                         h->uid,
-                        &h->manager->polkit_registry,
                         error);
         if (r < 0)
                 return r;
@@ -382,8 +416,14 @@ int bus_home_method_authenticate(
         return 1;
 }
 
-int bus_home_method_update_record(Home *h, sd_bus_message *message, UserRecord *hr, sd_bus_error *error) {
-        int r;
+int bus_home_update_record(
+                Home *h,
+                sd_bus_message *message,
+                UserRecord *hr,
+                Hashmap *blobs,
+                uint64_t flags,
+                sd_bus_error *error) {
+        int r, relax_access;
 
         assert(h);
         assert(message);
@@ -393,21 +433,43 @@ int bus_home_method_update_record(Home *h, sd_bus_message *message, UserRecord *
         if (r < 0)
                 return r;
 
-        r = bus_verify_polkit_async(
+        if ((flags & ~SD_HOMED_UPDATE_FLAGS_ALL) != 0)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid flags provided.");
+
+        if (blobs) {
+                const char *failed = NULL;
+                r = user_record_ensure_blob_manifest(hr, blobs, &failed);
+                if (r == -EINVAL)
+                        return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "Provided blob files do not correspond to blob manifest.");
+                if (r < 0)
+                        return sd_bus_error_set_errnof(error, r, "Failed to generate hash for blob %s: %m", strnull(failed));
+        }
+
+        relax_access = user_record_self_changes_allowed(h->record, hr);
+        if (relax_access < 0) {
+                log_warning_errno(relax_access, "Failed to determine if changes to user record are permitted, assuming not: %m");
+                relax_access = false;
+        } else if (relax_access) {
+                relax_access = bus_home_client_is_trusted(h, message, /* strict= */ true);
+                if (relax_access < 0) {
+                        log_warning_errno(relax_access, "Failed to determine whether client is trusted, assuming not: %m");
+                        relax_access = false;
+                }
+        }
+
+        r = home_verify_polkit_async(
+                        h,
                         message,
-                        CAP_SYS_ADMIN,
-                        "org.freedesktop.home1.update-home",
-                        NULL,
-                        true,
+                        relax_access ? "org.freedesktop.home1.update-home-by-owner"
+                                     : "org.freedesktop.home1.update-home",
                         UID_INVALID,
-                        &h->manager->polkit_registry,
                         error);
         if (r < 0)
                 return r;
         if (r == 0)
                 return 1; /* Will call us back */
 
-        r = home_update(h, hr, error);
+        r = home_update(h, hr, blobs, flags, error);
         if (r < 0)
                 return r;
 
@@ -418,6 +480,8 @@ int bus_home_method_update_record(Home *h, sd_bus_message *message, UserRecord *
         if (r < 0)
                 return r;
 
+        h->current_operation->call_flags = flags;
+
         return 1;
 }
 
@@ -427,16 +491,28 @@ int bus_home_method_update(
                 sd_bus_error *error) {
 
         _cleanup_(user_record_unrefp) UserRecord *hr = NULL;
+        _cleanup_hashmap_free_ Hashmap *blobs = NULL;
+        uint64_t flags = 0;
         Home *h = ASSERT_PTR(userdata);
         int r;
 
         assert(message);
 
-        r = bus_message_read_home_record(message, USER_RECORD_REQUIRE_REGULAR|USER_RECORD_REQUIRE_SECRET|USER_RECORD_ALLOW_PRIVILEGED|USER_RECORD_ALLOW_PER_MACHINE|USER_RECORD_ALLOW_SIGNATURE|USER_RECORD_PERMISSIVE, &hr, error);
+        r = bus_message_read_home_record(message, USER_RECORD_REQUIRE_REGULAR|USER_RECORD_ALLOW_SECRET|USER_RECORD_ALLOW_PRIVILEGED|USER_RECORD_ALLOW_PER_MACHINE|USER_RECORD_ALLOW_SIGNATURE|USER_RECORD_PERMISSIVE, &hr, error);
         if (r < 0)
                 return r;
 
-        return bus_home_method_update_record(h, message, hr, error);
+        if (endswith(sd_bus_message_get_member(message), "Ex")) {
+                r = bus_message_read_blobs(message, &blobs, error);
+                if (r < 0)
+                        return r;
+
+                r = sd_bus_message_read(message, "t", &flags);
+                if (r < 0)
+                        return r;
+        }
+
+        return bus_home_update_record(h, message, hr, blobs, flags, error);
 }
 
 int bus_home_method_resize(
@@ -459,21 +535,18 @@ int bus_home_method_resize(
         if (r < 0)
                 return r;
 
-        r = bus_verify_polkit_async(
+        r = home_verify_polkit_async(
+                        h,
                         message,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.home1.resize-home",
-                        NULL,
-                        true,
                         UID_INVALID,
-                        &h->manager->polkit_registry,
                         error);
         if (r < 0)
                 return r;
         if (r == 0)
                 return 1; /* Will call us back */
 
-        r = home_resize(h, sz, secret, /* automatic= */ false, error);
+        r = home_resize(h, sz, secret, error);
         if (r < 0)
                 return r;
 
@@ -506,14 +579,11 @@ int bus_home_method_change_password(
         if (r < 0)
                 return r;
 
-        r = bus_verify_polkit_async(
+        r = home_verify_polkit_async(
+                        h,
                         message,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.home1.passwd-home",
-                        NULL,
-                        true,
-                        h->uid,
-                        &h->manager->polkit_registry,
+                        h->uid, /* Always let a user change their own password. Safe b/c homework will always re-check password */
                         error);
         if (r < 0)
                 return r;
@@ -637,30 +707,38 @@ int bus_home_method_ref(
 
         _cleanup_close_ int fd = -EBADF;
         Home *h = ASSERT_PTR(userdata);
-        HomeState state;
         int please_suspend, r;
+        bool unrestricted;
 
         assert(message);
+
+        /* In unrestricted mode we'll add a reference to the home even if it's not active */
+        unrestricted = strstr(sd_bus_message_get_member(message), "Unrestricted");
 
         r = sd_bus_message_read(message, "b", &please_suspend);
         if (r < 0)
                 return r;
 
-        state = home_get_state(h);
-        switch (state) {
-        case HOME_ABSENT:
-                return sd_bus_error_setf(error, BUS_ERROR_HOME_ABSENT, "Home %s is currently missing or not plugged in.", h->user_name);
-        case HOME_UNFIXATED:
-        case HOME_INACTIVE:
-        case HOME_DIRTY:
-                return sd_bus_error_setf(error, BUS_ERROR_HOME_NOT_ACTIVE, "Home %s not active.", h->user_name);
-        case HOME_LOCKED:
-                return sd_bus_error_setf(error, BUS_ERROR_HOME_LOCKED, "Home %s is currently locked.", h->user_name);
-        default:
-                if (HOME_STATE_IS_ACTIVE(state))
-                        break;
+        if (!unrestricted) {
+                HomeState state;
 
-                return sd_bus_error_setf(error, BUS_ERROR_HOME_BUSY, "An operation on home %s is currently being executed.", h->user_name);
+                state = home_get_state(h);
+
+                switch (state) {
+                case HOME_ABSENT:
+                        return sd_bus_error_setf(error, BUS_ERROR_HOME_ABSENT, "Home %s is currently missing or not plugged in.", h->user_name);
+                case HOME_UNFIXATED:
+                case HOME_INACTIVE:
+                case HOME_DIRTY:
+                        return sd_bus_error_setf(error, BUS_ERROR_HOME_NOT_ACTIVE, "Home %s not active.", h->user_name);
+                case HOME_LOCKED:
+                        return sd_bus_error_setf(error, BUS_ERROR_HOME_LOCKED, "Home %s is currently locked.", h->user_name);
+                default:
+                        if (HOME_STATE_IS_ACTIVE(state))
+                                break;
+
+                        return sd_bus_error_setf(error, BUS_ERROR_HOME_BUSY, "An operation on home %s is currently being executed.", h->user_name);
+                }
         }
 
         fd = home_create_fifo(h, please_suspend);
@@ -784,7 +862,12 @@ const sd_bus_vtable home_vtable[] = {
                                 SD_BUS_ARGS("s", secret),
                                 SD_BUS_NO_RESULT,
                                 bus_home_method_activate,
-                                SD_BUS_VTABLE_SENSITIVE),
+                                SD_BUS_VTABLE_UNPRIVILEGED|SD_BUS_VTABLE_SENSITIVE),
+        SD_BUS_METHOD_WITH_ARGS("ActivateIfReferenced",
+                                SD_BUS_ARGS("s", secret),
+                                SD_BUS_NO_RESULT,
+                                bus_home_method_activate,
+                                SD_BUS_VTABLE_UNPRIVILEGED|SD_BUS_VTABLE_SENSITIVE),
         SD_BUS_METHOD("Deactivate", NULL, NULL, bus_home_method_deactivate, 0),
         SD_BUS_METHOD("Unregister", NULL, NULL, bus_home_method_unregister, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("Realize",
@@ -806,6 +889,11 @@ const sd_bus_vtable home_vtable[] = {
                                 SD_BUS_VTABLE_UNPRIVILEGED|SD_BUS_VTABLE_SENSITIVE),
         SD_BUS_METHOD_WITH_ARGS("Update",
                                 SD_BUS_ARGS("s", user_record),
+                                SD_BUS_NO_RESULT,
+                                bus_home_method_update,
+                                SD_BUS_VTABLE_UNPRIVILEGED|SD_BUS_VTABLE_SENSITIVE),
+        SD_BUS_METHOD_WITH_ARGS("UpdateEx",
+                                SD_BUS_ARGS("s", user_record, "a{sh}", blobs, "t", flags),
                                 SD_BUS_NO_RESULT,
                                 bus_home_method_update,
                                 SD_BUS_VTABLE_UNPRIVILEGED|SD_BUS_VTABLE_SENSITIVE),
@@ -831,6 +919,11 @@ const sd_bus_vtable home_vtable[] = {
                                 bus_home_method_acquire,
                                 SD_BUS_VTABLE_SENSITIVE),
         SD_BUS_METHOD_WITH_ARGS("Ref",
+                                SD_BUS_ARGS("b", please_suspend),
+                                SD_BUS_RESULT("h", send_fd),
+                                bus_home_method_ref,
+                                0),
+        SD_BUS_METHOD_WITH_ARGS("RefUnrestricted",
                                 SD_BUS_ARGS("b", please_suspend),
                                 SD_BUS_RESULT("h", send_fd),
                                 bus_home_method_ref,

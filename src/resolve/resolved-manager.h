@@ -6,13 +6,13 @@
 #include "sd-event.h"
 #include "sd-netlink.h"
 #include "sd-network.h"
+#include "sd-varlink.h"
 
 #include "common-signal.h"
 #include "hashmap.h"
 #include "list.h"
 #include "ordered-set.h"
 #include "resolve-util.h"
-#include "varlink.h"
 
 typedef struct Manager Manager;
 
@@ -123,10 +123,6 @@ struct Manager {
         int hostname_fd;
         sd_event_source *hostname_event_source;
 
-        sd_event_source *sigusr1_event_source;
-        sd_event_source *sigusr2_event_source;
-        sd_event_source *sigrtmin1_event_source;
-
         unsigned n_transactions_total;
         unsigned n_timeouts_total;
         unsigned n_timeouts_served_stale_total;
@@ -153,8 +149,8 @@ struct Manager {
 
         Hashmap *polkit_registry;
 
-        VarlinkServer *varlink_server;
-        VarlinkServer *varlink_monitor_server;
+        sd_varlink_server *varlink_server;
+        sd_varlink_server *varlink_monitor_server;
 
         Set *varlink_subscription;
 
@@ -176,8 +172,9 @@ int manager_start(Manager *m);
 
 uint32_t manager_find_mtu(Manager *m);
 
-int manager_monitor_send(Manager *m, int state, int rcode, int error, DnsQuestion *question_idna, DnsQuestion *question_utf8, DnsPacket *question_bypass, DnsQuestion *collected_questions, DnsAnswer *answer);
+int manager_monitor_send(Manager *m, DnsQuery *q);
 
+int sendmsg_loop(int fd, struct msghdr *mh, int flags);
 int manager_write(Manager *m, int fd, DnsPacket *p);
 int manager_send(Manager *m, int fd, int ifindex, int family, const union in_addr_union *destination, uint16_t port, const union in_addr_union *source, DnsPacket *p);
 int manager_recv(Manager *m, int fd, DnsProtocol protocol, DnsPacket **ret);
@@ -225,6 +222,6 @@ bool manager_server_is_stub(Manager *m, DnsServer *s);
 
 int socket_disable_pmtud(int fd, int af);
 
-int dns_manager_dump_statistics_json(Manager *m, JsonVariant **ret);
+int dns_manager_dump_statistics_json(Manager *m, sd_json_variant **ret);
 
 void dns_manager_reset_statistics(Manager *m);

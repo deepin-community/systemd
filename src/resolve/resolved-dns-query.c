@@ -10,6 +10,7 @@
 #include "resolved-dns-query.h"
 #include "resolved-dns-synthesize.h"
 #include "resolved-etc-hosts.h"
+#include "resolved-timeouts.h"
 #include "string-util.h"
 
 #define QUERIES_MAX 2048
@@ -48,9 +49,28 @@ static void dns_query_candidate_stop(DnsQueryCandidate *c) {
 
         assert(c);
 
+        (void) event_source_disable(c->timeout_event_source);
+
         /* Detach all the DnsTransactions attached to this query */
 
         while ((t = set_steal_first(c->transactions))) {
+                set_remove(t->notify_query_candidates, c);
+                set_remove(t->notify_query_candidates_done, c);
+                dns_transaction_gc(t);
+        }
+}
+
+static void dns_query_candidate_abandon(DnsQueryCandidate *c) {
+        DnsTransaction *t;
+
+        assert(c);
+
+        (void) event_source_disable(c->timeout_event_source);
+
+        /* Abandon all the DnsTransactions attached to this query */
+
+        while ((t = set_steal_first(c->transactions))) {
+                t->wait_for_answer = true;
                 set_remove(t->notify_query_candidates, c);
                 set_remove(t->notify_query_candidates_done, c);
                 dns_transaction_gc(t);
@@ -78,6 +98,8 @@ static DnsQueryCandidate* dns_query_candidate_unlink(DnsQueryCandidate *c) {
 static DnsQueryCandidate* dns_query_candidate_free(DnsQueryCandidate *c) {
         if (!c)
                 return NULL;
+
+        c->timeout_event_source = sd_event_source_disable_unref(c->timeout_event_source);
 
         dns_query_candidate_stop(c);
         dns_query_candidate_unlink(c);
@@ -177,6 +199,8 @@ static int dns_query_candidate_go(DnsQueryCandidate *c) {
         /* Let's keep a reference to the query while we're operating */
         keep_c = dns_query_candidate_ref(c);
 
+        uint64_t generation = c->generation;
+
         /* Start the transactions that are not started yet */
         SET_FOREACH(t, c->transactions) {
                 if (t->state != DNS_TRANSACTION_NULL)
@@ -185,6 +209,13 @@ static int dns_query_candidate_go(DnsQueryCandidate *c) {
                 r = dns_transaction_go(t);
                 if (r < 0)
                         return r;
+
+                if (c->generation != generation)
+                        /* The transaction has been completed, and dns_transaction_complete() ->
+                         * dns_query_candidate_notify() has been already called. Moreover, the query
+                         * candidate has been regenerated, and the query should be already restarted.
+                         * Let's exit from the loop now. */
+                        return 0;
 
                 n++;
         }
@@ -249,6 +280,8 @@ static int dns_query_candidate_setup_transactions(DnsQueryCandidate *c) {
 
         dns_query_candidate_stop(c);
 
+        c->generation++;
+
         if (c->query->question_bypass) {
                 /* If this is a bypass query, then pass the original query packet along to the transaction */
 
@@ -297,6 +330,30 @@ fail:
         return r;
 }
 
+static void dns_query_accept(DnsQuery *q, DnsQueryCandidate *c);
+
+static int on_candidate_timeout(sd_event_source *s, usec_t usec, void *userdata) {
+        DnsQueryCandidate *c = userdata;
+
+        assert(s);
+        assert(c);
+
+        log_debug("Accepting incomplete query candidate after expedited timeout on partial success.");
+        dns_query_accept(c->query, c);
+
+        return 0;
+}
+
+static bool dns_query_candidate_has_partially_succeeded(DnsQueryCandidate *c) {
+        DnsTransaction *t;
+
+        SET_FOREACH(t, c->transactions)
+                if (t->state == DNS_TRANSACTION_SUCCESS)
+                        return true;
+
+        return false;
+}
+
 void dns_query_candidate_notify(DnsQueryCandidate *c) {
         DnsTransactionState state;
         int r;
@@ -308,10 +365,23 @@ void dns_query_candidate_notify(DnsQueryCandidate *c) {
 
         state = dns_query_candidate_state(c);
 
-        if (DNS_TRANSACTION_IS_LIVE(state))
+        if (DNS_TRANSACTION_IS_LIVE(state)) {
+                if (dns_query_candidate_has_partially_succeeded(c))
+                        (void) event_reset_time_relative(
+                                        c->query->manager->event,
+                                        &c->timeout_event_source,
+                                        CLOCK_BOOTTIME,
+                                        CANDIDATE_EXPEDITED_TIMEOUT_USEC, /* accuracy_usec= */ 0,
+                                        on_candidate_timeout, c,
+                                        /* priority= */ 0, "candidate-timeout",
+                                        /* force_reset= */ false);
+
                 return;
+        }
 
         if (state != DNS_TRANSACTION_SUCCESS && c->search_domain) {
+
+                (void) event_source_disable(c->timeout_event_source);
 
                 r = dns_query_candidate_next_search_domain(c);
                 if (r < 0)
@@ -354,6 +424,16 @@ static void dns_query_stop(DnsQuery *q) {
                 dns_query_candidate_stop(c);
 }
 
+static void dns_query_abandon(DnsQuery *q) {
+        assert(q);
+
+        /* Thankfully transactions have their own timeouts */
+        event_source_disable(q->timeout_event_source);
+
+        LIST_FOREACH(candidates_by_query, c, q->candidates)
+                dns_query_candidate_abandon(c);
+}
+
 static void dns_query_unlink_candidates(DnsQuery *q) {
         assert(q);
 
@@ -368,6 +448,8 @@ static void dns_query_reset_answer(DnsQuery *q) {
 
         q->answer = dns_answer_unref(q->answer);
         q->answer_rcode = 0;
+        q->answer_ede_rcode = _DNS_EDE_RCODE_INVALID;
+        q->answer_ede_msg = mfree(q->answer_ede_msg);
         q->answer_dnssec_result = _DNSSEC_RESULT_INVALID;
         q->answer_errno = 0;
         q->answer_query_flags = 0;
@@ -405,8 +487,8 @@ DnsQuery *dns_query_free(DnsQuery *q) {
         sd_bus_track_unref(q->bus_track);
 
         if (q->varlink_request) {
-                varlink_set_userdata(q->varlink_request, NULL);
-                varlink_unref(q->varlink_request);
+                sd_varlink_set_userdata(q->varlink_request, NULL);
+                sd_varlink_unref(q->varlink_request);
         }
 
         if (q->request_packet)
@@ -514,6 +596,7 @@ int dns_query_new(
                 .question_bypass = dns_packet_ref(question_bypass),
                 .ifindex = ifindex,
                 .flags = flags,
+                .answer_ede_rcode = _DNS_EDE_RCODE_INVALID,
                 .answer_dnssec_result = _DNSSEC_RESULT_INVALID,
                 .answer_protocol = _DNS_PROTOCOL_INVALID,
                 .answer_family = AF_UNSPEC,
@@ -586,9 +669,9 @@ void dns_query_complete(DnsQuery *q, DnsTransactionState state) {
 
         q->state = state;
 
-        (void) manager_monitor_send(q->manager, q->state, q->answer_rcode, q->answer_errno, q->question_idna, q->question_utf8, q->question_bypass, q->collected_questions, q->answer);
+        (void) manager_monitor_send(q->manager, q);
 
-        dns_query_stop(q);
+        dns_query_abandon(q);
         if (q->complete)
                 q->complete(q);
 }
@@ -669,6 +752,8 @@ static int dns_query_synthesize_reply(DnsQuery *q, DnsTransactionState *state) {
                 q->answer_query_flags = SD_RESOLVED_AUTHENTICATED|SD_RESOLVED_CONFIDENTIAL|SD_RESOLVED_SYNTHETIC;
                 *state = DNS_TRANSACTION_RCODE_FAILURE;
 
+                log_debug("Found synthetic NXDOMAIN response.");
+
                 return 0;
         }
         if (r <= 0)
@@ -683,6 +768,8 @@ static int dns_query_synthesize_reply(DnsQuery *q, DnsTransactionState *state) {
         q->answer_query_flags = SD_RESOLVED_AUTHENTICATED|SD_RESOLVED_CONFIDENTIAL|SD_RESOLVED_SYNTHETIC;
 
         *state = DNS_TRANSACTION_SUCCESS;
+
+        log_debug("Found synthetic success response.");
 
         return 1;
 }
@@ -738,7 +825,7 @@ int dns_query_go(DnsQuery *q) {
         LIST_FOREACH(scopes, s, q->manager->dns_scopes) {
                 DnsScopeMatch match;
 
-                match = dns_scope_good_domain(s, q);
+                match = dns_scope_good_domain(s, q, q->flags);
                 assert(match >= 0);
                 if (match > found) { /* Does this match better? If so, remember how well it matched, and the first one
                                       * that matches this well */
@@ -765,7 +852,7 @@ int dns_query_go(DnsQuery *q) {
         LIST_FOREACH(scopes, s, first->scopes_next) {
                 DnsScopeMatch match;
 
-                match = dns_scope_good_domain(s, q);
+                match = dns_scope_good_domain(s, q, q->flags);
                 assert(match >= 0);
                 if (match < found)
                         continue;
@@ -898,6 +985,10 @@ static void dns_query_accept(DnsQuery *q, DnsQueryCandidate *c) {
 
                         DNS_ANSWER_REPLACE(q->answer, dns_answer_ref(t->answer));
                         q->answer_rcode = t->answer_rcode;
+                        q->answer_ede_rcode = t->answer_ede_rcode;
+                        r = free_and_strdup_warn(&q->answer_ede_msg, t->answer_ede_msg);
+                        if (r < 0)
+                                goto fail;
                         q->answer_dnssec_result = t->answer_dnssec_result;
                         q->answer_query_flags = t->answer_query_flags | dns_transaction_source_to_query_flags(t->answer_source);
                         q->answer_errno = t->answer_errno;
@@ -1246,7 +1337,7 @@ DnsQuestion* dns_query_question_for_protocol(DnsQuery *q, DnsProtocol protocol) 
         }
 }
 
-const char *dns_query_string(DnsQuery *q) {
+const char* dns_query_string(DnsQuery *q) {
         const char *name;
         int r;
 

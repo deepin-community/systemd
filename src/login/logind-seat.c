@@ -25,13 +25,13 @@
 #include "terminal-util.h"
 #include "tmpfile-util.h"
 
-int seat_new(Seat** ret, Manager *m, const char *id) {
+int seat_new(Manager *m, const char *id, Seat **ret) {
         _cleanup_(seat_freep) Seat *s = NULL;
         int r;
 
-        assert(ret);
         assert(m);
         assert(id);
+        assert(ret);
 
         if (!seat_name_is_valid(id))
                 return -EINVAL;
@@ -42,13 +42,11 @@ int seat_new(Seat** ret, Manager *m, const char *id) {
 
         *s = (Seat) {
                 .manager = m,
+                .id = strdup(id),
+                .state_file = path_join("/run/systemd/seats/", id),
         };
-
-        s->state_file = path_join("/run/systemd/seats", id);
-        if (!s->state_file)
+        if (!s->id || !s->state_file)
                 return -ENOMEM;
-
-        s->id = basename(s->state_file);
 
         r = hashmap_put(m->seats, s->id, s);
         if (r < 0)
@@ -77,6 +75,7 @@ Seat* seat_free(Seat *s) {
 
         free(s->positions);
         free(s->state_file);
+        free(s->id);
 
         return mfree(s);
 }
@@ -395,8 +394,8 @@ int seat_read_active_vt(Seat *s) {
         if (!seat_has_vts(s))
                 return 0;
 
-        if (lseek(s->manager->console_active_fd, SEEK_SET, 0) < 0)
-                return log_error_errno(errno, "lseek on console_active_fd failed: %m");
+        if (lseek(s->manager->console_active_fd, 0, SEEK_SET) < 0)
+                return log_error_errno(errno, "lseek() on console_active_fd failed: %m");
 
         errno = 0;
         k = read(s->manager->console_active_fd, t, sizeof(t)-1);

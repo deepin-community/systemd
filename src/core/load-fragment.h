@@ -12,8 +12,6 @@ int unit_is_likely_recursive_template_dependency(Unit *u, const char *name, cons
 int parse_crash_chvt(const char *value, int *data);
 int parse_confirm_spawn(const char *value, char **console);
 
-int hashmap_put_credential(Hashmap **h, const char *id, const char *path, bool encrypted);
-
 /* Read service data from .desktop file style configuration fragments */
 
 int unit_load_fragment(Unit *u);
@@ -23,6 +21,7 @@ void unit_dump_config_items(FILE *f);
 CONFIG_PARSER_PROTOTYPE(config_parse_unit_deps);
 CONFIG_PARSER_PROTOTYPE(config_parse_obsolete_unit_deps);
 CONFIG_PARSER_PROTOTYPE(config_parse_unit_string_printf);
+CONFIG_PARSER_PROTOTYPE(config_parse_reboot_parameter);
 CONFIG_PARSER_PROTOTYPE(config_parse_unit_strv_printf);
 CONFIG_PARSER_PROTOTYPE(config_parse_unit_path_printf);
 CONFIG_PARSER_PROTOTYPE(config_parse_colon_separated_paths);
@@ -71,7 +70,7 @@ CONFIG_PARSER_PROTOTYPE(config_parse_unit_condition_string);
 CONFIG_PARSER_PROTOTYPE(config_parse_kill_mode);
 CONFIG_PARSER_PROTOTYPE(config_parse_notify_access);
 CONFIG_PARSER_PROTOTYPE(config_parse_emergency_action);
-CONFIG_PARSER_PROTOTYPE(config_parse_unit_requires_mounts_for);
+CONFIG_PARSER_PROTOTYPE(config_parse_unit_mounts_for);
 CONFIG_PARSER_PROTOTYPE(config_parse_syscall_filter);
 CONFIG_PARSER_PROTOTYPE(config_parse_syscall_archs);
 CONFIG_PARSER_PROTOTYPE(config_parse_syscall_errno);
@@ -89,6 +88,7 @@ CONFIG_PARSER_PROTOTYPE(config_parse_delegate);
 CONFIG_PARSER_PROTOTYPE(config_parse_delegate_subgroup);
 CONFIG_PARSER_PROTOTYPE(config_parse_managed_oom_mode);
 CONFIG_PARSER_PROTOTYPE(config_parse_managed_oom_mem_pressure_limit);
+CONFIG_PARSER_PROTOTYPE(config_parse_managed_oom_mem_pressure_duration_sec);
 CONFIG_PARSER_PROTOTYPE(config_parse_managed_oom_preference);
 CONFIG_PARSER_PROTOTYPE(config_parse_device_policy);
 CONFIG_PARSER_PROTOTYPE(config_parse_device_allow);
@@ -112,6 +112,10 @@ CONFIG_PARSER_PROTOTYPE(config_parse_import_credential);
 CONFIG_PARSER_PROTOTYPE(config_parse_set_status);
 CONFIG_PARSER_PROTOTYPE(config_parse_namespace_path_strv);
 CONFIG_PARSER_PROTOTYPE(config_parse_temporary_filesystems);
+CONFIG_PARSER_PROTOTYPE(config_parse_private_tmp);
+CONFIG_PARSER_PROTOTYPE(config_parse_private_users);
+CONFIG_PARSER_PROTOTYPE(config_parse_private_pids);
+CONFIG_PARSER_PROTOTYPE(config_parse_protect_control_groups);
 CONFIG_PARSER_PROTOTYPE(config_parse_cpu_quota);
 CONFIG_PARSER_PROTOTYPE(config_parse_allowed_cpuset);
 CONFIG_PARSER_PROTOTYPE(config_parse_protect_home);
@@ -159,6 +163,7 @@ CONFIG_PARSER_PROTOTYPE(config_parse_log_filter_patterns);
 CONFIG_PARSER_PROTOTYPE(config_parse_open_file);
 CONFIG_PARSER_PROTOTYPE(config_parse_memory_pressure_watch);
 CONFIG_PARSER_PROTOTYPE(config_parse_cgroup_nft_set);
+CONFIG_PARSER_PROTOTYPE(config_parse_mount_node);
 
 /* gperf prototypes */
 const struct ConfigPerfItem* load_fragment_gperf_lookup(const char *key, GPERF_LEN_TYPE length);

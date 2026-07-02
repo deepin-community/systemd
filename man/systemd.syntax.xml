@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd" [
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd" [
 <!ENTITY % entities SYSTEM "custom-entities.ent" >
 %entities;
 ]>
@@ -89,7 +89,7 @@
     file type. When a comment line or lines follow a line ending with a backslash, the comment block
     is ignored, so the continued line is concatenated with whatever follows the comment block.</para>
 
-    <example><programlisting>[Section A]
+    <informalexample><programlisting>[Section A]
 KeyOne=value 1
 KeyTwo=value 2
 
@@ -105,7 +105,7 @@ KeyThree=value 3\
 # this line is ignored
 ; this line is ignored too
        value 3 continued
-</programlisting></example>
+</programlisting></informalexample>
 
     <para>Boolean arguments used in configuration files can be written in
     various formats. For positive settings the strings
@@ -224,9 +224,10 @@ KeyThree=value 3\
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

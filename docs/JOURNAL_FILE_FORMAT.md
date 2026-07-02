@@ -8,8 +8,9 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 # Journal File Format
 
 _Note that this document describes the binary on-disk format of journals only.
-For interfacing with web technologies there's the [Journal JSON Format](JOURNAL_EXPORT_FORMATS.md#journal-json-format).
-For transfer of journal data across the network there's the [Journal Export Format](JOURNAL_EXPORT_FORMATS.md#journal-export-format)._
+For interfacing with web technologies there's the [Journal JSON Format](JOURNAL_EXPORT_FORMATS#journal-json-format).
+For transfer of journal data across the network there's the
+[Journal Export Format](JOURNAL_EXPORT_FORMATS#journal-export-format)._
 
 The systemd journal stores log data in a binary format with several features:
 
@@ -20,65 +21,62 @@ The systemd journal stores log data in a binary format with several features:
 * Support for in-line compression
 * Support for in-line Forward Secure Sealing
 
-This document explains the basic structure of the file format on disk. We are
-making this available primarily to allow review and provide documentation. Note
-that the actual implementation in the [systemd
-codebase](https://github.com/systemd/systemd/blob/main/src/libsystemd/sd-journal/) is the
-only ultimately authoritative description of the format, so if this document
-and the code disagree, the code is right. That said we'll of course try hard to
-keep this document up-to-date and accurate.
+This document explains the basic structure of the file format on disk.
+We are making this available primarily to allow review and provide documentation.
+Note that the actual implementation in the
+[systemd codebase](https://github.com/systemd/systemd/blob/main/src/libsystemd/sd-journal/)
+is the only ultimately authoritative description of the format,
+so if this document and the code disagree, the code is right.
+That said we'll of course try hard to keep this document up-to-date and accurate.
 
-Instead of implementing your own reader or writer for journal files we ask you
-to use the [Journal's native C
-API](https://www.freedesktop.org/software/systemd/man/sd-journal.html) to access
-these files. It provides you with full access to the files, and will not
-withhold any data. If you find a limitation, please ping us and we might add
-some additional interfaces for you.
+Instead of implementing your own reader or writer for journal files we ask you to use the
+[Journal's native CAPI](https://www.freedesktop.org/software/systemd/man/sd-journal.html)
+to access these files.
+It provides you with full access to the files, and will not withhold any data.
+If you find a limitation, please ping us and we might add some additional interfaces for you.
 
-If you need access to the raw journal data in serialized stream form without C
-API our recommendation is to make use of the [Journal Export
-Format](https://systemd.io/JOURNAL_EXPORT_FORMATS#journal-export-format), which you can
-get via `journalctl -o export` or via `systemd-journal-gatewayd`. The export
-format is much simpler to parse, but complete and accurate. Due to its
-stream-based nature it is not indexed.
+If you need access to the raw journal data in serialized stream form without C API our recommendation is to make use of the
+[Journal Export Format](JOURNAL_EXPORT_FORMATS#journal-export-format),
+which you can get via `journalctl -o export` or via `systemd-journal-gatewayd`.
+The export format is much simpler to parse, but complete and accurate.
+Due to its stream-based nature it is not indexed.
 
-_Or, to put this in other words: this low-level document is probably not what
-you want to use as base of your project. You want our [C
-API](https://www.freedesktop.org/software/systemd/man/sd-journal.html) instead!
+_Or, to put this in other words: this low-level document is probably not what you want to use as base of your project.
+You want our [C API](https://www.freedesktop.org/software/systemd/man/sd-journal.html) instead!
 And if you really don't want the C API, then you want the
-[Journal Export Format or Journal JSON Format](JOURNAL_EXPORT_FORMATS.md)
-instead! This document is primarily for your entertainment and education.
+[Journal Export Format or Journal JSON Format](/JOURNAL_EXPORT_FORMATS) instead!
+This document is primarily for your entertainment and education.
 Thank you!_
 
-This document assumes you have a basic understanding of the journal concepts,
-the properties of a journal entry and so on. If not, please go and read up,
-then come back! This is a good opportunity to read about the [basic properties
-of journal
-entries](https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html),
-in particular realize that they may include binary non-text data (though
-usually don't), and the same field might have multiple values assigned within
-the same entry.
+This document assumes you have a basic understanding of the journal concepts, the properties of a journal entry and so on.
+If not, please go and read up, then come back!
+This is a good opportunity to read about the
+[basic properties of journal entries](https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html),
+in particular realize that they may include binary non-text data (though usually don't),
+and the same field might have multiple values assigned within the same entry.
 
-This document describes the current format of systemd 246. The documented
-format is compatible with the format used in the first versions of the journal,
+This document describes the current format of systemd 246.
+The documented format is compatible with the format used in the first versions of the journal,
 but received various compatible and incompatible additions since.
 
-If you are wondering why the journal file format has been created in the first
-place instead of adopting an existing database implementation, please have a
-look [at this
-thread](https://lists.freedesktop.org/archives/systemd-devel/2012-October/007054.html).
+If you are wondering why the journal file format has been created in the first place instead of adopting an existing database implementation,
+please have a look [at this thread](https://lists.freedesktop.org/archives/systemd-devel/2012-October/007054.html).
 
 
 ## Basics
 
 * All offsets, sizes, time values, hashes (and most other numeric values) are 32-bit/64-bit unsigned integers in LE format.
 * Offsets are always relative to the beginning of the file.
-* The 64-bit hash function siphash24 is used for newer journal files. For older files [Jenkins lookup3](https://en.wikipedia.org/wiki/Jenkins_hash_function) is used, more specifically `jenkins_hashlittle2()` with the first 32-bit integer it returns as higher 32-bit part of the 64-bit value, and the second one uses as lower 32-bit part.
+* The 64-bit hash function siphash24 is used for newer journal files.
+  For older files [Jenkins lookup3](https://en.wikipedia.org/wiki/Jenkins_hash_function) is used,
+  more specifically `jenkins_hashlittle2()` with the first 32-bit integer it returns as higher 32-bit part of the 64-bit value,
+  and the second one uses as lower 32-bit part.
 * All structures are aligned to 64-bit boundaries and padded to multiples of 64-bit
 * The format is designed to be read and written via memory mapping using multiple mapped windows.
 * All time values are stored in usec since the respective epoch.
 * Wall clock time values are relative to the Unix time epoch, i.e. January 1st, 1970. (`CLOCK_REALTIME`)
-* Monotonic time values are always stored jointly with the kernel boot ID value (i.e. `/proc/sys/kernel/random/boot_id`) they belong to. They tend to be relative to the start of the boot, but aren't for containers. (`CLOCK_MONOTONIC`)
+* Monotonic time values are always stored jointly with the kernel boot ID value (i.e. `/proc/sys/kernel/random/boot_id`) they belong to.
+  They tend to be relative to the start of the boot, but aren't for containers. (`CLOCK_MONOTONIC`)
 * Randomized, unique 128-bit IDs are used in various locations. These are generally UUID v4 compatible, but this is not a requirement.
 
 ## General Rules
@@ -204,7 +202,7 @@ also supposed to be updated whenever the file was opened for any form of
 writing, including when opened to mark it as archived. This behaviour has been
 deemed problematic since without an associated boot ID the
 **tail_entry_monotonic** field is useless. To indicate whether the boot ID is
-updated only on append the JOURNAL_COMPATIBLE_TAIL_ENTRY_BOOT_ID is set. If it
+updated only on append the `JOURNAL_COMPATIBLE_TAIL_ENTRY_BOOT_ID` is set. If it
 is not set, the **tail_entry_monotonic** field is not usable).
 
 The currently used part of the file is the **header_size** plus the
@@ -293,27 +291,27 @@ enum {
 };
 ```
 
-HEADER_INCOMPATIBLE_COMPRESSED_XZ indicates that the file includes DATA objects
-that are compressed using XZ. Similarly, HEADER_INCOMPATIBLE_COMPRESSED_LZ4
+`HEADER_INCOMPATIBLE_COMPRESSED_XZ` indicates that the file includes DATA objects
+that are compressed using XZ. Similarly, `HEADER_INCOMPATIBLE_COMPRESSED_LZ4`
 indicates that the file includes DATA objects that are compressed with the LZ4
-algorithm. And HEADER_INCOMPATIBLE_COMPRESSED_ZSTD indicates that there are
+algorithm. And `HEADER_INCOMPATIBLE_COMPRESSED_ZSTD` indicates that there are
 objects compressed with ZSTD.
 
-HEADER_INCOMPATIBLE_KEYED_HASH indicates that instead of the unkeyed Jenkins
+`HEADER_INCOMPATIBLE_KEYED_HASH` indicates that instead of the unkeyed Jenkins
 hash function the keyed siphash24 hash function is used for the two hash
 tables, see below.
 
-HEADER_INCOMPATIBLE_COMPACT indicates that the journal file uses the new binary
+`HEADER_INCOMPATIBLE_COMPACT` indicates that the journal file uses the new binary
 format that uses less space on disk compared to the original format.
 
-HEADER_COMPATIBLE_SEALED indicates that the file includes TAG objects required
+`HEADER_COMPATIBLE_SEALED` indicates that the file includes TAG objects required
 for Forward Secure Sealing.
 
-HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID indicates whether the
+`HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID` indicates whether the
 **tail_entry_boot_id** field is strictly updated on initial creation of the
 file and whenever an entry is updated (in which case the flag is set), or also
 when the file is archived (in which case it is unset). New files should always
-set this flag (and thus not update the **tail_entry_boot_id** except when
+set this flag (and thus not update **tail_entry_boot_id** except when
 creating the file and when appending an entry to it.
 
 ## Dirty Detection
@@ -408,11 +406,11 @@ _packed_ struct ObjectHeader {
 ```
 
 The **type** field is one of the object types listed above. The **flags** field
-currently knows three flags: OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4 and
-OBJECT_COMPRESSED_ZSTD. It is only valid for DATA objects and indicates that
+currently knows three flags: `OBJECT_COMPRESSED_XZ`, `OBJECT_COMPRESSED_LZ4` and
+`OBJECT_COMPRESSED_ZSTD`. It is only valid for DATA objects and indicates that
 the data payload is compressed with XZ/LZ4/ZSTD. If one of the
-OBJECT_COMPRESSED_* flags is set for an object then the matching
-HEADER_INCOMPATIBLE_COMPRESSED_XZ/HEADER_INCOMPATIBLE_COMPRESSED_LZ4/HEADER_INCOMPATIBLE_COMPRESSED_ZSTD
+`OBJECT_COMPRESSED_*` flags is set for an object then the matching
+`HEADER_INCOMPATIBLE_COMPRESSED_XZ`/`HEADER_INCOMPATIBLE_COMPRESSED_LZ4`/`HEADER_INCOMPATIBLE_COMPRESSED_ZSTD`
 flag must be set for the file as well. At most one of these three bits may be
 set. The **size** field encodes the size of the object including all its
 headers and payload.
@@ -467,7 +465,7 @@ number of ENTRY objects that reference this object, i.e. the sum of all
 ENTRY_ARRAYS chained up from this object, plus 1.
 
 The **payload[]** field contains the field name and date unencoded, unless
-OBJECT_COMPRESSED_XZ/OBJECT_COMPRESSED_LZ4/OBJECT_COMPRESSED_ZSTD is set in the
+`OBJECT_COMPRESSED_XZ`/`OBJECT_COMPRESSED_LZ4`/`OBJECT_COMPRESSED_ZSTD` is set in the
 `ObjectHeader`, in which case the payload is compressed with the indicated
 compression algorithm.
 

@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "sd-dhcp-option.h"
+#include "dns-resolver-internal.h"
 
 #include "dhcp-protocol.h"
 #include "hash-funcs.h"
@@ -44,3 +45,4 @@ int dhcp_option_parse(
                 char **ret_error_message);
 
 int dhcp_option_parse_string(const uint8_t *option, size_t len, char **ret);
+int dhcp_option_parse_hostname(const uint8_t *option, size_t len, char **ret);

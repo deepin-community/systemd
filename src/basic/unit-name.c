@@ -218,7 +218,7 @@ UnitType unit_name_to_type(const char *n) {
 int unit_name_change_suffix(const char *n, const char *suffix, char **ret) {
         _cleanup_free_ char *s = NULL;
         size_t a, b;
-        char *e;
+        const char *e;
 
         assert(n);
         assert(suffix);
@@ -331,7 +331,7 @@ static char *do_escape(const char *f, char *t) {
         return t;
 }
 
-char *unit_name_escape(const char *f) {
+char* unit_name_escape(const char *f) {
         char *r, *t;
 
         assert(f);
@@ -454,34 +454,45 @@ int unit_name_path_unescape(const char *f, char **ret) {
         return 0;
 }
 
-int unit_name_replace_instance(const char *f, const char *i, char **ret) {
-        _cleanup_free_ char *s = NULL;
-        const char *p, *e;
-        size_t a, b;
+int unit_name_replace_instance_full(
+                const char *original,
+                const char *instance,
+                bool accept_glob,
+                char **ret) {
 
-        assert(f);
-        assert(i);
+        _cleanup_free_ char *s = NULL;
+        const char *prefix, *suffix;
+        size_t pl;
+
+        assert(original);
+        assert(instance);
         assert(ret);
 
-        if (!unit_name_is_valid(f, UNIT_NAME_INSTANCE|UNIT_NAME_TEMPLATE))
+        if (!unit_name_is_valid(original, UNIT_NAME_INSTANCE|UNIT_NAME_TEMPLATE))
                 return -EINVAL;
-        if (!unit_instance_is_valid(i))
+        if (!unit_instance_is_valid(instance) && !(accept_glob && in_charset(instance, VALID_CHARS_GLOB)))
                 return -EINVAL;
 
-        assert_se(p = strchr(f, '@'));
-        assert_se(e = strrchr(f, '.'));
+        prefix = ASSERT_PTR(strchr(original, '@'));
+        suffix = ASSERT_PTR(strrchr(original, '.'));
+        assert(prefix < suffix);
 
-        a = p - f;
-        b = strlen(i);
+        pl = prefix - original + 1; /* include '@' */
 
-        s = new(char, a + 1 + b + strlen(e) + 1);
+        s = new(char, pl + strlen(instance) + strlen(suffix) + 1);
         if (!s)
                 return -ENOMEM;
 
-        strcpy(mempcpy(mempcpy(s, f, a + 1), i, b), e);
+#if HAS_FEATURE_MEMORY_SANITIZER
+        /* MSan doesn't like stpncpy... See also https://github.com/google/sanitizers/issues/926 */
+        memzero(s, pl + strlen(instance) + strlen(suffix) + 1);
+#endif
 
-        /* Make sure the resulting name still is valid, i.e. didn't grow too large */
-        if (!unit_name_is_valid(s, UNIT_NAME_INSTANCE))
+        strcpy(stpcpy(stpncpy(s, original, pl), instance), suffix);
+
+        /* Make sure the resulting name still is valid, i.e. didn't grow too large. Globs will be expanded
+         * by clients when used, so the check is pointless. */
+        if (!accept_glob && !unit_name_is_valid(s, UNIT_NAME_INSTANCE))
                 return -EINVAL;
 
         *ret = TAKE_PTR(s);
@@ -515,7 +526,7 @@ int unit_name_template(const char *f, char **ret) {
 }
 
 bool unit_name_is_hashed(const char *name) {
-        char *s;
+        const char *s;
 
         if (!unit_name_is_valid(name, UNIT_NAME_PLAIN))
                 return false;
@@ -538,7 +549,7 @@ bool unit_name_is_hashed(const char *name) {
 
 int unit_name_hash_long(const char *name, char **ret) {
         _cleanup_free_ char *n = NULL, *hash = NULL;
-        char *suffix;
+        const char *suffix;
         le64_t h;
         size_t len;
 
@@ -782,19 +793,10 @@ int unit_name_mangle_with_suffix(
         return 1;
 
 good:
-        s = strdup(name);
-        if (!s)
-                return -ENOMEM;
-
-        *ret = TAKE_PTR(s);
-        return 0;
+        return strdup_to(ret, name);
 }
 
 int slice_build_parent_slice(const char *slice, char **ret) {
-        _cleanup_free_ char *s = NULL;
-        char *dash;
-        int r;
-
         assert(slice);
         assert(ret);
 
@@ -806,18 +808,16 @@ int slice_build_parent_slice(const char *slice, char **ret) {
                 return 0;
         }
 
-        s = strdup(slice);
+        _cleanup_free_ char *s = strdup(slice);
         if (!s)
                 return -ENOMEM;
 
-        dash = strrchr(s, '-');
-        if (dash)
-                strcpy(dash, ".slice");
-        else {
-                r = free_and_strdup(&s, SPECIAL_ROOT_SLICE);
-                if (r < 0)
-                        return r;
-        }
+        char *dash = strrchr(s, '-');
+        if (!dash)
+                return strdup_to_full(ret, SPECIAL_ROOT_SLICE);
+
+        /* We know that s ended with .slice before truncation, so we have enough space. */
+        strcpy(dash, ".slice");
 
         *ret = TAKE_PTR(s);
         return 1;
@@ -839,7 +839,7 @@ int slice_build_subslice(const char *slice, const char *name, char **ret) {
         if (streq(slice, SPECIAL_ROOT_SLICE))
                 subslice = strjoin(name, ".slice");
         else {
-                char *e;
+                const char *e;
 
                 assert_se(e = endswith(slice, ".slice"));
 

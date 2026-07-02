@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 
 <refentry id="sd_bus_message_append"
@@ -95,7 +95,7 @@
       <title>Item type specifiers</title>
 
       <tgroup cols='5'>
-        <xi:include href="sd_bus_message_append_basic.xml" xpointer="xpointer(//table[@id='format-specifiers'])//colspec" />
+        <xi:include href="sd_bus_message_append_basic.xml" xpointer="xpointer(//table[@id='format-specifiers']//colspec)" />
         <xi:include href="sd_bus_message_append_basic.xml" xpointer="xpointer(//table[@id='format-specifiers']//thead)" />
 
         <tbody>
@@ -194,12 +194,12 @@ sd_bus_message_append(m, "ynqiuxtd", y, n, q, i, u, x, t, d);</programlisting>
      <para>Append a structure composed of a string and a D-Bus path:</para>
 
      <programlisting>sd_bus_message_append(m, "(so)", "a string", "/a/path");
-    </programlisting>
+</programlisting>
 
      <para>Append an array of UNIX file descriptors:</para>
 
      <programlisting>sd_bus_message_append(m, "ah", 3, STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO);
-    </programlisting>
+</programlisting>
 
      <para>Append a variant, with the real type "g" (signature),
      and value "sdbusisgood":</para>
@@ -210,7 +210,7 @@ sd_bus_message_append(m, "ynqiuxtd", y, n, q, i, u, x, t, d);</programlisting>
      </para>
 
      <programlisting>sd_bus_message_append(m, "a{is}", 3, 1, "a", 2, "b", 3, NULL);
-     </programlisting>
+</programlisting>
   </refsect1>
 
   <refsect1>
@@ -227,13 +227,13 @@ sd_bus_message_append(m, "ynqiuxtd", y, n, q, i, u, x, t, d);</programlisting>
   <refsect1>
     <title>See Also</title>
 
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd-bus</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_message_append_basic</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_message_append_array</refentrytitle><manvolnum>3</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>sd_bus_message_open_container</refentrytitle><manvolnum>3</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd-bus</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_message_append_basic</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_message_append_array</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>sd_bus_message_open_container</refentrytitle><manvolnum>3</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

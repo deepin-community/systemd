@@ -10,59 +10,59 @@
 #include "glyph-util.h"
 #include "log.h"
 #include "memory-util.h"
-#include "random-util.h"
 #include "strv.h"
 #include "unistd.h"
 
 static void *libfido2_dl = NULL;
 
-int (*sym_fido_assert_allow_cred)(fido_assert_t *, const unsigned char *, size_t) = NULL;
-void (*sym_fido_assert_free)(fido_assert_t **) = NULL;
-size_t (*sym_fido_assert_hmac_secret_len)(const fido_assert_t *, size_t) = NULL;
-const unsigned char* (*sym_fido_assert_hmac_secret_ptr)(const fido_assert_t *, size_t) = NULL;
-fido_assert_t* (*sym_fido_assert_new)(void) = NULL;
-int (*sym_fido_assert_set_clientdata_hash)(fido_assert_t *, const unsigned char *, size_t) = NULL;
-int (*sym_fido_assert_set_extensions)(fido_assert_t *, int) = NULL;
-int (*sym_fido_assert_set_hmac_salt)(fido_assert_t *, const unsigned char *, size_t) = NULL;
-int (*sym_fido_assert_set_rp)(fido_assert_t *, const char *) = NULL;
-int (*sym_fido_assert_set_up)(fido_assert_t *, fido_opt_t) = NULL;
-int (*sym_fido_assert_set_uv)(fido_assert_t *, fido_opt_t) = NULL;
-size_t (*sym_fido_cbor_info_extensions_len)(const fido_cbor_info_t *) = NULL;
-char **(*sym_fido_cbor_info_extensions_ptr)(const fido_cbor_info_t *) = NULL;
-void (*sym_fido_cbor_info_free)(fido_cbor_info_t **) = NULL;
-fido_cbor_info_t* (*sym_fido_cbor_info_new)(void) = NULL;
-size_t (*sym_fido_cbor_info_options_len)(const fido_cbor_info_t *) = NULL;
-char** (*sym_fido_cbor_info_options_name_ptr)(const fido_cbor_info_t *) = NULL;
-const bool* (*sym_fido_cbor_info_options_value_ptr)(const fido_cbor_info_t *) = NULL;
-void (*sym_fido_cred_free)(fido_cred_t **) = NULL;
-size_t (*sym_fido_cred_id_len)(const fido_cred_t *) = NULL;
-const unsigned char* (*sym_fido_cred_id_ptr)(const fido_cred_t *) = NULL;
-fido_cred_t* (*sym_fido_cred_new)(void) = NULL;
-int (*sym_fido_cred_set_clientdata_hash)(fido_cred_t *, const unsigned char *, size_t) = NULL;
-int (*sym_fido_cred_set_extensions)(fido_cred_t *, int) = NULL;
-int (*sym_fido_cred_set_rk)(fido_cred_t *, fido_opt_t) = NULL;
-int (*sym_fido_cred_set_rp)(fido_cred_t *, const char *, const char *) = NULL;
-int (*sym_fido_cred_set_type)(fido_cred_t *, int) = NULL;
-int (*sym_fido_cred_set_user)(fido_cred_t *, const unsigned char *, size_t, const char *, const char *, const char *) = NULL;
-int (*sym_fido_cred_set_uv)(fido_cred_t *, fido_opt_t) = NULL;
-void (*sym_fido_dev_free)(fido_dev_t **) = NULL;
-int (*sym_fido_dev_get_assert)(fido_dev_t *, fido_assert_t *, const char *) = NULL;
-int (*sym_fido_dev_get_cbor_info)(fido_dev_t *, fido_cbor_info_t *) = NULL;
-void (*sym_fido_dev_info_free)(fido_dev_info_t **, size_t) = NULL;
-int (*sym_fido_dev_info_manifest)(fido_dev_info_t *, size_t, size_t *) = NULL;
-const char* (*sym_fido_dev_info_manufacturer_string)(const fido_dev_info_t *) = NULL;
-const char* (*sym_fido_dev_info_product_string)(const fido_dev_info_t *) = NULL;
-fido_dev_info_t* (*sym_fido_dev_info_new)(size_t) = NULL;
-const char* (*sym_fido_dev_info_path)(const fido_dev_info_t *) = NULL;
-const fido_dev_info_t* (*sym_fido_dev_info_ptr)(const fido_dev_info_t *, size_t) = NULL;
-bool (*sym_fido_dev_is_fido2)(const fido_dev_t *) = NULL;
-int (*sym_fido_dev_make_cred)(fido_dev_t *, fido_cred_t *, const char *) = NULL;
-fido_dev_t* (*sym_fido_dev_new)(void) = NULL;
-int (*sym_fido_dev_open)(fido_dev_t *, const char *) = NULL;
-int (*sym_fido_dev_close)(fido_dev_t *) = NULL;
-void (*sym_fido_init)(int) = NULL;
-void (*sym_fido_set_log_handler)(fido_log_handler_t *) = NULL;
-const char* (*sym_fido_strerr)(int) = NULL;
+DLSYM_PROTOTYPE(fido_assert_allow_cred) = NULL;
+DLSYM_PROTOTYPE(fido_assert_free) = NULL;
+DLSYM_PROTOTYPE(fido_assert_hmac_secret_len) = NULL;
+DLSYM_PROTOTYPE(fido_assert_hmac_secret_ptr) = NULL;
+DLSYM_PROTOTYPE(fido_assert_new) = NULL;
+DLSYM_PROTOTYPE(fido_assert_set_clientdata_hash) = NULL;
+DLSYM_PROTOTYPE(fido_assert_set_extensions) = NULL;
+DLSYM_PROTOTYPE(fido_assert_set_hmac_salt) = NULL;
+DLSYM_PROTOTYPE(fido_assert_set_rp) = NULL;
+DLSYM_PROTOTYPE(fido_assert_set_up) = NULL;
+DLSYM_PROTOTYPE(fido_assert_set_uv) = NULL;
+DLSYM_PROTOTYPE(fido_cbor_info_extensions_len) = NULL;
+DLSYM_PROTOTYPE(fido_cbor_info_extensions_ptr) = NULL;
+DLSYM_PROTOTYPE(fido_cbor_info_free) = NULL;
+DLSYM_PROTOTYPE(fido_cbor_info_new) = NULL;
+DLSYM_PROTOTYPE(fido_cbor_info_options_len) = NULL;
+DLSYM_PROTOTYPE(fido_cbor_info_options_name_ptr) = NULL;
+DLSYM_PROTOTYPE(fido_cbor_info_options_value_ptr) = NULL;
+DLSYM_PROTOTYPE(fido_cred_free) = NULL;
+DLSYM_PROTOTYPE(fido_cred_id_len) = NULL;
+DLSYM_PROTOTYPE(fido_cred_id_ptr) = NULL;
+DLSYM_PROTOTYPE(fido_cred_new) = NULL;
+DLSYM_PROTOTYPE(fido_cred_set_clientdata_hash) = NULL;
+DLSYM_PROTOTYPE(fido_cred_set_extensions) = NULL;
+DLSYM_PROTOTYPE(fido_cred_set_prot) = NULL;
+DLSYM_PROTOTYPE(fido_cred_set_rk) = NULL;
+DLSYM_PROTOTYPE(fido_cred_set_rp) = NULL;
+DLSYM_PROTOTYPE(fido_cred_set_type) = NULL;
+DLSYM_PROTOTYPE(fido_cred_set_user) = NULL;
+DLSYM_PROTOTYPE(fido_cred_set_uv) = NULL;
+DLSYM_PROTOTYPE(fido_dev_free) = NULL;
+DLSYM_PROTOTYPE(fido_dev_get_assert) = NULL;
+DLSYM_PROTOTYPE(fido_dev_get_cbor_info) = NULL;
+DLSYM_PROTOTYPE(fido_dev_info_free) = NULL;
+DLSYM_PROTOTYPE(fido_dev_info_manifest) = NULL;
+DLSYM_PROTOTYPE(fido_dev_info_manufacturer_string) = NULL;
+DLSYM_PROTOTYPE(fido_dev_info_product_string) = NULL;
+DLSYM_PROTOTYPE(fido_dev_info_new) = NULL;
+DLSYM_PROTOTYPE(fido_dev_info_path) = NULL;
+DLSYM_PROTOTYPE(fido_dev_info_ptr) = NULL;
+DLSYM_PROTOTYPE(fido_dev_is_fido2) = NULL;
+DLSYM_PROTOTYPE(fido_dev_make_cred) = NULL;
+DLSYM_PROTOTYPE(fido_dev_new) = NULL;
+DLSYM_PROTOTYPE(fido_dev_open) = NULL;
+DLSYM_PROTOTYPE(fido_dev_close) = NULL;
+DLSYM_PROTOTYPE(fido_init) = NULL;
+DLSYM_PROTOTYPE(fido_set_log_handler) = NULL;
+DLSYM_PROTOTYPE(fido_strerr) = NULL;
 
 static void fido_log_propagate_handler(const char *s) {
         log_debug("libfido2: %s", strempty(s));
@@ -70,6 +70,11 @@ static void fido_log_propagate_handler(const char *s) {
 
 int dlopen_libfido2(void) {
         int r;
+
+        ELF_NOTE_DLOPEN("fido2",
+                        "Support fido2 for encryption and authentication",
+                        ELF_NOTE_DLOPEN_PRIORITY_SUGGESTED,
+                        "libfido2.so.1");
 
         r = dlopen_many_sym_or_warn(
                         &libfido2_dl, "libfido2.so.1", LOG_DEBUG,
@@ -97,6 +102,7 @@ int dlopen_libfido2(void) {
                         DLSYM_ARG(fido_cred_new),
                         DLSYM_ARG(fido_cred_set_clientdata_hash),
                         DLSYM_ARG(fido_cred_set_extensions),
+                        DLSYM_ARG(fido_cred_set_prot),
                         DLSYM_ARG(fido_cred_set_rk),
                         DLSYM_ARG(fido_cred_set_rp),
                         DLSYM_ARG(fido_cred_set_type),
@@ -574,7 +580,7 @@ static int fido2_use_hmac_hash_specific_token(
 
 /* COSE_ECDH_ES256 is not usable with fido_cred_set_type() thus it's not listed here. */
 static const char *fido2_algorithm_to_string(int alg) {
-        switch(alg) {
+        switch (alg) {
                 case COSE_ES256:
                         return "es256";
                 case COSE_RS256:
@@ -676,8 +682,6 @@ finish:
         return r;
 }
 
-#define FIDO2_SALT_SIZE 32
-
 int fido2_generate_hmac_hash(
                 const char *device,
                 const char *rp_id,
@@ -686,16 +690,17 @@ int fido2_generate_hmac_hash(
                 const char *user_name,
                 const char *user_display_name,
                 const char *user_icon,
-                const char *askpw_icon_name,
+                const char *askpw_icon,
+                const char *askpw_credential,
                 Fido2EnrollFlags lock_with,
                 int cred_alg,
+                const struct iovec *salt,
                 void **ret_cid, size_t *ret_cid_size,
-                void **ret_salt, size_t *ret_salt_size,
                 void **ret_secret, size_t *ret_secret_size,
                 char **ret_usedpin,
                 Fido2EnrollFlags *ret_locked_with) {
 
-        _cleanup_(erase_and_freep) void *salt = NULL, *secret_copy = NULL;
+        _cleanup_(erase_and_freep) void *secret_copy = NULL;
         _cleanup_(fido_assert_free_wrapper) fido_assert_t *a = NULL;
         _cleanup_(fido_cred_free_wrapper) fido_cred_t *c = NULL;
         _cleanup_(fido_dev_free_wrapper) fido_dev_t *d = NULL;
@@ -709,12 +714,10 @@ int fido2_generate_hmac_hash(
         assert(device);
         assert(ret_cid);
         assert(ret_cid_size);
-        assert(ret_salt);
-        assert(ret_salt_size);
         assert(ret_secret);
         assert(ret_secret_size);
 
-        /* Construction is like this: we generate a salt of 32 bytes. We then ask the FIDO2 device to
+        /* Construction is like this: we read or generate a salt of 32 bytes. We then ask the FIDO2 device to
          * HMAC-SHA256 it for us with its internal key. The result is the key used by LUKS and account
          * authentication. LUKS and UNIX password auth all do their own salting before hashing, so that FIDO2
          * device never sees the volume key.
@@ -723,24 +726,17 @@ int fido2_generate_hmac_hash(
          *
          * with: S → LUKS/account authentication key                                         (never stored)
          *       I → internal key on FIDO2 device                              (stored in the FIDO2 device)
-         *       D → salt we generate here               (stored in the privileged part of the JSON record)
+         *       D → salt     (stored in the privileged part of the JSON record or read from a file/socket)
          *
          */
 
         assert(device);
         assert((lock_with & ~(FIDO2ENROLL_PIN|FIDO2ENROLL_UP|FIDO2ENROLL_UV)) == 0);
+        assert(iovec_is_set(salt));
 
         r = dlopen_libfido2();
         if (r < 0)
                 return log_error_errno(r, "FIDO2 token support is not installed.");
-
-        salt = malloc(FIDO2_SALT_SIZE);
-        if (!salt)
-                return log_oom();
-
-        r = crypto_random_bytes(salt, FIDO2_SALT_SIZE);
-        if (r < 0)
-                return log_error_errno(r, "Failed to generate salt: %m");
 
         d = sym_fido_dev_new();
         if (!d)
@@ -775,10 +771,21 @@ int fido2_generate_hmac_hash(
         if (!c)
                 return log_oom();
 
-        r = sym_fido_cred_set_extensions(c, FIDO_EXT_HMAC_SECRET);
+        int extensions = FIDO_EXT_HMAC_SECRET;
+        if (FLAGS_SET(lock_with, FIDO2ENROLL_UV)) {
+                /* Attempt to use the "cred protect" extension, requiring user verification (UV) for this
+                 * credential. If the authenticator doesn't support the extension, it will be ignored. */
+                extensions |= FIDO_EXT_CRED_PROTECT;
+
+                r = sym_fido_cred_set_prot(c, FIDO_CRED_PROT_UV_REQUIRED);
+                if (r != FIDO_OK)
+                        log_warning("Failed to set protection level on FIDO2 credential, ignoring: %s", sym_fido_strerr(r));
+        }
+
+        r = sym_fido_cred_set_extensions(c, extensions);
         if (r != FIDO_OK)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
-                                       "Failed to enable HMAC-SECRET extension on FIDO2 credential: %s", sym_fido_strerr(r));
+                                       "Failed to enable extensions on FIDO2 credential: %s", sym_fido_strerr(r));
 
         r = sym_fido_cred_set_rp(c, rp_id, rp_name);
         if (r != FIDO_OK)
@@ -829,19 +836,39 @@ int fido2_generate_hmac_hash(
                            emoji_enabled() ? special_glyph(SPECIAL_GLYPH_TOUCH) : "",
                            emoji_enabled() ? " " : "");
 
-        r = sym_fido_dev_make_cred(d, c, NULL);
+        /* If we are using the user PIN, then we must pass that PIN to the get_assertion call below, or
+         * the authenticator will use the non-user-verification HMAC secret (which differs from the one when
+         * the PIN is passed).
+         *
+         * Rather than potentially trying and failing to create the credential, just collect the PIN first
+         * and then pass it to both the make_credential and the get_assertion operations. */
+        if (FLAGS_SET(lock_with, FIDO2ENROLL_PIN))
+                r = FIDO_ERR_PIN_REQUIRED;
+        else
+                r = sym_fido_dev_make_cred(d, c, NULL);
+
         if (r == FIDO_ERR_PIN_REQUIRED) {
 
                 if (!has_client_pin)
                         return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                                "Token asks for PIN but doesn't advertise 'clientPin' feature.");
 
+                AskPasswordFlags askpw_flags = ASK_PASSWORD_ACCEPT_CACHED;
+
                 for (;;) {
                         _cleanup_strv_free_erase_ char **pin = NULL;
+                        AskPasswordRequest req = {
+                                .message = "Please enter security token PIN:",
+                                .icon = askpw_icon,
+                                .keyring = "fido2-pin",
+                                .credential = askpw_credential,
+                        };
 
-                        r = ask_password_auto("Please enter security token PIN:", askpw_icon_name, NULL, "fido2-pin", "fido2-pin", USEC_INFINITY, 0, &pin);
+                        r = ask_password_auto(&req, USEC_INFINITY, askpw_flags, &pin);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to acquire user PIN: %m");
+
+                        askpw_flags &= ~ASK_PASSWORD_ACCEPT_CACHED;
 
                         r = FIDO_ERR_PIN_INVALID;
                         STRV_FOREACH(i, pin) {
@@ -900,7 +927,7 @@ int fido2_generate_hmac_hash(
                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
                                        "Failed to enable HMAC-SECRET extension on FIDO2 assertion: %s", sym_fido_strerr(r));
 
-        r = sym_fido_assert_set_hmac_salt(a, salt, FIDO2_SALT_SIZE);
+        r = sym_fido_assert_set_hmac_salt(a, salt->iov_base, salt->iov_len);
         if (r != FIDO_OK)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO),
                                        "Failed to set salt on FIDO2 assertion: %s", sym_fido_strerr(r));
@@ -1037,8 +1064,6 @@ int fido2_generate_hmac_hash(
 
         *ret_cid = TAKE_PTR(cid_copy);
         *ret_cid_size = cid_size;
-        *ret_salt = TAKE_PTR(salt);
-        *ret_salt_size = FIDO2_SALT_SIZE;
         *ret_secret = TAKE_PTR(secret_copy);
         *ret_secret_size = secret_size;
 
@@ -1103,7 +1128,7 @@ int fido2_list_devices(void) {
                 goto finish;
         }
 
-        t = table_new("path", "manufacturer", "product");
+        t = table_new("path", "manufacturer", "product", "compatible");
         if (!t) {
                 r = log_oom();
                 goto finish;
@@ -1122,14 +1147,14 @@ int fido2_list_devices(void) {
                 r = check_device_is_fido2_with_hmac_secret(sym_fido_dev_info_path(entry));
                 if (r < 0)
                         goto finish;
-                if (!r)
-                        continue;
+                bool compatible = r > 0;
 
                 r = table_add_many(
                                 t,
                                 TABLE_PATH, sym_fido_dev_info_path(entry),
                                 TABLE_STRING, sym_fido_dev_info_manufacturer_string(entry),
-                                TABLE_STRING, sym_fido_dev_info_product_string(entry));
+                                TABLE_STRING, sym_fido_dev_info_product_string(entry),
+                                TABLE_BOOLEAN_CHECKMARK, compatible);
                 if (r < 0) {
                         table_log_add_error(r);
                         goto finish;

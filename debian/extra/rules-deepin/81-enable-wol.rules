@@ -1,1 +1,0 @@
-ACTION=="add", SUBSYSTEM=="net", NAME=="en*", PROGRAM=="/usr/bin/test -x /sbin/ethtool", RUN+="/sbin/ethtool -s $name wol g"

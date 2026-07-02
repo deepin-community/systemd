@@ -6,7 +6,6 @@ if zshcompletiondir == ''
 endif
 
 custom_target(
-        '_systemctl',
         input : '_systemctl.in',
         output : '_systemctl',
         command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
@@ -21,12 +20,14 @@ items = [['_busctl',                   ''],
          ['_systemd',                  ''],
          ['_systemd-path',             ''],
          ['_systemd-run',              ''],
+         ['_run0',                     ''],
          ['_udevadm',                  ''],
+         ['_varlinkctl',               ''],
          ['_kernel-install',           'ENABLE_KERNEL_INSTALL'],
          ['_sd_hosts_or_user_at_host', ''],
          ['_sd_outputmodes',           ''],
          ['_sd_unit_files',            ''],
-         ['_sd_machines',              ''],
+         ['_sd_machines',              'ENABLE_MACHINED'],
          ['_bootctl',                  ''],
          ['_coredumpctl',              'ENABLE_COREDUMP'],
          ['_hostnamectl',              'ENABLE_HOSTNAMED'],

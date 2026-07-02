@@ -159,23 +159,35 @@ int sd_network_link_get_network_file(int ifindex, char **ret) {
         return network_link_get_string(ifindex, "NETWORK_FILE", ret);
 }
 
-int sd_network_link_get_network_file_dropins(int ifindex, char ***ret) {
-        _cleanup_free_ char **sv = NULL, *joined = NULL;
+int sd_network_link_get_netdev_file(int ifindex, char **ret) {
+        return network_link_get_string(ifindex, "NETDEV_FILE", ret);
+}
+
+static int link_get_config_file_dropins_internal(int ifindex, const char *field, char ***ret) {
+        _cleanup_free_ char *s = NULL;
         int r;
 
+        assert(field);
         assert_return(ifindex > 0, -EINVAL);
         assert_return(ret, -EINVAL);
 
-        r = network_link_get_string(ifindex, "NETWORK_FILE_DROPINS", &joined);
+        r = network_link_get_string(ifindex, field, &s);
         if (r < 0)
                 return r;
 
-        r = strv_split_full(&sv, joined, ":", EXTRACT_CUNESCAPE);
+        r = strv_split_full(ret, s, ":", EXTRACT_CUNESCAPE);
         if (r < 0)
                 return r;
 
-        *ret = TAKE_PTR(sv);
         return 0;
+}
+
+int sd_network_link_get_network_file_dropins(int ifindex, char ***ret) {
+        return link_get_config_file_dropins_internal(ifindex, "NETWORK_FILE_DROPINS", ret);
+}
+
+int sd_network_link_get_netdev_file_dropins(int ifindex, char ***ret) {
+        return link_get_config_file_dropins_internal(ifindex, "NETDEV_FILE_DROPINS", ret);
 }
 
 int sd_network_link_get_operational_state(int ifindex, char **ret) {
@@ -394,7 +406,7 @@ int sd_network_monitor_new(sd_network_monitor **m, const char *category) {
 
 sd_network_monitor* sd_network_monitor_unref(sd_network_monitor *m) {
         if (m)
-                (void) close_nointr(MONITOR_TO_FD(m));
+                (void) close(MONITOR_TO_FD(m));
 
         return NULL;
 }

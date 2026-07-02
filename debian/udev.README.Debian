@@ -1,6 +1,19 @@
 This documents udev integration Debian specifics. Please see man udev(7) and
 its referenced manpages for general documentation.
 
+Use of .link files in conjunction with systemd-networkd
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When using systemd-networkd it's commonplace to make changes to network
+interface settings using systemd.link(5) files in the /etc/systemd/network/
+directory. It should be noted that Debian systems copy .link files into the
+initrd so that they are available at early boot.
+
+The initrd MUST be updated with "update-initramfs -u" after any systemd.link
+files changes. Failure to do so will leave outdated link files in the initrd,
+which may cause various unintended and difficult-to-diagnose problems, including
+potential loss of remote access to the host.
+
 Network interface naming
 ~~~~~~~~~~~~~~~~~~~~~~~~
 Since version 197 udev has a builtin persistent name generator which checks
@@ -31,8 +44,8 @@ You can disable these stable names and go back to the kernel-provided ones
     "ln -s /dev/null /etc/systemd/network/73-usb-net-by-mac.link"
     and rebuild the initrd with "update-initramfs -u".
 
-See this page for more information:
-http://www.freedesktop.org/wiki/Software/systemd/PredictableNetworkInterfaceNames/
+See this manpage for more information:
+https://www.freedesktop.org/software/systemd/man/latest/systemd.net-naming-scheme.html
 
 Legacy persistent network interface naming
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

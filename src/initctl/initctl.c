@@ -74,12 +74,12 @@ static const char *translate_runlevel(int runlevel, bool *isolate) {
 
         assert(isolate);
 
-        for (size_t i = 0; i < ELEMENTSOF(table); i++)
-                if (table[i].runlevel == runlevel) {
-                        *isolate = table[i].isolate;
+        FOREACH_ELEMENT(i, table)
+                if (i->runlevel == runlevel) {
+                        *isolate = i->isolate;
                         if (runlevel == '6' && kexec_loaded())
                                 return SPECIAL_KEXEC_TARGET;
-                        return table[i].special;
+                        return i->special;
                 }
 
         return NULL;
@@ -318,8 +318,7 @@ static int run(int argc, char *argv[]) {
 
         n = sd_listen_fds(true);
         if (n < 0)
-                return log_error_errno(errno,
-                                       "Failed to read listening file descriptors from environment: %m");
+                return log_error_errno(n, "Failed to read listening file descriptors from environment: %m");
 
         if (n <= 0 || n > SERVER_FD_MAX)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),

@@ -36,11 +36,11 @@ typedef enum HardwareAddressToStringFlags {
 } HardwareAddressToStringFlags;
 
 #define HW_ADDR_TO_STRING_MAX (3*HW_ADDR_MAX_SIZE)
-char *hw_addr_to_string_full(
+char* hw_addr_to_string_full(
                 const struct hw_addr_data *addr,
                 HardwareAddressToStringFlags flags,
                 char buffer[static HW_ADDR_TO_STRING_MAX]);
-static inline char *hw_addr_to_string(const struct hw_addr_data *addr, char buffer[static HW_ADDR_TO_STRING_MAX]) {
+static inline char* hw_addr_to_string(const struct hw_addr_data *addr, char buffer[static HW_ADDR_TO_STRING_MAX]) {
         return hw_addr_to_string_full(addr, 0, buffer);
 }
 
@@ -113,3 +113,5 @@ static inline bool ether_addr_is_global(const struct ether_addr *addr) {
 
 extern const struct hash_ops ether_addr_hash_ops;
 extern const struct hash_ops ether_addr_hash_ops_free;
+
+void ether_addr_mark_random(struct ether_addr *addr);

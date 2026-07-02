@@ -20,7 +20,7 @@ size_t page_size(void) _pure_;
 #define PAGE_OFFSET_U64(l)     ALIGN_OFFSET_U64(l, page_size())
 
 /* Normal memcpy() requires src to be nonnull. We do nothing if n is 0. */
-static inline void *memcpy_safe(void *dst, const void *src, size_t n) {
+static inline void* memcpy_safe(void *dst, const void *src, size_t n) {
         if (n == 0)
                 return dst;
         assert(src);
@@ -28,12 +28,22 @@ static inline void *memcpy_safe(void *dst, const void *src, size_t n) {
 }
 
 /* Normal mempcpy() requires src to be nonnull. We do nothing if n is 0. */
-static inline void *mempcpy_safe(void *dst, const void *src, size_t n) {
+static inline void* mempcpy_safe(void *dst, const void *src, size_t n) {
         if (n == 0)
                 return dst;
         assert(src);
         return mempcpy(dst, src, n);
 }
+
+#define _mempcpy_typesafe(dst, src, n, sz)                              \
+        ({                                                              \
+                size_t sz;                                              \
+                assert_se(MUL_SAFE(&sz, sizeof((dst)[0]), n));          \
+                (typeof((dst)[0])*) mempcpy_safe(dst, src, sz);         \
+        })
+
+#define mempcpy_typesafe(dst, src, n)                                   \
+        _mempcpy_typesafe(dst, src, n, UNIQ_T(sz, UNIQ))
 
 /* Normal memcmp() requires s1 and s2 to be nonnull. We do nothing if n is 0. */
 static inline int memcmp_safe(const void *s1, const void *s2, size_t n) {
@@ -107,3 +117,6 @@ static inline void erase_and_freep(void *p) {
 static inline void erase_char(char *p) {
         explicit_bzero_safe(p, sizeof(char));
 }
+
+/* Makes a copy of the buffer with reversed order of bytes */
+void *memdup_reverse(const void *mem, size_t size);

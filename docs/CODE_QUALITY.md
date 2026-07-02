@@ -21,9 +21,10 @@ available functionality:
    change these flags for an already set up build tree, too, with "meson
    configure -C build -D…".)
 
-2. Use `./test/run-integration-tests.sh` to run the full integration test
-   suite. This will build OS images with a number of integration tests and run
-   them using `systemd-nspawn` and `qemu`. Requires root.
+2. Run the full integration test suite as described in
+   [test/integration-tests/README.md](/../test/integration-tests/README.md).
+   This will build OS images with a number of integration tests and run them
+   using `systemd-nspawn` and `qemu`. Requires root.
 
 3. Use `./coccinelle/run-coccinelle.sh` to run all
    [Coccinelle](http://coccinelle.lip6.fr/) semantic patch scripts we ship. The
@@ -75,7 +76,7 @@ available functionality:
 
 15. Each PR is automatically tested with [Address Sanitizer](https://clang.llvm.org/docs/AddressSanitizer.html)
     and [Undefined Behavior Sanitizer](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html).
-    See [Testing systemd using sanitizers](TESTING_WITH_SANITIZERS.md)
+    See [Testing systemd using sanitizers](/TESTING_WITH_SANITIZERS)
     for more information.
 
 16. Fossies provides [source code misspelling reports](https://fossies.org/features.html#codespell).

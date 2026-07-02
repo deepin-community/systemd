@@ -3,12 +3,13 @@
 
 #include <netinet/in.h>
 
+#include "sd-json.h"
+
 #include "bitmap.h"
 #include "dns-def.h"
 #include "dns-type.h"
 #include "hashmap.h"
 #include "in-addr-util.h"
-#include "json.h"
 #include "list.h"
 #include "string-util.h"
 #include "time-util.h"
@@ -16,6 +17,7 @@
 typedef struct DnsResourceKey DnsResourceKey;
 typedef struct DnsResourceRecord DnsResourceRecord;
 typedef struct DnsTxtItem DnsTxtItem;
+typedef struct DnsSvcParam DnsSvcParam;
 
 /* DNSKEY RR flags */
 #define DNSKEY_FLAG_SEP            (UINT16_C(1) << 0)
@@ -88,6 +90,17 @@ struct DnsTxtItem {
         size_t length;
         LIST_FIELDS(DnsTxtItem, items);
         uint8_t data[];
+};
+
+struct DnsSvcParam {
+        uint16_t key;
+        size_t length;
+        LIST_FIELDS(DnsSvcParam, params);
+        union {
+                DECLARE_FLEX_ARRAY(uint8_t, value);
+                DECLARE_FLEX_ARRAY(struct in_addr, value_in_addr);
+                DECLARE_FLEX_ARRAY(struct in6_addr, value_in6_addr);
+        };
 };
 
 struct DnsResourceRecord {
@@ -243,6 +256,13 @@ struct DnsResourceRecord {
                         uint8_t matching_type;
                 } tlsa;
 
+                /* https://tools.ietf.org/html/rfc9460 */
+                struct {
+                        uint16_t priority;
+                        char *target_name;
+                        DnsSvcParam *params;
+                } svcb, https;
+
                 /* https://tools.ietf.org/html/rfc6844 */
                 struct {
                         char *tag;
@@ -251,6 +271,16 @@ struct DnsResourceRecord {
 
                         uint8_t flags;
                 } caa;
+
+                /* https://datatracker.ietf.org/doc/html/rfc2915 */
+                struct {
+                        uint16_t order;
+                        uint16_t preference;
+                        char *flags;
+                        char *services;
+                        char *regexp;
+                        char *replacement;
+                } naptr;
         };
 
         /* Note: fields should be ordered to minimize alignment gaps. Use pahole! */
@@ -305,6 +335,7 @@ DnsResourceKey* dns_resource_key_unref(DnsResourceKey *key);
 const char* dns_resource_key_name(const DnsResourceKey *key);
 bool dns_resource_key_is_address(const DnsResourceKey *key);
 bool dns_resource_key_is_dnssd_ptr(const DnsResourceKey *key);
+bool dns_resource_key_is_dnssd_two_label_ptr(const DnsResourceKey *key);
 int dns_resource_key_equal(const DnsResourceKey *a, const DnsResourceKey *b);
 int dns_resource_key_match_rr(const DnsResourceKey *key, DnsResourceRecord *rr, const char *search_domain);
 int dns_resource_key_match_cname_or_dname(const DnsResourceKey *key, const DnsResourceKey *cname, const char *search_domain);
@@ -315,7 +346,7 @@ int dns_resource_key_match_soa(const DnsResourceKey *key, const DnsResourceKey *
 #define DNS_RESOURCE_KEY_STRING_MAX (_DNS_CLASS_STRING_MAX + _DNS_TYPE_STRING_MAX + DNS_HOSTNAME_MAX + 1)
 
 char* dns_resource_key_to_string(const DnsResourceKey *key, char *buf, size_t buf_size);
-ssize_t dns_resource_record_payload(DnsResourceRecord *rr, void **out);
+ssize_t dns_resource_record_payload(DnsResourceRecord *rr, const void **ret);
 
 #define DNS_RESOURCE_KEY_TO_STRING(key) \
         dns_resource_key_to_string(key, (char[DNS_RESOURCE_KEY_STRING_MAX]) {}, DNS_RESOURCE_KEY_STRING_MAX)
@@ -368,11 +399,15 @@ bool dns_txt_item_equal(DnsTxtItem *a, DnsTxtItem *b);
 DnsTxtItem *dns_txt_item_copy(DnsTxtItem *i);
 int dns_txt_item_new_empty(DnsTxtItem **ret);
 
+DnsSvcParam *dns_svc_param_free_all(DnsSvcParam *i);
+bool dns_svc_params_equal(DnsSvcParam *a, DnsSvcParam *b);
+DnsSvcParam *dns_svc_params_copy(DnsSvcParam *first);
+
 int dns_resource_record_new_from_raw(DnsResourceRecord **ret, const void *data, size_t size);
 
-int dns_resource_key_to_json(DnsResourceKey *key, JsonVariant **ret);
-int dns_resource_key_from_json(JsonVariant *v, DnsResourceKey **ret);
-int dns_resource_record_to_json(DnsResourceRecord *rr, JsonVariant **ret);
+int dns_resource_key_to_json(DnsResourceKey *key, sd_json_variant **ret);
+int dns_resource_key_from_json(sd_json_variant *v, DnsResourceKey **ret);
+int dns_resource_record_to_json(DnsResourceRecord *rr, sd_json_variant **ret);
 
 void dns_resource_record_hash_func(const DnsResourceRecord *i, struct siphash *state);
 int dns_resource_record_compare_func(const DnsResourceRecord *x, const DnsResourceRecord *y);

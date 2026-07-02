@@ -18,12 +18,19 @@
 #include "bus-internal.h"
 #include "bus-label.h"
 #include "bus-util.h"
+#include "capsule-util.h"
+#include "chase.h"
+#include "daemon-util.h"
 #include "data-fd-util.h"
+#include "env-util.h"
 #include "fd-util.h"
+#include "format-util.h"
 #include "memstream-util.h"
 #include "path-util.h"
 #include "socket-util.h"
 #include "stdio-util.h"
+#include "string-table.h"
+#include "uid-classification.h"
 
 static int name_owner_change_callback(sd_bus_message *m, void *userdata, sd_bus_error *ret_error) {
         sd_event *e = ASSERT_PTR(userdata);
@@ -44,14 +51,14 @@ int bus_log_address_error(int r, BusTransport transport) {
                                       "Failed to set bus address: %m");
 }
 
-int bus_log_connect_error(int r, BusTransport transport) {
+int bus_log_connect_error(int r, BusTransport transport, RuntimeScope scope) {
         bool hint_vars = transport == BUS_TRANSPORT_LOCAL && r == -ENOMEDIUM,
              hint_addr = transport == BUS_TRANSPORT_LOCAL && ERRNO_IS_PRIVILEGE(r);
 
         return log_error_errno(r,
-                               r == hint_vars ? "Failed to connect to bus: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=<user>@.host --user to connect to bus of other user)" :
-                               r == hint_addr ? "Failed to connect to bus: Operation not permitted (consider using --machine=<user>@.host --user to connect to bus of other user)" :
-                                                "Failed to connect to bus: %m");
+                               hint_vars ? "Failed to connect to %s scope bus via %s transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=<user>@.host --user to connect to bus of other user)" :
+                               hint_addr ? "Failed to connect to %s scope bus via %s transport: Operation not permitted (consider using --machine=<user>@.host --user to connect to bus of other user)" :
+                                           "Failed to connect to %s scope bus via %s transport: %m", runtime_scope_to_string(scope), bus_transport_to_string(transport));
 }
 
 int bus_async_unregister_and_exit(sd_event *e, sd_bus *bus, const char *name) {
@@ -93,6 +100,19 @@ int bus_async_unregister_and_exit(sd_event *e, sd_bus *bus, const char *name) {
         return 0;
 }
 
+static bool idle_allowed(void) {
+        static int allowed = -1;
+
+        if (allowed >= 0)
+                return allowed;
+
+        allowed = secure_getenv_bool("SYSTEMD_EXIT_ON_IDLE");
+        if (allowed < 0 && allowed != -ENXIO)
+                log_debug_errno(allowed, "Failed to parse $SYSTEMD_EXIT_ON_IDLE, ignoring: %m");
+
+        return allowed != 0;
+}
+
 int bus_event_loop_with_idle(
                 sd_event *e,
                 sd_bus *bus,
@@ -117,7 +137,9 @@ int bus_event_loop_with_idle(
                 if (r == SD_EVENT_FINISHED)
                         break;
 
-                if (check_idle)
+                if (!idle_allowed() || sd_bus_pending_method_calls(bus) > 0)
+                        idle = false;
+                else if (check_idle)
                         idle = check_idle(userdata);
                 else
                         idle = true;
@@ -127,9 +149,11 @@ int bus_event_loop_with_idle(
                         return r;
 
                 if (r == 0 && !exiting && idle) {
+                        log_debug("Idle for %s, exiting.", FORMAT_TIMESPAN(timeout, 1));
+
                         /* Inform the service manager that we are going down, so that it will queue all
-                         * further start requests, instead of assuming we are already running. */
-                        sd_notify(false, "STOPPING=1");
+                         * further start requests, instead of assuming we are still running. */
+                        (void) sd_notify(false, NOTIFY_STOPPING);
 
                         r = bus_async_unregister_and_exit(e, bus, name);
                         if (r < 0)
@@ -205,12 +229,6 @@ int bus_connect_system_systemd(sd_bus **ret_bus) {
 
         assert(ret_bus);
 
-        if (geteuid() != 0)
-                return sd_bus_default_system(ret_bus);
-
-        /* If we are root then let's talk directly to the system
-         * instance, instead of going via the bus */
-
         r = sd_bus_new(&bus);
         if (r < 0)
                 return r;
@@ -221,7 +239,7 @@ int bus_connect_system_systemd(sd_bus **ret_bus) {
 
         r = sd_bus_start(bus);
         if (r < 0)
-                return sd_bus_default_system(ret_bus);
+                return r;
 
         r = bus_check_peercred(bus);
         if (r < 0)
@@ -241,7 +259,7 @@ int bus_connect_user_systemd(sd_bus **ret_bus) {
 
         e = secure_getenv("XDG_RUNTIME_DIR");
         if (!e)
-                return sd_bus_default_user(ret_bus);
+                return -ENOMEDIUM;
 
         ee = bus_address_escape(e);
         if (!ee)
@@ -257,9 +275,134 @@ int bus_connect_user_systemd(sd_bus **ret_bus) {
 
         r = sd_bus_start(bus);
         if (r < 0)
-                return sd_bus_default_user(ret_bus);
+                return r;
 
         r = bus_check_peercred(bus);
+        if (r < 0)
+                return r;
+
+        *ret_bus = TAKE_PTR(bus);
+        return 0;
+}
+
+static int pin_capsule_socket(const char *capsule, const char *suffix, uid_t *ret_uid, gid_t *ret_gid) {
+        _cleanup_close_ int inode_fd = -EBADF;
+        _cleanup_free_ char *p = NULL;
+        struct stat st;
+        int r;
+
+        assert(capsule);
+        assert(suffix);
+        assert(ret_uid);
+        assert(ret_gid);
+
+        p = path_join("/run/capsules", capsule, suffix);
+        if (!p)
+                return -ENOMEM;
+
+        /* We enter territory owned by the user, hence let's be paranoid about symlinks and ownership */
+        r = chase(p, /* root= */ NULL, CHASE_SAFE|CHASE_PROHIBIT_SYMLINKS, /* ret_path= */ NULL, &inode_fd);
+        if (r < 0)
+                return r;
+
+        if (fstat(inode_fd, &st) < 0)
+                return negative_errno();
+
+        /* Paranoid safety check */
+        if (uid_is_system(st.st_uid) || gid_is_system(st.st_gid))
+                return -EPERM;
+
+        *ret_uid = st.st_uid;
+        *ret_gid = st.st_gid;
+
+        return TAKE_FD(inode_fd);
+}
+
+static int bus_set_address_capsule(sd_bus *bus, const char *capsule, const char *suffix, int *ret_pin_fd) {
+        _cleanup_close_ int inode_fd = -EBADF;
+        _cleanup_free_ char *pp = NULL;
+        uid_t uid;
+        gid_t gid;
+        int r;
+
+        assert(bus);
+        assert(capsule);
+        assert(suffix);
+        assert(ret_pin_fd);
+
+        /* Connects to a capsule's user bus. We need to do so under the capsule's UID/GID, otherwise
+         * the service manager might refuse our connection. Hence fake it. */
+
+        r = capsule_name_is_valid(capsule);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -EINVAL;
+
+        inode_fd = pin_capsule_socket(capsule, suffix, &uid, &gid);
+        if (inode_fd < 0)
+                return inode_fd;
+
+        pp = bus_address_escape(FORMAT_PROC_FD_PATH(inode_fd));
+        if (!pp)
+                return -ENOMEM;
+
+        if (asprintf(&bus->address, "unix:path=%s,uid=" UID_FMT ",gid=" GID_FMT, pp, uid, gid) < 0)
+                return -ENOMEM;
+
+        *ret_pin_fd = TAKE_FD(inode_fd); /* This fd must be kept pinned until the connection has been established */
+        return 0;
+}
+
+int bus_set_address_capsule_bus(sd_bus *bus, const char *capsule, int *ret_pin_fd) {
+        return bus_set_address_capsule(bus, capsule, "bus", ret_pin_fd);
+}
+
+int bus_connect_capsule_systemd(const char *capsule, sd_bus **ret_bus) {
+        _cleanup_(sd_bus_close_unrefp) sd_bus *bus = NULL;
+        _cleanup_close_ int inode_fd = -EBADF;
+        int r;
+
+        assert(capsule);
+        assert(ret_bus);
+
+        r = sd_bus_new(&bus);
+        if (r < 0)
+                return r;
+
+        r = bus_set_address_capsule(bus, capsule, "systemd/private", &inode_fd);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_start(bus);
+        if (r < 0)
+                return r;
+
+        *ret_bus = TAKE_PTR(bus);
+        return 0;
+}
+
+int bus_connect_capsule_bus(const char *capsule, sd_bus **ret_bus) {
+        _cleanup_(sd_bus_close_unrefp) sd_bus *bus = NULL;
+        _cleanup_close_ int inode_fd = -EBADF;
+        int r;
+
+        assert(capsule);
+        assert(ret_bus);
+
+        r = sd_bus_new(&bus);
+        if (r < 0)
+                return r;
+
+        r = bus_set_address_capsule_bus(bus, capsule, &inode_fd);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_set_bus_client(bus, true);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_start(bus);
         if (r < 0)
                 return r;
 
@@ -280,12 +423,10 @@ int bus_connect_transport(
         assert(transport < _BUS_TRANSPORT_MAX);
         assert(ret);
 
-        assert_return((transport == BUS_TRANSPORT_LOCAL) == !host, -EINVAL);
-        assert_return(transport != BUS_TRANSPORT_REMOTE || runtime_scope == RUNTIME_SCOPE_SYSTEM, -EOPNOTSUPP);
-
         switch (transport) {
 
         case BUS_TRANSPORT_LOCAL:
+                assert_return(!host, -EINVAL);
 
                 switch (runtime_scope) {
 
@@ -298,6 +439,7 @@ int bus_connect_transport(
                                 /* Print a friendly message when the local system is actually not running systemd as PID 1. */
                                 return log_error_errno(SYNTHETIC_ERRNO(EHOSTDOWN),
                                                        "System has not been booted with systemd as init system (PID 1). Can't operate.");
+
                         r = sd_bus_default_system(&bus);
                         break;
 
@@ -307,11 +449,12 @@ int bus_connect_transport(
                 break;
 
         case BUS_TRANSPORT_REMOTE:
+                assert_return(runtime_scope == RUNTIME_SCOPE_SYSTEM, -EOPNOTSUPP);
+
                 r = sd_bus_open_system_remote(&bus, host);
                 break;
 
         case BUS_TRANSPORT_MACHINE:
-
                 switch (runtime_scope) {
 
                 case RUNTIME_SCOPE_USER:
@@ -328,6 +471,12 @@ int bus_connect_transport(
 
                 break;
 
+        case BUS_TRANSPORT_CAPSULE:
+                assert_return(runtime_scope == RUNTIME_SCOPE_USER, -EINVAL);
+
+                r = bus_connect_capsule_bus(host, &bus);
+                break;
+
         default:
                 assert_not_reached();
         }
@@ -342,28 +491,50 @@ int bus_connect_transport(
         return 0;
 }
 
-int bus_connect_transport_systemd(BusTransport transport, const char *host, RuntimeScope runtime_scope, sd_bus **bus) {
+int bus_connect_transport_systemd(
+                BusTransport transport,
+                const char *host,
+                RuntimeScope runtime_scope,
+                sd_bus **ret_bus) {
+
+        int r;
+
         assert(transport >= 0);
         assert(transport < _BUS_TRANSPORT_MAX);
-        assert(bus);
-
-        assert_return((transport == BUS_TRANSPORT_LOCAL) == !host, -EINVAL);
-        assert_return(transport == BUS_TRANSPORT_LOCAL || runtime_scope == RUNTIME_SCOPE_SYSTEM, -EOPNOTSUPP);
+        assert(ret_bus);
 
         switch (transport) {
 
         case BUS_TRANSPORT_LOCAL:
+                assert_return(!host, -EINVAL);
+
                 switch (runtime_scope) {
 
                 case RUNTIME_SCOPE_USER:
-                        return bus_connect_user_systemd(bus);
+                        r = bus_connect_user_systemd(ret_bus);
+                        /* We used to always fall back to the user session bus if we couldn't connect to the
+                         * private manager bus. To keep compat with existing code that was setting
+                         * DBUS_SESSION_BUS_ADDRESS without setting XDG_RUNTIME_DIR, connect to the user
+                         * session bus if DBUS_SESSION_BUS_ADDRESS is set and XDG_RUNTIME_DIR isn't. */
+                        if (r == -ENOMEDIUM && secure_getenv("DBUS_SESSION_BUS_ADDRESS")) {
+                                log_debug_errno(r, "$XDG_RUNTIME_DIR not set, unable to connect to private bus. Falling back to session bus.");
+                                r = sd_bus_default_user(ret_bus);
+                        }
+
+                        return r;
 
                 case RUNTIME_SCOPE_SYSTEM:
                         if (sd_booted() <= 0)
                                 /* Print a friendly message when the local system is actually not running systemd as PID 1. */
                                 return log_error_errno(SYNTHETIC_ERRNO(EHOSTDOWN),
                                                        "System has not been booted with systemd as init system (PID 1). Can't operate.");
-                        return bus_connect_system_systemd(bus);
+
+                        /* If we are root then let's talk directly to the system instance, instead of
+                         * going via the bus. */
+                        if (geteuid() == 0)
+                                return bus_connect_system_systemd(ret_bus);
+
+                        return sd_bus_default_system(ret_bus);
 
                 default:
                         assert_not_reached();
@@ -372,10 +543,16 @@ int bus_connect_transport_systemd(BusTransport transport, const char *host, Runt
                 break;
 
         case BUS_TRANSPORT_REMOTE:
-                return sd_bus_open_system_remote(bus, host);
+                assert_return(runtime_scope == RUNTIME_SCOPE_SYSTEM, -EOPNOTSUPP);
+                return sd_bus_open_system_remote(ret_bus, host);
 
         case BUS_TRANSPORT_MACHINE:
-                return sd_bus_open_system_machine(bus, host);
+                assert_return(runtime_scope == RUNTIME_SCOPE_SYSTEM, -EOPNOTSUPP);
+                return sd_bus_open_system_machine(ret_bus, host);
+
+        case BUS_TRANSPORT_CAPSULE:
+                assert_return(runtime_scope == RUNTIME_SCOPE_USER, -EINVAL);
+                return bus_connect_capsule_systemd(host, ret_bus);
 
         default:
                 assert_not_reached();
@@ -521,6 +698,27 @@ int bus_track_add_name_many(sd_bus_track *t, char **l) {
         return r;
 }
 
+int bus_track_to_strv(sd_bus_track *t, char ***ret) {
+        _cleanup_strv_free_ char **subscribed = NULL;
+        int r;
+
+        assert(ret);
+
+        for (const char *n = sd_bus_track_first(t); n; n = sd_bus_track_next(t)) {
+                int c = sd_bus_track_count_name(t, n);
+                assert(c >= 0);
+
+                for (int j = 0; j < c; j++) {
+                        r = strv_extend(&subscribed, n);
+                        if (r < 0)
+                                return r;
+                }
+        }
+
+        *ret = TAKE_PTR(subscribed);
+        return 0;
+}
+
 int bus_open_system_watch_bind_with_description(sd_bus **ret, const char *description) {
         _cleanup_(sd_bus_close_unrefp) sd_bus *bus = NULL;
         const char *e;
@@ -626,7 +824,7 @@ static int method_dump_memory_state_by_fd(sd_bus_message *message, void *userdat
         if (r < 0)
                 return r;
 
-        fd = acquire_data_fd(dump, dump_size, 0);
+        fd = acquire_data_fd_full(dump, dump_size, /* flags = */ 0);
         if (fd < 0)
                 return fd;
 
@@ -709,3 +907,84 @@ int bus_property_get_string_set(
 
         return bus_message_append_string_set(reply, *s);
 }
+
+int bus_creds_get_pidref(
+                sd_bus_creds *c,
+                PidRef *ret) {
+
+        int pidfd = -EBADF;
+        pid_t pid;
+        int r;
+
+        assert(c);
+        assert(ret);
+
+        r = sd_bus_creds_get_pid(c, &pid);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_creds_get_pidfd_dup(c, &pidfd);
+        if (r < 0 && r != -ENODATA)
+                return r;
+
+        *ret = (PidRef) {
+                .pid = pid,
+                .fd = pidfd,
+        };
+
+        return 0;
+}
+
+int bus_query_sender_pidref(
+                sd_bus_message *m,
+                PidRef *ret) {
+
+        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
+        int r;
+
+        assert(m);
+        assert(ret);
+
+        r = sd_bus_query_sender_creds(m, SD_BUS_CREDS_PID|SD_BUS_CREDS_PIDFD, &creds);
+        if (r < 0)
+                return r;
+
+        return bus_creds_get_pidref(creds, ret);
+}
+
+int bus_message_read_id128(sd_bus_message *m, sd_id128_t *ret) {
+        const void *a;
+        size_t sz;
+        int r;
+
+        assert(m);
+
+        r = sd_bus_message_read_array(m, 'y', &a, &sz);
+        if (r < 0)
+                return r;
+
+        switch (sz) {
+        case 0:
+                if (ret)
+                        *ret = SD_ID128_NULL;
+                return 0;
+
+        case sizeof(sd_id128_t):
+                if (ret)
+                        memcpy(ret, a, sz);
+                return !memeqzero(a, sz); /* This mimics sd_id128_is_null(), but ret may be NULL,
+                                           * and a may be misaligned, so use memeqzero() here. */
+
+        default:
+                return -EINVAL;
+        }
+}
+
+static const char* const bus_transport_table[] = {
+        [BUS_TRANSPORT_LOCAL]   = "local",
+        [BUS_TRANSPORT_REMOTE]  = "remote",
+        [BUS_TRANSPORT_MACHINE] = "machine",
+        [BUS_TRANSPORT_CAPSULE] = "capsule",
+};
+
+DEFINE_STRING_TABLE_LOOKUP_TO_STRING(bus_transport, BusTransport);

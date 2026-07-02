@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <!--*-nxml-*-->
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 <!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
 <refentry id="sysusers.d" conditional='ENABLE_SYSUSERS'
     xmlns:xi="http://www.w3.org/2001/XInclude">
@@ -22,9 +22,12 @@
   </refnamediv>
 
   <refsynopsisdiv>
-    <para><filename>/etc/sysusers.d/*.conf</filename></para>
-    <para><filename>/run/sysusers.d/*.conf</filename></para>
-    <para><filename>/usr/lib/sysusers.d/*.conf</filename></para>
+    <para><simplelist>
+      <member><filename>/etc/sysusers.d/*.conf</filename></member>
+      <member><filename>/run/sysusers.d/*.conf</filename></member>
+      <member><filename>/usr/local/lib/sysusers.d/*.conf</filename></member>
+      <member><filename>/usr/lib/sysusers.d/*.conf</filename></member>
+    </simplelist></para>
 
     <programlisting>
 #Type Name       ID                  GECOS              Home directory Shell
@@ -90,9 +93,9 @@ r     -          lowest-highest</programlisting>
     field description, home directory, and login shell:</para>
 
     <programlisting>#Type Name     ID             GECOS                 Home directory Shell
-u     httpd    404            "HTTP User"
-u     _authd   /usr/bin/authd "Authorization user"
-u     postgres -              "Postgresql Database" /var/lib/pgsql /usr/libexec/postgresdb
+u!    httpd    404            "HTTP User"
+u!    _authd   /usr/bin/authd "Authorization user"
+u!    postgres -              "Postgresql Database" /var/lib/pgsql /usr/libexec/postgresdb
 g     input    -              -
 m     _authd   input
 u     root     0              "Superuser"           /root          /bin/zsh
@@ -116,7 +119,15 @@ r     -        500-900
           bearing the same name unless the ID field specifies it. The account will be
           created disabled, so that logins are not allowed.</para>
 
-          <xi:include href="version-info.xml" xpointer="v215"/></listitem>
+          <xi:include href="version-info.xml" xpointer="v215"/>
+
+          <para>Type <varname>u</varname> may be suffixed with an exclamation mark (<literal>u!</literal>) to
+          create a fully locked account. This is recommended, since logins should typically not be allowed
+          for system users. With or without the exclamation mark an invalid password is set. For
+          <literal>u!</literal>, the account is also locked, which makes a difference for non-password forms
+          of authentication, such as SSH or similar.</para>
+
+          <xi:include href="version-info.xml" xpointer="v257"/></listitem>
         </varlistentry>
 
         <varlistentry>
@@ -275,6 +286,7 @@ r     -        500-900
           <xi:include href="standard-specifiers.xml" xpointer="m"/>
           <xi:include href="standard-specifiers.xml" xpointer="M"/>
           <xi:include href="standard-specifiers.xml" xpointer="o"/>
+          <xi:include href="standard-specifiers.xml" xpointer="q"/>
           <xi:include href="standard-specifiers.xml" xpointer="T"/>
           <xi:include href="standard-specifiers.xml" xpointer="v"/>
           <xi:include href="standard-specifiers.xml" xpointer="V"/>
@@ -298,10 +310,10 @@ r     -        500-900
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-sysusers</refentrytitle><manvolnum>8</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-sysusers</refentrytitle><manvolnum>8</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
 
 </refentry>

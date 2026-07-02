@@ -12,9 +12,11 @@
 #include "random-util.h"
 #include "resolved-dnssd.h"
 #include "resolved-dns-scope.h"
+#include "resolved-dns-synthesize.h"
 #include "resolved-dns-zone.h"
 #include "resolved-llmnr.h"
 #include "resolved-mdns.h"
+#include "resolved-timeouts.h"
 #include "socket-util.h"
 #include "strv.h"
 
@@ -41,6 +43,9 @@ int dns_scope_new(Manager *m, DnsScope **ret, Link *l, DnsProtocol protocol, int
                 .protocol = protocol,
                 .family = family,
                 .resend_timeout = MULTICAST_RESEND_TIMEOUT_MIN_USEC,
+
+                /* Enforce ratelimiting for the multicast protocols */
+                .ratelimit = { MULTICAST_RATELIMIT_INTERVAL_USEC, MULTICAST_RATELIMIT_BURST },
         };
 
         if (protocol == DNS_PROTOCOL_DNS) {
@@ -69,9 +74,6 @@ int dns_scope_new(Manager *m, DnsScope **ret, Link *l, DnsProtocol protocol, int
         dns_scope_mdns_membership(s, true);
 
         log_debug("New scope on link %s, protocol %s, family %s", l ? l->ifname : "*", dns_protocol_to_string(protocol), family == AF_UNSPEC ? "*" : af_to_name(family));
-
-        /* Enforce ratelimiting for the multicast protocols */
-        s->ratelimit = (const RateLimit) { MULTICAST_RATELIMIT_INTERVAL_USEC, MULTICAST_RATELIMIT_BURST };
 
         *ret = s;
         return 0;
@@ -115,6 +117,8 @@ DnsScope* dns_scope_free(DnsScope *s) {
 
         sd_event_source_disable_unref(s->announce_event_source);
 
+        sd_event_source_disable_unref(s->mdns_goodbye_event_source);
+
         dns_cache_flush(&s->cache);
         dns_zone_flush(&s->zone);
 
@@ -135,23 +139,15 @@ DnsServer *dns_scope_get_dns_server(DnsScope *s) {
 }
 
 unsigned dns_scope_get_n_dns_servers(DnsScope *s) {
-        unsigned n = 0;
-        DnsServer *i;
-
         assert(s);
 
         if (s->protocol != DNS_PROTOCOL_DNS)
                 return 0;
 
         if (s->link)
-                i = s->link->dns_servers;
+                return s->link->n_dns_servers;
         else
-                i = s->manager->dns_servers;
-
-        for (; i; i = i->servers_next)
-                n++;
-
-        return n;
+                return s->manager->n_dns_servers;
 }
 
 void dns_scope_next_dns_server(DnsScope *s, DnsServer *if_current) {
@@ -389,7 +385,7 @@ static int dns_scope_socket(
                 assert(family != AF_UNSPEC);
                 assert(address);
 
-                ifindex = s->link ? s->link->ifindex : 0;
+                ifindex = dns_scope_ifindex(s);
 
                 switch (family) {
                 case AF_INET:
@@ -424,7 +420,15 @@ static int dns_scope_socket(
                         return r;
         }
 
-        if (ifindex != 0) {
+        bool addr_is_nonlocal = s->link &&
+            !manager_find_link_address(s->manager, sa.sa.sa_family, sockaddr_in_addr(&sa.sa)) &&
+            in_addr_is_localhost(sa.sa.sa_family, sockaddr_in_addr(&sa.sa)) == 0;
+
+        if (addr_is_nonlocal && ifindex != 0) {
+                /* As a special exception we don't use UNICAST_IF if we notice that the specified IP address
+                 * is on the local host. Otherwise, destination addresses on the local host result in
+                 * EHOSTUNREACH, since Linux won't send the packets out of the specified interface, but
+                 * delivers them directly to the local socket. */
                 r = socket_set_unicast_if(fd, sa.sa.sa_family, ifindex);
                 if (r < 0)
                         return r;
@@ -463,19 +467,13 @@ static int dns_scope_socket(
         else {
                 bool bound = false;
 
-                /* Let's temporarily bind the socket to the specified ifindex. The kernel currently takes
-                 * only the SO_BINDTODEVICE/SO_BINDTOINDEX ifindex into account when making routing decisions
+                /* Let's temporarily bind the socket to the specified ifindex. Older kernels only take
+                 * the SO_BINDTODEVICE/SO_BINDTOINDEX ifindex into account when making routing decisions
                  * in connect() — and not IP_UNICAST_IF. We don't really want any of the other semantics of
                  * SO_BINDTODEVICE/SO_BINDTOINDEX, hence we immediately unbind the socket after the fact
                  * again.
-                 *
-                 * As a special exception we don't do this if we notice that the specified IP address is on
-                 * the local host. SO_BINDTODEVICE in combination with destination addresses on the local
-                 * host result in EHOSTUNREACH, since Linux won't send the packets out of the specified
-                 * interface, but delivers them directly to the local socket. */
-                if (s->link &&
-                    !manager_find_link_address(s->manager, sa.sa.sa_family, sockaddr_in_addr(&sa.sa)) &&
-                    in_addr_is_localhost(sa.sa.sa_family, sockaddr_in_addr(&sa.sa)) == 0) {
+                 */
+                if (addr_is_nonlocal) {
                         r = socket_bind_to_ifindex(fd, ifindex);
                         if (r < 0)
                                 return r;
@@ -589,18 +587,43 @@ static DnsScopeMatch match_subnet_reverse_lookups(
         return _DNS_SCOPE_MATCH_INVALID;
 }
 
+/* https://www.iana.org/assignments/special-use-domain-names/special-use-domain-names.xhtml */
+/* https://www.iana.org/assignments/locally-served-dns-zones/locally-served-dns-zones.xhtml */
+static bool dns_refuse_special_use_domain(const char *domain, DnsQuestion *question) {
+        /* RFC9462 § 6.4: resolvers SHOULD respond to queries of any type other than SVCB for
+         * _dns.resolver.arpa. with NODATA and queries of any type for any domain name under
+         * resolver.arpa with NODATA. */
+        if (dns_name_equal(domain, "_dns.resolver.arpa") > 0) {
+                DnsResourceKey *t;
+
+                /* Only SVCB is permitted to _dns.resolver.arpa */
+                DNS_QUESTION_FOREACH(t, question)
+                        if (t->type == DNS_TYPE_SVCB)
+                                return false;
+
+                return true;
+        }
+
+        if (dns_name_endswith(domain, "resolver.arpa") > 0)
+                return true;
+
+        return false;
+}
+
 DnsScopeMatch dns_scope_good_domain(
                 DnsScope *s,
-                DnsQuery *q) {
+                DnsQuery *q,
+                uint64_t query_flags) {
 
         DnsQuestion *question;
         const char *domain;
         uint64_t flags;
-        int ifindex;
+        int ifindex, r;
 
         /* This returns the following return values:
          *
          *    DNS_SCOPE_NO         → This scope is not suitable for lookups of this domain, at all
+         *    DNS_SCOPE_LAST_RESORT→ This scope is not suitable, unless we have no alternative
          *    DNS_SCOPE_MAYBE      → This scope is suitable, but only if nothing else wants it
          *    DNS_SCOPE_YES_BASE+n → This scope is suitable, and 'n' suffix labels match
          *
@@ -643,11 +666,24 @@ DnsScopeMatch dns_scope_good_domain(
         if (dns_name_dont_resolve(domain))
                 return DNS_SCOPE_NO;
 
+        /* Avoid asking invalid questions of some special use domains */
+        if (dns_refuse_special_use_domain(domain, question))
+                return DNS_SCOPE_NO;
+
         /* Never go to network for the _gateway, _outbound, _localdnsstub, _localdnsproxy domain — they're something special, synthesized locally. */
         if (is_gateway_hostname(domain) ||
             is_outbound_hostname(domain) ||
             is_dns_stub_hostname(domain) ||
             is_dns_proxy_stub_hostname(domain))
+                return DNS_SCOPE_NO;
+
+        /* Don't look up the local host name via the network, unless user turned of local synthesis of it */
+        if (manager_is_own_hostname(s->manager, domain) && shall_synthesize_own_hostname_rrs())
+                return DNS_SCOPE_NO;
+
+        /* Never send SOA or NS or DNSSEC request to LLMNR, where they make little sense. */
+        r = dns_question_types_suitable_for_protocol(question, s->protocol);
+        if (r <= 0)
                 return DNS_SCOPE_NO;
 
         switch (s->protocol) {
@@ -705,7 +741,8 @@ DnsScopeMatch dns_scope_good_domain(
 
                 /* If ResolveUnicastSingleLabel=yes and the query is single-label, then bump match result
                    to prevent LLMNR monopoly among candidates. */
-                if (s->manager->resolve_unicast_single_label && dns_name_is_single_label(domain))
+                if ((s->manager->resolve_unicast_single_label || (query_flags & SD_RESOLVED_RELAX_SINGLE_LABEL)) &&
+                    dns_name_is_single_label(domain))
                         return DNS_SCOPE_YES_BASE + 1;
 
                 /* Let's return the number of labels in the best matching result */
@@ -733,6 +770,10 @@ DnsScopeMatch dns_scope_good_domain(
                 if (!dns_scope_is_default_route(s))
                         return DNS_SCOPE_NO;
 
+                /* Prefer suitable per-link scopes where possible */
+                if (dns_server_is_fallback(dns_scope_get_dns_server(s)))
+                        return DNS_SCOPE_LAST_RESORT;
+
                 return DNS_SCOPE_MAYBE;
         }
 
@@ -749,7 +790,7 @@ DnsScopeMatch dns_scope_good_domain(
 
                 if ((s->family == AF_INET && dns_name_endswith(domain, "in-addr.arpa") > 0) ||
                     (s->family == AF_INET6 && dns_name_endswith(domain, "ip6.arpa") > 0))
-                        return DNS_SCOPE_MAYBE;
+                        return DNS_SCOPE_LAST_RESORT;
 
                 if ((dns_name_endswith(domain, "local") > 0 && /* only resolve names ending in .local via mDNS */
                      dns_name_equal(domain, "local") == 0 &&   /* but not the single-label "local" name itself */
@@ -772,7 +813,7 @@ DnsScopeMatch dns_scope_good_domain(
 
                 if ((s->family == AF_INET && dns_name_endswith(domain, "in-addr.arpa") > 0) ||
                     (s->family == AF_INET6 && dns_name_endswith(domain, "ip6.arpa") > 0))
-                        return DNS_SCOPE_MAYBE;
+                        return DNS_SCOPE_LAST_RESORT;
 
                 if ((dns_name_is_single_label(domain) && /* only resolve single label names via LLMNR */
                      dns_name_equal(domain, "local") == 0 && /* don't resolve "local" with LLMNR, it's the top-level domain of mDNS after all, see above */
@@ -1334,6 +1375,14 @@ void dns_scope_dump(DnsScope *s, FILE *f) {
                 fputs(af_to_name(s->family), f);
         }
 
+        if (s->protocol == DNS_PROTOCOL_DNS) {
+                fputs(" DNSSEC=", f);
+                fputs(dnssec_mode_to_string(s->dnssec_mode), f);
+
+                fputs(" DNSOverTLS=", f);
+                fputs(dns_over_tls_mode_to_string(s->dns_over_tls_mode), f);
+        }
+
         fputs("]\n", f);
 
         if (!dns_zone_is_empty(&s->zone)) {
@@ -1402,6 +1451,15 @@ int dns_scope_ifindex(DnsScope *s) {
         return 0;
 }
 
+const char* dns_scope_ifname(DnsScope *s) {
+        assert(s);
+
+        if (s->link)
+                return s->link->ifname;
+
+        return NULL;
+}
+
 static int on_announcement_timeout(sd_event_source *s, usec_t usec, void *userdata) {
         DnsScope *scope = userdata;
 
@@ -1459,9 +1517,10 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
                         continue;
                 }
 
-                /* Collect service types for _services._dns-sd._udp.local RRs in a set */
+                /* Collect service types for _services._dns-sd._udp.local RRs in a set. Only two-label names
+                 * (not selective names) are considered according to RFC6763 § 9. */
                 if (!scope->announced &&
-                    dns_resource_key_is_dnssd_ptr(z->rr->key)) {
+                    dns_resource_key_is_dnssd_two_label_ptr(z->rr->key)) {
                         if (!set_contains(types, dns_resource_key_name(z->rr->key))) {
                                 r = set_ensure_put(&types, &dns_name_hash_ops, dns_resource_key_name(z->rr->key));
                                 if (r < 0)
@@ -1557,7 +1616,7 @@ int dns_scope_add_dnssd_services(DnsScope *scope) {
 
         assert(scope);
 
-        if (hashmap_size(scope->manager->dnssd_services) == 0)
+        if (hashmap_isempty(scope->manager->dnssd_services))
                 return 0;
 
         scope->announced = false;
@@ -1568,6 +1627,12 @@ int dns_scope_add_dnssd_services(DnsScope *scope) {
                 r = dns_zone_put(&scope->zone, scope, service->ptr_rr, false);
                 if (r < 0)
                         log_warning_errno(r, "Failed to add PTR record to MDNS zone: %m");
+
+                if (service->sub_ptr_rr) {
+                        r = dns_zone_put(&scope->zone, scope, service->sub_ptr_rr, false);
+                        if (r < 0)
+                                log_warning_errno(r, "Failed to add selective PTR record to MDNS zone: %m");
+                }
 
                 r = dns_zone_put(&scope->zone, scope, service->srv_rr, true);
                 if (r < 0)
@@ -1601,6 +1666,7 @@ int dns_scope_remove_dnssd_services(DnsScope *scope) {
 
         HASHMAP_FOREACH(service, scope->manager->dnssd_services) {
                 dns_zone_remove_rr(&scope->zone, service->ptr_rr);
+                dns_zone_remove_rr(&scope->zone, service->sub_ptr_rr);
                 dns_zone_remove_rr(&scope->zone, service->srv_rr);
                 LIST_FOREACH(items, txt_data, service->txt_data_items)
                         dns_zone_remove_rr(&scope->zone, txt_data->rr);
@@ -1662,8 +1728,8 @@ bool dns_scope_is_default_route(DnsScope *scope) {
         return !dns_scope_has_route_only_domains(scope);
 }
 
-int dns_scope_dump_cache_to_json(DnsScope *scope, JsonVariant **ret) {
-        _cleanup_(json_variant_unrefp) JsonVariant *cache = NULL;
+int dns_scope_dump_cache_to_json(DnsScope *scope, sd_json_variant **ret) {
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *cache = NULL;
         int r;
 
         assert(scope);
@@ -1673,11 +1739,79 @@ int dns_scope_dump_cache_to_json(DnsScope *scope, JsonVariant **ret) {
         if (r < 0)
                 return r;
 
-        return json_build(ret,
-                          JSON_BUILD_OBJECT(
-                                          JSON_BUILD_PAIR_STRING("protocol", dns_protocol_to_string(scope->protocol)),
-                                          JSON_BUILD_PAIR_CONDITION(scope->family != AF_UNSPEC, "family", JSON_BUILD_INTEGER(scope->family)),
-                                          JSON_BUILD_PAIR_CONDITION(scope->link, "ifindex", JSON_BUILD_INTEGER(scope->link ? scope->link->ifindex : 0)),
-                                          JSON_BUILD_PAIR_CONDITION(scope->link, "ifname", JSON_BUILD_STRING(scope->link ? scope->link->ifname : NULL)),
-                                          JSON_BUILD_PAIR_VARIANT("cache", cache)));
+        return sd_json_buildo(
+                        ret,
+                        SD_JSON_BUILD_PAIR_STRING("protocol", dns_protocol_to_string(scope->protocol)),
+                        SD_JSON_BUILD_PAIR_CONDITION(scope->family != AF_UNSPEC, "family", SD_JSON_BUILD_INTEGER(scope->family)),
+                        SD_JSON_BUILD_PAIR_CONDITION(!!scope->link, "ifindex", SD_JSON_BUILD_INTEGER(dns_scope_ifindex(scope))),
+                        SD_JSON_BUILD_PAIR_CONDITION(!!scope->link, "ifname", SD_JSON_BUILD_STRING(dns_scope_ifname(scope))),
+                        SD_JSON_BUILD_PAIR_VARIANT("cache", cache),
+                        SD_JSON_BUILD_PAIR_CONDITION(scope->protocol == DNS_PROTOCOL_DNS,
+                                                     "dnssec",
+                                                     SD_JSON_BUILD_STRING(dnssec_mode_to_string(scope->dnssec_mode))),
+                        SD_JSON_BUILD_PAIR_CONDITION(scope->protocol == DNS_PROTOCOL_DNS,
+                                                     "dnsOverTLS",
+                                                     SD_JSON_BUILD_STRING(dns_over_tls_mode_to_string(scope->dns_over_tls_mode))));
+}
+
+int dns_type_suitable_for_protocol(uint16_t type, DnsProtocol protocol) {
+
+        /* Tests whether it makes sense to route queries for the specified DNS RR types to the specified
+         * protocol. For classic DNS pretty much all RR types are suitable, but for LLMNR/mDNS let's
+         * allowlist only a few that make sense. We use this when routing queries so that we can more quickly
+         * return errors for queries that will almost certainly fail/time out otherwise. For example, this
+         * ensures that SOA, NS, or DS/DNSKEY queries are never routed to mDNS/LLMNR where they simply make
+         * no sense. */
+
+        if (dns_type_is_obsolete(type))
+                return false;
+
+        if (!dns_type_is_valid_query(type))
+                return false;
+
+        switch (protocol) {
+
+        case DNS_PROTOCOL_DNS:
+                return true;
+
+        case DNS_PROTOCOL_LLMNR:
+                return IN_SET(type,
+                              DNS_TYPE_ANY,
+                              DNS_TYPE_A,
+                              DNS_TYPE_AAAA,
+                              DNS_TYPE_CNAME,
+                              DNS_TYPE_PTR,
+                              DNS_TYPE_TXT);
+
+        case DNS_PROTOCOL_MDNS:
+                return IN_SET(type,
+                              DNS_TYPE_ANY,
+                              DNS_TYPE_A,
+                              DNS_TYPE_AAAA,
+                              DNS_TYPE_CNAME,
+                              DNS_TYPE_PTR,
+                              DNS_TYPE_TXT,
+                              DNS_TYPE_SRV,
+                              DNS_TYPE_NSEC,
+                              DNS_TYPE_HINFO);
+
+        default:
+                return -EPROTONOSUPPORT;
+        }
+}
+
+int dns_question_types_suitable_for_protocol(DnsQuestion *q, DnsProtocol protocol) {
+        DnsResourceKey *key;
+        int r;
+
+        /* Tests whether the types in the specified question make any sense to be routed to the specified
+         * protocol, i.e. if dns_type_suitable_for_protocol() is true for any of the contained RR types */
+
+        DNS_QUESTION_FOREACH(key, q) {
+                r = dns_type_suitable_for_protocol(key->type, protocol);
+                if (r != 0)
+                        return r;
+        }
+
+        return false;
 }

@@ -1,6 +1,5 @@
 ---
-# vi:ts=2 sw=2 et:
-#
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Docs: https://packit.dev/docs/
 
 specfile_path: .packit_rpm/systemd.spec
@@ -8,32 +7,23 @@ files_to_sync:
   - .packit.yml
   - src: .packit_rpm/systemd.spec
     dest: systemd.spec
-upstream_package_name: systemd
-downstream_package_name: systemd
 # `git describe` returns in systemd's case 'v245-xxx' which breaks RPM version
 # detection (that expects 245-xxxx'). Let's tweak the version string accordingly
 upstream_tag_template: "v{version}"
 srpm_build_deps: []
 
 actions:
+  get-current-version:
+    - cat meson.version
+
   post-upstream-clone:
     # Use the Fedora Rawhide specfile
-    - "git clone https://src.fedoraproject.org/rpms/systemd .packit_rpm --depth=1"
-    # Drop the "sources" file so rebase-helper doesn't think we're a dist-git
-    - "rm -fv .packit_rpm/sources"
-    # Drop backported patches from the specfile, but keep the downstream-only ones
-    # - Patch(0000-0499): backported patches from upstream
-    # - Patch0500-9999: downstream-only patches
-    - "sed -ri '/^Patch(0[0-4]?[0-9]{0,2})?\\:.+\\.patch/d' .packit_rpm/systemd.spec"
-    # Build the RPM with --werror. Even though --werror doesn't work in all
-    # cases (see [0]), we can't use -Dc_args=/-Dcpp_args= here because of the
-    # RPM hardening macros, that use $CFLAGS/$CPPFLAGS (see [1]).
-    #
-    # [0] https://github.com/mesonbuild/meson/issues/7360
-    # [1] https://github.com/systemd/systemd/pull/18908#issuecomment-792250110
-    - 'sed -i "/^CONFIGURE_OPTS=(/a--werror" .packit_rpm/systemd.spec'
-    # Ignore unpackages standalone binaries
-    - "sed -i 's/assert False,.*/pass/' .packit_rpm/split-files.py"
+    - git clone https://src.fedoraproject.org/rpms/systemd .packit_rpm
+    - bash -c 'git -C .packit_rpm checkout "$(grep GIT_COMMIT= mkosi/mkosi.conf.d/centos-fedora/mkosi.conf.d/pkgenv.conf | cut -d= -f2)"'
+    - bash -c 'echo "%bcond upstream 1" > .packit_rpm/systemd.spec.new'
+    - bash -c 'echo "%define meson_extra_configure_options --werror" >> .packit_rpm/systemd.spec.new'
+    - bash -c 'cat .packit_rpm/systemd.spec >> .packit_rpm/systemd.spec.new'
+    - mv .packit_rpm/systemd.spec.new .packit_rpm/systemd.spec
 
 jobs:
 - job: copr_build
@@ -47,8 +37,17 @@ jobs:
 
 - job: tests
   trigger: pull_request
-  fmf_url: https://src.fedoraproject.org/tests/systemd
-  fmf_ref: main
-  tmt_plan: ci
+  fmf_url: https://src.fedoraproject.org/rpms/systemd
+  # This is automatically updated by tools/fetch-distro.py --update fedora
+  fmf_ref: 08ce156d74460867657fb9b201c8be93d31e07de
   targets:
   - fedora-rawhide-x86_64
+  # testing-farm in the Fedora repository is explicitly configured to use testing-farm bare metal runners as
+  # the volume of pull requests there is very low. Upstream the volume of pull requests is much higher and
+  # we'll bottleneck ourselves if we insist on bare metal runners, so explicitly do not request support for
+  # nested virtualization so we don't only consider bare metal runners.
+  tf_extra_params:
+    environments:
+      - hardware:
+          virtualization:
+            is-supported: false

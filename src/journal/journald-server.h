@@ -5,6 +5,7 @@
 #include <sys/types.h>
 
 #include "sd-event.h"
+#include "sd-varlink.h"
 
 typedef struct Server Server;
 
@@ -13,13 +14,12 @@ typedef struct Server Server;
 #include "hashmap.h"
 #include "journal-file.h"
 #include "journald-context.h"
-#include "journald-rate-limit.h"
 #include "journald-stream.h"
 #include "list.h"
 #include "prioq.h"
 #include "ratelimit.h"
+#include "socket-util.h"
 #include "time-util.h"
-#include "varlink.h"
 
 typedef enum Storage {
         STORAGE_AUTO,
@@ -78,6 +78,7 @@ struct Server {
         int audit_fd;
         int hostname_fd;
         int notify_fd;
+        int forward_socket_fd;
 
         sd_event *event;
 
@@ -106,7 +107,7 @@ struct Server {
 
         char *buffer;
 
-        JournalRateLimit *ratelimit;
+        OrderedHashmap *ratelimit_groups_by_id;
         usec_t sync_interval_usec;
         usec_t ratelimit_interval;
         unsigned ratelimit_burst;
@@ -123,6 +124,7 @@ struct Server {
         bool forward_to_syslog;
         bool forward_to_console;
         bool forward_to_wall;
+        SocketAddress forward_to_socket;
 
         unsigned n_forward_syslog_missed;
         usec_t last_warn_forward_syslog_missed;
@@ -142,6 +144,7 @@ struct Server {
         int max_level_kmsg;
         int max_level_console;
         int max_level_wall;
+        int max_level_socket;
 
         Storage storage;
         SplitMode split_mode;
@@ -158,8 +161,8 @@ struct Server {
         bool sent_notify_ready:1;
         bool sync_scheduled:1;
 
-        char machine_id_field[sizeof("_MACHINE_ID=") + 32];
-        char boot_id_field[sizeof("_BOOT_ID=") + 32];
+        char machine_id_field[STRLEN("_MACHINE_ID=") + SD_ID128_STRING_MAX];
+        char boot_id_field[STRLEN("_BOOT_ID=") + SD_ID128_STRING_MAX];
         char *hostname_field;
         char *namespace_field;
         char *runtime_directory;
@@ -182,7 +185,7 @@ struct Server {
         ClientContext *my_context; /* the context of journald itself */
         ClientContext *pid1_context; /* the context of PID 1 */
 
-        VarlinkServer *varlink_server;
+        sd_varlink_server *varlink_server;
 };
 
 #define SERVER_MACHINE_ID(s) ((s)->machine_id_field + STRLEN("_MACHINE_ID="))
@@ -214,28 +217,27 @@ const struct ConfigPerfItem* journald_gperf_lookup(const char *key, GPERF_LEN_TY
 CONFIG_PARSER_PROTOTYPE(config_parse_storage);
 CONFIG_PARSER_PROTOTYPE(config_parse_line_max);
 CONFIG_PARSER_PROTOTYPE(config_parse_compress);
+CONFIG_PARSER_PROTOTYPE(config_parse_forward_to_socket);
 
-const char *storage_to_string(Storage s) _const_;
+const char* storage_to_string(Storage s) _const_;
 Storage storage_from_string(const char *s) _pure_;
 
 CONFIG_PARSER_PROTOTYPE(config_parse_split_mode);
 
-const char *split_mode_to_string(SplitMode s) _const_;
+const char* split_mode_to_string(SplitMode s) _const_;
 SplitMode split_mode_from_string(const char *s) _pure_;
 
+int server_new(Server **ret);
 int server_init(Server *s, const char *namespace);
-void server_done(Server *s);
-void server_sync(Server *s);
+Server* server_free(Server *s);
+DEFINE_TRIVIAL_CLEANUP_FUNC(Server*, server_free);
 void server_vacuum(Server *s, bool verbose);
 void server_rotate(Server *s);
-int server_schedule_sync(Server *s, int priority);
 int server_flush_to_var(Server *s, bool require_flag_file);
 void server_maybe_append_tags(Server *s);
 int server_process_datagram(sd_event_source *es, int fd, uint32_t revents, void *userdata);
 void server_space_usage_message(Server *s, JournalStorage *storage);
 
 int server_start_or_stop_idle_timer(Server *s);
-int server_refresh_idle_timer(Server *s);
 
 int server_map_seqnum_file(Server *s, const char *fname, size_t size, void **ret);
-void server_unmap_seqnum_file(void *p, size_t size);

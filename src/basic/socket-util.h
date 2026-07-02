@@ -2,15 +2,16 @@
 #pragma once
 
 #include <inttypes.h>
-#include <linux/netlink.h>
 #include <linux/if_ether.h>
 #include <linux/if_infiniband.h>
 #include <linux/if_packet.h>
+#include <linux/netlink.h>
+#include <sys/socket.h> /* linux/vms_sockets.h requires 'struct sockaddr' */
+#include <linux/vm_sockets.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
 
@@ -28,7 +29,7 @@ union sockaddr_union {
         /* The libc provided version that allocates "enough room" for every protocol */
         struct sockaddr_storage storage;
 
-        /* Protoctol-specific implementations */
+        /* Protocol-specific implementations */
         struct sockaddr_in in;
         struct sockaddr_in6 in6;
         struct sockaddr_un un;
@@ -113,7 +114,7 @@ int sockaddr_pretty(const struct sockaddr *_sa, socklen_t salen, bool translate_
 int getpeername_pretty(int fd, bool include_port, char **ret);
 int getsockname_pretty(int fd, char **ret);
 
-int socknameinfo_pretty(union sockaddr_union *sa, socklen_t salen, char **_ret);
+int socknameinfo_pretty(const struct sockaddr *sa, socklen_t salen, char **_ret);
 
 const char* socket_address_bind_ipv6_only_to_string(SocketAddressBindIPv6Only b) _const_;
 SocketAddressBindIPv6Only socket_address_bind_ipv6_only_from_string(const char *s) _pure_;
@@ -152,6 +153,7 @@ bool address_label_valid(const char *p);
 int getpeercred(int fd, struct ucred *ucred);
 int getpeersec(int fd, char **ret);
 int getpeergroups(int fd, gid_t **ret);
+int getpeerpidfd(int fd);
 
 ssize_t send_many_fds_iov_sa(
                 int transport_fd,
@@ -195,6 +197,7 @@ int receive_many_fds(int transport_fd, int **ret_fds_array, size_t *ret_n_fds_ar
 ssize_t next_datagram_size_fd(int fd);
 
 int flush_accept(int fd);
+ssize_t flush_mqueue(int fd);
 
 #define CMSG_FOREACH(cmsg, mh)                                          \
         for ((cmsg) = CMSG_FIRSTHDR(mh); (cmsg); (cmsg) = CMSG_NXTHDR((mh), (cmsg)))
@@ -318,27 +321,14 @@ static inline int getsockopt_int(int fd, int level, int optname, int *ret) {
 int socket_bind_to_ifname(int fd, const char *ifname);
 int socket_bind_to_ifindex(int fd, int ifindex);
 
-/* Define a 64-bit version of timeval/timespec in any case, even on 32-bit userspace. */
-struct timeval_large {
-        uint64_t tvl_sec, tvl_usec;
-};
-struct timespec_large {
-        uint64_t tvl_sec, tvl_nsec;
-};
 
 /* glibc duplicates timespec/timeval on certain 32-bit arches, once in 32-bit and once in 64-bit.
  * See __convert_scm_timestamps() in glibc source code. Hence, we need additional buffer space for them
- * to prevent from recvmsg_safe() returning -EXFULL. */
+ * to prevent truncating control msg (recvmsg() MSG_CTRUNC). */
 #define CMSG_SPACE_TIMEVAL                                              \
-        ((sizeof(struct timeval) == sizeof(struct timeval_large)) ?     \
-         CMSG_SPACE(sizeof(struct timeval)) :                           \
-         CMSG_SPACE(sizeof(struct timeval)) +                           \
-         CMSG_SPACE(sizeof(struct timeval_large)))
+        (CMSG_SPACE(sizeof(struct timeval)) + CMSG_SPACE(2 * sizeof(uint64_t)))
 #define CMSG_SPACE_TIMESPEC                                             \
-        ((sizeof(struct timespec) == sizeof(struct timespec_large)) ?   \
-         CMSG_SPACE(sizeof(struct timespec)) :                          \
-         CMSG_SPACE(sizeof(struct timespec)) +                          \
-         CMSG_SPACE(sizeof(struct timespec_large)))
+        (CMSG_SPACE(sizeof(struct timespec)) + CMSG_SPACE(2 * sizeof(uint64_t)))
 
 ssize_t recvmsg_safe(int sockfd, struct msghdr *msg, int flags);
 
@@ -373,6 +363,14 @@ int socket_get_mtu(int fd, int af, size_t *ret);
 
 int connect_unix_path(int fd, int dir_fd, const char *path);
 
+static inline bool VSOCK_CID_IS_REGULAR(unsigned cid) {
+        /* 0, 1, 2, UINT32_MAX are special, refuse those */
+        return cid > 2 && cid < UINT32_MAX;
+}
+
+int vsock_parse_port(const char *s, unsigned *ret);
+int vsock_parse_cid(const char *s, unsigned *ret);
+
 /* Parses AF_UNIX and AF_VSOCK addresses. AF_INET[6] require some netlink calls, so it cannot be in
  * src/basic/ and is done from 'socket_local_address from src/shared/. Return -EPROTO in case of
  * protocol mismatch. */
@@ -380,8 +378,12 @@ int socket_address_parse_unix(SocketAddress *ret_address, const char *s);
 int socket_address_parse_vsock(SocketAddress *ret_address, const char *s);
 
 /* libc's SOMAXCONN is defined to 128 or 4096 (at least on glibc). But actually, the value can be much
- * larger. In our codebase we want to set it to the max usually, since noawadays socket memory is properly
+ * larger. In our codebase we want to set it to the max usually, since nowadays socket memory is properly
  * tracked by memcg, and hence we don't need to enforce extra limits here. Moreover, the kernel caps it to
  * /proc/sys/net/core/somaxconn anyway, thus by setting this to unbounded we just make that sysctl file
  * authoritative. */
 #define SOMAXCONN_DELUXE INT_MAX
+
+int vsock_get_local_cid(unsigned *ret);
+
+int netlink_socket_get_multicast_groups(int fd, size_t *ret_len, uint32_t **ret_groups);

@@ -148,7 +148,7 @@ DEFINE_TRIVIAL_REF_UNREF_FUNC(sd_netlink, sd_netlink, netlink_free);
 int sd_netlink_send(
                 sd_netlink *nl,
                 sd_netlink_message *message,
-                uint32_t *serial) {
+                uint32_t *ret_serial) {
 
         int r;
 
@@ -163,8 +163,8 @@ int sd_netlink_send(
         if (r < 0)
                 return r;
 
-        if (serial)
-                *serial = message_get_serial(message);
+        if (ret_serial)
+                *ret_serial = message_get_serial(message);
 
         return 1;
 }
@@ -176,7 +176,7 @@ static int dispatch_rqueue(sd_netlink *nl, sd_netlink_message **ret) {
         assert(nl);
         assert(ret);
 
-        if (ordered_set_size(nl->rqueue) <= 0) {
+        if (ordered_set_isempty(nl->rqueue)) {
                 /* Try to read a new message */
                 r = socket_read_message(nl);
                 if (r == -ENOBUFS) /* FIXME: ignore buffer overruns for now */
@@ -234,7 +234,6 @@ static int process_timeout(sd_netlink *nl) {
 
 static int process_reply(sd_netlink *nl, sd_netlink_message *m) {
         struct reply_callback *c;
-        sd_netlink_slot *slot;
         uint32_t serial;
         uint16_t type;
         int r;
@@ -257,7 +256,8 @@ static int process_reply(sd_netlink *nl, sd_netlink_message *m) {
         if (type == NLMSG_DONE)
                 m = NULL;
 
-        slot = container_of(c, sd_netlink_slot, reply_callback);
+        _cleanup_(sd_netlink_slot_unrefp) sd_netlink_slot *slot =
+                sd_netlink_slot_ref(container_of(c, sd_netlink_slot, reply_callback));
 
         r = c->callback(nl, m, slot->userdata);
         if (r < 0)
@@ -443,7 +443,7 @@ int sd_netlink_wait(sd_netlink *nl, uint64_t timeout_usec) {
         assert_return(nl, -EINVAL);
         assert_return(!netlink_pid_changed(nl), -ECHILD);
 
-        if (ordered_set_size(nl->rqueue) > 0)
+        if (!ordered_set_isempty(nl->rqueue))
                 return 0;
 
         r = netlink_poll(nl, false, timeout_usec);
@@ -623,28 +623,28 @@ int sd_netlink_get_events(sd_netlink *nl) {
         assert_return(nl, -EINVAL);
         assert_return(!netlink_pid_changed(nl), -ECHILD);
 
-        return ordered_set_size(nl->rqueue) == 0 ? POLLIN : 0;
+        return ordered_set_isempty(nl->rqueue) ? POLLIN : 0;
 }
 
-int sd_netlink_get_timeout(sd_netlink *nl, uint64_t *timeout_usec) {
+int sd_netlink_get_timeout(sd_netlink *nl, uint64_t *ret) {
         struct reply_callback *c;
 
         assert_return(nl, -EINVAL);
-        assert_return(timeout_usec, -EINVAL);
+        assert_return(ret, -EINVAL);
         assert_return(!netlink_pid_changed(nl), -ECHILD);
 
-        if (ordered_set_size(nl->rqueue) > 0) {
-                *timeout_usec = 0;
+        if (!ordered_set_isempty(nl->rqueue)) {
+                *ret = 0;
                 return 1;
         }
 
         c = prioq_peek(nl->reply_callbacks_prioq);
         if (!c) {
-                *timeout_usec = UINT64_MAX;
+                *ret = UINT64_MAX;
                 return 0;
         }
 
-        *timeout_usec = c->timeout;
+        *ret = c->timeout;
         return 1;
 }
 

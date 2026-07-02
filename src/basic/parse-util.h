@@ -16,7 +16,7 @@ int parse_tristate_full(const char *v, const char *third, int *ret);
 static inline int parse_tristate(const char *v, int *ret) {
         return parse_tristate_full(v, NULL, ret);
 }
-int parse_pid(const char *s, pid_t* ret_pid);
+int parse_pid(const char *s, pid_t *ret);
 int parse_mode(const char *s, mode_t *ret);
 int parse_ifindex(const char *s);
 int parse_mtu(int family, const char *s, uint32_t *ret);
@@ -139,9 +139,7 @@ int parse_fractional_part_u(const char **s, size_t digits, unsigned *res);
 int parse_nice(const char *p, int *ret);
 
 int parse_ip_port(const char *s, uint16_t *ret);
-int parse_ip_port_range(const char *s, uint16_t *low, uint16_t *high);
-
-int parse_ip_prefix_length(const char *s, int *ret);
+int parse_ip_port_range(const char *s, uint16_t *low, uint16_t *high, bool allow_zero);
 
 int parse_oom_score_adjust(const char *s, int *ret);
 

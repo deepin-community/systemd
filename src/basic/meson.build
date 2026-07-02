@@ -10,16 +10,19 @@ basic_sources = files(
         'audit-util.c',
         'btrfs.c',
         'build.c',
+        'build-path.c',
         'bus-label.c',
         'cap-list.c',
         'capability-util.c',
         'cgroup-util.c',
         'chase.c',
         'chattr-util.c',
+        'compress.c',
         'conf-files.c',
         'confidential-virt.c',
         'devnum-util.c',
         'dirent-util.c',
+        'dlfcn-util.c',
         'efivars.c',
         'env-file.c',
         'env-util.c',
@@ -30,8 +33,10 @@ basic_sources = files(
         'fd-util.c',
         'fileio.c',
         'filesystems.c',
+        'format-ifname.c',
         'format-util.c',
         'fs-util.c',
+        'gcrypt-util.c',
         'glob-util.c',
         'glyph-util.c',
         'gunicode.c',
@@ -53,6 +58,7 @@ basic_sources = files(
         'lock-util.c',
         'log.c',
         'login-util.c',
+        'keyring-util.c',
         'memfd-util.c',
         'memory-util.c',
         'mempool.c',
@@ -64,7 +70,6 @@ basic_sources = files(
         'ordered-set.c',
         'os-util.c',
         'parse-util.c',
-        'path-lookup.c',
         'path-util.c',
         'percent-util.c',
         'pidref.c',
@@ -79,6 +84,7 @@ basic_sources = files(
         'replace-var.c',
         'rlimit-util.c',
         'runtime-scope.c',
+        'sha256.c',
         'sigbus.c',
         'signal-util.c',
         'siphash24.c',
@@ -96,10 +102,9 @@ basic_sources = files(
         'terminal-util.c',
         'time-util.c',
         'tmpfile-util.c',
-        'uid-alloc-range.c',
+        'uid-classification.c',
         'uid-range.c',
         'unit-def.c',
-        'unit-file.c',
         'unit-name.c',
         'user-util.c',
         'utf8.c',
@@ -116,28 +121,24 @@ basic_sources += missing_syscall_def_h
 
 generate_af_list = find_program('generate-af-list.sh')
 af_list_txt = custom_target(
-        'af-list.txt',
         output : 'af-list.txt',
         command : [generate_af_list, cpp, config_h, missing_socket_h],
         capture : true)
 
 generate_arphrd_list = find_program('generate-arphrd-list.sh')
 arphrd_list_txt = custom_target(
-        'arphrd-list.txt',
         output : 'arphrd-list.txt',
-        command : [generate_arphrd_list, cpp, config_h],
+        command : [generate_arphrd_list, cpp, files('linux/if_arp.h'), config_h],
         capture : true)
 
 generate_cap_list = find_program('generate-cap-list.sh')
 cap_list_txt = custom_target(
-        'cap-list.txt',
         output : 'cap-list.txt',
         command : [generate_cap_list, cpp, config_h, missing_capability_h],
         capture : true)
 
 generate_errno_list = find_program('generate-errno-list.sh')
 errno_list_txt = custom_target(
-        'errno-list.txt',
         output : 'errno-list.txt',
         command : [generate_errno_list, cpp],
         capture : true)
@@ -150,7 +151,6 @@ foreach item : [['af',     af_list_txt,     'af',         ''],
 
         fname = '@0@-from-name.gperf'.format(item[0])
         gperf_file = custom_target(
-                fname,
                 input : item[1],
                 output : fname,
                 command : [generate_gperfs, item[2], item[3], '@INPUT@'],
@@ -158,7 +158,6 @@ foreach item : [['af',     af_list_txt,     'af',         ''],
 
         fname = '@0@-from-name.h'.format(item[0])
         target1 = custom_target(
-                fname,
                 input : gperf_file,
                 output : fname,
                 command : [gperf,
@@ -172,7 +171,6 @@ foreach item : [['af',     af_list_txt,     'af',         ''],
         fname = '@0@-to-name.h'.format(item[0])
         awkscript = '@0@-to-name.awk'.format(item[0])
         target2 = custom_target(
-                fname,
                 input : [awkscript, item[1]],
                 output : fname,
                 command : [awk, '-f', '@INPUT0@', '@INPUT1@'],
@@ -202,6 +200,7 @@ arch_list = [
         'powerpc64',
         'riscv32',
         'riscv64',
+        'sh',
         's390',
         's390x',
         'sparc',
@@ -229,17 +228,18 @@ run_target(
 
 ############################################################
 
-filesystem_includes = ['linux/magic.h',
-                       'linux/gfs2_ondisk.h']
+filesystem_includes = files(
+        'linux/magic.h',
+        'missing_magic.h',
+)
 
 check_filesystems = find_program('check-filesystems.sh')
 r = run_command([check_filesystems, cpp, files('filesystems-gperf.gperf')] + filesystem_includes, check: false)
 if r.returncode() != 0
-        error('Unknown filesystems defined in kernel headers:\n\n' + r.stdout())
+        warning('Unknown filesystems defined in kernel headers:\n\n' + r.stdout())
 endif
 
 filesystems_gperf_h = custom_target(
-        'filesystems-gperf.h',
         input : 'filesystems-gperf.gperf',
         output : 'filesystems-gperf.h',
         command : [gperf, '@INPUT@', '--output-file', '@OUTPUT@'])
@@ -247,7 +247,6 @@ filesystems_gperf_h = custom_target(
 generate_filesystem_list = find_program('generate-filesystem-list.py')
 fname = 'filesystem-list.h'
 filesystem_list_h = custom_target(
-        fname,
         input : 'filesystems-gperf.gperf',
         output : fname,
         command : [generate_filesystem_list,
@@ -257,7 +256,6 @@ filesystem_list_h = custom_target(
 generate_filesystem_switch_case_h = find_program('generate-filesystem-switch-case.py')
 fname = 'filesystem-switch-case.h'
 filesystem_switch_case_h = custom_target(
-        fname,
         input : 'filesystems-gperf.gperf',
         output : 'filesystem-switch-case.h',
         command : [generate_filesystem_switch_case_h,
@@ -266,51 +264,20 @@ filesystem_switch_case_h = custom_target(
 
 basic_sources += [filesystem_list_h, filesystem_switch_case_h, filesystems_gperf_h]
 
-libbasic = static_library(
+libbasic_static = static_library(
         'basic',
         basic_sources,
         fundamental_sources,
         include_directories : basic_includes,
         dependencies : [libcap,
+                        libdl,
+                        libgcrypt_cflags,
+                        liblz4_cflags,
                         libm,
                         librt,
+                        libxz_cflags,
+                        libzstd_cflags,
                         threads,
-                        userspace],
-        c_args : ['-fvisibility=default'],
-        build_by_default : false)
-
-############################################################
-
-basic_gcrypt_sources = files(
-        'gcrypt-util.c',
-)
-
-# A convenience library that is separate from libbasic to avoid
-# unnecessary linking to libgcrypt.
-libbasic_gcrypt = static_library(
-        'basic-gcrypt',
-        basic_gcrypt_sources,
-        include_directories : basic_includes,
-        dependencies : [libgcrypt,
-                        userspace],
-        c_args : ['-fvisibility=default'],
-        build_by_default : false)
-
-############################################################
-
-basic_compress_sources = files(
-        'compress.c',
-)
-
-# A convenience library that is separate from libbasic to avoid unnecessary
-# linking to the compression libraries.
-libbasic_compress = static_library(
-        'basic-compress',
-        basic_compress_sources,
-        include_directories : basic_includes,
-        dependencies : [liblz4,
-                        libxz,
-                        libzstd,
                         userspace],
         c_args : ['-fvisibility=default'],
         build_by_default : false)

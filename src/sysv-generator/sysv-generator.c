@@ -763,12 +763,13 @@ static int enumerate_sysv(const LookupPaths *lp, Hashmap *all_services) {
                                 return log_oom();
 
                         log_struct(LOG_WARNING,
-                                   LOG_MESSAGE("SysV service '%s' lacks a native systemd unit file. "
-                                               "%s Automatically generating a unit file for compatibility. Please update package to include a native systemd unit file, in order to make it safe, robust and future-proof. "
+                                   LOG_MESSAGE("SysV service '%s' lacks a native systemd unit file, "
+                                               "automatically generating a unit file for compatibility.\n"
+                                               "Please update package to include a native systemd unit file.\n"
                                                "%s This compatibility logic is deprecated, expect removal soon. %s",
                                                fpath,
-                                               special_glyph(SPECIAL_GLYPH_RECYCLING),
-                                               special_glyph(SPECIAL_GLYPH_WARNING_SIGN), special_glyph(SPECIAL_GLYPH_WARNING_SIGN)),
+                                               special_glyph(SPECIAL_GLYPH_WARNING_SIGN),
+                                               special_glyph(SPECIAL_GLYPH_WARNING_SIGN)),
                                    "MESSAGE_ID=" SD_MESSAGE_SYSV_GENERATOR_DEPRECATED_STR,
                                    "SYSVSCRIPT=%s", fpath,
                                    "UNIT=%s", name);
@@ -807,7 +808,7 @@ static int set_dependencies_from_rcnd(const LookupPaths *lp, Hashmap *all_servic
                 return r;
 
         STRV_FOREACH(p, sysvrcnd_path)
-                for (unsigned i = 0; i < ELEMENTSOF(rcnd_table); i ++) {
+                for (unsigned i = 0; i < ELEMENTSOF(rcnd_table); i++) {
                         _cleanup_closedir_ DIR *d = NULL;
                         _cleanup_free_ char *path = NULL;
 
@@ -894,7 +895,7 @@ finish:
 
 static int run(const char *dest, const char *dest_early, const char *dest_late) {
         _cleanup_(free_sysvstub_hashmapp) Hashmap *all_services = NULL;
-        _cleanup_(lookup_paths_free) LookupPaths lp = {};
+        _cleanup_(lookup_paths_done) LookupPaths lp = {};
         SysvStub *service;
         int r;
 

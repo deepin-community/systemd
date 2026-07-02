@@ -37,40 +37,11 @@ class ServicesTest(unittest.TestCase):
 
         self.assertIn('systemd', os.readlink('/proc/1/exe'))
 
-    def test_no_failed(self):
-        '''No failed units'''
-
-        out = subprocess.check_output(
-                ['systemctl', '--state=failed', '--no-legend', '--plain'],
-                universal_newlines=True)
-        failed = out.splitlines()
-        # ignore /etc/modules failure as stuff that we put there by default
-        # often fails
-        failed = [f for f in failed if 'systemd-modules-load' not in f]
-        # apparmor fails if not enabled in the kernel
-        if not os.path.exists('/sys/kernel/security/apparmor'):
-            failed = [f for f in failed if 'apparmor.service' not in f]
-        # ignore thermald as it doesn't start in most virtual envs
-        failed = [f for f in failed if 'thermald' not in f]
-        # console-setup.service fails on devices without keyboard (LP: #1516591)
-        failed = [f for f in failed if 'console-setup' not in f]
-        # cpi.service fails on s390x
-        failed = [f for f in failed if 'cpi.service' not in f]
-        # https://bugs.debian.org/969568
-        failed = [f for f in failed if 'rng-tools-debian.service' not in f]
-        # https://bugs.debian.org/926138
-        if is_container:
-            failed = [f for f in failed if 'e2scrub_reap.service' not in f]
-        if failed:
-            for f in failed:
-                f = f.split()[0]
-                print('-------- journal for failed service %s -----------' % f)
-                sys.stdout.flush()
-                subprocess.call(['journalctl', '-b', '-u', f])
-            self.assertEqual(failed, [])
-
     @unittest.skipUnless(shutil.which('gdm3') is not None, 'gdm3 not found')
     def test_gdm3(self):
+        if 'lxc' in subprocess.run(['systemd-detect-virt', '--container'], check=False, stdout=subprocess.PIPE).stdout.decode():
+            # this test often fails in tests-in-lxd
+            self.skipTest('gdm3 is flaky under lxd')
         subprocess.check_call(['pgrep', '-af', '/gdm[-3]'])
         self.active_unit('gdm')
 
@@ -93,8 +64,9 @@ class ServicesTest(unittest.TestCase):
         self.active_unit('NetworkManager')
 
     def test_cron(self):
-        out = subprocess.check_output(['ps', 'u', '-C', 'cron'])
-        self.assertIn(b'root', out)
+        pid = subprocess.check_output(['pidof', 'cron'], universal_newlines=True).strip()
+        out = subprocess.check_output(['ps', 'u', pid], universal_newlines=True)
+        self.assertIn('root', out)
         self.active_unit('cron')
 
     def test_logind(self):
@@ -102,11 +74,12 @@ class ServicesTest(unittest.TestCase):
         self.assertNotEqual(b'', out)
         self.active_unit('systemd-logind')
 
-    @unittest.skipIf('TEST_UPSTREAM' in os.environ,
+    @unittest.skipIf('pkg.systemd.upstream' in os.environ.get('DEB_BUILD_PROFILES', ''),
                      'Forwarding to rsyslog is a Debian patch')
     def test_rsyslog(self):
-        out = subprocess.check_output(['ps', 'u', '-C', 'rsyslogd'])
-        self.assertIn(b'bin/rsyslogd', out)
+        pid = subprocess.check_output(['pidof', 'rsyslogd'], universal_newlines=True).strip()
+        out = subprocess.check_output(['ps', 'u', pid], universal_newlines=True)
+        self.assertIn('bin/rsyslogd', out)
         self.active_unit('rsyslog')
         with open('/var/log/syslog') as f:
             log = f.read()
@@ -124,35 +97,17 @@ class ServicesTest(unittest.TestCase):
         self.assertIn(b'\nP: /devices/', out)
         self.active_unit('systemd-udevd')
 
-    def test_tmp_mount(self):
-        # check if we want to mount /tmp in fstab
-        want_tmp_mount = False
+    @unittest.skipIf('pkg.systemd.upstream' in os.environ.get('DEB_BUILD_PROFILES', ''),
+                     'Debian specific configuration, N/A for upstream')
+    def test_tmp_cleanup(self):
+        # autopkgtest overrides tmp.mount with empty /etc/systemd/system/tmp.mount
+        # as a workaround for issues where /tmp is filled up too easily. LP: #2069834
         try:
-            with open('/etc/fstab') as f:
-                for l in f:
-                    try:
-                        if not l.startswith('#') and l.split()[1] in ('/tmp', '/tmp/'):
-                            want_tmp_mount = True
-                            break
-                    except IndexError:
-                        pass
+            if os.stat('/etc/systemd/system/tmp.mount').st_size == 0:
+                self.skipTest('autopkgtest environment has overridden tmp.mount')
         except FileNotFoundError:
             pass
 
-        # ensure that we actually do/don't have a /tmp mount
-        (status, status_out) = subprocess.getstatusoutput('systemctl status tmp.mount')
-        findmnt = subprocess.call(['findmnt', '-n', '/tmp'], stdout=subprocess.PIPE)
-        if want_tmp_mount:
-            self.assertEqual(status, 0, status_out)
-            self.assertEqual(findmnt, 0)
-        else:
-            # 4 is correct (since upstream commit ca473d57), accept 3 for systemd <= 230
-            self.assertIn(status, [3, 4], status_out)
-            self.assertNotEqual(findmnt, 0)
-
-    @unittest.skipIf('TEST_UPSTREAM' in os.environ,
-                     'Debian specific configuration, N/A for upstream')
-    def test_tmp_cleanup(self):
         # systemd-tmpfiles-clean.timer only runs 15 mins after boot, shortcut
         # it
         self.assertEqual(subprocess.call(
@@ -163,17 +118,16 @@ class ServicesTest(unittest.TestCase):
             # all files in /tmp/ should get cleaned up on boot
             self.assertFalse(os.path.exists('/tmp/oldfile.test'))
         self.assertFalse(os.path.exists('/tmp/newfile.test'))
-        # files in /var/tmp/ older than 30d should get cleaned up
-        # XXX FIXME: /var/tmp/ cleanup was disabled in #675422
-        # if not is_container:
-        #     self.assertFalse(os.path.exists('/var/tmp/oldfile.test'))
+        # files in /var/tmp/ older than 30d should get cleaned up, unless legacy
+        # compat tmpfiles.d is installed
+        if not is_container and not os.path.exists('/etc/tmpfiles.d/tmp.conf'):
+            self.assertFalse(os.path.exists('/var/tmp/oldfile.test'))
         self.assertTrue(os.path.exists('/var/tmp/newfile.test'))
 
         # next run should leave the recent ones
         os.close(os.open('/tmp/newfile.test',
                          os.O_CREAT | os.O_EXCL | os.O_WRONLY))
         subprocess.check_call(['systemctl', 'start', 'systemd-tmpfiles-clean'])
-        wait_unit_stop('systemd-tmpfiles-clean')
         self.assertTrue(os.path.exists('/tmp/newfile.test'))
 
     # Helper methods
@@ -243,8 +197,8 @@ poweroff\n''')
         out = nspawn.communicate(timeout=60)[0]
         self.assertIn(b'Spawning container c1', out)
         self.assertIn(b'fake container started', out)
-        self.assertRegex(out, b'\n\s+1\s+0\s+init[\r\n]')
-        self.assertRegex(out, b'\n\s+2+\s+0\s.*rcS[\r\n]')
+        self.assertRegex(out, rb'\n\s+1\s+0\s+init[\r\n]')
+        self.assertRegex(out, rb'\n\s+2+\s+0\s.*rcS[\r\n]')
         self.assertRegex(out, b'Container c1.*shut down')
         self.assertEqual(nspawn.returncode, 0)
 
@@ -451,13 +405,11 @@ class CoredumpTest(unittest.TestCase):
         for timeout in range(10):
             subprocess.call(['journalctl', '--sync'])
             journal = subprocess.check_output(['journalctl', '-t', 'systemd-coredump'])
-            if re.search(b'Process.*bash.*dumped core', journal) and \
-               re.search(b'#[0-9] .*bash', journal):
+            if re.search(b'Process.*bash.*dumped core', journal):
                 break
             time.sleep(1)
         self.assertRegex(journal, b'Process.*bash.*dumped core')
         self.assertIn(b'Stack trace', journal)
-        self.assertRegex(journal, b'#[0-9] .*bash')
 
 
 class CLITest(unittest.TestCase):

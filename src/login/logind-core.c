@@ -40,6 +40,8 @@ void manager_reset_config(Manager *m) {
         m->inhibit_delay_max = 5 * USEC_PER_SEC;
         m->user_stop_delay = 10 * USEC_PER_SEC;
 
+        m->handle_action_sleep_mask = HANDLE_ACTION_SLEEP_MASK_DEFAULT;
+
         m->handle_power_key = HANDLE_POWEROFF;
         m->handle_power_key_long_press = HANDLE_IGNORE;
         m->handle_reboot_key = HANDLE_REBOOT;
@@ -48,6 +50,7 @@ void manager_reset_config(Manager *m) {
         m->handle_suspend_key_long_press = HANDLE_HIBERNATE;
         m->handle_hibernate_key = HANDLE_HIBERNATE;
         m->handle_hibernate_key_long_press = HANDLE_IGNORE;
+        m->handle_secure_attention_key = HANDLE_SECURE_ATTENTION_KEY;
 
         m->handle_lid_switch = HANDLE_SUSPEND;
         m->handle_lid_switch_ep = _HANDLE_ACTION_INVALID;
@@ -75,14 +78,19 @@ void manager_reset_config(Manager *m) {
         m->kill_exclude_users = strv_free(m->kill_exclude_users);
 
         m->stop_idle_session_usec = USEC_INFINITY;
+
+        m->maintenance_time = calendar_spec_free(m->maintenance_time);
 }
 
 int manager_parse_config_file(Manager *m) {
         assert(m);
 
-        return config_parse_config_file("logind.conf", "Login\0",
-                                        config_item_perf_lookup, logind_gperf_lookup,
-                                        CONFIG_PARSE_WARN, m);
+        return config_parse_standard_file_with_dropins(
+                        "systemd/logind.conf",
+                        "Login\0",
+                        config_item_perf_lookup, logind_gperf_lookup,
+                        CONFIG_PARSE_WARN,
+                        /* userdata= */ m);
 }
 
 int manager_add_device(Manager *m, const char *sysfs, bool master, Device **ret_device) {
@@ -116,7 +124,7 @@ int manager_add_seat(Manager *m, const char *id, Seat **ret_seat) {
 
         s = hashmap_get(m->seats, id);
         if (!s) {
-                r = seat_new(&s, m, id);
+                r = seat_new(m, id, &s);
                 if (r < 0)
                         return r;
         }
@@ -136,7 +144,7 @@ int manager_add_session(Manager *m, const char *id, Session **ret_session) {
 
         s = hashmap_get(m->sessions, id);
         if (!s) {
-                r = session_new(&s, m, id);
+                r = session_new(m, id, &s);
                 if (r < 0)
                         return r;
         }
@@ -160,7 +168,7 @@ int manager_add_user(
 
         u = hashmap_get(m->users, UID_TO_PTR(ur->uid));
         if (!u) {
-                r = user_new(&u, m, ur);
+                r = user_new(m, ur, &u);
                 if (r < 0)
                         return r;
         }
@@ -216,7 +224,7 @@ int manager_add_inhibitor(Manager *m, const char* id, Inhibitor **ret) {
 
         i = hashmap_get(m->inhibitors, id);
         if (!i) {
-                r = inhibitor_new(&i, m, id);
+                r = inhibitor_new(m, id, &i);
                 if (r < 0)
                         return r;
         }
@@ -351,6 +359,29 @@ int manager_process_button_device(Manager *m, sd_device *d) {
 
 int manager_get_session_by_pidref(Manager *m, const PidRef *pid, Session **ret) {
         _cleanup_free_ char *unit = NULL;
+        Session *s = NULL;
+        int r;
+
+        assert(m);
+
+        if (!pidref_is_set(pid))
+                return -EINVAL;
+
+        r = manager_get_session_by_leader(m, pid, ret);
+        if (r != 0)
+                return r;
+
+        r = cg_pidref_get_unit(pid, &unit);
+        if (r >= 0)
+                s = hashmap_get(m->session_units, unit);
+
+        if (ret)
+                *ret = s;
+
+        return !!s;
+}
+
+int manager_get_session_by_leader(Manager *m, const PidRef *pid, Session **ret) {
         Session *s;
         int r;
 
@@ -364,12 +395,6 @@ int manager_get_session_by_pidref(Manager *m, const PidRef *pid, Session **ret) 
                 r = pidref_verify(pid);
                 if (r < 0)
                         return r;
-        } else {
-                r = cg_pidref_get_unit(pid, &unit);
-                if (r < 0)
-                        return r;
-
-                s = hashmap_get(m->session_units, unit);
         }
 
         if (ret)
@@ -401,15 +426,22 @@ int manager_get_user_by_pid(Manager *m, pid_t pid, User **ret) {
 int manager_get_idle_hint(Manager *m, dual_timestamp *t) {
         Session *s;
         bool idle_hint;
-        dual_timestamp ts = DUAL_TIMESTAMP_NULL;
+        dual_timestamp ts;
 
         assert(m);
 
-        idle_hint = !manager_is_inhibited(m, INHIBIT_IDLE, INHIBIT_BLOCK, t, false, false, 0, NULL);
+        /* Initialize the baseline timestamp with the time the manager got initialized to avoid reporting
+         * unreasonable large idle periods starting with the Unix epoch. */
+        ts = m->init_ts;
+
+        idle_hint = !manager_is_inhibited(m, INHIBIT_IDLE, /* block= */ true, t, false, false, 0, NULL);
 
         HASHMAP_FOREACH(s, m->sessions) {
                 dual_timestamp k;
                 int ih;
+
+                if (!SESSION_CLASS_CAN_IDLE(s->class))
+                        continue;
 
                 ih = session_get_idle_hint(s, &k);
                 if (ih < 0)
@@ -586,7 +618,7 @@ static int manager_count_external_displays(Manager *m) {
                 return r;
 
         FOREACH_DEVICE(e, d) {
-                const char *status, *enabled, *dash, *nn, *subsys;
+                const char *status, *enabled, *dash, *nn;
                 sd_device *p;
 
                 if (sd_device_get_parent(d, &p) < 0)
@@ -595,7 +627,7 @@ static int manager_count_external_displays(Manager *m) {
                 /* If the parent shares the same subsystem as the
                  * device we are looking at then it is a connector,
                  * which is what we are interested in. */
-                if (sd_device_get_subsystem(p, &subsys) < 0 || !streq(subsys, "drm"))
+                if (!device_in_subsystem(p, "drm"))
                         continue;
 
                 if (sd_device_get_sysname(d, &nn) < 0)
@@ -688,6 +720,8 @@ bool manager_all_buttons_ignored(Manager *m) {
                 return false;
         if (m->handle_lid_switch_docked != HANDLE_IGNORE)
                 return false;
+        if (m->handle_secure_attention_key != HANDLE_IGNORE)
+                return false;
 
         return true;
 }
@@ -699,8 +733,8 @@ int manager_read_utmp(Manager *m) {
 
         assert(m);
 
-        if (utmpxname(_PATH_UTMPX) < 0)
-                return log_error_errno(errno, "Failed to set utmp path to " _PATH_UTMPX ": %m");
+        if (utmpxname(UTMPX_FILE) < 0)
+                return log_error_errno(errno, "Failed to set utmp path to " UTMPX_FILE ": %m");
 
         utmpx = utxent_start();
 
@@ -714,9 +748,9 @@ int manager_read_utmp(Manager *m) {
                 u = getutxent();
                 if (!u) {
                         if (errno == ENOENT)
-                                log_debug_errno(errno, _PATH_UTMPX " does not exist, ignoring.");
+                                log_debug_errno(errno, UTMPX_FILE " does not exist, ignoring.");
                         else if (errno != 0)
-                                log_warning_errno(errno, "Failed to read " _PATH_UTMPX ", ignoring: %m");
+                                log_warning_errno(errno, "Failed to read " UTMPX_FILE ", ignoring: %m");
                         return 0;
                 }
 
@@ -726,7 +760,7 @@ int manager_read_utmp(Manager *m) {
                 if (!pid_is_valid(u->ut_pid))
                         continue;
 
-                t = strndup(u->ut_line, sizeof(u->ut_line));
+                t = memdup_suffix0(u->ut_line, sizeof(u->ut_line));
                 if (!t)
                         return log_oom();
 
@@ -740,7 +774,10 @@ int manager_read_utmp(Manager *m) {
                 if (isempty(t))
                         continue;
 
-                if (manager_get_session_by_pidref(m, &PIDREF_MAKE_FROM_PID(u->ut_pid), &s) <= 0)
+                if (manager_get_session_by_leader(m, &PIDREF_MAKE_FROM_PID(u->ut_pid), &s) <= 0)
+                        continue;
+
+                if (s->type != SESSION_TTY)
                         continue;
 
                 if (s->tty_validity == TTY_FROM_UTMP && !streq_ptr(s->tty, t)) {
@@ -797,9 +834,9 @@ void manager_connect_utmp(Manager *m) {
          * Yes, relying on utmp is pretty ugly, but it's good enough for informational purposes, as well as idle
          * detection (which, for tty sessions, relies on the TTY used) */
 
-        r = sd_event_add_inotify(m->event, &s, _PATH_UTMPX, IN_MODIFY|IN_MOVE_SELF|IN_DELETE_SELF|IN_ATTRIB, manager_dispatch_utmp, m);
+        r = sd_event_add_inotify(m->event, &s, UTMPX_FILE, IN_MODIFY|IN_MOVE_SELF|IN_DELETE_SELF|IN_ATTRIB, manager_dispatch_utmp, m);
         if (r < 0)
-                log_full_errno(r == -ENOENT ? LOG_DEBUG: LOG_WARNING, r, "Failed to create inotify watch on " _PATH_UTMPX ", ignoring: %m");
+                log_full_errno(r == -ENOENT ? LOG_DEBUG: LOG_WARNING, r, "Failed to create inotify watch on " UTMPX_FILE ", ignoring: %m");
         else {
                 r = sd_event_source_set_priority(s, SD_EVENT_PRIORITY_IDLE);
                 if (r < 0)

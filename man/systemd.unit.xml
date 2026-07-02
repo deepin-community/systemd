@@ -1,6 +1,6 @@
 <?xml version='1.0'?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
-  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd" [
+  "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd" [
 <!ENTITY % entities SYSTEM "custom-entities.ent" >
 %entities;
 ]>
@@ -25,52 +25,60 @@
   </refnamediv>
 
   <refsynopsisdiv>
-    <para><filename><replaceable>service</replaceable>.service</filename>,
-    <filename><replaceable>socket</replaceable>.socket</filename>,
-    <filename><replaceable>device</replaceable>.device</filename>,
-    <filename><replaceable>mount</replaceable>.mount</filename>,
-    <filename><replaceable>automount</replaceable>.automount</filename>,
-    <filename><replaceable>swap</replaceable>.swap</filename>,
-    <filename><replaceable>target</replaceable>.target</filename>,
-    <filename><replaceable>path</replaceable>.path</filename>,
-    <filename><replaceable>timer</replaceable>.timer</filename>,
-    <filename><replaceable>slice</replaceable>.slice</filename>,
-    <filename><replaceable>scope</replaceable>.scope</filename></para>
+    <para><simplelist type="inline">
+      <member><filename><replaceable>service</replaceable>.service</filename></member>
+      <member><filename><replaceable>socket</replaceable>.socket</filename></member>
+      <member><filename><replaceable>device</replaceable>.device</filename></member>
+      <member><filename><replaceable>mount</replaceable>.mount</filename></member>
+      <member><filename><replaceable>automount</replaceable>.automount</filename></member>
+      <member><filename><replaceable>swap</replaceable>.swap</filename></member>
+      <member><filename><replaceable>target</replaceable>.target</filename></member>
+      <member><filename><replaceable>path</replaceable>.path</filename></member>
+      <member><filename><replaceable>timer</replaceable>.timer</filename></member>
+      <member><filename><replaceable>slice</replaceable>.slice</filename></member>
+      <member><filename><replaceable>scope</replaceable>.scope</filename></member>
+    </simplelist></para>
 
     <refsect2>
       <title>System Unit Search Path</title>
 
-      <para><literallayout><filename>/etc/systemd/system.control/*</filename>
-<filename>/run/systemd/system.control/*</filename>
-<filename>/run/systemd/transient/*</filename>
-<filename>/run/systemd/generator.early/*</filename>
-<filename>/etc/systemd/system/*</filename>
-<filename>/etc/systemd/system.attached/*</filename>
-<filename>/run/systemd/system/*</filename>
-<filename>/run/systemd/system.attached/*</filename>
-<filename>/run/systemd/generator/*</filename>
-<filename index='false'>…</filename>
-<filename>/usr/lib/systemd/system/*</filename>
-<filename>/run/systemd/generator.late/*</filename></literallayout></para>
+      <para><simplelist>
+        <member><filename>/etc/systemd/system.control/*</filename></member>
+        <member><filename>/run/systemd/system.control/*</filename></member>
+        <member><filename>/run/systemd/transient/*</filename></member>
+        <member><filename>/run/systemd/generator.early/*</filename></member>
+        <member><filename>/etc/systemd/system/*</filename></member>
+        <member><filename>/etc/systemd/system.attached/*</filename></member>
+        <member><filename>/run/systemd/system/*</filename></member>
+        <member><filename>/run/systemd/system.attached/*</filename></member>
+        <member><filename>/run/systemd/generator/*</filename></member>
+        <member><filename index='false'>…</filename></member>
+        <member><filename>/usr/local/lib/systemd/system/*</filename></member>
+        <member><filename>/usr/lib/systemd/system/*</filename></member>
+        <member><filename>/run/systemd/generator.late/*</filename></member>
+      </simplelist></para>
     </refsect2>
 
     <refsect2>
       <title>User Unit Search Path</title>
-      <para><literallayout><filename>~/.config/systemd/user.control/*</filename>
-<filename>$XDG_RUNTIME_DIR/systemd/user.control/*</filename>
-<filename>$XDG_RUNTIME_DIR/systemd/transient/*</filename>
-<filename>$XDG_RUNTIME_DIR/systemd/generator.early/*</filename>
-<filename>~/.config/systemd/user/*</filename>
-<filename>$XDG_CONFIG_DIRS/systemd/user/*</filename>
-<filename>/etc/systemd/user/*</filename>
-<filename>$XDG_RUNTIME_DIR/systemd/user/*</filename>
-<filename>/run/systemd/user/*</filename>
-<filename>$XDG_RUNTIME_DIR/systemd/generator/*</filename>
-<filename>$XDG_DATA_HOME/systemd/user/*</filename>
-<filename>$XDG_DATA_DIRS/systemd/user/*</filename>
-<filename index='false'>…</filename>
-<filename>/usr/lib/systemd/user/*</filename>
-<filename>$XDG_RUNTIME_DIR/systemd/generator.late/*</filename></literallayout></para>
+      <para><simplelist>
+        <member><filename>~/.config/systemd/user.control/*</filename></member>
+        <member><filename>$XDG_RUNTIME_DIR/systemd/user.control/*</filename></member>
+        <member><filename>$XDG_RUNTIME_DIR/systemd/transient/*</filename></member>
+        <member><filename>$XDG_RUNTIME_DIR/systemd/generator.early/*</filename></member>
+        <member><filename>~/.config/systemd/user/*</filename></member>
+        <member><filename>$XDG_CONFIG_DIRS/systemd/user/*</filename></member>
+        <member><filename>/etc/systemd/user/*</filename></member>
+        <member><filename>$XDG_RUNTIME_DIR/systemd/user/*</filename></member>
+        <member><filename>/run/systemd/user/*</filename></member>
+        <member><filename>$XDG_RUNTIME_DIR/systemd/generator/*</filename></member>
+        <member><filename>$XDG_DATA_HOME/systemd/user/*</filename></member>
+        <member><filename>$XDG_DATA_DIRS/systemd/user/*</filename></member>
+        <member><filename index='false'>…</filename></member>
+        <member><filename>/usr/local/lib/systemd/user/*</filename></member>
+        <member><filename>/usr/lib/systemd/user/*</filename></member>
+        <member><filename>$XDG_RUNTIME_DIR/systemd/generator.late/*</filename></member>
+      </simplelist></para>
     </refsect2>
 
   </refsynopsisdiv>
@@ -158,20 +166,20 @@
     instance (if any) is always uniquely defined for a given unit and all its aliases. The target of alias
     symlink must point to a valid unit file location, i.e. the symlink target name must match the symlink
     source name as described, and the destination path must be in one of the unit search paths, see UNIT FILE
-    LOAD PATH section below for more details. Note that the target file may not exist, i.e. the symlink may
+    LOAD PATH section below for more details. Note that the target file might not exist, i.e. the symlink may
     be dangling.</para>
 
     <para>Unit files may specify aliases through the <varname>Alias=</varname> directive in the [Install]
     section. When the unit is enabled, symlinks will be created for those names, and removed when the unit is
     disabled. For example, <filename>reboot.target</filename> specifies
     <varname>Alias=ctrl-alt-del.target</varname>, so when enabled, the symlink
-    <filename>/etc/systemd/system/ctrl-alt-del.service</filename> pointing to the
+    <filename>/etc/systemd/system/ctrl-alt-del.target</filename> pointing to the
     <filename>reboot.target</filename> file will be created, and when
     <keycombo><keycap>Ctrl</keycap><keycap>Alt</keycap><keycap>Del</keycap></keycombo> is invoked,
-    <command>systemd</command> will look for the <filename>ctrl-alt-del.service</filename> and execute
-    <filename>reboot.service</filename>. <command>systemd</command> does not look at the [Install] section at
-    all during normal operation, so any directives in that section only have an effect through the symlinks
-    created during enablement.</para>
+    <command>systemd</command> will look for <filename>ctrl-alt-del.target</filename>, follow the symlink to
+    <filename>reboot.target</filename>, and execute <filename>reboot.service</filename> as part of that target.
+    <command>systemd</command> does not look at the [Install] section at all during normal operation, so any
+    directives in that section only have an effect through the symlinks created during enablement.</para>
 
     <para>Along with a unit file <filename>foo.service</filename>, the directory
     <filename>foo.service.wants/</filename> may exist. All unit files symlinked from such a directory are
@@ -190,7 +198,7 @@
     <filename>.wants/</filename> or <filename>.requires/</filename> must thus point to a valid unit file
     location, i.e. the symlink target name must satisfy the described requirements, and the destination path
     must be in one of the unit search paths, see UNIT FILE LOAD PATH section below for more details. Note
-    that the target file may not exist, i.e. the symlink may be dangling.</para>
+    that the target file might not exist, i.e. the symlink may be dangling.</para>
 
     <para>Along with a unit file <filename>foo.service</filename>, a "drop-in" directory
     <filename>foo.service.d/</filename> may exist. All files with the suffix
@@ -200,7 +208,7 @@
     section headers. For instantiated units, this logic will first look for the instance
     <literal>.d/</literal> subdirectory (e.g. <literal>foo@bar.service.d/</literal>) and read its
     <literal>.conf</literal> files, followed by the template <literal>.d/</literal> subdirectory (e.g.
-    <literal>foo@.service.d/</literal>) and the <literal>.conf</literal> files there. Moreover for unit
+    <literal>foo@.service.d/</literal>) and the <literal>.conf</literal> files there. Moreover, for unit
     names containing dashes (<literal>-</literal>), the set of directories generated by repeatedly
     truncating the unit name after all dashes is searched too. Specifically, for a unit name
     <filename>foo-bar-baz.service</filename> not only the regular drop-in directory
@@ -345,7 +353,9 @@
     <para>Unit files are loaded from a set of paths determined during
     compilation, described in the two tables below. Unit files found
     in directories listed earlier override files with the same name in
-    directories lower in the list.</para>
+    directories lower in the list
+    <xi:include href="standard-conf.xml" xpointer="usr-local-footnote" />.
+    </para>
 
     <para>When the variable <varname>$SYSTEMD_UNIT_PATH</varname> is set,
     the contents of this variable overrides the unit load path. If
@@ -399,7 +409,7 @@
           </row>
           <row>
             <entry><filename>/usr/local/lib/systemd/system</filename></entry>
-            <entry>System units installed by the administrator </entry>
+            <entry>System units installed by the administrator</entry>
           </row>
           <row>
             <entry><filename>/usr/lib/systemd/system</filename></entry>
@@ -523,7 +533,7 @@
     <para>It is important to distinguish "linked unit files" from "unit file aliases": any symlink where the
     symlink <emphasis>target</emphasis> is within the unit load path becomes an alias: the source name and
     the target file name must satisfy specific constraints listed above in the discussion of aliases, but the
-    symlink target doesn't have to exist, and in fact the symlink target path is not used, except to check
+    symlink target does not have to exist, and in fact the symlink target path is not used, except to check
     whether the target is within the unit load path. In contrast, a symlink which goes outside of the unit
     load path signifies a linked unit file. The symlink is followed when loading the file, but the
     destination name is otherwise unused (and may even not be a valid unit file name). For example, symlinks
@@ -572,7 +582,7 @@
     signals, resource consumption and other statistics are lost, except for what is stored in the log subsystem.</para>
 
     <para>Use <command>systemctl daemon-reload</command> or an equivalent command to reload unit configuration while
-    the unit is already loaded. In this case all configuration settings are flushed out and replaced with the new
+    the unit is already loaded. In this case, all configuration settings are flushed out and replaced with the new
     configuration (which however might not be in effect immediately), however all runtime state is
     saved/restored.</para>
   </refsect1>
@@ -589,9 +599,9 @@
         <term><varname>Description=</varname></term>
         <listitem><para>A short human readable title of the unit. This may be used by
         <command>systemd</command> (and other UIs) as a user-visible label for the unit, so this string
-        should identify the unit rather than describe it, despite the name. This string also shouldn't just
+        should identify the unit rather than describe it, despite the name. This string also should not just
         repeat the unit name. <literal>Apache2 Web Server</literal> is a good example. Bad examples are
-        <literal>high-performance light-weight HTTP server</literal> (too generic) or
+        <literal>high-performance lightweight HTTP server</literal> (too generic) or
         <literal>Apache2</literal> (meaningless for people who do not know Apache, duplicates the unit
         name). <command>systemd</command> may use this string as a noun in status messages (<literal>Starting
         <replaceable>description</replaceable>...</literal>, <literal>Started
@@ -705,9 +715,10 @@
         <term><varname>BindsTo=</varname></term>
 
         <listitem><para>Configures requirement dependencies, very similar in style to
-        <varname>Requires=</varname>. However, this dependency type is stronger: in addition to the effect of
-        <varname>Requires=</varname> it declares that if the unit bound to is stopped, this unit will be stopped
-        too. This means a unit bound to another unit that suddenly enters inactive state will be stopped too.
+        <varname>Requires=</varname>. However, this dependency type is stronger: in addition to the effects of
+        <varname>Requires=</varname>, which already stops (or restarts) the configuring unit when a listed unit is
+        explicitly stopped (or restarted), it also does so when a listed unit stops unexpectedly (which includes when it
+        fails).
         Units can suddenly, unexpectedly enter inactive state for different reasons: the main process of a service unit
         might terminate on its own choice, the backing device of a device unit might be unplugged or the mount point of
         a mount unit might be unmounted without involvement of the system and service manager.</para>
@@ -779,7 +790,7 @@
         <para>Note that this setting does not imply an ordering dependency, similarly to the
         <varname>Wants=</varname> and <varname>Requires=</varname> dependencies described above. This means
         that to ensure that the conflicting unit is stopped before the other unit is started, an
-        <varname>After=</varname> or <varname>Before=</varname> dependency must be declared. It doesn't
+        <varname>After=</varname> or <varname>Before=</varname> dependency must be declared. It does not
         matter which of the two ordering dependencies is used, because stop jobs are always ordered before
         start jobs, see the discussion in <varname>Before=</varname>/<varname>After=</varname> below.</para>
 
@@ -814,15 +825,15 @@
         start-up order is applied. I.e. if a unit is configured with <varname>After=</varname> on another
         unit, the former is stopped before the latter if both are shut down. Given two units with any
         ordering dependency between them, if one unit is shut down and the other is started up, the shutdown
-        is ordered before the start-up. It doesn't matter if the ordering dependency is
-        <varname>After=</varname> or <varname>Before=</varname>, in this case. It also doesn't matter which
+        is ordered before the start-up. It does not matter if the ordering dependency is
+        <varname>After=</varname> or <varname>Before=</varname>, in this case. It also does not matter which
         of the two is shut down, as long as one is shut down and the other is started up; the shutdown is
         ordered before the start-up in all cases. If two units have no ordering dependencies between them,
         they are shut down or started up simultaneously, and no ordering takes place. It depends on the unit
         type when precisely a unit has finished starting up. Most importantly, for service units start-up is
         considered completed for the purpose of <varname>Before=</varname>/<varname>After=</varname> when all
         its configured start-up commands have been invoked and they either failed or reported start-up
-        success. Note that this does includes <varname>ExecStartPost=</varname> (or
+        success. Note that this includes <varname>ExecStartPost=</varname> (or
         <varname>ExecStopPost=</varname> for the shutdown case).</para>
 
         <para>Note that those settings are independent of and orthogonal to the requirement dependencies as
@@ -917,6 +928,16 @@
         will be pulled in by this unit.</para>
 
         <xi:include href="version-info.xml" xpointer="v201"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>WantsMountsFor=</varname></term>
+
+        <listitem><para>Same as <varname>RequiresMountsFor=</varname>,
+        but adds dependencies of type <varname>Wants=</varname> instead
+        of <varname>Requires=</varname>.</para>
+
+        <xi:include href="version-info.xml" xpointer="v256"/></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -1046,7 +1067,7 @@
         is not unloaded if it is in the <constant>failed</constant> state. In <option>failed</option> mode, failed
         units are not unloaded until the user invoked <command>systemctl reset-failed</command> on them to reset the
         <constant>failed</constant> state, or an equivalent command. This behaviour is altered if this option is set to
-        <option>inactive-or-failed</option>: in this case the unit is unloaded even if the unit is in a
+        <option>inactive-or-failed</option>: in this case, the unit is unloaded even if the unit is in a
         <constant>failed</constant> state, and thus an explicitly resetting of the <constant>failed</constant> state is
         not necessary. Note that if this mode is used unit results (such as exit codes, exit signals, consumed
         resources, …) are flushed out immediately after the unit completed, except for what is stored in the logging
@@ -1067,9 +1088,8 @@
         <option>exit-force</option>, <option>soft-reboot</option>, <option>soft-reboot-force</option>,
         <option>kexec</option>, <option>kexec-force</option>, <option>halt</option>,
         <option>halt-force</option> and <option>halt-immediate</option>. In system mode, all options are
-        allowed. In user mode, only <option>none</option>, <option>exit</option>,
-        <option>exit-force</option>, <option>soft-reboot</option> and <option>soft-reboot-force</option> are
-        allowed. Both options default to <option>none</option>.</para>
+        allowed. In user mode, only <option>none</option>, <option>exit</option>, and
+        <option>exit-force</option> are allowed. Both options default to <option>none</option>.</para>
 
         <para>If <option>none</option> is set, no action will be triggered. <option>reboot</option> causes a
         reboot following the normal shutdown procedure (i.e. equivalent to <command>systemctl
@@ -1103,7 +1123,7 @@
         <listitem><para>Controls the exit status to propagate back to an invoking container manager (in case of a
         system service) or service manager (in case of a user manager) when the
         <varname>FailureAction=</varname>/<varname>SuccessAction=</varname> are set to <option>exit</option> or
-        <option>exit-force</option> and the action is triggered. By default the exit status of the main process of the
+        <option>exit-force</option> and the action is triggered. By default, the exit status of the main process of the
         triggering unit (if this applies) is propagated. Takes a value in the range 0…255 or the empty string to
         request default behaviour.</para>
 
@@ -1122,7 +1142,7 @@
 
         <para>Both settings take a time span with the default unit of seconds, but other units may be
         specified, see
-        <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+        <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry>.
         The default is <literal>infinity</literal> (job timeouts disabled), except for device units where
         <varname>JobRunningTimeoutSec=</varname> defaults to <varname>DefaultDeviceTimeoutSec=</varname>.
         </para>
@@ -1144,7 +1164,8 @@
         <listitem><para><varname>JobTimeoutAction=</varname> optionally configures an additional action to
         take when the timeout is hit, see description of <varname>JobTimeoutSec=</varname> and
         <varname>JobRunningTimeoutSec=</varname> above. It takes the same values as
-        <varname>StartLimitAction=</varname>. Defaults to <option>none</option>.</para>
+        <varname>FailureAction=</varname>/<varname>SuccessAction=</varname>. Defaults to
+        <option>none</option>.</para>
 
         <para><varname>JobTimeoutRebootArgument=</varname> configures an optional reboot string to pass to
         the <citerefentry><refentrytitle>reboot</refentrytitle><manvolnum>2</manvolnum></citerefentry> system
@@ -1165,7 +1186,7 @@
 
         <para><replaceable>interval</replaceable> is a time span with the default unit of seconds, but other
         units may be specified, see
-        <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+        <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry>.
         The special value <literal>infinity</literal> can be used to limit the total number of start
         attempts, even if they happen at large time intervals.
         Defaults to <varname>DefaultStartLimitIntervalSec=</varname> in manager configuration file, and may
@@ -1245,7 +1266,7 @@
       unit was successfully activated, and the conditions and asserts are executed the precise moment the
       unit would normally start and thus can validate system state after the units ordered before completed
       initialization. Use condition expressions for skipping units that do not apply to the local system, for
-      example because the kernel or runtime environment doesn't require their functionality.
+      example because the kernel or runtime environment does not require their functionality.
       </para>
 
       <para>If multiple conditions are specified, the unit will be executed if all of them apply (i.e. a
@@ -1310,6 +1331,10 @@
           <literal>arc</literal>,
           <literal>arc-be</literal>, or
           <literal>native</literal>.</para>
+
+          <para>Use
+          <citerefentry><refentrytitle>systemd-analyze</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+          for the complete list of known architectures.</para>
 
           <para>The architecture is determined from the information returned by
           <citerefentry project='man-pages'><refentrytitle>uname</refentrytitle><manvolnum>2</manvolnum></citerefentry>
@@ -1604,7 +1629,7 @@
           to make sure they run before the stamp file's modification time gets reset indicating a completed
           update.</para>
 
-          <para>If the <varname>systemd.condition-needs-update=</varname> option is specified on the kernel
+          <para>If the <varname>systemd.condition_needs_update=</varname> option is specified on the kernel
           command line (taking a boolean), it will override the result of this condition check, taking
           precedence over any file modification time checks. If the kernel command line option is used,
           <filename>systemd-update-done.service</filename> will not have immediate effect on any following
@@ -1634,18 +1659,26 @@
           whether the system is booting up for the first time. This roughly means that <filename>/etc/</filename>
           was unpopulated when the system started booting (for details, see "First Boot Semantics" in
           <citerefentry><refentrytitle>machine-id</refentrytitle><manvolnum>5</manvolnum></citerefentry>).
-          First boot is considered finished (this condition will evaluate as false) after the manager
+          First Boot is considered finished (this condition will evaluate as false) after the manager
           has finished the startup phase.</para>
 
           <para>This condition may be used to populate <filename>/etc/</filename> on the first boot after
           factory reset, or when a new system instance boots up for the first time.</para>
+
+          <para>Note that the service manager itself will perform setup steps during First Boot: it will
+          initialize
+          <citerefentry><refentrytitle>machine-id</refentrytitle><manvolnum>5</manvolnum></citerefentry> and
+          preset all units, enabling or disabling them according to the
+          <citerefentry><refentrytitle>systemd.preset</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+          settings. Additional setup may be performed via units with
+          <varname>ConditionFirstBoot=yes</varname>.</para>
 
           <para>For robustness, units with <varname>ConditionFirstBoot=yes</varname> should order themselves
           before <filename>first-boot-complete.target</filename> and pull in this passive target with
           <varname>Wants=</varname>. This ensures that in a case of an aborted first boot, these units will
           be re-run during the next system startup.</para>
 
-          <para>If the <varname>systemd.condition-first-boot=</varname> option is specified on the kernel
+          <para>If the <varname>systemd.condition_first_boot=</varname> option is specified on the kernel
           command line (taking a boolean), it will override the result of this condition check, taking
           precedence over <filename>/etc/machine-id</filename> existence checks.</para>
 
@@ -1801,7 +1834,7 @@
           for use on the system or whether the legacy v1 cgroup or the modern v2 cgroup hierarchy is used.
           </para>
 
-          <para>Multiple controllers may be passed with a space separating them; in this case the condition
+          <para>Multiple controllers may be passed with a space separating them; in this case, the condition
           will only pass if all listed controllers are available for use. Controllers unknown to systemd are
           ignored. Valid controllers are <literal>cpu</literal>, <literal>io</literal>,
           <literal>memory</literal>, and <literal>pids</literal>. Even if available in the kernel, a
@@ -1927,6 +1960,8 @@
           <literal>&lt;&gt;</literal>, <literal>&gt;=</literal>, <literal>&gt;</literal>), and shell-style
           wildcard comparisons (<literal>*</literal>, <literal>?</literal>, <literal>[]</literal>) are
           supported with the <literal>$=</literal> (match) and <literal>!$=</literal> (non-match).</para>
+
+          <para>If the given key is not found in the file, the match is done against an empty value.</para>
 
           <xi:include href="version-info.xml" xpointer="v249"/>
           </listitem>
@@ -2130,7 +2165,7 @@
     implicitly along with their reverses and cannot be specified directly.</para>
 
     <para>Note: <varname>Triggers=</varname> is created implicitly between a socket,
-    path unit, or an automount unit, and the unit they activate. By default a unit
+    path unit, or an automount unit, and the unit they activate. By default, a unit
     with the same name is triggered, but this can be overridden using
     <varname>Sockets=</varname>, <varname>Service=</varname>, and <varname>Unit=</varname>
     settings. See
@@ -2283,6 +2318,11 @@
             <entry>This is the value of the <literal>$CREDENTIALS_DIRECTORY</literal> environment variable if available. See section "Credentials" in <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry> for more information.</entry>
           </row>
           <row>
+            <entry><literal>%D</literal></entry>
+            <entry>Shared data directory</entry>
+            <entry>This is either <filename>/usr/share/</filename> (for the system manager) or the path <literal>$XDG_DATA_HOME</literal> resolves to (for user managers).</entry>
+          </row>
+          <row>
             <entry><literal>%E</literal></entry>
             <entry>Configuration directory root</entry>
             <entry>This is either <filename>/etc/</filename> (for the system manager) or the path <literal>$XDG_CONFIG_HOME</literal> resolves to (for user managers).</entry>
@@ -2415,7 +2455,7 @@ Note that this setting is <emphasis>not</emphasis> influenced by the <varname>Us
           <row>
             <entry><literal>%y</literal></entry>
             <entry>The path to the fragment</entry>
-            <entry>This is the path where the main part of the unit file is located. For linked unit files, the real path outside of the unit search directories is used. For units that don't have a fragment file, this specifier will raise an error.</entry>
+            <entry>This is the path where the main part of the unit file is located. For linked unit files, the real path outside of the unit search directories is used. For units that do not have a fragment file, this specifier will raise an error.</entry>
           </row>
           <row>
             <entry><literal>%Y</literal></entry>
@@ -2589,7 +2629,7 @@ Description=My failure handler for %i
 Type=oneshot
 # Perform some special action for when %i exits unexpectedly.
 ExecStart=/usr/sbin/myfailurehandler %i
-     </programlisting>
+</programlisting>
 
      <para>We can then add an instance of
      <filename index='false'>failure-handler@.service</filename> as an
@@ -2600,7 +2640,7 @@ ExecStart=/usr/sbin/myfailurehandler %i
 
     <programlisting>[Unit]
 OnFailure=failure-handler@%N.service
-    </programlisting>
+</programlisting>
 
     <para>Now, after running <command>systemctl daemon-reload</command> all
     services will have acquired an <varname>OnFailure=</varname> dependency on
@@ -2609,7 +2649,7 @@ OnFailure=failure-handler@%N.service
     in the creation of a recursive dependency chain. systemd will try to detect
     these recursive dependency chains where a template unit directly and
     recursively depends on itself and will remove such dependencies
-    automatically if it finds them. If systemd doesn't detect the recursive
+    automatically if it finds them. If systemd does not detect the recursive
     dependency chain, we can break the chain ourselves by disabling the drop-in
     for the template instance units via a symlink to
     <filename index='false'>/dev/null</filename>:</para>
@@ -2618,7 +2658,7 @@ OnFailure=failure-handler@%N.service
 <command>mkdir /etc/systemd/system/failure-handler@.service.d/</command>
 <command>ln -s /dev/null /etc/systemd/system/failure-handler@.service.d/10-all.conf</command>
 <command>systemctl daemon-reload</command>
-    </programlisting>
+</programlisting>
 
     <para>This ensures that if a <filename index='false'>failure-handler@.service</filename> instance fails it will not trigger an instance named
     <filename index='false'>failure-handler@failure-handler.service</filename>.</para>
@@ -2629,28 +2669,27 @@ OnFailure=failure-handler@%N.service
 
   <refsect1>
     <title>See Also</title>
-    <para>
-      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.special</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.service</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.socket</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.device</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.mount</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.automount</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.swap</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.target</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.path</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.timer</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.scope</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.slice</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd-analyze</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>capabilities</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
-      <citerefentry project='man-pages'><refentrytitle>uname</refentrytitle><manvolnum>1</manvolnum></citerefentry>
-    </para>
+    <para><simplelist type="inline">
+      <member><citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.special</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.service</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.socket</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.device</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.mount</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.automount</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.swap</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.target</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.path</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.timer</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.scope</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.slice</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd-analyze</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>capabilities</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry></member>
+      <member><citerefentry project='man-pages'><refentrytitle>uname</refentrytitle><manvolnum>1</manvolnum></citerefentry></member>
+    </simplelist></para>
   </refsect1>
-
 </refentry>

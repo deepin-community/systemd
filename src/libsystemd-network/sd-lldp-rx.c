@@ -4,6 +4,7 @@
 #include <linux/sockios.h>
 #include <sys/ioctl.h>
 
+#include "sd-json.h"
 #include "sd-lldp-rx.h"
 
 #include "alloc-util.h"
@@ -488,6 +489,30 @@ int sd_lldp_rx_get_neighbors(sd_lldp_rx *lldp_rx, sd_lldp_neighbor ***ret) {
         *ret = TAKE_PTR(l);
 
         return k;
+}
+
+int lldp_rx_build_neighbors_json(sd_lldp_rx *lldp_rx, sd_json_variant **ret) {
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
+        int r;
+
+        assert(lldp_rx);
+        assert(ret);
+
+        sd_lldp_neighbor *n;
+        HASHMAP_FOREACH(n, lldp_rx->neighbor_by_id) {
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *w = NULL;
+
+                r = lldp_neighbor_build_json(n, &w);
+                if (r < 0)
+                        return r;
+
+                r = sd_json_variant_append_array(&v, w);
+                if (r < 0)
+                        return r;
+        }
+
+        *ret = TAKE_PTR(v);
+        return 0;
 }
 
 int sd_lldp_rx_set_neighbors_max(sd_lldp_rx *lldp_rx, uint64_t m) {

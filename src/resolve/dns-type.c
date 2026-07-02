@@ -80,7 +80,7 @@ bool dns_type_is_valid_query(uint16_t type) {
                        DNS_TYPE_RRSIG);
 }
 
-bool dns_type_is_zone_transer(uint16_t type) {
+bool dns_type_is_zone_transfer(uint16_t type) {
 
         /* Zone transfers, either normal or incremental */
 
@@ -220,7 +220,7 @@ int dns_type_to_af(uint16_t t) {
         }
 }
 
-const char *dns_class_to_string(uint16_t class) {
+const char* dns_class_to_string(uint16_t class) {
 
         switch (class) {
 

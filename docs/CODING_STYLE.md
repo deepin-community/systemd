@@ -54,6 +54,18 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   }
   ```
 
+- Function return types should be seen/written as whole, i.e. write this:
+
+  ```c
+  const char* foo(const char *input);
+  ```
+
+  instead of this:
+
+  ```c
+  const char *foo(const char *input);
+  ```
+
 - Single-line `if` blocks should not be enclosed in `{}`. Write this:
 
   ```c
@@ -164,28 +176,62 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   thread. Use `is_main_thread()` to detect whether the calling thread is the
   main thread.
 
-- Do not write functions that clobber call-by-reference variables on
-  failure. Use temporary variables for these cases and change the passed in
-  variables only on success. The rule is: never clobber return parameters on
-  failure, always initialize return parameters on success.
+- Typically, function parameters fit into four categories: input parameters,
+  mutable objects, call-by-reference return parameters that are initialized on
+  success, and call-by-reference return parameters that are initialized on
+  failure. Input parameters should always carry suitable `const` declarators if
+  they are pointers, to indicate they are input-only and not changed by the
+  function. The name of return parameters that are initialized on success
+  should be prefixed with `ret_`, to clarify they are return parameters. The
+  name of return parameters that are initialized on failure should be prefixed
+  with `reterr_`. (Examples of such parameters: those which carry additional
+  error information, such as the row/column of parse errors or so). –
+  Conversely, please do not prefix parameters that aren't output-only with
+  `ret_` or `reterr_`, in particular not mutable parameters that are both input
+  as well as output.
 
-- Typically, function parameters fit into three categories: input parameters,
-  mutable objects, and call-by-reference return parameters. Input parameters
-  should always carry suitable "const" declarators if they are pointers, to
-  indicate they are input-only and not changed by the function. Return
-  parameters are best prefixed with "ret_", to clarify they are return
-  parameters. (Conversely, please do not prefix parameters that aren't
-  output-only with "ret_", in particular not mutable parameters that are both
-  input as well as output). Example:
+  Example:
 
   ```c
   static int foobar_frobnicate(
-                  Foobar* object,            /* the associated mutable object */
+                  Foobar *object,            /* the associated mutable object */
                   const char *input,         /* immutable input parameter */
-                  char **ret_frobnicated) {  /* return parameter */
+                  char **ret_frobnicated,    /* return parameter on success */
+                  unsigned *reterr_line,     /* return parameter on failure */
+                  unsigned *reterr_column) { /* ditto */
           …
           return 0;
   }
+  ```
+
+- Do not write functions that clobber call-by-reference success return
+  parameters on failure (i.e. `ret_xyz`, see above), or that clobber
+  call-by-reference failure return parameters on success
+  (i.e. `reterr_xyz`). Use temporary variables for these cases and change the
+  passed in variables only in the right condition. The rule is: never clobber
+  success return parameters on failure, always initialize success return
+  parameters on success (and the reverse for failure return parameters, of
+  course).
+
+- Please put `reterr_` return parameters in the function parameter list last,
+  and `ret_` return parameters immediately before that.
+
+  Good:
+
+  ```c
+  static int do_something(
+                  const char *input,
+                  const char *ret_on_success,
+                  const char *reterr_on_failure);
+  ```
+
+  Not good:
+
+  ```c
+  static int do_something(
+                  const char *reterr_on_failure,
+                  const char *ret_on_success,
+                  const char *input);
   ```
 
 - The order in which header files are included doesn't matter too
@@ -297,7 +343,7 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   t.bar = "bazz";
   ```
 
-- To implement an endless loop, use `for (;;)` rather than `while (1)`.  The
+- To implement an endless loop, use `for (;;)` rather than `while (1)`. The
   latter is a bit ugly anyway, since you probably really meant `while
   (true)`. To avoid the discussion what the right always-true expression for an
   infinite while loop is, our recommendation is to simply write it without any
@@ -473,6 +519,26 @@ SPDX-License-Identifier: LGPL-2.1-or-later
           return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to read ...");
   ```
 
+- When generating log messages that contain filenames, user controlled strings,
+  or similar, please enclose them in single ticks.
+
+- Think about the log level you choose: for functions that are of the "logging"
+  kind (see above), please ensure that failures we propagate should be logged
+  about at `LOG_ERR` level. Failures that are noteworthy, but we proceed anyway,
+  should be loged at `LOG_WARN` level. Important informational messages should
+  use `LOG_NOTICE` and regular informational messages should use
+  `LOG_INFO`. Note that the latter is the default maximum log level, i.e. only
+  `LOG_DEBUG` messages are hidden by default.
+
+- All log messages that show some failure which is not fatal for the immediate
+  operation (i.e. generally those you'd log at `LOG_WARN` level, as described
+  above) should be suffixed with a `…, ignoring: %m"` or similar. Or in other
+  words, they should make clear not only in log level but also in English
+  language that the issue is not fatal, but ignored. Depending on context you
+  can also use `…, proceeding anyway: %m"`, `…, skipping: %m` or other language
+  that makes clear that the failure is not actionable and doesn't strictly
+  require immediate administrator attention.
+
 ## Memory Allocation
 
 - Always check OOM. There is no excuse. In program code, you can use
@@ -544,6 +610,14 @@ SPDX-License-Identifier: LGPL-2.1-or-later
   (at least initially), but it needs to be there. This is particularly
   important for objects that unprivileged users may allocate, but also matters
   for everything else any user may allocate.
+
+- Please use `secure_getenv()` for all environment variable accesses, unless
+  it's clear that `getenv()` would be the better choice. This matters in
+  particular in `src/basic/` and `src/shared/` (i.e. library code that might
+  end up in unexpected processes), but should be followed everywhere else too
+  (in order to make it unproblematic to move code around). To say this clearly:
+  the default should be `secure_getenv()`, the exception should be regular
+  `getenv()`.
 
 ## Types
 
@@ -774,9 +848,19 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 - A corollary of the above is: never use `clone()` where a `fork()` would do
   too. Also consider using `posix_spawn()` which combines `clone()` +
   `execve()` into one and has nice properties since it avoids becoming a CoW
-  trap by using `CLONE_VORK` and `CLONE_VM` together.
+  trap by using `CLONE_VFORK` and `CLONE_VM` together.
 
 - While we avoid forking off threads on our own, writing thread-safe code is a
   good idea where it might end up running inside of libsystemd.so or
   similar. Hence, use TLS (i.e. `thread_local`) where appropriate, and maybe
   the occasional `pthread_once()`.
+
+## Tests
+
+- Use the assertion macros from `tests.h` (`ASSERT_GE()`, `ASSERT_OK()`, ...) to
+  make sure a descriptive error is logged when an assertion fails. If no assertion
+  macro exists for your specific use case, please add a new assertion macro in a
+  separate commit.
+
+- When modifying existing tests, please convert the test to use the new assertion
+  macros from `tests.h` if it is not already using those.

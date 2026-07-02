@@ -1,12 +1,103 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#if HAVE_PIDFD_OPEN
+#include <sys/pidfd.h>
+#endif
+
 #include "errno-util.h"
 #include "fd-util.h"
+#include "missing_magic.h"
 #include "missing_syscall.h"
+#include "missing_wait.h"
 #include "parse-util.h"
 #include "pidref.h"
 #include "process-util.h"
 #include "signal-util.h"
+#include "stat-util.h"
+
+static int pidfd_inode_ids_supported(void) {
+        static int cached = -1;
+
+        if (cached >= 0)
+                return cached;
+
+        _cleanup_close_ int fd = pidfd_open(getpid_cached(), 0);
+        if (fd < 0) {
+                if (ERRNO_IS_NOT_SUPPORTED(errno))
+                        return (cached = false);
+
+                return -errno;
+        }
+
+        return (cached = fd_is_fs_type(fd, PID_FS_MAGIC));
+}
+
+int pidref_acquire_pidfd_id(PidRef *pidref) {
+        int r;
+
+        assert(pidref);
+
+        if (!pidref_is_set(pidref))
+                return -ESRCH;
+
+        if (pidref_is_remote(pidref))
+                return -EREMOTE;
+
+        if (pidref->fd < 0)
+                return -ENOMEDIUM;
+
+        if (pidref->fd_id > 0)
+                return 0;
+
+        r = pidfd_inode_ids_supported();
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -EOPNOTSUPP;
+
+        struct stat st;
+
+        if (fstat(pidref->fd, &st) < 0)
+                return log_debug_errno(errno, "Failed to get inode number of pidfd for pid " PID_FMT ": %m",
+                                       pidref->pid);
+
+        pidref->fd_id = (uint64_t) st.st_ino;
+        return 0;
+}
+
+bool pidref_equal(PidRef *a, PidRef *b) {
+
+        if (!pidref_is_set(a))
+                return !pidref_is_set(b);
+
+        if (!pidref_is_set(b))
+                return false;
+
+        if (a->pid != b->pid)
+                return false;
+
+        if (pidref_is_remote(a)) {
+                /* If one is remote and the other isn't, they are not the same */
+                if (!pidref_is_remote(b))
+                        return false;
+
+                /* If both are remote, compare fd IDs if we have both, otherwise don't bother, and cut things short */
+                if (a->fd_id == 0 || b->fd_id == 0)
+                        return true;
+        } else {
+                if (pidref_is_remote(b))
+                        return false;
+
+                /* Try to compare pidfds using their inode numbers. This way we can ensure that we
+                 * don't spuriously consider two PidRefs equal if the pid has been reused once. Note
+                 * that we ignore all errors here, not only EOPNOTSUPP, as fstat() might fail due to
+                 * many reasons. */
+                if (pidref_acquire_pidfd_id(a) < 0 || pidref_acquire_pidfd_id(b) < 0)
+                        return true;
+        }
+
+        return a->fd_id == b->fd_id;
+}
 
 int pidref_set_pid(PidRef *pidref, pid_t pid) {
         int fd;
@@ -22,7 +113,7 @@ int pidref_set_pid(PidRef *pidref, pid_t pid) {
         if (fd < 0) {
                 /* Graceful fallback in case the kernel doesn't support pidfds or is out of fds */
                 if (!ERRNO_IS_NOT_SUPPORTED(errno) && !ERRNO_IS_PRIVILEGE(errno) && !ERRNO_IS_RESOURCE(errno))
-                        return -errno;
+                        return log_debug_errno(errno, "Failed to open pidfd for pid " PID_FMT ": %m", pid);
 
                 fd = -EBADF;
         }
@@ -106,6 +197,38 @@ int pidref_set_pidfd_consume(PidRef *pidref, int fd) {
         return r;
 }
 
+int pidref_set_parent(PidRef *ret) {
+        _cleanup_(pidref_done) PidRef parent = PIDREF_NULL;
+        pid_t ppid;
+        int r;
+
+        assert(ret);
+
+        /* Acquires a pidref to our parent process. Deals with the fact that parent processes might exit, and
+         * we get reparented to other processes, with our old parent's PID already being recycled. */
+
+        ppid = getppid();
+        for (;;) {
+                r = pidref_set_pid(&parent, ppid);
+                if (r < 0)
+                        return r;
+
+                if (parent.fd < 0) /* If pidfds are not available, then we are done */
+                        break;
+
+                pid_t now_ppid = getppid();
+                if (now_ppid == ppid) /* If our ppid is still the same, then we are done */
+                        break;
+
+                /* Otherwise let's try again with the new ppid */
+                ppid = now_ppid;
+                pidref_done(&parent);
+        }
+
+        *ret = TAKE_PIDREF(parent);
+        return 0;
+}
+
 void pidref_done(PidRef *pidref) {
         assert(pidref);
 
@@ -114,7 +237,7 @@ void pidref_done(PidRef *pidref) {
         };
 }
 
-PidRef *pidref_free(PidRef *pidref) {
+PidRef* pidref_free(PidRef *pidref) {
         /* Regularly, this is an embedded structure. But sometimes we want it on the heap too */
         if (!pidref)
                 return NULL;
@@ -123,20 +246,19 @@ PidRef *pidref_free(PidRef *pidref) {
         return mfree(pidref);
 }
 
-int pidref_dup(const PidRef *pidref, PidRef **ret) {
+int pidref_copy(const PidRef *pidref, PidRef *dest) {
         _cleanup_close_ int dup_fd = -EBADF;
         pid_t dup_pid = 0;
 
-        assert(ret);
+        /* If NULL is passed we'll generate a PidRef that refers to no process. This makes it easy to
+         * copy pidref fields that might or might not reference a process yet. */
 
-        /* Allocates a new PidRef on the heap, making it a copy of the specified pidref. This does not try to
-         * acquire a pidfd if we don't have one yet!
-         *
-         * If NULL is passed we'll generate a PidRef that refers to no process. This makes it easy to copy
-         * pidref fields that might or might not reference a process yet. */
+        assert(dest);
 
         if (pidref) {
-                if (pidref->fd >= 0) {
+                if (pidref_is_remote(pidref)) /* Propagate remote flag */
+                        dup_fd = -EREMOTE;
+                else if (pidref->fd >= 0) {
                         dup_fd = fcntl(pidref->fd, F_DUPFD_CLOEXEC, 3);
                         if (dup_fd < 0) {
                                 if (!ERRNO_IS_RESOURCE(errno))
@@ -150,21 +272,37 @@ int pidref_dup(const PidRef *pidref, PidRef **ret) {
                         dup_pid = pidref->pid;
         }
 
-        PidRef *dup_pidref = new(PidRef, 1);
-        if (!dup_pidref)
-                return -ENOMEM;
-
-        *dup_pidref = (PidRef) {
+        *dest = (PidRef) {
                 .fd = TAKE_FD(dup_fd),
                 .pid = dup_pid,
         };
+
+        return 0;
+}
+
+int pidref_dup(const PidRef *pidref, PidRef **ret) {
+        _cleanup_(pidref_freep) PidRef *dup_pidref = NULL;
+        int r;
+
+        /* Allocates a new PidRef on the heap, making it a copy of the specified pidref. This does not try to
+         * acquire a pidfd if we don't have one yet! */
+
+        assert(ret);
+
+        dup_pidref = newdup(PidRef, &PIDREF_NULL, 1);
+        if (!dup_pidref)
+                return -ENOMEM;
+
+        r = pidref_copy(pidref, dup_pidref);
+        if (r < 0)
+                return r;
 
         *ret = TAKE_PTR(dup_pidref);
         return 0;
 }
 
 int pidref_new_from_pid(pid_t pid, PidRef **ret) {
-        _cleanup_(pidref_freep) PidRef *n = 0;
+        _cleanup_(pidref_freep) PidRef *n = NULL;
         int r;
 
         assert(ret);
@@ -190,6 +328,9 @@ int pidref_kill(const PidRef *pidref, int sig) {
 
         if (!pidref)
                 return -ESRCH;
+
+        if (pidref_is_remote(pidref))
+                return -EREMOTE;
 
         if (pidref->fd >= 0)
                 return RET_NERRNO(pidfd_send_signal(pidref->fd, sig, NULL, 0));
@@ -217,6 +358,9 @@ int pidref_sigqueue(const PidRef *pidref, int sig, int value) {
 
         if (!pidref)
                 return -ESRCH;
+
+        if (pidref_is_remote(pidref))
+                return -EREMOTE;
 
         if (pidref->fd >= 0) {
                 siginfo_t si;
@@ -250,6 +394,9 @@ int pidref_verify(const PidRef *pidref) {
         if (!pidref_is_set(pidref))
                 return -ESRCH;
 
+        if (pidref_is_remote(pidref))
+                return -EREMOTE;
+
         if (pidref->pid == 1)
                 return 1; /* PID 1 can never go away, hence never be recycled to a different process → return 1 */
 
@@ -267,11 +414,59 @@ bool pidref_is_self(const PidRef *pidref) {
         if (!pidref)
                 return false;
 
+        if (pidref_is_remote(pidref))
+                return false;
+
         return pidref->pid == getpid_cached();
 }
 
+int pidref_wait(const PidRef *pidref, siginfo_t *ret, int options) {
+        int r;
+
+        if (!pidref_is_set(pidref))
+                return -ESRCH;
+
+        if (pidref_is_remote(pidref))
+                return -EREMOTE;
+
+        if (pidref->pid == 1 || pidref->pid == getpid_cached())
+                return -ECHILD;
+
+        siginfo_t si = {};
+
+        if (pidref->fd >= 0) {
+                r = RET_NERRNO(waitid(P_PIDFD, pidref->fd, &si, options));
+                if (r >= 0) {
+                        if (ret)
+                                *ret = si;
+                        return r;
+                }
+                if (r != -EINVAL) /* P_PIDFD was added in kernel 5.4 only */
+                        return r;
+        }
+
+        r = RET_NERRNO(waitid(P_PID, pidref->pid, &si, options));
+        if (r >= 0 && ret)
+                *ret = si;
+        return r;
+}
+
+int pidref_wait_for_terminate(const PidRef *pidref, siginfo_t *ret) {
+        int r;
+
+        for (;;) {
+                r = pidref_wait(pidref, ret, WEXITED);
+                if (r != -EINTR)
+                        return r;
+        }
+}
+
+bool pidref_is_automatic(const PidRef *pidref) {
+        return pidref && pid_is_automatic(pidref->pid);
+}
+
 static void pidref_hash_func(const PidRef *pidref, struct siphash *state) {
-        siphash24_compress(&pidref->pid, sizeof(pidref->pid), state);
+        siphash24_compress_typesafe(pidref->pid, state);
 }
 
 static int pidref_compare_func(const PidRef *a, const PidRef *b) {

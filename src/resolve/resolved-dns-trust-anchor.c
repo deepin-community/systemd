@@ -25,6 +25,10 @@ static const uint8_t root_digest2[] =
         { 0xE0, 0x6D, 0x44, 0xB8, 0x0B, 0x8F, 0x1D, 0x39, 0xA9, 0x5C, 0x0B, 0x0D, 0x7C, 0x65, 0xD0, 0x84,
           0x58, 0xE8, 0x80, 0x40, 0x9B, 0xBC, 0x68, 0x34, 0x57, 0x10, 0x42, 0x37, 0xC7, 0xF8, 0xEC, 0x8D };
 
+static const uint8_t root_digest3[] =
+        { 0x68, 0x3D, 0x2D, 0x0A, 0xCB, 0x8C, 0x9B, 0x71, 0x2A, 0x19, 0x48, 0xB2, 0x7F, 0x74, 0x12, 0x19,
+          0x29, 0x8D, 0x0A, 0x45, 0x0D, 0x61, 0x2C, 0x48, 0x3A, 0xF4, 0x44, 0xA4, 0xC0, 0xFB, 0x2B, 0x16 };
+
 static bool dns_trust_anchor_knows_domain_positive(DnsTrustAnchor *d, const char *name) {
         assert(d);
 
@@ -93,6 +97,9 @@ static int dns_trust_anchor_add_builtin_positive(DnsTrustAnchor *d) {
 
         /* Add the currently valid RRs from https://data.iana.org/root-anchors/root-anchors.xml */
         r = add_root_ksk(answer, key, 20326, DNSSEC_ALGORITHM_RSASHA256, DNSSEC_DIGEST_SHA256, root_digest2, sizeof(root_digest2));
+        if (r < 0)
+                return r;
+        r = add_root_ksk(answer, key, 38696, DNSSEC_ALGORITHM_RSASHA256, DNSSEC_DIGEST_SHA256, root_digest3, sizeof(root_digest3));
         if (r < 0)
                 return r;
 
@@ -165,6 +172,11 @@ static int dns_trust_anchor_add_builtin_negative(DnsTrustAnchor *d) {
                 /* Defined by RFC 8375. The most official choice. */
                 "home.arpa\0"
 
+                /* RFC 9462 doesn't mention DNSSEC, but this domain
+                 * can't really be signed and clients need to validate
+                 * the answer before using it anyway. */
+                "resolver.arpa\0"
+
                 /* RFC 8880 says because the 'ipv4only.arpa' zone has to
                  * be an insecure delegation, DNSSEC cannot be used to
                  * protect these answers from tampering by malicious
@@ -181,7 +193,7 @@ static int dns_trust_anchor_add_builtin_negative(DnsTrustAnchor *d) {
          * trust anchor defined at all. This enables easy overriding
          * of negative trust anchors. */
 
-        if (set_size(d->negative_by_name) > 0)
+        if (!set_isempty(d->negative_by_name))
                 return 0;
 
         r = set_ensure_allocated(&d->negative_by_name, &dns_name_hash_ops);
@@ -228,7 +240,7 @@ static int dns_trust_anchor_load_positive(DnsTrustAnchor *d, const char *path, u
                 return -EINVAL;
         }
 
-        r = extract_many_words(&p, NULL, 0, &class, &type, NULL);
+        r = extract_many_words(&p, NULL, 0, &class, &type);
         if (r < 0)
                 return log_warning_errno(r, "Unable to parse class and type in line %s:%u: %m", path, line);
         if (r != 2) {
@@ -248,7 +260,7 @@ static int dns_trust_anchor_load_positive(DnsTrustAnchor *d, const char *path, u
                 int a, dt;
                 size_t l;
 
-                r = extract_many_words(&p, NULL, 0, &key_tag, &algorithm, &digest_type, NULL);
+                r = extract_many_words(&p, NULL, 0, &key_tag, &algorithm, &digest_type);
                 if (r < 0) {
                         log_warning_errno(r, "Failed to parse DS parameters on line %s:%u: %m", path, line);
                         return -EINVAL;
@@ -279,7 +291,7 @@ static int dns_trust_anchor_load_positive(DnsTrustAnchor *d, const char *path, u
                         return -EINVAL;
                 }
 
-                r = unhexmem(p, strlen(p), &dd, &l);
+                r = unhexmem(p, &dd, &l);
                 if (r < 0) {
                         log_warning("Failed to parse DS digest %s on line %s:%u", p, path, line);
                         return -EINVAL;
@@ -302,7 +314,7 @@ static int dns_trust_anchor_load_positive(DnsTrustAnchor *d, const char *path, u
                 size_t l;
                 int a;
 
-                r = extract_many_words(&p, NULL, 0, &flags, &protocol, &algorithm, NULL);
+                r = extract_many_words(&p, NULL, 0, &flags, &protocol, &algorithm);
                 if (r < 0)
                         return log_warning_errno(r, "Failed to parse DNSKEY parameters on line %s:%u: %m", path, line);
                 if (r != 3) {
@@ -338,7 +350,7 @@ static int dns_trust_anchor_load_positive(DnsTrustAnchor *d, const char *path, u
                         return -EINVAL;
                 }
 
-                r = unbase64mem(p, strlen(p), &k, &l);
+                r = unbase64mem(p, &k, &l);
                 if (r < 0)
                         return log_warning_errno(r, "Failed to parse DNSKEY key data %s on line %s:%u", p, path, line);
 
@@ -573,7 +585,7 @@ int dns_trust_anchor_lookup_negative(DnsTrustAnchor *d, const char *name) {
                 if (hashmap_contains(d->positive_by_key, &DNS_RESOURCE_KEY_CONST(DNS_CLASS_IN, DNS_TYPE_DS, name)))
                         return false;
 
-                if (hashmap_contains(d->positive_by_key, &DNS_RESOURCE_KEY_CONST(DNS_CLASS_IN, DNS_TYPE_KEY, name)))
+                if (hashmap_contains(d->positive_by_key, &DNS_RESOURCE_KEY_CONST(DNS_CLASS_IN, DNS_TYPE_DNSKEY, name)))
                         return false;
 
                 /* And now, let's look at the parent, and check that too */

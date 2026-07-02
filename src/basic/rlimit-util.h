@@ -6,7 +6,7 @@
 #include "macro.h"
 #include "missing_resource.h"
 
-const char *rlimit_to_string(int i) _const_;
+const char* rlimit_to_string(int i) _const_;
 int rlimit_from_string(const char *s) _pure_;
 int rlimit_from_string_harder(const char *s) _pure_;
 
@@ -25,3 +25,5 @@ void rlimit_free_all(struct rlimit **rl);
 
 int rlimit_nofile_bump(int limit);
 int rlimit_nofile_safe(void);
+
+int pid_getrlimit(pid_t pid, int resource, struct rlimit *ret);
