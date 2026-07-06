@@ -48,3 +48,4 @@ update-po-file-about-bo-and-ug.patch
 fix-double-free.patch
 fix-wrong-err-log.patch
 feat-swap-improve.patch
+add-numa-policy.patch
