@@ -1,0 +1,105 @@
+From a4328b284ef24c0dea0ccee7c138b64082af64bb Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Mon, 15 Apr 2024 22:34:39 +0200
+Subject: [PATCH] Merge pull request #32258 from
+ yuwata/network-tc-fix-stack-overflow
+
+network/tc: fix stack overflow
+
+From e6fa91195bbe225e89d31338542455a6af10fb89 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 13 Apr 2024 09:02:01 +0900
+Subject: [PATCH] test-network: add test for stack overflow in qdisc_drop() and
+ tclass_drop()
+
+
+diff --git a/test/test-network/systemd-networkd-tests.py b/test/test-network/systemd-networkd-tests.py
+index 0c12c43291..d83621dbf4 100755
+--- a/test/test-network/systemd-networkd-tests.py
++++ b/test/test-network/systemd-networkd-tests.py
+@@ -4623,6 +4623,23 @@ class NetworkdTCTests(unittest.TestCase, Utilities):
+         print(output)
+         self.assertRegex(output, 'qdisc teql1 31: root')
+ 
++    @expectedFailureIfModuleIsNotAvailable('sch_fq', 'sch_sfq', 'sch_tbf')
++    def test_qdisc_drop(self):
++        copy_network_unit('12-dummy.netdev', '12-dummy.network')
++        start_networkd()
++        self.wait_online('dummy98:routable')
++
++        # Test case for issue #32247 and #32254.
++        for _ in range(20):
++            check_output('tc qdisc replace dev dummy98 root fq')
++            self.assertFalse(networkd_is_failed())
++            check_output('tc qdisc replace dev dummy98 root fq pacing')
++            self.assertFalse(networkd_is_failed())
++            check_output('tc qdisc replace dev dummy98 handle 10: root tbf rate 0.5mbit burst 5kb latency 70ms peakrate 1mbit minburst 1540')
++            self.assertFalse(networkd_is_failed())
++            check_output('tc qdisc add dev dummy98 parent 10:1 handle 100: sfq')
++            self.assertFalse(networkd_is_failed())
++
+ class NetworkdStateFileTests(unittest.TestCase, Utilities):
+ 
+     def setUp(self):
+
+From 632d321050f58fe1b5bed7cfe769d212377c0301 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 13 Apr 2024 08:46:44 +0900
+Subject: [PATCH] network/tc: fix stack overflow when dropping tclass or qdisc
+
+Fixes a bug introduced by be8e93390003e45acbb318c6e1e48fbc3c772f78 (v255).
+
+Fixes #32247.
+Fixes #32254.
+
+diff --git a/src/network/tc/qdisc.c b/src/network/tc/qdisc.c
+index 75bcbbf01d..55ce16600a 100644
+--- a/src/network/tc/qdisc.c
++++ b/src/network/tc/qdisc.c
+@@ -293,14 +293,20 @@ QDisc* qdisc_drop(QDisc *qdisc) {
+ 
+         link = ASSERT_PTR(qdisc->link);
+ 
++        qdisc_mark(qdisc); /* To avoid stack overflow. */
++
+         /* also drop all child classes assigned to the qdisc. */
+         SET_FOREACH(tclass, link->tclasses) {
++                if (tclass_is_marked(tclass))
++                        continue;
++
+                 if (TC_H_MAJ(tclass->classid) != qdisc->handle)
+                         continue;
+ 
+                 tclass_drop(tclass);
+         }
+ 
++        qdisc_unmark(qdisc);
+         qdisc_enter_removed(qdisc);
+ 
+         if (qdisc->state == 0) {
+diff --git a/src/network/tc/tclass.c b/src/network/tc/tclass.c
+index ab8f79ac5b..63229ec6e8 100644
+--- a/src/network/tc/tclass.c
++++ b/src/network/tc/tclass.c
+@@ -260,14 +260,20 @@ TClass* tclass_drop(TClass *tclass) {
+ 
+         link = ASSERT_PTR(tclass->link);
+ 
++        tclass_mark(tclass); /* To avoid stack overflow. */
++
+         /* Also drop all child qdiscs assigned to the class. */
+         SET_FOREACH(qdisc, link->qdiscs) {
++                if (qdisc_is_marked(qdisc))
++                        continue;
++
+                 if (qdisc->parent != tclass->classid)
+                         continue;
+ 
+                 qdisc_drop(qdisc);
+         }
+ 
++        tclass_unmark(tclass);
+         tclass_enter_removed(tclass);
+ 
+         if (tclass->state == 0) {
+
