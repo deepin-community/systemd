@@ -1,3 +1,9 @@
+systemd (255.2-4deepin54) unstable; urgency=medium
+
+  * Fix journal not rotating unrelated files when full or corrupted, preventing unprivileged users from wiping system journals
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 03 Aug 2026 11:00:00 +0800
+
 systemd (255.2-4deepin53) unstable; urgency=medium
 
   * Fix atomic copy in replace mode to not unlink already-published target on later fsync/close failures

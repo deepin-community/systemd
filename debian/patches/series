@@ -65,3 +65,4 @@ CVE-2026-4105.patch
 fix-udev-util-bound-leading-whitespace-skip.patch
 fix-nss-resolve-blank-array-checks-improve-nss-status-codes.patch
 fix-copy-keep-replaced-target-after-publish-errors.patch
+fix-journal-do-not-rotate-unrelated-files.patch
