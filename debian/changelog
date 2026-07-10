@@ -1,3 +1,9 @@
+systemd (255.2-4deepin43) unstable; urgency=medium
+
+  * Fix network/ndisc on-link prefix handling: drop prefix route when valid lifetime is zero and do nothing when on-link flag is zero
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 10 Jul 2026 15:00:00 +0800
+
 systemd (255.2-4deepin42) unstable; urgency=medium
 
   * Align signal table formatting and make usleep_safe() return early for zero delay

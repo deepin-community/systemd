@@ -1,0 +1,69 @@
+From dd63f00c6471971e96e4f71f186979230ddaf3d1 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Fri, 12 Apr 2024 08:46:34 +0200
+Subject: [PATCH] Merge pull request #32240 from
+ yuwata/network-ndisc-fix-on-link-prefix
+
+network/ndisc: fixlets for on-link prefix
+
+From b26336225453ec8d2a3072c074e3bd926ce08e7a Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 12 Apr 2024 04:38:42 +0900
+Subject: [PATCH] network/ndisc: drop onlink prefix when valid lifetime is zero
+
+Replaces 155d7a2c049cf866a0bfde8de371f09dfb3b6f29.
+
+From 9f368d9eb2c15ce38f5643174375f986795ce84c Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 12 Apr 2024 04:24:57 +0900
+Subject: [PATCH] network/ndisc: do nothing for existing routes if on-link flag
+ is zero
+
+This effectively reverts commit 155d7a2c049cf866a0bfde8de371f09dfb3b6f29.
+
+From RFC 4861 section 6.3.4:
+> Note, however, that a Prefix Information option with the on-link flag
+> set to zero conveys no information concerning on-link determination and
+> MUST NOT be interpreted to mean that addresses covered by the prefix
+> are off-link.
+
+So, we should not drop previously configured routes when receieved a RA
+with Prefix Information option without on-link flag.
+
+Closes #28435.
+
+---
+ src/network/networkd-ndisc.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/network/networkd-ndisc.c b/src/network/networkd-ndisc.c
+index ab9eeb1..89c3de5 100644
+--- a/src/network/networkd-ndisc.c
++++ b/src/network/networkd-ndisc.c
+@@ -494,9 +494,23 @@ static int ndisc_router_process_onlink_prefix(Link *link, sd_ndisc_router *rt)
+         route->pref = preference;
+         route->lifetime_usec = lifetime_usec;
+ 
+-        r = ndisc_request_route(TAKE_PTR(route), link, rt);
+-        if (r < 0)
+-                return log_link_warning_errno(link, r, "Could not request prefix route: %m");
++        /* RFC 4861 section 6.3.4:
++         * - If the prefix is not already present in the Prefix List, and the Prefix Information option's
++         *   Valid Lifetime field is non-zero, create a new entry for the prefix and initialize its
++         *   invalidation timer to the Valid Lifetime value in the Prefix Information option.
++         *
++         * - If the prefix is already present in the host's Prefix List as the result of a previously
++         *   received advertisement, reset its invalidation timer to the Valid Lifetime value in the Prefix
++         *   Information option. If the new Lifetime value is zero, time-out the prefix immediately. */
++        if (lifetime_usec == 0) {
++                r = route_remove(route);
++                if (r < 0)
++                        return log_link_warning_errno(link, r, "Failed to remove prefix route: %m");
++        } else {
++                r = ndisc_request_route(TAKE_PTR(route), link, rt);
++                if (r < 0)
++                        return log_link_warning_errno(link, r, "Failed to request prefix route: %m");
++        }
+ 
+         return 0;
+ }
