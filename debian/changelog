@@ -1,3 +1,9 @@
+systemd (255.2-4deepin46) unstable; urgency=medium
+
+  * Fix dont_close[] array size in exec-invoke
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 23 Jul 2026 16:00:00 +0800
+
 systemd (255.2-4deepin45) unstable; urgency=medium
 
   * Limit DNSSEC signature validations and reduce NSEC3 iterations
