@@ -1,0 +1,33 @@
+From 838235be870e93284392501a4ccce16173d055a9 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Thu, 28 Mar 2024 17:05:33 +0100
+Subject: [PATCH] login: Fix fallback error handling
+
+Use a local sd_bus_error in manager_start_scope() so that the error
+state is properly propagated to the caller instead of being lost
+when sd_bus_call() fails.
+
+Adapted to apply to version without pidfd fallback logic.
+
+--- a/src/login/logind-dbus.c
++++ b/src/login/logind-dbus.c
+@@ -4133,6 +4133,7 @@ int manager_start_scope(
+                 char **job) {
+
+         _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
++        _cleanup_(sd_bus_error_free) sd_bus_error e = SD_BUS_ERROR_NULL;
+         int r;
+
+         assert(manager);
+@@ -4218,9 +4219,9 @@ int manager_start_scope(
+         if (r < 0)
+                 return r;
+
+-        r = sd_bus_call(manager->bus, m, 0, error, &reply);
++        r = sd_bus_call(manager->bus, m, 0, &e, &reply);
+         if (r < 0)
+-                return r;
++                return sd_bus_error_move(error, &e);
+
+         return strdup_job(reply, job);
+ }
