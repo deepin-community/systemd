@@ -1,0 +1,121 @@
+From 7072777163bef1877d65dce07e0914cf57c6ea38 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Fri, 5 Apr 2024 15:21:49 +0200
+Subject: [PATCH] core: Serialize both pid and pidfd
+
+If we try to deserialize only a pidfd that points to a process that
+has been reaped, creating the pidref object will fail, which means that
+we'll try to create a pidref object from the serialized pid that comes
+next. If the pid has already been reused, this will succeed and we'll
+now have a pidref that points to a different process.
+
+Let's avoid this issue by serializing both the pidfd and the pid and
+creating the pidref object directly from both. This means we'll reuse
+the deserialized pidfd instead of opening a new one. We'll then immediately
+notice the pidfd is dead and do the appropriate follow up depending on
+the unit type.
+diff --git a/src/core/scope.c b/src/core/scope.c
+index e4c27da..2841280 100644
+--- a/src/core/scope.c
++++ b/src/core/scope.c
+@@ -586,6 +586,8 @@ static int scope_deserialize_item(Unit *u, const char *key, const char *value, F
+         } else if (streq(key, "pids")) {
+                 _cleanup_(pidref_done) PidRef pidref = PIDREF_NULL;
+ 
++                /* We don't check if we already received the pid before here because unit_watch_pidref()
++                 * does this check internally and discards the new pidref if we already received it before. */
+                 if (deserialize_pidref(fds, value, &pidref) >= 0) {
+                         r = unit_watch_pidref(u, &pidref, /* exclusive= */ false);
+                         if (r < 0)
+diff --git a/src/core/service.c b/src/core/service.c
+index b9eb40c..a75c8aa 100644
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -3182,7 +3182,7 @@ static int service_deserialize_item(Unit *u, const char *key, const char *value,
+         } else if (streq(key, "main-pid")) {
+                 _cleanup_(pidref_done) PidRef pidref = PIDREF_NULL;
+ 
+-                if (deserialize_pidref(fds, value, &pidref) >= 0)
++                if (!pidref_is_set(&s->main_pid) && deserialize_pidref(fds, value, &pidref) >= 0)
+                         (void) service_set_main_pidref(s, &pidref);
+ 
+         } else if (streq(key, "main-pid-known")) {
+diff --git a/src/shared/serialize.c b/src/shared/serialize.c
+index 7099f67..0d27bbf 100644
+--- a/src/shared/serialize.c
++++ b/src/shared/serialize.c
+@@ -188,17 +188,23 @@ int serialize_pidref(FILE *f, FDSet *fds, const char *key, PidRef *pidref) {
+         if (!pidref_is_set(pidref))
+                 return 0;
+ 
+-        /* If we have a pidfd we serialize the fd and encode the fd number prefixed by "@" in the
+-         * serialization. Otherwise we serialize the numeric PID as it is. */
+-
+-        if (pidref->fd < 0)
+-                return serialize_item_format(f, key, PID_FMT, pidref->pid);
++        /* We always serialize the pid separately, to keep downgrades mostly working (older versions will
++         * deserialize the pid and silently fail to deserialize the pidfd). If we also have a pidfd, we
++         * serialize both the pid and pidfd, so that we can construct the exact same pidref after
++         * deserialization (this doesn't work with only the pidfd, as we can't retrieve the original pid
++         * from the pidfd anymore if the process is reaped). */
++
++        if (pidref->fd >= 0) {
++                copy = fdset_put_dup(fds, pidref->fd);
++                if (copy < 0)
++                        return log_error_errno(copy, "Failed to add file descriptor to serialization set: %m");
+ 
+-        copy = fdset_put_dup(fds, pidref->fd);
+-        if (copy < 0)
+-                return log_error_errno(copy, "Failed to add file descriptor to serialization set: %m");
++                r = serialize_item_format(f, key, "@%i:" PID_FMT, copy, pidref->pid);
++                if (r < 0)
++                        return r;
++        }
+ 
+-        return serialize_item_format(f, key, "@%i", copy);
++        return serialize_item_format(f, key, PID_FMT, pidref->pid);
+ }
+ 
+ int serialize_ratelimit(FILE *f, const char *key, const RateLimit *rl) {
+@@ -476,12 +482,39 @@ int deserialize_pidref(FDSet *fds, const char *value, PidRef *ret) {
+ 
+         e = startswith(value, "@");
+         if (e) {
+-                int fd = deserialize_fd(fds, e);
++                _cleanup_free_ char *fdstr = NULL, *pidstr = NULL;
++                _cleanup_close_ int fd = -EBADF;
++
++                r = extract_many_words(&e, ":", /* flags = */ 0, &fdstr, &pidstr);
++                if (r < 0)
++                        return log_debug_errno(r, "Failed to deserialize pidref '%s': %m", e);
++                if (r == 0)
++                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Cannot deserialize pidref from empty string.");
++
++                assert(r <= 2);
+ 
++                fd = deserialize_fd(fds, fdstr);
+                 if (fd < 0)
+                         return fd;
+ 
+-                r = pidref_set_pidfd_consume(ret, fd);
++                /* The serialization format changed after 255.4. In systemd <= 255.4 only pidfd is
++                 * serialized, but that causes problems when reconstructing pidref (see serialize_pidref for
++                 * details). After 255.4 the pid is serialized as well even if we have a pidfd, but we still
++                 * need to support older format as we might be upgrading from a version that still uses the
++                 * old format. */
++                if (pidstr) {
++                        pid_t pid;
++
++                        r = parse_pid(pidstr, &pid);
++                        if (r < 0)
++                                return log_debug_errno(r, "Failed to parse PID: %s", pidstr);
++
++                        *ret = (PidRef) {
++                                .pid = pid,
++                                .fd = TAKE_FD(fd),
++                        };
++                } else
++                        r = pidref_set_pidfd_consume(ret, TAKE_FD(fd));
+         } else {
+                 pid_t pid;
+ 
