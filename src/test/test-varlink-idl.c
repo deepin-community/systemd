@@ -13,6 +13,7 @@
 #include "varlink-io.systemd.PCRExtend.h"
 #include "varlink-io.systemd.Resolve.Monitor.h"
 #include "varlink-io.systemd.Resolve.h"
+#include "varlink-io.systemd.StorageProvider.h"
 #include "varlink-io.systemd.UserDatabase.h"
 #include "varlink-io.systemd.oom.h"
 #include "varlink-io.systemd.service.h"
@@ -142,6 +143,8 @@ TEST(parse_format) {
         test_parse_format_one(&vl_interface_io_systemd_service);
         print_separator();
         test_parse_format_one(&vl_interface_io_systemd_sysext);
+        print_separator();
+        test_parse_format_one(&vl_interface_io_systemd_StorageProvider);
         print_separator();
         test_parse_format_one(&vl_interface_xyz_test);
 }

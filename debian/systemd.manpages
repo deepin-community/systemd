@@ -5,6 +5,7 @@ debian/tmp/usr/share/man/man1/journalctl.1
 debian/tmp/usr/share/man/man1/localectl.1
 debian/tmp/usr/share/man/man1/loginctl.1
 debian/tmp/usr/share/man/man1/networkctl.1
+debian/tmp/usr/share/man/man1/storagectl.1
 debian/tmp/usr/share/man/man1/systemctl.1
 debian/tmp/usr/share/man/man1/systemd.1
 debian/tmp/usr/share/man/man1/systemd-ac-power.1
@@ -34,6 +35,7 @@ debian/tmp/usr/share/man/man1/systemd-tty-ask-password-agent.1
 debian/tmp/usr/share/man/man1/systemd-umount.1
 debian/tmp/usr/share/man/man1/timedatectl.1
 debian/tmp/usr/share/man/man1/varlinkctl.1
+debian/tmp/usr/share/man/man1/mount.storage.1
 debian/tmp/usr/share/man/man5/binfmt.d.5
 debian/tmp/usr/share/man/man5/dnssec-trust-anchors.d.5
 debian/tmp/usr/share/man/man5/environment.d.5
@@ -240,6 +242,12 @@ debian/tmp/usr/share/man/man8/systemd-shutdown.8
 debian/tmp/usr/share/man/man8/systemd-sleep.8
 debian/tmp/usr/share/man/man8/systemd-socket-proxyd.8
 debian/tmp/usr/share/man/man8/systemd-soft-reboot.service.8
+debian/tmp/usr/share/man/man8/systemd-storage-block.8
+debian/tmp/usr/share/man/man8/systemd-storage-block.socket.8
+debian/tmp/usr/share/man/man8/systemd-storage-block@.service.8
+debian/tmp/usr/share/man/man8/systemd-storage-fs.8
+debian/tmp/usr/share/man/man8/systemd-storage-fs.socket.8
+debian/tmp/usr/share/man/man8/systemd-storage-fs@.service.8
 debian/tmp/usr/share/man/man8/systemd-storagetm.8
 debian/tmp/usr/share/man/man8/systemd-storagetm.service.8
 debian/tmp/usr/share/man/man8/systemd-suspend.service.8

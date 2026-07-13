@@ -172,7 +172,6 @@ static int on_connect(VarlinkServer *s, Varlink *link, void *userdata) {
         assert_se(varlink_get_peer_uid(link, &uid) >= 0);
         assert_se(getuid() == uid);
         assert_se(varlink_set_allow_fd_passing_input(link, true) >= 0);
-        assert_se(varlink_set_allow_fd_passing_output(link, true) >= 0);
 
         return 0;
 }
@@ -265,6 +264,8 @@ static void *thread(void *arg) {
         }
         assert_se(x == 6);
 
+        assert_se(varlink_collect(c, "io.test.IDontExist", i, NULL, NULL, NULL) >= 0);
+
         assert_se(varlink_call(c, "io.test.DoSomething", i, &o, &e, NULL) >= 0);
         assert_se(json_variant_integer(json_variant_by_key(o, "sum")) == 88 + 99);
         assert_se(!e);
@@ -343,7 +344,7 @@ int main(int argc, char *argv[]) {
         assert_se(sd_event_source_set_priority(block_event, SD_EVENT_PRIORITY_IMPORTANT) >= 0);
         block_write_fd = TAKE_FD(block_fds[1]);
 
-        assert_se(varlink_server_new(&s, VARLINK_SERVER_ACCOUNT_UID) >= 0);
+        assert_se(varlink_server_new(&s, VARLINK_SERVER_ACCOUNT_UID|VARLINK_SERVER_ALLOW_FD_PASSING_OUTPUT) >= 0);
         assert_se(varlink_server_set_description(s, "our-server") >= 0);
 
         assert_se(varlink_server_bind_method(s, "io.test.PassFD", method_passfd) >= 0);

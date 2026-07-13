@@ -20,6 +20,7 @@ custom_target(
 
 items = [['busctl',              ''],
          ['journalctl',          ''],
+         ['storagectl',          ''],
          ['systemd-analyze',     ''],
          ['systemd-cat',         ''],
          ['systemd-cgls',        ''],

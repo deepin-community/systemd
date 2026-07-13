@@ -23,6 +23,7 @@ usr/bin/kernel-install
 usr/bin/localectl
 usr/bin/loginctl
 usr/bin/networkctl
+usr/bin/storagectl
 usr/bin/systemctl
 usr/bin/systemd-ac-power
 usr/bin/systemd-analyze
@@ -55,6 +56,7 @@ usr/bin/systemd-tty-ask-password-agent
 usr/bin/systemd-umount
 usr/bin/timedatectl
 usr/bin/varlinkctl
+usr/sbin/mount.storage
 usr/lib/environment.d/99-environment.conf
 usr/lib/kernel/install.conf
 usr/lib/kernel/install.d/50-depmod.install
@@ -131,6 +133,8 @@ usr/lib/systemd/systemd-rfkill
 usr/lib/systemd/systemd-shutdown
 usr/lib/systemd/systemd-sleep
 usr/lib/systemd/systemd-socket-proxyd
+usr/lib/systemd/systemd-storage-block
+usr/lib/systemd/systemd-storage-fs
 usr/lib/systemd/systemd-storagetm
 usr/lib/systemd/systemd-sulogin-shell
 usr/lib/systemd/systemd-sysctl
@@ -244,6 +248,8 @@ usr/lib/systemd/system/sockets.target.wants/systemd-journald-dev-log.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-journald.socket
 [amd64 i386 arm64 armhf riscv64] <!stage1> usr/lib/systemd/system/sockets.target.wants/systemd-pcrextend.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-sysext.socket
+usr/lib/systemd/system/sockets.target.wants/systemd-storage-block.socket
+usr/lib/systemd/system/sockets.target.wants/systemd-storage-fs.socket
 usr/lib/systemd/system/soft-reboot.target
 usr/lib/systemd/system/sound.target
 usr/lib/systemd/system/storage-target-mode.target
@@ -359,6 +365,10 @@ usr/lib/systemd/system/systemd-repart.service
 usr/lib/systemd/system/systemd-rfkill.service
 usr/lib/systemd/system/systemd-rfkill.socket
 usr/lib/systemd/system/systemd-soft-reboot.service
+usr/lib/systemd/system/systemd-storage-block.socket
+usr/lib/systemd/system/systemd-storage-block@.service
+usr/lib/systemd/system/systemd-storage-fs.socket
+usr/lib/systemd/system/systemd-storage-fs@.service
 usr/lib/systemd/system/systemd-storagetm.service
 usr/lib/systemd/system/systemd-suspend.service
 usr/lib/systemd/system/systemd-suspend-then-hibernate.service
@@ -421,7 +431,10 @@ usr/lib/systemd/user/session.slice
 usr/lib/systemd/user/shutdown.target
 usr/lib/systemd/user/smartcard.target
 usr/lib/systemd/user/sockets.target
+usr/lib/systemd/user/sockets.target.wants/systemd-storage-fs.socket
 usr/lib/systemd/user/sound.target
+usr/lib/systemd/user/systemd-storage-fs.socket
+usr/lib/systemd/user/systemd-storage-fs@.service
 usr/lib/systemd/user/systemd-exit.service
 usr/lib/systemd/user/systemd-tmpfiles-clean.service
 usr/lib/systemd/user/systemd-tmpfiles-clean.timer
@@ -456,6 +469,7 @@ usr/share/bash-completion/completions/kernel-install
 usr/share/bash-completion/completions/localectl
 usr/share/bash-completion/completions/loginctl
 usr/share/bash-completion/completions/networkctl
+usr/share/bash-completion/completions/storagectl
 usr/share/bash-completion/completions/systemctl
 usr/share/bash-completion/completions/systemd-analyze
 usr/share/bash-completion/completions/systemd-cat
@@ -485,6 +499,7 @@ usr/share/dbus-1/system-services/org.freedesktop.systemd1.service
 usr/share/dbus-1/system-services/org.freedesktop.timedate1.service
 usr/share/doc/systemd/
 usr/share/locale/
+usr/share/polkit-1/actions/io.systemd.storage.policy
 usr/share/polkit-1/actions/org.freedesktop.hostname1.policy
 usr/share/polkit-1/actions/org.freedesktop.locale1.policy
 usr/share/polkit-1/actions/org.freedesktop.login1.policy
@@ -503,6 +518,7 @@ usr/share/zsh/vendor-completions/_kernel-install
 usr/share/zsh/vendor-completions/_localectl
 usr/share/zsh/vendor-completions/_loginctl
 usr/share/zsh/vendor-completions/_networkctl
+usr/share/zsh/vendor-completions/_storagectl
 usr/share/zsh/vendor-completions/_sd_hosts_or_user_at_host
 usr/share/zsh/vendor-completions/_sd_outputmodes
 usr/share/zsh/vendor-completions/_sd_unit_files
