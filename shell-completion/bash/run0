@@ -1,0 +1,81 @@
+# shellcheck shell=bash
+# run0(1) completion                      -*- shell-script -*-
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+__run0_systemctl() {
+    systemctl --system --full --no-legend --no-pager --plain "$@"
+}
+
+__run0_get_slice_units() {
+    __run0_systemctl list-units --all --type=slice 2>/dev/null |
+        { while read -r a b c d; do echo " $a"; done; }
+}
+
+__run0_get_machines() {
+    local a b
+    { machinectl list --full --max-addresses=0 --no-legend --no-pager 2>/dev/null; echo ".host"; } |
+        { while read -r a b; do echo " $a"; done; } |
+        sort -u
+}
+
+_run0() {
+    local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+    local opts_with_values=(
+        --machine --unit --property --description --slice -u --user -g --group --nice -D --chdir --setenv
+    )
+    local opts="${opts_with_values[*]} -h --help -V --version --no-ask-password -n --non-interactive"
+    opts="$opts --slice-inherit --pty --pipe --empower"
+    local i
+
+    for ((i=1; i <= COMP_CWORD; i++)); do
+        if [[ ${COMP_WORDS[i]} != -* ]]; then
+            _command_offset "$i"
+            return
+        fi
+
+        [[ $i -lt $COMP_CWORD && " ${opts_with_values[*]} " =~ " ${COMP_WORDS[i]} " ]] && ((i++))
+    done
+
+    case "$prev" in
+        --unit|--description|--nice|--setenv)
+            return
+            ;;
+        --slice)
+            local comps
+            comps=$(__run0_get_slice_units)
+            COMPREPLY=( $(compgen -W "$comps" -- "$cur") )
+            return
+            ;;
+        --property)
+            local comps='CPUAccounting= MemoryAccounting= BlockIOAccounting= SendSIGHUP=
+                         SendSIGKILL= User= Group= Nice= Environment= KillMode=
+                         PrivateTmp= PrivateDevices= PrivateNetwork= NoNewPrivileges=
+                         WorkingDirectory= RootDirectory= ReadWritePaths= ReadOnlyPaths='
+            COMPREPLY=( $(compgen -W "$comps" -- "$cur") )
+            return
+            ;;
+        --machine)
+            local comps
+            comps=$(__run0_get_machines)
+            COMPREPLY=( $(compgen -W "$comps" -- "$cur") )
+            return
+            ;;
+        -u|--user)
+            COMPREPLY=( $(compgen -u -- "$cur") )
+            return
+            ;;
+        -g|--group)
+            COMPREPLY=( $(compgen -g -- "$cur") )
+            return
+            ;;
+        -D|--chdir)
+            compopt -o filenames
+            COMPREPLY=( $(compgen -A directory -- "$cur") )
+            return
+            ;;
+    esac
+
+    COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+}
+
+complete -F _run0 run0

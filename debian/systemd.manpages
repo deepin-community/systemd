@@ -27,6 +27,7 @@ debian/tmp/usr/share/man/man1/systemd-machine-id-setup.1
 debian/tmp/usr/share/man/man1/systemd-mount.1
 debian/tmp/usr/share/man/man1/systemd-notify.1
 debian/tmp/usr/share/man/man1/systemd-path.1
+debian/tmp/usr/share/man/man1/run0.1
 debian/tmp/usr/share/man/man1/systemd-run.1
 debian/tmp/usr/share/man/man1/systemd-socket-activate.1
 debian/tmp/usr/share/man/man1/systemd-stdio-bridge.1

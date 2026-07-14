@@ -45,6 +45,7 @@ usr/bin/systemd-mount
 usr/bin/systemd-notify
 usr/bin/systemd-path
 usr/bin/systemd-repart
+usr/bin/run0
 usr/bin/systemd-run
 usr/bin/systemd-socket-activate
 usr/bin/systemd-stdio-bridge
@@ -467,6 +468,7 @@ usr/share/bash-completion/completions/systemd-detect-virt
 usr/share/bash-completion/completions/systemd-dissect
 usr/share/bash-completion/completions/systemd-id128
 usr/share/bash-completion/completions/systemd-path
+usr/share/bash-completion/completions/run0
 usr/share/bash-completion/completions/systemd-run
 usr/share/bash-completion/completions/systemd-sysext
 usr/share/bash-completion/completions/timedatectl
@@ -493,6 +495,7 @@ usr/share/polkit-1/actions/org.freedesktop.systemd1.policy
 usr/share/polkit-1/actions/org.freedesktop.timedate1.policy
 usr/share/polkit-1/actions/org.freedesktop.timesync1.policy
 usr/share/polkit-1/rules.d/systemd-networkd.rules
+usr/share/polkit-1/rules.d/empower.rules
 usr/share/systemd/kbd-model-map
 usr/share/systemd/language-fallback-map
 usr/share/zsh/vendor-completions/_bootctl
@@ -512,6 +515,7 @@ usr/share/zsh/vendor-completions/_systemd-analyze
 usr/share/zsh/vendor-completions/_systemd-delta
 usr/share/zsh/vendor-completions/_systemd-inhibit
 usr/share/zsh/vendor-completions/_systemd-path
+usr/share/zsh/vendor-completions/_run0
 usr/share/zsh/vendor-completions/_systemd-run
 usr/share/zsh/vendor-completions/_systemd-tmpfiles
 usr/share/zsh/vendor-completions/_timedatectl
