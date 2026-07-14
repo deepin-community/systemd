@@ -53,3 +53,4 @@ add-numa-policy.patch
 fix-timesyncd-randomize-transmit-timestamp.patch
 fix-socket-util-remove-variable-ensure-nul-termination.patch
 refactor-signal-time-util-trivial-cleanups.patch
+fix-doc-various-fixes-and-resolved-id-rename.patch
