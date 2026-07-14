@@ -1,0 +1,710 @@
+From 29ba6bddc5e4a937c7d7380d78111d9aef20d76f Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 22 Apr 2024 17:41:39 +0200
+Subject: [PATCH] Merge pull request #32399 from poettering/doc-fixes-256
+
+various documentation fixes (plus minor other work)
+
+diff --git a/man/common-variables.xml b/man/common-variables.xml
+index 81425e5..1aa31e1 100644
+--- a/man/common-variables.xml
++++ b/man/common-variables.xml
+@@ -137,6 +137,9 @@
+         </varlistentry>
+       </variablelist>
+ 
++      <para>Note that setting the regular <varname>$LESS</varname> environment variable has no effect
++      for <command>less</command> invocations by systemd tools.</para>
++
+       <para>See
+       <citerefentry project='man-pages'><refentrytitle>less</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+       for more discussion.</para></listitem>
+@@ -146,7 +149,10 @@
+       <term><varname>$SYSTEMD_LESSCHARSET</varname></term>
+ 
+       <listitem><para>Override the charset passed to <command>less</command> (by default <literal>utf-8</literal>, if
+-      the invoking terminal is determined to be UTF-8 compatible).</para></listitem>
++      the invoking terminal is determined to be UTF-8 compatible).</para>
++
++      <para>Note that setting the regular <varname>$LESSCHARSET</varname> environment variable has no effect
++      for <command>less</command> invocations by systemd tools.</para></listitem>
+     </varlistentry>
+ 
+     <varlistentry id='lesssecure'>
+diff --git a/man/journald.conf.xml b/man/journald.conf.xml
+index e150d04..7f20692 100644
+--- a/man/journald.conf.xml
++++ b/man/journald.conf.xml
+@@ -403,31 +403,21 @@
+         <term><varname>MaxLevelKMsg=</varname></term>
+         <term><varname>MaxLevelConsole=</varname></term>
+         <term><varname>MaxLevelWall=</varname></term>
+-
+-        <listitem><para>Controls the maximum log level of messages
+-        that are stored in the journal, forwarded to syslog, kmsg, the
+-        console or wall (if that is enabled, see above). As argument,
+-        takes one of
+-        <literal>emerg</literal>,
+-        <literal>alert</literal>,
+-        <literal>crit</literal>,
+-        <literal>err</literal>,
+-        <literal>warning</literal>,
+-        <literal>notice</literal>,
+-        <literal>info</literal>,
+-        <literal>debug</literal>,
+-        or integer values in the range of 0–7 (corresponding to the
+-        same levels). Messages equal or below the log level specified
+-        are stored/forwarded, messages above are dropped. Defaults to
+-        <literal>debug</literal> for <varname>MaxLevelStore=</varname>
+-        and <varname>MaxLevelSyslog=</varname>, to ensure that the all
+-        messages are stored in the journal and forwarded to syslog.
+-        Defaults to
+-        <literal>notice</literal> for <varname>MaxLevelKMsg=</varname>,
+-        <literal>info</literal> for <varname>MaxLevelConsole=</varname>,
+-        and <literal>emerg</literal> for
+-        <varname>MaxLevelWall=</varname>. These settings may be
+-        overridden at boot time with the kernel command line options
++        <term><varname>MaxLevelSocket=</varname></term>
++
++        <listitem><para>Controls the maximum log level of messages that are stored in the journal, forwarded
++        to syslog, kmsg, the console, the wall, or a socket (if that is enabled, see above).  As argument,
++        takes one of <literal>emerg</literal>, <literal>alert</literal>, <literal>crit</literal>,
++        <literal>err</literal>, <literal>warning</literal>, <literal>notice</literal>,
++        <literal>info</literal>, <literal>debug</literal>, or integer values in the range of 0–7
++        (corresponding to the same levels). Messages equal or below the log level specified are
++        stored/forwarded, messages above are dropped. Defaults to <literal>debug</literal> for
++        <varname>MaxLevelStore=</varname>, <varname>MaxLevelSyslog=</varname> and
++        <varname>MaxLevelSocket=</varname>, to ensure that the all messages are stored in the journal,
++        forwarded to syslog and the socket if one exists.  Defaults to <literal>notice</literal> for
++        <varname>MaxLevelKMsg=</varname>, <literal>info</literal> for <varname>MaxLevelConsole=</varname>,
++        and <literal>emerg</literal> for <varname>MaxLevelWall=</varname>. These settings may be overridden
++        at boot time with the kernel command line options
+         <literal>systemd.journald.max_level_store=</literal>,
+         <literal>systemd.journald.max_level_syslog=</literal>,
+         <literal>systemd.journald.max_level_kmsg=</literal>,
+diff --git a/man/org.freedesktop.resolve1.xml b/man/org.freedesktop.resolve1.xml
+index f9cba4f..f15e34a 100644
+--- a/man/org.freedesktop.resolve1.xml
++++ b/man/org.freedesktop.resolve1.xml
+@@ -103,7 +103,7 @@ node /org/freedesktop/resolve1 {
+       SetLinkDNSSECNegativeTrustAnchors(in  i ifindex,
+                                         in  as names);
+       RevertLink(in  i ifindex);
+-      RegisterService(in  s name,
++      RegisterService(in  s id,
+                       in  s name_template,
+                       in  s type,
+                       in  q service_port,
+@@ -156,16 +156,6 @@ node /org/freedesktop/resolve1 {
+ };
+     </programlisting>
+ 
+-    <!--method RegisterService is not documented!-->
+-
+-    <!--method UnregisterService is not documented!-->
+-
+-    <!--method FlushCaches is not documented!-->
+-
+-    <!--method ResetServerFeatures is not documented!-->
+-
+-    <!--property DNSSECNegativeTrustAnchors is not documented!-->
+-
+     <!--Autogenerated cross-references for systemd.directives, do not edit-->
+ 
+     <variablelist class="dbus-interface" generated="True" extra-ref="org.freedesktop.resolve1.Manager"/>
+@@ -433,6 +423,30 @@ node /org/freedesktop/resolve1 {
+       <para>The <function>RevertLink()</function> method may be used to revert all per-link settings
+       described above to the defaults.</para>
+ 
++      <para>The <function>FlushCaches()</function> flushes all resource record caches maintained by the
++      resolver, and ensures that any subsequent lookups re-request their responses from their sources.</para>
++
++      <para>The <function>ResetServerFeatures()</function> flushes any feature information learned about
++      remote DNS servers. This ensures that subsequent lookups will be initially attempted at the highest DNS
++      protocol feature level again, possibly requiring a (potentially slow) downgrade cycle to recognize the
++      supported feature level again.</para>
++
++      <para>The <function>RegisterService()</function> method may be used to register a DNS-SD service on the
++      host. This functionality is closely related to the functionality provided by
++      <citerefentry><refentrytitle>systemd.dnssd</refentrytitle><manvolnum>5</manvolnum></citerefentry>
++      files. It takes a server identifier string as first parameter (this is jus a local identifier, and
++      should be chosen so that it neither collides with the basename of <filename>*.dnssd</filename> files
++      nor with names chosen by other IPC clients). It also takes a name template string for the DNS-SD
++      service name visible on the network. This string is subject to specifier expansation, as documented for
++      the <varname>Name=</varname> setting in <filename>*.dnssd</filename> files. It also takes a service
++      type string containing the DNS-SD service type, as well as an IP port, a priority/weight pair for the
++      DNS-SD SRV record. Finally, it takes an array of TXT record data. It returns an object path which may be
++      used as handle to the registered service.</para>
++
++      <para>The <function>UnregisterService()</function> method undoes the effect of
++      <function>RegisterService()</function> and deletes a DNS-SD service previously created via IPC
++      again.</para>
++
+       <refsect3>
+         <title>The Flags Parameter</title>
+ 
+@@ -635,6 +649,9 @@ node /org/freedesktop/resolve1 {
+       enabled. Possible values are <literal>yes</literal> (enabled), <literal>no</literal> (disabled),
+       <literal>udp</literal> (only the UDP listener is enabled), and <literal>tcp</literal> (only the TCP
+       listener is enabled).</para>
++
++      <para>The <varname>DNSSECNegativeTrustAnchors</varname> property contains a list of recognized DNSSEC
++      negative trust anchors and contains a list of domains.</para>
+     </refsect2>
+   </refsect1>
+ 
+@@ -689,8 +706,6 @@ node /org/freedesktop/resolve1/link/_1 {
+ };
+     </programlisting>
+ 
+-    <!--property DNSSECNegativeTrustAnchors is not documented!-->
+-
+     <!--Autogenerated cross-references for systemd.directives, do not edit-->
+ 
+     <variablelist class="dbus-interface" generated="True" extra-ref="org.freedesktop.resolve1.Link"/>
+diff --git a/man/rules/meson.build b/man/rules/meson.build
+index 5dc3e08..9e46672 100644
+--- a/man/rules/meson.build
++++ b/man/rules/meson.build
+@@ -548,7 +548,8 @@ manpages = [
+   '3',
+   ['sd_event_add_inotify_fd',
+    'sd_event_inotify_handler_t',
+-   'sd_event_source_get_inotify_mask'],
++   'sd_event_source_get_inotify_mask',
++   'sd_event_source_get_inotify_path'],
+   ''],
+  ['sd_event_add_io',
+   '3',
+diff --git a/man/systemctl.xml b/man/systemctl.xml
+index 1d791b4..e695f26 100644
+--- a/man/systemctl.xml
++++ b/man/systemctl.xml
+@@ -1318,36 +1318,49 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
+           <term><command>show-environment</command></term>
+ 
+           <listitem>
+-            <para>Dump the systemd manager environment block. This is the environment
+-            block that is passed to all processes the manager spawns. The environment
+-            block will be dumped in straightforward form suitable for sourcing into
+-            most shells. If no special characters or whitespace is present in the variable
+-            values, no escaping is performed, and the assignments have the form
+-            <literal>VARIABLE=value</literal>. If whitespace or characters which have
+-            special meaning to the shell are present, dollar-single-quote escaping is
+-            used, and assignments have the form <literal>VARIABLE=$'value'</literal>.
+-            This syntax is known to be supported by
+-            <citerefentry project='die-net'><refentrytitle>bash</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+-            <citerefentry project='die-net'><refentrytitle>zsh</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+-            <citerefentry project='die-net'><refentrytitle>ksh</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+-            and
+-            <citerefentry project='die-net'><refentrytitle>busybox</refentrytitle><manvolnum>1</manvolnum></citerefentry>'s
+-            <citerefentry project='die-net'><refentrytitle>ash</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+-            but not
+-            <citerefentry project='die-net'><refentrytitle>dash</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+-            or
+-            <citerefentry project='die-net'><refentrytitle>fish</refentrytitle><manvolnum>1</manvolnum></citerefentry>.
++            <para>Dump the systemd manager environment block. This is the environment block that is passed to
++            all processes the manager spawns. The environment block will be dumped in straightforward form
++            suitable for sourcing into most shells. If no special characters or whitespace is present in the
++            variable values, no escaping is performed, and the assignments have the form
++            <literal>VARIABLE=value</literal>. If whitespace or characters which have special meaning to the
++            shell are present, dollar-single-quote escaping is used, and assignments have the form
++            <literal>VARIABLE=$'value'</literal>.  This syntax is known to be supported by <citerefentry
++            project='die-net'><refentrytitle>bash</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
++            <citerefentry
++            project='die-net'><refentrytitle>zsh</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
++            <citerefentry
++            project='die-net'><refentrytitle>ksh</refentrytitle><manvolnum>1</manvolnum></citerefentry>, and
++            <citerefentry
++            project='die-net'><refentrytitle>busybox</refentrytitle><manvolnum>1</manvolnum></citerefentry>'s
++            <citerefentry
++            project='die-net'><refentrytitle>ash</refentrytitle><manvolnum>1</manvolnum></citerefentry>, but
++            not <citerefentry
++            project='die-net'><refentrytitle>dash</refentrytitle><manvolnum>1</manvolnum></citerefentry> or
++            <citerefentry
++            project='die-net'><refentrytitle>fish</refentrytitle><manvolnum>1</manvolnum></citerefentry>.
+             </para>
++
++            <para>Note that this shows the <emphasis>effective</emphasis> block, i.e. the combination of
++            environment variables configured via configuration files, environment generators and via IPC
++            (i.e. via the <command>set-environment</command> described below). At the moment a unit process
++            is forked off this combined environment block will be further combined with per-unit environment
++            variables, which are not visible in this command.</para>
+           </listitem>
+         </varlistentry>
+         <varlistentry>
+           <term><command>set-environment <replaceable>VARIABLE=VALUE</replaceable>…</command></term>
+ 
+           <listitem>
+-            <para>Set one or more systemd manager environment variables, as specified on the command
++            <para>Set one or more service manager environment variables, as specified on the command
+             line. This command will fail if variable names and values do not conform to the rules listed
+             above.</para>
+ 
++            <para>Note that this operates on an environment block separate from the environment block
++            configured from service manager configuration and environment generators. Whenever a process is
++            invoked the two blocks are combined (also incorporating any per-service environment variables),
++            and passed to it. The <command>show-environment</command> verb will show the combination of the
++            blocks, see above.</para>
++
+             <xi:include href="version-info.xml" xpointer="v233"/>
+           </listitem>
+         </varlistentry>
+@@ -1355,11 +1368,16 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
+           <term><command>unset-environment <replaceable>VARIABLE</replaceable>…</command></term>
+ 
+           <listitem>
+-            <para>Unset one or more systemd manager environment
+-            variables. If only a variable name is specified, it will be
+-            removed regardless of its value. If a variable and a value
+-            are specified, the variable is only removed if it has the
+-            specified value.</para>
++            <para>Unset one or more systemd manager environment variables. If only a variable name is
++            specified, it will be removed regardless of its value. If a variable and a value are specified,
++            the variable is only removed if it has the specified value.</para>
++
++            <para>Note that this operates on an environment block separate from the environment block
++            configured from service manager configuration and environment generators. Whenever a process is
++            invoked the two blocks are combined (also incorporating any per-service environment variables),
++            and passed to it. The <command>show-environment</command> verb will show the combination of the
++            blocks, see above. Note that this means this command cannot be used to unset environment
++            variables defined in the service manager configuration files or via generators.</para>
+ 
+             <xi:include href="version-info.xml" xpointer="v233"/>
+           </listitem>
+diff --git a/man/systemd-journald.service.xml b/man/systemd-journald.service.xml
+index 31435b2..7e252ae 100644
+--- a/man/systemd-journald.service.xml
++++ b/man/systemd-journald.service.xml
+@@ -245,6 +245,24 @@ systemd-tmpfiles --create --prefix /var/log/journal</programlisting>
+         </listitem>
+ 
+       </varlistentry>
++
++      <varlistentry>
++        <term><varname>systemd.journald.max_level_store=</varname></term>
++        <term><varname>systemd.journald.max_level_syslog=</varname></term>
++        <term><varname>systemd.journald.max_level_kmsg=</varname></term>
++        <term><varname>systemd.journald.max_level_console=</varname></term>
++        <term><varname>systemd.journald.max_level_wall=</varname></term>
++        <term><varname>systemd.journald.max_level_socket=</varname></term>
++
++        <listitem><para>Controls the maximum log level of messages that are stored in the journal, forwarded
++        to syslog, kmsg, the console, the wall, or a socket. This kernel command line options override the
++        settings of the same names in the
++        <citerefentry><refentrytitle>journald.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
++        file.</para>
++
++        <xi:include href="version-info.xml" xpointer="v232"/>
++        </listitem>
++      </varlistentry>
+     </variablelist>
+ 
+     <para>Note that these kernel command line options are only honoured by the default namespace, see
+diff --git a/man/systemd-socket-proxyd.xml b/man/systemd-socket-proxyd.xml
+index 57a6827..59a1073 100644
+--- a/man/systemd-socket-proxyd.xml
++++ b/man/systemd-socket-proxyd.xml
+@@ -53,6 +53,11 @@
+     <literal>Accept=no</literal> and an event-driven
+     design that scales better with the number of
+     connections.</para>
++
++    <para>Note that <command>systemd-socket-proxyd</command> will not forward socket side channel
++    information, i.e. will not forward <constant>SCM_RIGHTS</constant>, <constant>SCM_CREDENTIALS</constant>,
++    <constant>SCM_SECURITY</constant>, <constant>SO_PEERCRED</constant>, <constant>SO_PEERPIDFD</constant>,
++    <constant>SO_PEERSEC</constant>, <constant>SO_PEERGROUPS</constant> and similar.</para>
+   </refsect1>
+   <refsect1>
+     <title>Options</title>
+diff --git a/man/systemd.exec.xml b/man/systemd.exec.xml
+index 525303c..ca01ac9 100644
+--- a/man/systemd.exec.xml
++++ b/man/systemd.exec.xml
+@@ -439,6 +439,9 @@
+         that in this case both read-only and regular bind mounts are reset, regardless which of the two settings is
+         used.</para>
+ 
++        <para>Using this option implies that a mount namespace is allocated for the unit, i.e. it implies the
++        effect of <varname>PrivateMounts=</varname> (see below).</para>
++
+         <para>This option is particularly useful when <varname>RootDirectory=</varname>/<varname>RootImage=</varname>
+         is used. In this case the source path refers to a path on the host file system, while the destination path
+         refers to a path below the root directory of the unit.</para>
+@@ -1369,6 +1372,11 @@ CapabilityBoundingSet=~CAP_B CAP_C</programlisting>
+     accessible to privileged processes. However, most namespacing settings, that will not work on their own in user
+     services, will work when used in conjunction with <varname>PrivateUsers=</varname><option>true</option>.</para>
+ 
++    <para>Note that the various options that turn directories read-only (such as
++    <varname>ProtectSystem=</varname>, <varname>ReadOnlyPaths=</varname>, …) do not affect the ability for
++    programs to connect to and communicate with <constant>AF_UNIX</constant> sockets in these
++    directores. These options cannot be used to lock down access to IPC services hence.</para>
++
+     <variablelist class='unit-directives'>
+ 
+       <varlistentry>
+@@ -1382,14 +1390,16 @@ CapabilityBoundingSet=~CAP_B CAP_C</programlisting>
+         mounted read-only, except for the API file system subtrees <filename>/dev/</filename>,
+         <filename>/proc/</filename> and <filename>/sys/</filename> (protect these directories using
+         <varname>PrivateDevices=</varname>, <varname>ProtectKernelTunables=</varname>,
+-        <varname>ProtectControlGroups=</varname>). This setting ensures that any modification of the vendor-supplied
+-        operating system (and optionally its configuration, and local mounts) is prohibited for the service. It is
+-        recommended to enable this setting for all long-running services, unless they are involved with system updates
+-        or need to modify the operating system in other ways. If this option is used,
+-        <varname>ReadWritePaths=</varname> may be used to exclude specific directories from being made read-only. This
+-        setting is implied if <varname>DynamicUser=</varname> is set. This setting cannot ensure protection in all
+-        cases. In general it has the same limitations as <varname>ReadOnlyPaths=</varname>, see below. Defaults to
+-        off.</para>
++        <varname>ProtectControlGroups=</varname>). This setting ensures that any modification of the
++        vendor-supplied operating system (and optionally its configuration, and local mounts) is prohibited
++        for the service. It is recommended to enable this setting for all long-running services, unless they
++        are involved with system updates or need to modify the operating system in other ways. If this option
++        is used, <varname>ReadWritePaths=</varname> may be used to exclude specific directories from being
++        made read-only. Similar, <varname>StateDirectory=</varname>, <varname>LogsDirectory=</varname>, … and
++        related directory settings (see below) also exclude the specific directories from the effect of
++        <varname>ProtectSystem=</varname>. This setting is implied if <varname>DynamicUser=</varname> is
++        set. This setting cannot ensure protection in all cases. In general it has the same limitations as
++        <varname>ReadOnlyPaths=</varname>, see below. Defaults to off.</para>
+ 
+         <xi:include href="version-info.xml" xpointer="v214"/></listitem>
+       </varlistentry>
+@@ -2360,9 +2370,10 @@ RestrictNamespaces=~cgroup net</programlisting>
+ 
+         <para>Other file system namespace unit settings — <varname>PrivateMounts=</varname>,
+         <varname>PrivateTmp=</varname>, <varname>PrivateDevices=</varname>, <varname>ProtectSystem=</varname>,
+-        <varname>ProtectHome=</varname>, <varname>ReadOnlyPaths=</varname>, <varname>InaccessiblePaths=</varname>,
+-        <varname>ReadWritePaths=</varname>, … — also enable file system namespacing in a fashion equivalent to this
+-        option. Hence it is primarily useful to explicitly request this behaviour if none of the other settings are
++        <varname>ProtectHome=</varname>, <varname>ReadOnlyPaths=</varname>,
++        <varname>InaccessiblePaths=</varname>, <varname>ReadWritePaths=</varname>,
++        <varname>BindPaths=</varname>, <varname>BindReadOnlyPaths=</varname>, … — also enable file system
++        namespacing in a fashion equivalent to this option. Hence it is primarily useful to explicitly request this behaviour if none of the other settings are
+         used.</para>
+ 
+         <xi:include href="system-or-user-ns.xml" xpointer="singular"/>
+@@ -3121,6 +3132,9 @@ StandardInputData=V2XigLJyZSBubyBzdHJhbmdlcnMgdG8gbG92ZQpZb3Uga25vdyB0aGUgcnVsZX
+         values are indexed may also be used to implement cross-unit log record matching. Assign an empty
+         string to reset the list.</para>
+ 
++        <para>Note that this functionality is currently only available in system services, not in per-user
++        services.</para>
++
+         <xi:include href="version-info.xml" xpointer="v236"/></listitem>
+       </varlistentry>
+ 
+@@ -3176,6 +3190,9 @@ StandardInputData=V2XigLJyZSBubyBzdHJhbmdlcnMgdG8gbG92ZQpZb3Uga25vdyB0aGUgcnVsZX
+         the kernel log buffer (kmsg), the systemd console, or sent as wall messages to all logged-in
+         users.</para>
+ 
++        <para>Note that this functionality is currently only available in system services, not in per-user
++        services.</para>
++
+         <xi:include href="version-info.xml" xpointer="v253"/></listitem>
+       </varlistentry>
+ 
+diff --git a/man/systemd.resource-control.xml b/man/systemd.resource-control.xml
+index 42f265c..5c61b74 100644
+--- a/man/systemd.resource-control.xml
++++ b/man/systemd.resource-control.xml
+@@ -749,6 +749,9 @@ CPUWeight=20   DisableControllers=cpu              /          \
+           <para>The system default for this setting may be controlled with <varname>DefaultIPAccounting=</varname> in
+           <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>.</para>
+ 
++          <para>Note that this functionality is currently only available for system services, not for
++          per-user services.</para>
++
+           <xi:include href="version-info.xml" xpointer="v235"/>
+         </listitem>
+       </varlistentry>
+@@ -865,8 +868,10 @@ CPUWeight=20   DisableControllers=cpu              /          \
+         <term><varname>SocketBindDeny=<replaceable>bind-rule</replaceable></varname></term>
+ 
+         <listitem>
+-          <para>Allow or deny binding a socket address to a socket by matching it with the <replaceable>bind-rule</replaceable> and
+-          applying a corresponding action if there is a match.</para>
++          <para>Configures restrictions on the ability of unit processes to invoke <citerefentry
++          project='man-pages'><refentrytitle>bind</refentrytitle><manvolnum>2</manvolnum></citerefentry> on a
++          socket. Both allow and deny rules may defined that restrict which addresses a socket may be bound
++          to.</para>
+ 
+           <para><replaceable>bind-rule</replaceable> describes socket properties such as <replaceable>address-family</replaceable>,
+           <replaceable>transport-protocol</replaceable> and <replaceable>ip-ports</replaceable>.</para>
+@@ -913,6 +918,13 @@ CPUWeight=20   DisableControllers=cpu              /          \
+           </itemizedlist>
+ 
+           <para>The feature is implemented with <constant>cgroup/bind4</constant> and <constant>cgroup/bind6</constant> cgroup-bpf hooks.</para>
++
++          <para>Note that these settings apply to any <citerefentry
++          project='man-pages'><refentrytitle>bind</refentrytitle><manvolnum>2</manvolnum></citerefentry>
++          system call invocation by the unit processes, regardless in which network namespace they are
++          placed. Or in other words: changing the network namespace is not a suitable mechanism for escaping
++          these restrictions on <function>bind()</function>.</para>
++
+           <para>Examples:<programlisting>…
+ # Allow binding IPv6 socket addresses with a port greater than or equal to 10000.
+ [Service]
+diff --git a/src/resolve/resolved-bus.c b/src/resolve/resolved-bus.c
+index 1ef25ac..f765585 100644
+--- a/src/resolve/resolved-bus.c
++++ b/src/resolve/resolved-bus.c
+@@ -11,6 +11,7 @@
+ #include "format-util.h"
+ #include "memory-util.h"
+ #include "missing_capability.h"
++#include "path-util.h"
+ #include "resolved-bus.h"
+ #include "resolved-def.h"
+ #include "resolved-dns-synthesize.h"
+@@ -1852,7 +1853,7 @@ static int bus_method_register_service(sd_bus_message *message, void *userdata,
+         _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
+         _cleanup_(dnssd_service_freep) DnssdService *service = NULL;
+         _cleanup_(sd_bus_track_unrefp) sd_bus_track *bus_track = NULL;
+-        const char *name, *name_template, *type;
++        const char *id, *name_template, *type;
+         _cleanup_free_ char *path = NULL;
+         DnssdService *s = NULL;
+         Manager *m = ASSERT_PTR(userdata);
+@@ -1883,15 +1884,18 @@ static int bus_method_register_service(sd_bus_message *message, void *userdata,
+         if (r < 0)
+                 return r;
+ 
+-        s = hashmap_get(m->dnssd_services, name);
+-        if (s)
+-                return sd_bus_error_setf(error, BUS_ERROR_DNSSD_SERVICE_EXISTS, "DNS-SD service '%s' exists already", name);
++        if (!filename_part_is_valid(name))
++                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "DNS-SD service identifier '%s' is invalid", name);
+ 
+         if (!dnssd_srv_type_is_valid(type))
+                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "DNS-SD service type '%s' is invalid", type);
+ 
+-        service->name = strdup(name);
+-        if (!service->name)
++        s = hashmap_get(m->dnssd_services, name);
++        if (s)
++                return sd_bus_error_setf(error, BUS_ERROR_DNSSD_SERVICE_EXISTS, "DNS-SD service '%s' exists already", name);
++
++        service->id = strdup(name);
++        if (!service->id)
+                 return log_oom();
+ 
+         service->name_template = strdup(name_template);
+@@ -1984,7 +1988,7 @@ static int bus_method_register_service(sd_bus_message *message, void *userdata,
+                 txt_data = NULL;
+         }
+ 
+-        r = sd_bus_path_encode("/org/freedesktop/resolve1/dnssd", service->name, &path);
++        r = sd_bus_path_encode("/org/freedesktop/resolve1/dnssd", service->id, &path);
+         if (r < 0)
+                 return r;
+ 
+@@ -1997,7 +2001,7 @@ static int bus_method_register_service(sd_bus_message *message, void *userdata,
+         if (r == 0)
+                 return 1; /* Polkit will call us back */
+ 
+-        r = hashmap_ensure_put(&m->dnssd_services, &string_hash_ops, service->name, service);
++        r = hashmap_ensure_put(&m->dnssd_services, &string_hash_ops, service->id, service);
+         if (r < 0)
+                 return r;
+ 
+@@ -2161,7 +2165,7 @@ static const sd_bus_vtable resolve_vtable[] = {
+                                 bus_method_revert_link,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
+         SD_BUS_METHOD_WITH_ARGS("RegisterService",
+-                                SD_BUS_ARGS("s", name,
++                                SD_BUS_ARGS("s", id,
+                                             "s", name_template,
+                                             "s", type,
+                                             "q", service_port,
+diff --git a/src/resolve/resolved-dnssd-bus.c b/src/resolve/resolved-dnssd-bus.c
+index 0f0d478..d887eef 100644
+--- a/src/resolve/resolved-dnssd-bus.c
++++ b/src/resolve/resolved-dnssd-bus.c
+@@ -101,7 +101,7 @@ static int dnssd_node_enumerator(sd_bus *bus, const char *path, void *userdata,
+         HASHMAP_FOREACH(service, m->dnssd_services) {
+                 char *p;
+ 
+-                r = sd_bus_path_encode("/org/freedesktop/resolve1/dnssd", service->name, &p);
++                r = sd_bus_path_encode("/org/freedesktop/resolve1/dnssd", service->id, &p);
+                 if (r < 0)
+                         return r;
+ 
+diff --git a/src/resolve/resolved-dnssd.c b/src/resolve/resolved-dnssd.c
+index 994771e..386fd04 100644
+--- a/src/resolve/resolved-dnssd.c
++++ b/src/resolve/resolved-dnssd.c
+@@ -3,10 +3,11 @@
+ #include "conf-files.h"
+ #include "conf-parser.h"
+ #include "constants.h"
+-#include "resolved-dnssd.h"
++#include "path-util.h"
++#include "resolved-conf.h"
+ #include "resolved-dns-rr.h"
++#include "resolved-dnssd.h"
+ #include "resolved-manager.h"
+-#include "resolved-conf.h"
+ #include "specifier.h"
+ #include "strv.h"
+ 
+@@ -40,55 +41,69 @@ DnssdService *dnssd_service_free(DnssdService *service) {
+                 return NULL;
+ 
+         if (service->manager)
+-                hashmap_remove(service->manager->dnssd_services, service->name);
++                hashmap_remove(service->manager->dnssd_services, service->id);
+ 
+         dns_resource_record_unref(service->ptr_rr);
+         dns_resource_record_unref(service->srv_rr);
+ 
+         dnssd_txtdata_free_all(service->txt_data_items);
+ 
+-        free(service->filename);
+-        free(service->name);
++        free(service->path);
++        free(service->id);
+         free(service->type);
+         free(service->name_template);
+ 
+         return mfree(service);
+ }
+ 
+-static int dnssd_service_load(Manager *manager, const char *filename) {
++static int dnssd_id_from_path(const char *path, char **ret_id) {
++        int r;
++
++        assert(path);
++        assert(ret_id);
++
++        _cleanup_free_ char *fn = NULL;
++        r = path_extract_filename(path, &fn);
++        if (r < 0)
++                return r;
++
++        char *d = endswith(fn, ".dnssd");
++        if (!d)
++                return -EINVAL;
++
++        *d = '\0';
++
++        *ret_id = TAKE_PTR(fn);
++        return 0;
++}
++
++static int dnssd_service_load(Manager *manager, const char *path) {
+         _cleanup_(dnssd_service_freep) DnssdService *service = NULL;
+         _cleanup_(dnssd_txtdata_freep) DnssdTxtData *txt_data = NULL;
+-        char *d;
+-        const char *dropin_dirname;
++        _cleanup_free_ char *dropin_dirname = NULL;
+         int r;
+ 
+         assert(manager);
+-        assert(filename);
++        assert(path);
+ 
+         service = new0(DnssdService, 1);
+         if (!service)
+                 return log_oom();
+ 
+-        service->filename = strdup(filename);
+-        if (!service->filename)
++        service->path = strdup(path);
++        if (!service->path)
+                 return log_oom();
+ 
+-        service->name = strdup(basename(filename));
+-        if (!service->name)
+-                return log_oom();
+-
+-        d = endswith(service->name, ".dnssd");
+-        if (!d)
+-                return -EINVAL;
+-
+-        assert(streq(d, ".dnssd"));
+-
+-        *d = '\0';
++        r = dnssd_id_from_path(path, &service->id);
++        if (r < 0)
++                return log_error_errno(r, "Failed to extract DNS-SD service id from filename: %m");
+ 
+-        dropin_dirname = strjoina(service->name, ".dnssd.d");
++        dropin_dirname = strjoin(service->id, ".dnssd.d");
++        if (!dropin_dirname)
++                return log_oom();
+ 
+         r = config_parse_many(
+-                        STRV_MAKE_CONST(filename), DNSSD_SERVICE_DIRS, dropin_dirname, /* root = */ NULL,
++                        STRV_MAKE_CONST(path), DNSSD_SERVICE_DIRS, dropin_dirname, /* root = */ NULL,
+                         "Service\0",
+                         config_item_perf_lookup, resolved_dnssd_gperf_lookup,
+                         CONFIG_PARSE_WARN,
+@@ -101,12 +116,12 @@ static int dnssd_service_load(Manager *manager, const char *filename) {
+         if (!service->name_template)
+                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                        "%s doesn't define service instance name",
+-                                       service->name);
++                                       service->id);
+ 
+         if (!service->type)
+                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                        "%s doesn't define service type",
+-                                       service->name);
++                                       service->id);
+ 
+         if (!service->txt_data_items) {
+                 txt_data = new0(DnssdTxtData, 1);
+@@ -121,7 +136,7 @@ static int dnssd_service_load(Manager *manager, const char *filename) {
+                 TAKE_PTR(txt_data);
+         }
+ 
+-        r = hashmap_ensure_put(&manager->dnssd_services, &string_hash_ops, service->name, service);
++        r = hashmap_ensure_put(&manager->dnssd_services, &string_hash_ops, service->id, service);
+         if (r < 0)
+                 return r;
+ 
+@@ -342,7 +357,7 @@ int dnssd_signal_conflict(Manager *manager, const char *name) {
+ 
+                         s->withdrawn = true;
+ 
+-                        r = sd_bus_path_encode("/org/freedesktop/resolve1/dnssd", s->name, &path);
++                        r = sd_bus_path_encode("/org/freedesktop/resolve1/dnssd", s->id, &path);
+                         if (r < 0)
+                                 return log_error_errno(r, "Can't get D-BUS object path: %m");
+ 
+diff --git a/src/resolve/resolved-dnssd.h b/src/resolve/resolved-dnssd.h
+index e978a0d..e0c786e 100644
+--- a/src/resolve/resolved-dnssd.h
++++ b/src/resolve/resolved-dnssd.h
+@@ -25,8 +25,8 @@ struct DnssdTxtData {
+ };
+ 
+ struct DnssdService {
+-        char *filename;
+-        char *name;
++        char *path;
++        char *id;
+         char *name_template;
+         char *type;
+         uint16_t port;
+diff --git a/src/resolve/resolved-manager.c b/src/resolve/resolved-manager.c
+index b52619e..2b01c05 100644
+--- a/src/resolve/resolved-manager.c
++++ b/src/resolve/resolved-manager.c
+@@ -1279,7 +1279,7 @@ void manager_refresh_rrs(Manager *m) {
+         if (m->mdns_support == RESOLVE_SUPPORT_YES)
+                 HASHMAP_FOREACH(s, m->dnssd_services)
+                         if (dnssd_update_rrs(s) < 0)
+-                                log_warning("Failed to refresh DNS-SD service '%s'", s->name);
++                                log_warning("Failed to refresh DNS-SD service '%s'", s->id);
+ 
+         HASHMAP_FOREACH(l, m->links)
+                 link_add_rrs(l, false);
+@@ -1708,7 +1708,7 @@ bool manager_next_dnssd_names(Manager *m) {
+ 
+                 r = manager_next_random_name(s->name_template, &new_name);
+                 if (r < 0) {
+-                        log_warning_errno(r, "Failed to get new name for service '%s': %m", s->name);
++                        log_warning_errno(r, "Failed to get new name for service '%s': %m", s->id);
+                         continue;
+                 }
+ 
