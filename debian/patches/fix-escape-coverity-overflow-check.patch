@@ -1,0 +1,22 @@
+From 60cf40599a8d7984f9b9459e8f7b2a4e75052d97 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Thu, 7 Mar 2024 00:46:19 +0000
+Subject: [PATCH] escape: fix operator precedence in overflow check
+
+CID#1535100
+
+Follow-up for c6342e35b07f750771f0fdb3c80a27d3272e8001
+
+diff --git a/src/basic/escape.c b/src/basic/escape.c
+--- a/src/basic/escape.c
++++ b/src/basic/escape.c
+@@ -451,6 +451,9 @@ char* octescape(const char *s, size_t len) {
+ 
+         assert(s || len == 0);
+ 
++        if (len > (SIZE_MAX - 1) / 4)
++                return NULL;
++
+         t = buf = new(char, len * 4 + 1);
+         if (!buf)
+                 return NULL;
