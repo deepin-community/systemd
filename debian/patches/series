@@ -54,3 +54,4 @@ fix-timesyncd-randomize-transmit-timestamp.patch
 fix-socket-util-remove-variable-ensure-nul-termination.patch
 refactor-signal-time-util-trivial-cleanups.patch
 fix-dissect-copy-to-directory-symlinks.patch
+fix-escape-coverity-overflow-check.patch
