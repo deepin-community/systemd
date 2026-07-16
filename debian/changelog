@@ -1,3 +1,9 @@
+systemd (255.2-4deepin65) unstable; urgency=medium
+
+  * Backport sd-journal: potentially reduce number of fstat call (PR#30209)
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 07 Aug 2026 18:07:56 +0800
+
 systemd (255.2-4deepin64) unstable; urgency=medium
 
   * Reduce superfluous DNSSEC transactions in systemd-resolved
