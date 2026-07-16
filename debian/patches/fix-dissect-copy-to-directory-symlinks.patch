@@ -1,0 +1,38 @@
+From 4839cb914e8a467b4aedf58ab0ca4321f0893068 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Tue, 7 Jul 2026 19:11:06 +0800
+Subject: [PATCH] dissect: do not follow copy-to directory symlinks
+
+When copying a directory into an image, open an existing destination
+with O_NOFOLLOW before passing it to copy_tree_at(). This rejects a
+symlink used as the final destination component without a separate
+stat-before-use check.
+
+Previously the pre-opened destination followed that symlink. That
+allowed --copy-to to be redirected outside the image root when the
+image was a directory tree.
+
+If the destination does not exist yet, keep delegating creation to
+copy_tree_at(). Real existing directories still use COPY_MERGE through
+the opened directory fd.
+
+Signed-off-by: dongshengyuan <dongshengyuan@uniontech.com>
+
+diff --git a/src/dissect/dissect.c b/src/dissect/dissect.c
+index e70263a9fd..7a82d905da 100644
+--- a/src/dissect/dissect.c
++++ b/src/dissect/dissect.c
+@@ -1490,8 +1490,12 @@ static int action_list_or_mtree_or_copy_or_make_archive(DissectedImage *m, LoopD
+ 
+                         /* We are looking at a directory. */
+ 
+-                        target_fd = openat(dfd, bn, O_RDONLY|O_DIRECTORY|O_CLOEXEC);
++                        target_fd = openat(dfd, bn, O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
+                         if (target_fd < 0) {
++                                if (errno == ELOOP)
++                                        return log_error_errno(SYNTHETIC_ERRNO(ELOOP),
++                                                        "Refusing to copy directory to symlink destination '%s'.", arg_target);
++
+                                 if (errno != ENOENT)
+                                         return log_error_errno(errno, "Failed to open destination '%s': %m", arg_target);
+
