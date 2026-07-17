@@ -1,3 +1,9 @@
+systemd (255.2-4deepin43) unstable; urgency=medium
+
+  * fix(cve): CVE-2026-40226
+
+ -- deepin-ci-robot <packages@deepin.org>  Sat, 18 Jul 2026 05:18:43 +0800
+
 systemd (255.2-4deepin42) unstable; urgency=medium
 
   * Align signal table formatting and make usleep_safe() return early for zero delay
