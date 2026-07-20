@@ -55,3 +55,4 @@ fix-socket-util-remove-variable-ensure-nul-termination.patch
 refactor-signal-time-util-trivial-cleanups.patch
 CVE-2026-40226.patch
 CVE-2026-40225.patch
+CVE-2026-4105.patch
