@@ -27,6 +27,7 @@ def filter_fsname(name):
 
 gperf_file = sys.argv[1]
 keywords_section = False
+seen_names = {}
 
 for line in open(gperf_file):
     if line[0] == "#":
@@ -36,16 +37,22 @@ for line in open(gperf_file):
         name, ids = line.split(",", 1)
 
         name = name.strip()
-        if filter_fsname(name):
-            continue
-
         ids = ids.strip()
         assert ids[0] == "{"
         assert ids[-1] == "}"
-        ids = ids[1:-1]
+        ids = tuple(id.strip() for id in ids[1:-1].split(","))
 
-        for id in ids.split(","):
-            print(f"case (statfs_f_type_t) {id.strip()}:")
+        if name in seen_names:
+            if seen_names[name] != ids:
+                raise ValueError(f"Conflicting definitions for file system {name}")
+            continue
+        seen_names[name] = ids
+
+        if filter_fsname(name):
+            continue
+
+        for id in ids:
+            print(f"case (statfs_f_type_t) {id}:")
 
         print(f'        return "{name}";')
 

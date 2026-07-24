@@ -243,7 +243,7 @@ struct VarlinkServer {
 
 typedef struct VarlinkCollectContext {
         JsonVariant *parameters;
-        const char *error_id;
+        char *error_id;
         VarlinkReplyFlags flags;
 } VarlinkCollectContext ;
 
@@ -2112,7 +2112,7 @@ static void varlink_collect_context_free(VarlinkCollectContext *cc) {
         assert(cc);
 
         json_variant_unref(cc->parameters);
-        free((char *)cc->error_id);
+        free(cc->error_id);
 }
 
 static int collect_callback(
@@ -2130,7 +2130,10 @@ static int collect_callback(
         context->flags = flags;
         /* If we hit an error, we will drop all collected replies and just return the error_id and flags in varlink_collect() */
         if (error_id) {
-                context->error_id = error_id;
+                r = free_and_strdup(&context->error_id, error_id);
+                if (r < 0)
+                        return r;
+
                 return 0;
         }
 
@@ -3071,6 +3074,7 @@ int varlink_server_add_connection(VarlinkServer *server, int fd, Varlink **ret) 
                 return r;
 
         v->fd = fd;
+        v->allow_fd_passing_output = FLAGS_SET(server->flags, VARLINK_SERVER_ALLOW_FD_PASSING_OUTPUT);
         if (server->flags & VARLINK_SERVER_INHERIT_USERDATA)
                 v->userdata = server->userdata;
 

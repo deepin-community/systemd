@@ -15,6 +15,7 @@ custom_target(
 
 items = [['_busctl',                   ''],
          ['_journalctl',               ''],
+         ['_storagectl',               ''],
          ['_systemd-analyze',          ''],
          ['_systemd-delta',            ''],
          ['_systemd-nspawn',           ''],

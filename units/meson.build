@@ -592,6 +592,16 @@ units = [
           'conditions' : ['ENABLE_STORAGETM'],
         },
         {
+          'file' : 'systemd-storage-block.socket',
+          'symlinks' : ['sockets.target.wants/'],
+        },
+        { 'file' : 'systemd-storage-block@.service.in' },
+        {
+          'file' : 'systemd-storage-fs.socket',
+          'symlinks' : ['sockets.target.wants/'],
+        },
+        { 'file' : 'systemd-storage-fs@.service.in' },
+        {
           'file' : 'storage-target-mode.target',
           'conditions' : ['ENABLE_STORAGETM'],
         },

@@ -117,8 +117,10 @@ squashfs,        {SQUASHFS_MAGIC}
 sysfs,           {SYSFS_MAGIC}
 # note that devtmpfs shares the same magic with tmpfs, given it is just a special named instance of it.
 tmpfs,           {TMPFS_MAGIC}
+tpmfs,           {TPMFS_SUPER_MAGIC}
 tracefs,         {TRACEFS_MAGIC}
 udf,             {UDF_SUPER_MAGIC}
+usecfs,          {USEC_MAGIC}
 usbdevfs,        {USBDEVICE_SUPER_MAGIC}
 vboxsf,          {VBOXSF_SUPER_MAGIC}
 # note that msdos shares the same magic (and is the older version)

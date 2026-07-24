@@ -20,6 +20,7 @@ units = [
         'systemd-tmpfiles-clean.service',
         'systemd-tmpfiles-clean.timer',
         'systemd-tmpfiles-setup.service',
+        'systemd-storage-fs.socket',
         'timers.target',
 ]
 
@@ -31,3 +32,19 @@ foreach file : units
         install_data(file,
                      install_dir : userunitdir)
 endforeach
+
+custom_target(
+        'user-systemd-storage-fs@.service',
+        input : 'systemd-storage-fs@.service.in',
+        output : 'systemd-storage-fs@.service',
+        command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
+        install : true,
+        install_dir : userunitdir)
+
+install_emptydir(userunitdir / 'sockets.target.wants')
+meson.add_install_script(
+        sh,
+        '-c',
+        ln_s.format(
+                userunitdir / 'systemd-storage-fs.socket',
+                userunitdir / 'sockets.target.wants/systemd-storage-fs.socket'))

@@ -242,7 +242,7 @@ filesystems_gperf_h = custom_target(
         'filesystems-gperf.h',
         input : 'filesystems-gperf.gperf',
         output : 'filesystems-gperf.h',
-        command : [gperf, '@INPUT@', '--output-file', '@OUTPUT@'])
+        command : [gperf, '-D', '@INPUT@', '--output-file', '@OUTPUT@'])
 
 generate_filesystem_list = find_program('generate-filesystem-list.py')
 fname = 'filesystem-list.h'
