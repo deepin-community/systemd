@@ -1,0 +1,44 @@
+#compdef run0
+
+(( $+functions[_run0_unit_properties] )) ||
+_run0_unit_properties() {
+    local -a props=(
+        BlockIOAccounting CPUAccounting DeviceAllow DevicePolicy Environment
+        Group KillMode KillSignal MemoryAccounting Nice NoNewPrivileges
+        PrivateDevices PrivateNetwork PrivateTmp ProtectHome ProtectSystem
+        ReadOnlyPaths ReadWritePaths RootDirectory SendSIGHUP SendSIGKILL
+        User WorkingDirectory
+    )
+    _values -S= 'properties' ${^props}'::()'
+}
+
+(( $+functions[_run0_slices] )) ||
+_run0_slices() {
+    local -a slices=(
+        ${(@f)"$(_call_program slice-units systemctl --no-pager --legend=no --plain list-units --all --type=slice 2>/dev/null)"}
+    )
+    slices=( ${slices%% *} )
+    _describe -t slice-units 'slice unit' slices
+}
+
+local -a args=(
+    '(-n --non-interactive --no-ask-password)'{-n,--non-interactive,--no-ask-password}'[Do not query the user for authentication]'
+    '--unit=[Use this unit name instead of an automatically generated one]:unit'
+    '*--property=[Set a property on the service unit]:property:_run0_unit_properties'
+    '--description=[Provide a description for the service unit]:text'
+    '--slice=[Make the new service unit part of the specified slice]:slice unit:_run0_slices'
+    '--slice-inherit[Make the new service unit part of the current slice]'
+    '(--user -u)'{--user=,-u+}'[Switch to the specified user]:user:_users'
+    '(--group -g)'{--group=,-g+}'[Switch to the specified group]:group:_groups'
+    '--nice=[Run with the specified nice level]:nice value'
+    '(--chdir -D)'{--chdir=,-D+}'[Run in the specified working directory]:directory:_files -/'
+    '*--setenv=[Set an environment variable]:environment variable:_parameters -g "*export*" -S = -q'
+    '(--pipe)--pty[Request allocation of a pseudo TTY for standard IO]'
+    '(--pty)--pipe[Pass standard IO file descriptors directly through]'
+    '--empower[Give privileges to the selected or current user]'
+    '--machine=[Execute on a local container]:machine:_sd_machines'
+    '(- *)'{-h,--help}'[Show help and exit]'
+    '(- *)'{-V,--version}'[Show version and exit]'
+)
+
+_arguments -S $args '*:: :_normal'

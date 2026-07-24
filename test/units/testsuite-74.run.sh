@@ -229,3 +229,23 @@ assert_eq "$A" "$B"
 
 umount /proc/version
 rm "$V"
+
+# Check that invoking the tool under the run0 alias name works
+run0 ls /
+assert_eq "$(run0 echo foo)" "foo"
+# Check if we set some expected environment variables
+for arg in "" "--user=root" "--user=testuser"; do
+    assert_eq "$(run0 ${arg:+"$arg"} bash -c 'echo $SUDO_USER')" "$USER"
+    assert_eq "$(run0 ${arg:+"$arg"} bash -c 'echo $SUDO_UID')" "$(id -u "$USER")"
+    assert_eq "$(run0 ${arg:+"$arg"} bash -c 'echo $SUDO_GID')" "$(id -u "$USER")"
+done
+# Let's chain a couple of run0 calls together, for fun
+readarray -t cmdline < <(printf "%.0srun0\n" {0..31})
+assert_eq "$("${cmdline[@]}" bash -c 'echo $SUDO_USER')" "$USER"
+
+assert_eq "$(run0 --pipe echo -n foo)" "foo"
+assert_eq "$(run0 --pipe -n echo -n foo)" "foo"
+
+root_caps="$(run0 --pipe grep CapEff /proc/self/status)"
+empowered_caps="$(run0 --pipe -u testuser --empower grep CapEff /proc/self/status)"
+assert_eq "$empowered_caps" "$root_caps"

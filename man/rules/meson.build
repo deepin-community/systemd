@@ -74,6 +74,7 @@ manpages = [
  ['repart.d', '5', [], 'ENABLE_REPART'],
  ['resolvectl', '1', ['resolvconf'], 'ENABLE_RESOLVE'],
  ['resolved.conf', '5', ['resolved.conf.d'], 'ENABLE_RESOLVE'],
+ ['run0', '1', [], ''],
  ['runlevel', '8', [], 'HAVE_SYSV_COMPAT'],
  ['sd-bus-errors',
   '3',
