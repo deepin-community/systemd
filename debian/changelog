@@ -1,3 +1,9 @@
+systemd (255.2-4deepin51) unstable; urgency=medium
+
+  * Bound leading whitespace skip in udev_replace_whitespace to prevent buffer over-read of non-NUL-terminated ATA IDENTIFY fields (CVE class: out-of-bounds read). Introduces strnspn() in string-util and uses it in udev-util. Upstream PR #42757.
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 31 Jul 2026 12:00:00 +0800
+
 systemd (255.2-4deepin50) unstable; urgency=medium
 
   * Fix malformed hunk header in DNSSEC signature validation patch.

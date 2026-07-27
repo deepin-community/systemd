@@ -1,0 +1,173 @@
+From 95648d612a8963d67963e2b1ac0d0a5cf5beeee4 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 17 Jul 2026 01:16:07 +0900
+Subject: [PATCH] udev-util: bound leading whitespace skip in
+ udev_replace_whitespace (#42757)
+
+udev_replace_whitespace() is documented to read at most 'len' bytes from
+'str':
+- the strspn() skip of leading whitespace stops at a non-space byte or
+NUL, not at 'len'
+- ata_id passes the space padded, non-NUL-terminated ATA IDENTIFY
+model/serial/fw fields
+- an all-blank field reads off the end of the 512-byte hd_driveid stack
+struct
+Capped the skip to 'len'; existing outputs are unchanged. Added a
+regression test.
+
+From 0af6caff42b53dbf740cc08ca77aab31ec405284 Mon Sep 17 00:00:00 2001
+From: Syed Mohammed Nayyar <jmestwa@gmail.com>
+Date: Mon, 29 Jun 2026 11:32:14 +0530
+Subject: [PATCH] string-util: add strnspn()
+
+Like strspn(), but reads at most 'n' bytes from the input. strspn()
+is bounded only by a non-matching byte or a NUL, so it over-reads a
+buffer that is all matching bytes and not NUL terminated within 'n'.
+
+From 6b2cb3abebf989adb58720efc8feb6bee8328f45 Mon Sep 17 00:00:00 2001
+From: Syed Mohammed Nayyar <jmestwa@gmail.com>
+Date: Mon, 29 Jun 2026 11:32:14 +0530
+Subject: [PATCH] udev-util: bound leading whitespace skip in
+ udev_replace_whitespace
+
+The function documents that at most 'len' bytes are read from 'str',
+but the leading whitespace skip used strspn(), which is bounded only
+by a non-whitespace byte or a NUL. ata_id passes the space padded,
+non-NUL-terminated ATA IDENTIFY fields, so an all-blank model reads
+past the buffer. Use strnspn() to cap the skip to 'len'.
+
+Index: repo/src/basic/string-util.c
+===================================================================
+--- repo.orig/src/basic/string-util.c
++++ repo/src/basic/string-util.c
+@@ -1381,6 +1381,23 @@ size_t strspn_from_end(const char *str,
+         return n;
+ }
+ 
++size_t strnspn(const char *str, const char *accept, size_t n) {
++        size_t i;
++
++        /* Like strspn(), but reads at most 'n' bytes from 'str'. Returns the length of the initial
++         * run of 'str' (capped at 'n') that consists solely of bytes found in 'accept'. Stops at a
++         * NUL byte too. Unlike strspn() this is safe on a buffer that is not NUL terminated within
++         * 'n' bytes. */
++
++        assert(str || n == 0);
++        assert(accept);
++
++        for (i = 0; i < n && str[i] != '\0' && strchr(accept, str[i]); i++)
++                ;
++
++        return i;
++}
++
+ char *strdupspn(const char *a, const char *accept) {
+         if (isempty(a) || isempty(accept))
+                 return strdup("");
+Index: repo/src/basic/string-util.h
+===================================================================
+--- repo.orig/src/basic/string-util.h
++++ repo/src/basic/string-util.h
+@@ -286,6 +286,8 @@ int make_cstring(const char *s, size_t n
+ 
+ size_t strspn_from_end(const char *str, const char *accept);
+ 
++size_t strnspn(const char *str, const char *accept, size_t n) _pure_;
++
+ char *strdupspn(const char *a, const char *accept);
+ char *strdupcspn(const char *a, const char *reject);
+ 
+Index: repo/src/test/test-string-util.c
+===================================================================
+--- repo.orig/src/test/test-string-util.c
++++ repo/src/test/test-string-util.c
+@@ -1151,6 +1151,26 @@ TEST(strspn_from_end) {
+         assert_se(strspn_from_end("aaa12aa34", DIGITS) == 2);
+ }
+ 
++TEST(strnspn) {
++        assert_se(strnspn(NULL, WHITESPACE, 0) == 0);
++        assert_se(strnspn("", WHITESPACE, 0) == 0);
++        assert_se(strnspn("hoge", WHITESPACE, 0) == 0);
++        assert_se(strnspn("hoge", WHITESPACE, 4) == 0);
++        assert_se(strnspn("   hoge", WHITESPACE, 7) == 3);
++        assert_se(strnspn("   hoge", WHITESPACE, 2) == 2);
++        assert_se(strnspn("    ", WHITESPACE, 4) == 4);
++
++        /* 'str' is all whitespace and not NUL terminated within 'n': at most 'n' bytes may be read,
++         * otherwise this reads off the end of the buffer (caught by the sanitizers). */
++        for (size_t n = 1; n <= 64; n++) {
++                _cleanup_free_ char *str = NULL;
++
++                assert_se(str = new(char, n));
++                memset(str, ' ', n);
++                assert_se(strnspn(str, WHITESPACE, n) == n);
++        }
++}
++
+ TEST(streq_skip_trailing_chars) {
+         /* NULL is WHITESPACE by default*/
+         assert_se(streq_skip_trailing_chars("foo bar", "foo bar", NULL));
+Index: repo/src/shared/udev-util.c
+===================================================================
+--- repo.orig/src/shared/udev-util.c
++++ repo/src/shared/udev-util.c
+@@ -298,7 +298,9 @@ size_t udev_replace_whitespace(const cha
+          *
+          * Note that only 'len' characters are read from 'str'. */
+ 
+-        i = strspn(str, WHITESPACE);
++        /* Skip leading whitespace, but read at most 'len' bytes: 'str' is not necessarily NUL
++         * terminated within 'len' (e.g. the space padded ATA IDENTIFY fields ata_id passes in). */
++        i = strnspn(str, WHITESPACE, len);
+ 
+         for (j = 0; j < len && i < len && str[i] != '\0'; i++) {
+                 if (isspace(str[i])) {
+Index: repo/src/test/test-udev-util.c
+===================================================================
+--- repo.orig/src/test/test-udev-util.c
++++ repo/src/test/test-udev-util.c
+@@ -60,4 +60,43 @@ TEST(udev_replace_whitespace) {
+         test_udev_replace_whitespace_one_len("    hoge   hoge    ", 0, "");
+ }
+ 
++static void test_udev_replace_whitespace_not_terminated_one(const char *str, size_t len, const char *expected) {
++        _cleanup_free_ char *buf = NULL, *result = NULL;
++        int r;
++
++        /* Copy exactly 'len' bytes with no trailing NUL, so any read past 'len' is caught by the
++         * sanitizers. */
++        assert_se(buf = memdup(str, len));
++
++        assert_se(result = new(char, len + 1));
++        r = udev_replace_whitespace(buf, result, len);
++        assert_se((size_t) r == strlen(expected));
++        ASSERT_STREQ(result, expected);
++}
++
++TEST(udev_replace_whitespace_not_nul_terminated) {
++        /* 'str' is not NUL terminated within 'len' and consists entirely of whitespace, like a
++         * space padded, non-terminated ATA IDENTIFY model/serial field. Only 'len' bytes may be
++         * read from it; otherwise this reads off the end of the buffer (caught by the sanitizers). */
++
++        for (size_t len = 1; len <= 64; len++) {
++                _cleanup_free_ char *str = NULL, *result = NULL;
++
++                assert_se(str = new(char, len));
++                memset(str, ' ', len);
++
++                assert_se(result = new(char, len + 1));
++                assert_se(udev_replace_whitespace(str, result, len) == 0);
++                ASSERT_STREQ(result, "");
++        }
++
++        /* Leading whitespace followed by content, also not NUL terminated within 'len': exercises
++         * the handoff from the bounded leading skip into the copy loop on a non-terminated buffer. */
++        test_udev_replace_whitespace_not_terminated_one("   hoge", 7, "hoge");
++        test_udev_replace_whitespace_not_terminated_one("  hoge   hoge", 13, "hoge_hoge");
++        test_udev_replace_whitespace_not_terminated_one("    hoge   hoge    ", 16, "hoge_hoge");
++        test_udev_replace_whitespace_not_terminated_one("    hoge   hoge    ", 7, "hog");
++        test_udev_replace_whitespace_not_terminated_one(" x", 2, "x");
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);
