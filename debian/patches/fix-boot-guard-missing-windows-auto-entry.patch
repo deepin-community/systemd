@@ -1,0 +1,29 @@
+From d0d0eea266702dc81329dbe522162872836f6084 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Tue, 14 Jul 2026 19:40:15 +0800
+Subject: [PATCH] boot: guard missing Windows auto entry
+
+config_add_entry_loader_auto() returns NULL when the Windows loader
+is missing. With reboot-for-bitlocker enabled, the caller still
+assigned e->call and could dereference NULL.
+
+This can happen when reboot-for-bitlocker is enabled but the ESP does
+not contain EFI/Microsoft/Boot/bootmgfw.efi.
+
+Before:
+  systemd-boot could dereference NULL while building the menu
+
+Follow-up for: 661615a0afacee3545cde0a48286c0fef983f8fe.
+
+diff --git a/src/boot/efi/boot.c b/src/boot/efi/boot.c
+--- a/src/boot/efi/boot.c
++++ b/src/boot/efi/boot.c
+@@ -2067,7 +2067,7 @@ static void config_add_entry_windows(Config *config, EFI_HANDLE *device, EFI_FIL
+                                                     u"auto-windows", 'w', title ?: u"Windows Boot Manager",
+                                                     u"\\EFI\\Microsoft\\Boot\\bootmgfw.efi");
+
+-        if (config->reboot_for_bitlocker)
++        if (e && config->reboot_for_bitlocker)
+                 e->call = boot_windows_bitlocker;
+ #endif
+ }
