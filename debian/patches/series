@@ -55,3 +55,4 @@ fix-socket-util-remove-variable-ensure-nul-termination.patch
 refactor-signal-time-util-trivial-cleanups.patch
 fix-tc-qdisc-tclass-stack-overflow.patch
 fix-core-serialize-both-pid-and-pidfd.patch
+fix-resolved-per-link-dnsovertls-certificate-verification.patch

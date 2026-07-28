@@ -1,0 +1,31 @@
+From 052ff5fb5d57e498c92dc3a0f187486a889bfeff Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Fri, 24 Apr 2026 22:03:17 +0100
+Subject: [PATCH] resolved: honour per-link DNSOverTLS=yes for certificate
+ verification
+
+dnstls_stream_connect_tls() reads the manager-wide dns_over_tls_mode
+field directly, so when the global mode was 'no' or 'opportunistic' but
+a link was configured with strict DNSOverTLS=yes, the DoT connection
+was established without SSL_VERIFY_PEER or hostname/IP checks.
+Use dns_server_get_dns_over_tls_mode() which honours the per-link
+override.
+
+Adapted for downstream: the OpenSSL TLS backend lives in
+resolved-dnstls-openssl.c (instead of a single resolved-dnstls.c) and
+calls OpenSSL directly without the sym_ dlopen prefix. The upstream
+regression test in test/units/TEST-75-RESOLVED.sh is dropped because
+that test file does not exist in this packaged version.
+
+diff --git a/src/resolve/resolved-dnstls-openssl.c b/src/resolve/resolved-dnstls-openssl.c
+--- a/src/resolve/resolved-dnstls-openssl.c
++++ b/src/resolve/resolved-dnstls-openssl.c
+@@ -91,7 +91,7 @@
+                 return -EIO;
+         SSL_set_bio(s, TAKE_PTR(rb), TAKE_PTR(wb));
+
+-        if (server->manager->dns_over_tls_mode == DNS_OVER_TLS_YES) {
++        if (dns_server_get_dns_over_tls_mode(server) == DNS_OVER_TLS_YES) {
+                 X509_VERIFY_PARAM *v;
+
+                 SSL_set_verify(s, SSL_VERIFY_PEER, NULL);
