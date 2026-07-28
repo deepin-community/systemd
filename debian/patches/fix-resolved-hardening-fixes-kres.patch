@@ -1,0 +1,74 @@
+From 321a3217877e8267768e8bd2ee77482d3f6867b5 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Tue, 14 Jul 2026 12:24:01 +0100
+Subject: [PATCH] Assorted resolved hardening fixes flagged by kres (#43011)
+
+This patch backports the following upstream resolved hardening fixes:
+ - dns-answer: preserve shared aliases when removing records
+   dns_answer_remove_by_rr() mutats the backing OrderedSet even when the answer
+   has multiple references. Callers such as trust-anchor revocation could thus
+   change snapshots held elsewhere in the resolver. Clone a shared answer before
+   removal.
+ - resolved: roll back partial DNS zone publication
+   dns_zone_link_item() inserts a new item into the by-key hashmap before
+   publishing it by name. If the second hashmap insertion fails, _cleanup_
+   frees the item while by-key retains a dangling key and value.
+
+Note: the upstream commit "resolved: publish browsed service after
+initialization" is not included because the browse-services feature is
+not present in this version of the package.
+
+diff --git a/src/resolve/resolved-dns-answer.c b/src/resolve/resolved-dns-answer.c
+--- a/src/resolve/resolved-dns-answer.c
++++ b/src/resolve/resolved-dns-answer.c
+@@ -546,14 +546,28 @@ int dns_answer_remove_by_rr(DnsAnswer **a, DnsResourceRecord *rr) {
+                 if (r < 0)
+                         return r;
+                 if (r > 0) {
+-                        dns_answer_item_unref(ordered_set_remove((*a)->items, item));
+                         found = true;
++                        break;
+                 }
+         }
+ 
+         if (!found)
+                 return 0;
+ 
++        if ((*a)->n_ref > 1) {
++                r = dns_answer_reserve_or_clone(a, 1);
++                if (r < 0)
++                        return r;
++        }
++
++        DNS_ANSWER_FOREACH_ITEM(item, *a) {
++                r = dns_resource_record_equal(item->rr, rr);
++                if (r < 0)
++                        return r;
++                if (r > 0)
++                        dns_answer_item_unref(ordered_set_remove((*a)->items, item));
++        }
++
+         if (dns_answer_isempty(*a))
+                 *a = dns_answer_unref(*a); /* Return NULL for the empty answer */
+ 
+diff --git a/src/resolve/resolved-dns-zone.c b/src/resolve/resolved-dns-zone.c
+--- a/src/resolve/resolved-dns-zone.c
++++ b/src/resolve/resolved-dns-zone.c
+@@ -153,8 +153,15 @@ static int dns_zone_link_item(DnsZone *z, DnsZoneItem *i) {
+                 assert_se(hashmap_replace(z->by_name, dns_resource_key_name(first->rr->key), first) >= 0);
+         } else {
+                 r = hashmap_put(z->by_name, dns_resource_key_name(i->rr->key), i);
+-                if (r < 0)
++                if (r < 0) {
++                        first = hashmap_get(z->by_key, i->rr->key);
++                        LIST_REMOVE(by_key, first, i);
++                        if (first)
++                                assert_se(hashmap_replace(z->by_key, first->rr->key, first) >= 0);
++                        else
++                                hashmap_remove(z->by_key, i->rr->key);
+                         return r;
++                }
+         }
+ 
+         return 0;
+
