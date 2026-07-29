@@ -1,0 +1,151 @@
+From: =?UTF-8?q?=C5=81ukasz=20Stelmach?= <l.stelmach@samsung.com>
+Date: Mon, 20 May 2024 16:51:55 +0200
+Subject: [PATCH] core: drop ambient capabilities in systemd-executor
+
+Since the commit 963b6b906e ("core: drop ambient capabilities in
+user manager") systemd running as the session manager has dropped ambient
+capabilities retaining other sets allowing user services to be started
+with elevated capabilities. This, worked fine until the introduction of
+sd-executor. For a non-root process to be started with elevated
+capabilities by a non-root parent it either needs file capabilities or
+ambient capabilities in the parent process. Thus, systemd needs to allow
+sd-executor to inherit its ambient capabilities and sd-executor should
+drop them as systemd did before.
+
+The ambient set is managed for both system and session managers, but
+with the default set for PID#1 being empty, this code does not affect
+operation of PID#1.
+
+This also reverts commit 943800f4e7728feb2416dd57b8c296614497b94f
+("execute: Call capability_ambient_set_apply even if ambient set is 0")
+which is no longer necessary now that ambient capabilities are dropped
+at the start of process managers (both system and user) as well as
+systemd-executor.
+
+Fixes: bb5232b6a3 ("core: add systemd-executor binary")
+
+diff --git a/src/core/execute.c b/src/core/execute.c
+index ef0bf88..1cc0543 100644
+--- a/src/core/execute.c
++++ b/src/core/execute.c
+@@ -444,6 +444,12 @@ int exec_spawn(Unit *unit,
+ 
+         xsprintf(serialization_fd_number, "%i", fileno(f));
+ 
++        /* Restore the original ambient capability set the manager was started with to pass it to
++         * sd-executor. */
++        r = capability_ambient_set_apply(unit->manager->original_ambient_set, /* also_inherit= */ false);
++        if (r < 0)
++                return log_unit_error_errno(unit, r, "Failed to apply the starting ambient set: %m");
++
+         /* The executor binary is pinned, to avoid compatibility problems during upgrades. */
+         r = posix_spawn_wrapper(
+                         FORMAT_PROC_FD_PATH(unit->manager->executor_fd),
+@@ -456,6 +462,9 @@ int exec_spawn(Unit *unit,
+         if (r < 0)
+                 return log_unit_error_errno(unit, r, "Failed to spawn executor: %m");
+ 
++        /* Drop the ambient set again, so no processes other than sd-executor spawned from the manager inherit it. */
++        (void) capability_ambient_set_apply(0, /* also_inherit= */ false);
++
+         log_unit_debug(unit, "Forked %s as "PID_FMT, command->path, pid);
+ 
+         /* We add the new process to the cgroup both in the child (so that we can be sure that no user code is ever
+diff --git a/src/core/executor.c b/src/core/executor.c
+index b2716ef..ee30ade 100644
+--- a/src/core/executor.c
++++ b/src/core/executor.c
+@@ -8,6 +8,7 @@
+ #include "alloc-util.h"
+ #include "argv-util.h"
+ #include "build.h"
++#include "capability-util.h"
+ #include "exec-invoke.h"
+ #include "execute-serialize.h"
+ #include "execute.h"
+@@ -206,6 +207,11 @@ static int run(int argc, char *argv[]) {
+         log_set_prohibit_ipc(false);
+         log_open();
+ 
++        /* Clear ambient capabilities, so services do not inherit them implicitly. Dropping them does
++         * not affect the permitted and effective sets which are important for the executor itself to
++         * operate. */
++        (void) capability_ambient_set_apply(0, /* also_inherit= */ false);
++
+         /* This call would collect all passed fds and enable CLOEXEC. We'll unset it in exec_invoke (flag_fds)
+          * for fds that shall be passed to the child.
+          * The serialization fd is set to CLOEXEC in parse_argv, so it's also filtered. */
+diff --git a/src/core/main.c b/src/core/main.c
+index 3f71cc0..529794c 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -1781,6 +1781,7 @@ static int do_reexecute(
+                 FDSet *fds,
+                 const char *switch_root_dir,
+                 const char *switch_root_init,
++                uint64_t capability_ambient_set,
+                 const char **ret_error_message) {
+ 
+         size_t i, args_size;
+@@ -1842,6 +1843,10 @@ static int do_reexecute(
+                         log_error_errno(r, "Failed to switch root, trying to continue: %m");
+         }
+ 
++        r = capability_ambient_set_apply(capability_ambient_set, /* also_inherit= */ false);
++        if (r < 0)
++                log_error_errno(r, "Failed to apply the starting ambient set, ignoring: %m.");
++
+         args_size = argc + 5;
+         args = newa(const char*, args_size);
+ 
+@@ -2806,6 +2811,7 @@ int main(int argc, char *argv[]) {
+         usec_t before_startup, after_startup;
+         static char systemd[] = "systemd";
+         const char *error_message = NULL;
++        uint64_t original_ambient_set = 0;
+         int r, retval = EXIT_FAILURE;
+         Manager *m = NULL;
+         FDSet *fds = NULL;
+@@ -2967,6 +2973,11 @@ int main(int argc, char *argv[]) {
+                 /* clear the kernel timestamp, because we are not PID 1 */
+                 kernel_timestamp = DUAL_TIMESTAMP_NULL;
+ 
++                /* Preserve the ambient set for later use with sd-executor processes. */
++                r = capability_get_ambient(&original_ambient_set);
++                if (r < 0)
++                        log_error_errno(r, "Failed to save ambient capabilities, ignoring: %m.");
++
+                 /* Clear ambient capabilities, so services do not inherit them implicitly. Dropping them does
+                  * not affect the permitted and effective sets which are important for the manager itself to
+                  * operate. */
+@@ -3083,6 +3094,8 @@ int main(int argc, char *argv[]) {
+         m->timestamps[manager_timestamp_initrd_mangle(MANAGER_TIMESTAMP_SECURITY_START)] = security_start_timestamp;
+         m->timestamps[manager_timestamp_initrd_mangle(MANAGER_TIMESTAMP_SECURITY_FINISH)] = security_finish_timestamp;
+ 
++        m->original_ambient_set = original_ambient_set;
++
+         set_manager_defaults(m);
+         set_manager_settings(m);
+         manager_set_first_boot(m, first_boot);
+@@ -3158,6 +3171,7 @@ finish:
+                                  fds,
+                                  switch_root_dir,
+                                  switch_root_init,
++                                 original_ambient_set,
+                                  &error_message); /* This only returns if reexecution failed */
+ 
+         arg_serialization = safe_fclose(arg_serialization);
+diff --git a/src/core/manager.h b/src/core/manager.h
+index d96eb7b..2d68e36 100644
+--- a/src/core/manager.h
++++ b/src/core/manager.h
+@@ -501,6 +501,9 @@ struct Manager {
+         /* Pin the systemd-executor binary, so that it never changes until re-exec, ensuring we don't have
+          * serialization/deserialization compatibility issues during upgrades. */
+         int executor_fd;
++
++        /* Original ambient capabilities when we were initialized */
++        uint64_t original_ambient_set;
+ };
+ 
+ static inline usec_t manager_default_timeout_abort_usec(Manager *m) {

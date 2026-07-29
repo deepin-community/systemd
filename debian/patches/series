@@ -59,3 +59,10 @@ fix-resolved-per-link-dnsovertls-certificate-verification.patch
 fix-resolved-hardening-fixes-kres.patch
 fix-boot-guard-missing-windows-auto-entry.patch
 fix-logind-dbus-check-auth-all-inhibitor-operations.patch
+fix-dissect-copy-to-directory-symlinks.patch
+fix-escape-coverity-overflow-check.patch
+fix-resolved-dnssec-limit-signature-validations.patch
+fix-exec-invoke-dont-close-size.patch
+fix-journal-importer-cap-field-size.patch
+fix-hostname-machine-tag-chars.patch
+fix-core-drop-ambient-capabilities-systemd-executor.patch
