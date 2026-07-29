@@ -1,3 +1,9 @@
+systemd (255.2-4deepin60) unstable; urgency=medium
+
+  * Check auth. for all inhibitor operations
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 06 Aug 2026 15:00:00 +0800
+
 systemd (255.2-4deepin59) unstable; urgency=medium
 
   * Guard missing Windows auto entry to prevent NULL dereference in systemd-boot when reboot-for-bitlocker is enabled but the Windows loader is absent

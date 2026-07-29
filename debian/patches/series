@@ -58,3 +58,4 @@ fix-core-serialize-both-pid-and-pidfd.patch
 fix-resolved-per-link-dnsovertls-certificate-verification.patch
 fix-resolved-hardening-fixes-kres.patch
 fix-boot-guard-missing-windows-auto-entry.patch
+fix-logind-dbus-check-auth-all-inhibitor-operations.patch
