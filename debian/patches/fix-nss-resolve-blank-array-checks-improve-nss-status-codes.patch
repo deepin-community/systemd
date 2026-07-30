@@ -1,0 +1,81 @@
+From dc5c09917e1e8192d3a817f2273348b30d572b40 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Tue, 16 Jun 2026 09:19:15 +0800
+Subject: [PATCH] nss-resolve: fix blank array checks and improve NSS status
+ codes
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Use sd_json_variant_is_blank_array() instead of is_blank_object() for
+p.addresses and p.names, which are declared as JSON arrays. The wrong
+predicate never triggered, allowing empty arrays to bypass the guards:
+for p.names this caused a size_t underflow leading to an out-of-bounds
+heap write; for p.addresses it returned success with no addresses.
+
+Add explicit n_addresses == 0 guards after the family-filter loops so
+entries with unsupported families also return NOTFOUND rather than
+crashing on a NULL dereference.
+
+In gethostbyname3_r (family-specific entry point), return NO_DATA for
+all zero-address results — both blank array and all-filtered — since
+both mean "name resolved, no record of the requested family". Keep
+HOST_NOT_FOUND in gethostbyname4_r (both-families) where a blank or
+all-unsupported result genuinely means the name was not found.
+
+Signed-off-by: dongshengyuan <dongshengyuan@uniontech.com>
+Co-developed-by: Claude Opus 4.8 <noreply@anthropic.com>
+
+Index: repo/src/nss-resolve/nss-resolve.c
+===================================================================
+--- repo.orig/src/nss-resolve/nss-resolve.c
++++ repo/src/nss-resolve/nss-resolve.c
+@@ -277,7 +277,7 @@ enum nss_status _nss_resolve_gethostbyna
+         r = json_dispatch(rparams, resolve_hostname_reply_dispatch_table, json_dispatch_flags, &p);
+         if (r < 0)
+                 goto fail;
+-        if (json_variant_is_blank_object(p.addresses))
++        if (json_variant_is_blank_array(p.addresses))
+                 goto not_found;
+ 
+         size_t n_addresses = 0;
+@@ -299,6 +299,9 @@ enum nss_status _nss_resolve_gethostbyna
+                 n_addresses++;
+         }
+ 
++        if (n_addresses == 0)
++                goto not_found;
++
+         const char *canonical = p.name ?: name;
+         size_t l = strlen(canonical);
+         size_t idx, ms = ALIGN(l+1) + ALIGN(sizeof(struct gaih_addrtuple)) * n_addresses;
+@@ -439,8 +442,8 @@ enum nss_status _nss_resolve_gethostbyna
+         r = json_dispatch(rparams, resolve_hostname_reply_dispatch_table, json_dispatch_flags, &p);
+         if (r < 0)
+                 goto fail;
+-        if (json_variant_is_blank_object(p.addresses))
+-                goto not_found;
++        if (json_variant_is_blank_array(p.addresses))
++                goto no_data;
+ 
+         size_t n_addresses = 0;
+         JSON_VARIANT_ARRAY_FOREACH(entry, p.addresses) {
+@@ -461,6 +464,9 @@ enum nss_status _nss_resolve_gethostbyna
+                 n_addresses++;
+         }
+ 
++        if (n_addresses == 0)
++                goto no_data;
++
+         const char *canonical = p.name ?: name;
+ 
+         size_t alen = FAMILY_ADDRESS_SIZE(af);
+@@ -655,7 +661,7 @@ enum nss_status _nss_resolve_gethostbyad
+         r = json_dispatch(rparams, resolve_address_reply_dispatch_table, json_dispatch_flags, &p);
+         if (r < 0)
+                 goto fail;
+-        if (json_variant_is_blank_object(p.names))
++        if (json_variant_is_blank_array(p.names))
+                 goto not_found;
+ 
+         size_t ms = 0, idx;

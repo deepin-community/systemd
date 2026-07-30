@@ -1,3 +1,9 @@
+systemd (255.2-4deepin52) unstable; urgency=medium
+
+  * nss-resolve: fix blank array checks and improve NSS status codes (YWH-PGM9780-82)
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 30 Jul 2026 10:22:38 +0800
+
 systemd (255.2-4deepin51) unstable; urgency=medium
 
   * Bound leading whitespace skip in udev_replace_whitespace to prevent buffer over-read of non-NUL-terminated ATA IDENTIFY fields (CVE class: out-of-bounds read). Introduces strnspn() in string-util and uses it in udev-util. Upstream PR #42757.
