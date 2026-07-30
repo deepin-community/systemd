@@ -1,0 +1,29 @@
+From 366fa466d2a791b3f989953b83b58307d5e6961a Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Fri, 3 Jul 2026 14:44:40 +0800
+Subject: [PATCH] copy: keep replaced target after publish errors
+
+Once link_tmpfile_at() succeeds, the target path
+has been published. Avoid unlinking it on later
+close or parent fsync failures when COPY_REPLACE
+was used, as that can remove the replaced target.
+
+Signed-off-by: dongshengyuan <dongshengyuan@uniontech.com>
+
+diff --git a/src/shared/copy.c b/src/shared/copy.c
+index f61b16caee..21add1d5c0 100644
+--- a/src/shared/copy.c
++++ b/src/shared/copy.c
+@@ -1645,7 +1645,11 @@ int copy_file_atomic_at_full(
+         return 0;
+ 
+ fail:
+-        (void) unlinkat(dir_fdt, to, 0);
++        /* link_tmpfile_at() succeeded, so 'to' is now published. In replacement mode, do not
++         * remove it again, as that may delete a pre-existing target replaced by this copy. */
++        if (!FLAGS_SET(copy_flags, COPY_REPLACE))
++                (void) unlinkat(dir_fdt, to, 0);
++
+         return r;
+ }
+
