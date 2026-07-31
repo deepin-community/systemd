@@ -62,3 +62,4 @@ fix-hostname-machine-tag-chars.patch
 CVE-2026-40226.patch
 CVE-2026-40225.patch
 CVE-2026-4105.patch
+CVE-2026-29111.patch
