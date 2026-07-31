@@ -1,3 +1,11 @@
+systemd (255.2-4deepin49) unstable; urgency=medium
+
+  * fix(cve): CVE-2026-40226 - nspawn: apply BindUser/Ephemeral from settings file only if trusted
+  * fix(cve): CVE-2026-40225 - udev: check for invalid chars in various fields received from the kernel
+  * fix(cve): CVE-2026-4105 - machined: reject invalid class types when registering machines
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 31 Jul 2026 09:00:00 +0800
+
 systemd (255.2-4deepin48) unstable; urgency=medium
 
   * hostname-util: don't allow machine tags to begin/end with '-' or '.'
