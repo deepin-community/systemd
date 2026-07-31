@@ -1,3 +1,9 @@
+systemd (255.2-4deepin50) unstable; urgency=medium
+
+  * Fix malformed hunk header in DNSSEC signature validation patch.
+
+ -- jiabowen <jiabowen@uniontech.com>  Fri, 31 Jul 2026 13:48:26 +0800
+
 systemd (255.2-4deepin49) unstable; urgency=medium
 
   * fix(cve): CVE-2026-40226 - nspawn: apply BindUser/Ephemeral from settings file only if trusted
