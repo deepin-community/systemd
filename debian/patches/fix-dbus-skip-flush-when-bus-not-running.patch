@@ -1,0 +1,85 @@
+From 3e04f8f45058aa4e6d2941572a2a6901809b7d45 Mon Sep 17 00:00:00 2001
+From: Sinity <ezo.dev@gmail.com>
+Date: Fri, 31 Jul 2026 06:08:05 +0200
+Subject: [PATCH] core/dbus: do not flush a user manager's bus that is not
+ RUNNING
+
+destroy_bus() flushes unwritten data for unprivileged managers so that
+queued messages are not lost when a connection is torn down. However,
+sd_bus_flush() first drives the connection to completion via
+bus_ensure_running(): for a connection still in OPENING or
+AUTHENTICATING this blocks the manager synchronously - a single-fd
+ppoll, the event loop is not running - until the peer answers or
+BUS_AUTH_TIMEOUT (= DEFAULT_TIMEOUT_USEC, 90 s by default) expires; a
+connection in HELLO blocks the same way on the Hello call's own
+method timeout. destroy_bus() is reached from four places: the
+disconnect handler, manager_recheck_dbus(), the failed-setup path in
+api_bus_instance_id_reply(), and bus_done() during normal shutdown or
+reexec (via manager_free()).
+
+Such a peer legitimately never answers: during session teardown,
+dbus.socket can be (or re-enter) listening while the D-Bus service
+behind it is hung or already gone, so connect() succeeds against the
+socket backlog and the authentication request is never read. The user
+manager then freezes mid-shutdown - or mid-reexec - for 90 s, with
+every remaining unit stop (or the reexec itself) gated behind it.
+
+This is the block traced in #16471 (2020, v245): the reporter's
+strace shows the manager hanging in a single-fd ppoll with an ~89 s
+timeout right after SIGTERM - bus_ensure_running() driving an
+AUTHENTICATING reconnection - and their summary attributes it to the
+flush. Their tested sd-bus-level patch (breaking the wait via a
+SIGTERM-set flag) was met with "a work-around once things are already
+bad, but we shouldn't even get in that state"; the same reply stated
+the expectation this commit implements - the manager "should normally
+protect itself ... and not issue dbus messages when the dbus service
+isn't fully up". bus_foreach_bus() already applies that principle in
+the other direction, skipping enqueue for connections that "haven't
+started yet" via the same sd_bus_is_ready() check. 1166f4472d
+("core/dbus: do not block the manager on GetId during bus
+(re-)connection") removed the connect-time instance of the same class
+of block, in code added in 2025. The flush here is twelve years
+older: it dates back to the libsystemd-bus conversion (718db96199,
+2013).
+
+Only flush when the connection is currently RUNNING. This does not
+change what gets delivered in the failure case this fixes: whatever a
+non-RUNNING connection's write queue holds (auth/Hello traffic, and
+any subscriber signal a per-unit or per-job bus_track attached without
+a readiness check) was never actually sent by the old code either -
+sd_bus_flush() calls bus_ensure_running() before it ever looks at the
+write queue, so a connection that times out without reaching RUNNING
+had its queued data silently discarded on close exactly as before,
+just after blocking for up to 90 s first rather than immediately. The
+one narrowing is a connection that would have completed authentication
+within the timeout window: previously such traffic could still reach
+the peer after the block; now it will not. Every destroy_bus() call
+site is reached only once the manager has already decided the
+connection is being torn down (disconnected, recognized as down, or
+the process itself exiting/reexecuting), so this narrowing does not
+trade a working delivery for a broken one.
+
+Fixes #16471
+
+Index: repo/src/core/dbus.c
+===================================================================
+--- repo.orig/src/core/dbus.c
++++ repo/src/core/dbus.c
+@@ -1032,9 +1032,14 @@ static void destroy_bus(Manager *m, sd_b
+         if (m->pending_reload_message && sd_bus_message_get_bus(m->pending_reload_message) == *bus)
+                 m->pending_reload_message = sd_bus_message_unref(m->pending_reload_message);
+ 
+-        /* Possibly flush unwritten data, but only if we are
+-         * unprivileged, since we don't want to sync here */
+-        if (!MANAGER_IS_SYSTEM(m))
++        /* Possibly flush unwritten data, but only if we are unprivileged, since we don't want to sync
++         * here, and only if the connection is currently RUNNING: sd_bus_flush() first drives the
++         * connection to completion via bus_ensure_running(), which blocks us synchronously for up to
++         * BUS_AUTH_TIMEOUT if the peer accepted the connection but never answers authentication (e.g. a
++         * socket-activated D-Bus service that is hung or already gone during session teardown).
++         * sd_bus_flush() only touches the write queue once that step succeeds, so anything queued on a
++         * connection that does not reach RUNNING is discarded either way - not worth blocking for. */
++        if (!MANAGER_IS_SYSTEM(m) && sd_bus_is_ready(*bus) > 0)
+                 sd_bus_flush(*bus);
+ 
+         /* And destroy the object */
