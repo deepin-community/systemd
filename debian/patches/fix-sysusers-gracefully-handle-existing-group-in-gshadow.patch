@@ -1,0 +1,125 @@
+From 36a9875c1dd20c65806e1ac5d81bedf8c38e48f0 Mon Sep 17 00:00:00 2001
+From: Frantisek Sumsal <frantisek@sumsal.cz>
+Date: Mon, 3 Aug 2026 15:34:15 +0200
+Subject: [PATCH] sysusers: gracefully handle existing group in /etc/gshadow
+
+systemd-sysusers currently skips entries for groups that already exists.
+However, if a group exists only in /etc/gshadow and not in /etc/group,
+systemd-sysusers panics:
+
+~# groupdel sgx
+~# systemd-sysusers; echo $?
+Creating group 'sgx' with GID 106.
+0
+~# systemd-sysusers; echo $?
+0
+~# sed -i '/sgx/d' /etc/group
+~# systemd-sysusers; echo $?
+Creating group 'sgx' with GID 106.
+/etc/gshadow: Group "sgx" already exists.
+1
+
+To fix this, let's mirror the logic from the user path
+(write_temporary_shadow()) where we simply drop the user from the "todo"
+queue if it already exists in /etc/shadow instead of throwing an error.
+
+diff --git a/src/sysusers/sysusers.c b/src/sysusers/sysusers.c
+index 56f3dc3953..5cf4c01964 100644
+--- a/src/sysusers/sysusers.c
++++ b/src/sysusers/sysusers.c
+@@ -932,10 +932,13 @@ static int write_temporary_gshadow(
+                 while ((r = fgetsgent_sane(original, &sg)) > 0) {
+ 
+                         i = ordered_hashmap_get(c->groups, sg->sg_namp);
+-                        if (i && i->todo_group)
+-                                return log_error_errno(SYNTHETIC_ERRNO(EEXIST),
+-                                                       "%s: Group \"%s\" already exists.",
+-                                                       gshadow_path, sg->sg_namp);
++                        if (i && i->todo_group) {
++                                /* The group already exists in /etc/gshadow. Only the
++                                 * /etc/gshadow stage is left, so we can safely remove
++                                 * the item from the todo set. */
++                                i->todo_group = false;
++                                ordered_hashmap_remove(c->todo_gids, GID_TO_PTR(i->gid));
++                        }
+ 
+                         r = putsgent_with_members(c, sg, gshadow);
+                         if (r < 0)
+diff --git a/test/test-sysusers.sh.in b/test/test-sysusers.sh.in
+index ae7bfee2fe..fb6798b53b 100755
+--- a/test/test-sysusers.sh.in
++++ b/test/test-sysusers.sh.in
+@@ -23,7 +23,7 @@ prepare_testdir() {
+     mkdir -p "$TESTDIR/etc/sysusers.d/"
+     mkdir -p "$TESTDIR/usr/lib/sysusers.d/"
+     rm -f "$TESTDIR"/etc/*{passwd,group,shadow}
+-    for i in $1.initial-{passwd,group,shadow}; do
++    for i in $1.initial-{passwd,group,shadow,gshadow}; do
+         test -f "$i" && cp "$i" "$TESTDIR/etc/${i#*.initial-}"
+     done
+     return 0
+diff --git a/test/test-sysusers/test-17.expected-group b/test/test-sysusers/test-17.expected-group
+new file mode 100644
+index 0000000000..41eeafbefc
+--- /dev/null
++++ b/test/test-sysusers/test-17.expected-group
+@@ -0,0 +1 @@
++testgroup:x:333:
+diff --git a/test/test-sysusers/test-17.expected-passwd b/test/test-sysusers/test-17.expected-passwd
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/test/test-sysusers/test-17.initial-group b/test/test-sysusers/test-17.initial-group
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/test/test-sysusers/test-17.initial-gshadow b/test/test-sysusers/test-17.initial-gshadow
+new file mode 100644
+index 0000000000..5af2638d7a
+--- /dev/null
++++ b/test/test-sysusers/test-17.initial-gshadow
+@@ -0,0 +1 @@
++testgroup:!::
+diff --git a/test/test-sysusers/test-17.initial-passwd b/test/test-sysusers/test-17.initial-passwd
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/test/test-sysusers/test-17.input b/test/test-sysusers/test-17.input
+new file mode 100644
+index 0000000000..2d6e893dbc
+--- /dev/null
++++ b/test/test-sysusers/test-17.input
+@@ -0,0 +1,4 @@
++# SPDX-License-Identifier: LGPL-2.1-or-later
++# Test that a group pre-existing in /etc/gshadow but missing from
++# /etc/group is handled gracefully instead of failing with EEXIST.
++g testgroup 333
+diff --git a/test/test-sysusers/test-18.expected-group b/test/test-sysusers/test-18.expected-group
+new file mode 100644
+index 0000000000..5bf8fcc0e2
+--- /dev/null
++++ b/test/test-sysusers/test-18.expected-group
+@@ -0,0 +1 @@
++testuser:x:444:
+diff --git a/test/test-sysusers/test-18.expected-passwd b/test/test-sysusers/test-18.expected-passwd
+new file mode 100644
+index 0000000000..7055b19a06
+--- /dev/null
++++ b/test/test-sysusers/test-18.expected-passwd
+@@ -0,0 +1 @@
++testuser:x:444:444:Test User:/:NOLOGIN
+diff --git a/test/test-sysusers/test-18.initial-shadow b/test/test-sysusers/test-18.initial-shadow
+new file mode 100644
+index 0000000000..a0410d8ff7
+--- /dev/null
++++ b/test/test-sysusers/test-18.initial-shadow
+@@ -0,0 +1 @@
++testuser:!*::0:99999:7:::
+diff --git a/test/test-sysusers/test-18.input b/test/test-sysusers/test-18.input
+new file mode 100644
+index 0000000000..0ec9a46c87
+--- /dev/null
++++ b/test/test-sysusers/test-18.input
+@@ -0,0 +1,4 @@
++# SPDX-License-Identifier: LGPL-2.1-or-later
++# Test that a user pre-existing in /etc/shadow but missing from
++# /etc/passwd is handled gracefully (existing entry is updated).
++u testuser 444 "Test User"
+

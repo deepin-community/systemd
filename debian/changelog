@@ -1,3 +1,9 @@
+systemd (255.2-4deepin66) unstable; urgency=medium
+
+  * sysusers: gracefully handle existing group in /etc/gshadow
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 18 Aug 2026 14:07:34 +0800
+
 systemd (255.2-4deepin65) unstable; urgency=medium
 
   * Backport sd-journal: potentially reduce number of fstat call (PR#30209)
