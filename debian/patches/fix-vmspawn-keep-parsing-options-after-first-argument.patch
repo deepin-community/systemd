@@ -1,0 +1,50 @@
+From 06cb8fbe618604f43c9a9a638e6fc3df920daa0c Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Sat, 8 Aug 2026 11:39:16 +0200
+Subject: [PATCH] vmspawn: keep parsing options after the first argument
+
+vmspawn's positional arguments are extra kernel command line arguments
+rather than a command to execute, so unlike nspawn or run it has nothing
+to shield from the option parser: a kernel command line argument never
+begins with a dash. Stopping at the first one only means an option that
+follows one is silently taken for another kernel command line argument,
+with no diagnostic:
+
+    systemd-vmspawn -i image.raw console=ttyS0 --set-credential=foo:bar
+
+boots with "--set-credential=foo:bar" appended to the kernel command
+line instead of setting a credential.
+
+The stop was right when it was written. In 9de3cc1484, vmspawn's first
+commit, the trailing arguments were appended to the QEMU command line
+directly, so they really were options that had to reach QEMU unparsed.
+4291f4461e turned them into extra kernel command line arguments passed
+through SMBIOS three weeks later, and updated the man page to say so,
+but left the "+" in the optstring behind; 4c778c51c0 and 5ff0ccaf8b then
+carried it into the new option parser as
+OPTION_PARSER_STOP_AT_FIRST_NONOPTION.
+
+Use the default parser mode, which permutes options ahead of the
+arguments; "--" still ends option parsing for an argument that does look
+like an option. test-options gains the case this turns on, an option
+after a positional argument in the default mode, beside the existing one
+for the mode vmspawn no longer uses.
+
+Index: repo/src/vmspawn/vmspawn.c
+===================================================================
+--- repo.orig/src/vmspawn/vmspawn.c
++++ repo/src/vmspawn/vmspawn.c
+@@ -139,8 +139,12 @@ static int parse_argv(int argc, char *ar
+         assert(argc >= 0);
+         assert(argv);
+ 
++        /* Our positional arguments are kernel command line arguments rather than a command to
++         * execute, and those never begin with a dash, so there's no reason to stop looking for
++         * options at the first of them. "--" still ends option parsing, for the rare argument that
++         * does look like an option. */
+         optind = 0;
+-        while ((c = getopt_long(argc, argv, "+hi:M", options, NULL)) >= 0)
++        while ((c = getopt_long(argc, argv, "hi:M", options, NULL)) >= 0)
+                 switch (c) {
+                 case 'h':
+                         return help();
