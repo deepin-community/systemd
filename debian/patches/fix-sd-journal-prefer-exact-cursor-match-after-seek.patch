@@ -1,0 +1,263 @@
+From 0e410a6b9d8e92427e7e488bc5d48c270150064f Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 6 Aug 2026 05:48:05 +0900
+Subject: [PATCH] sd-journal: prefer exact cursor match after seek (#43297)
+
+Fixes #31516.
+
+From 8e762e6b9f508c82c05e1c05358235d2067d9fb9 Mon Sep 17 00:00:00 2001
+From: Frantisek Sumsal <frantisek@sumsal.cz>
+Date: Wed, 5 Aug 2026 18:33:17 +0200
+Subject: [PATCH] test: verify cursor-seeking in the opposite direction as well
+
+
+diff --git a/src/libsystemd/sd-journal/test-journal-interleaving.c b/src/libsystemd/sd-journal/test-journal-interleaving.c
+index e94e177bb7..69c5563a5b 100644
+--- a/src/libsystemd/sd-journal/test-journal-interleaving.c
++++ b/src/libsystemd/sd-journal/test-journal-interleaving.c
+@@ -262,6 +262,18 @@ static void test_cursor(sd_journal *j) {
+                 ASSERT_OK(sd_journal_next(j));
+                 ASSERT_OK_POSITIVE(sd_journal_test_cursor(j, *c));
+         }
++
++        STRV_FOREACH(c, cursors) {
++                ASSERT_OK(sd_journal_seek_cursor(j, *c));
++                ASSERT_OK(sd_journal_previous(j));
++                ASSERT_OK_POSITIVE(sd_journal_test_cursor(j, *c));
++        }
++
++        ASSERT_OK(sd_journal_seek_tail(j));
++        STRV_FOREACH_BACKWARDS(c, cursors) {
++                ASSERT_OK(sd_journal_previous(j));
++                ASSERT_OK_POSITIVE(sd_journal_test_cursor(j, *c));
++        }
+ }
+ 
+ static void test_skip_one(void (*setup)(void)) {
+
+From 868d07d1d450bfae4ad9c1d6ce2ff4cb9855802e Mon Sep 17 00:00:00 2001
+From: Frantisek Sumsal <frantisek@sumsal.cz>
+Date: Wed, 5 Aug 2026 16:46:13 +0200
+Subject: [PATCH] sd-journal: prefer exact cursor match after seek
+
+Since 262299dccbb09f36c8c830dabd6a104469d9852b compare_locations() falls
+through to a realtime-based comparison in compare_boot_ids() if the
+compared entries have different boot IDs (and seqnum IDs). This can,
+however, cause us to pick up the wrong entry/file on systems with
+unreliable/missing RTC, where early-boot entries of a boot might have
+earlier realtime timestamp compared to the previous boot.
+
+For example, here's a minimal reproducer consisting of two journal files
+containing three entries from two separate boot IDs:
+
+$ journalctl --file one.journal -o export
+__CURSOR=s=ba37c62fcacf406aad088166c4963cd1;i=1;b=c220efc91dd440deb89d82c98ddb11a5;m=186a0;t=1e8480;x=39d4323a8e5a248d
+__REALTIME_TIMESTAMP=2000000
+__MONOTONIC_TIMESTAMP=100000
+__SEQNUM=1
+__SEQNUM_ID=ba37c62fcacf406aad088166c4963cd1
+_BOOT_ID=c220efc91dd440deb89d82c98ddb11a5
+NUMBER=1
+
+$ journalctl --file two.journal -o export
+__CURSOR=s=9d15197efcc54d8ca5d6e7cce28373e2;i=1;b=686dc35e78f64b6ba126018ab6e8bae9;m=186a0;t=f4240;x=57db1c7bd38b37ed
+__REALTIME_TIMESTAMP=1000000
+__MONOTONIC_TIMESTAMP=100000
+__SEQNUM=1
+__SEQNUM_ID=9d15197efcc54d8ca5d6e7cce28373e2
+_BOOT_ID=686dc35e78f64b6ba126018ab6e8bae9
+NUMBER=2
+
+__CURSOR=s=9d15197efcc54d8ca5d6e7cce28373e2;i=2;b=686dc35e78f64b6ba126018ab6e8bae9;m=30d40;t=2dc6c0;x=3513732159948113
+__REALTIME_TIMESTAMP=3000000
+__MONOTONIC_TIMESTAMP=200000
+__SEQNUM=2
+__SEQNUM_ID=9d15197efcc54d8ca5d6e7cce28373e2
+_BOOT_ID=686dc35e78f64b6ba126018ab6e8bae9
+NUMBER=3
+
+The first file (one.journal) contains a single entry from the first boot
+(c220efc91dd440deb89d82c98ddb11a5) and a realtime timestamp of 2s. The
+second file (two.journal) contains two entries from the second boot
+(686dc35e78f64b6ba126018ab6e8bae9) - the first entry has a realtime
+timestamp of 1s (i.e. _earlier_ than the tail timestamp of the first
+boot), and the second entry has a realtime timestamp of 3s (i.e.  after
+a time correction).
+
+This works fine for forward iteration, but seeking directly to the
+second entry is when things go south:
+
+First entry:
+$ python3 <<EOF
+c = "s=ba37c62fcacf406aad088166c4963cd1;i=1;b=c220efc91dd440deb89d82c98ddb11a5;m=186a0;t=1e8480;x=39d4323a8e5a248d"
+from systemd import journal; j = journal.Reader(path="."); j.seek_cursor(c); j.get_next(); print(j.test_cursor(c))
+EOF
+True
+
+Second entry:
+$ python3 <<EOF
+c = "s=9d15197efcc54d8ca5d6e7cce28373e2;i=1;b=686dc35e78f64b6ba126018ab6e8bae9;m=186a0;t=f4240;x=57db1c7bd38b37ed"
+from systemd import journal; j = journal.Reader(path="."); j.seek_cursor(c); j.get_next(); print(j.test_cursor(c))
+EOF
+False
+
+That's because:
+  - we call sd_journal_seek_cursor(...) and parse it (seqnum, seqnum_id,
+    boot_id, realtime, ...)
+  - we call sd_journal_next() -> real_journal_next() which iterates over
+    all open journal files to find all candidate entries and pick the
+    best one
+  - for each journal file we call next_beyond_location()
+  - for next_beyond_location(one.journal) we get:
+    - last_direction is _DIRECTION_INVALID, so we call find_location_with_matches()
+    - we fall all the way through to journal_file_move_to_entry_by_realtime()
+    - here we try to find the first entry with realtime >= 1s; this file
+      has only one entry with realtime = 2s which matches
+  - we got a match and new_file is unset, so we set it to one.journal
+  - for next_beyond_location(two.journal) we get:
+    - we fall through to find_location_with_matches()
+    - here we have a matching seqnum, so we call journal_file_move_to_entry_by_seqnum()
+  - we got another match but new_file is set, so we call compare_locations(two.journal, one.journal):
+    - we fall through to compare_boot_ids()
+    - we get the tail timestamps of both journal files and return
+      CMP(second boot, first boot) -> CMP(3s, 2s) = 1
+  - this bubbles up back to real_journal_next() where found = false, so
+    new_file remains one.journal (the wrong journal file)
+  - this is followed by set_location(one.journal), which makes the
+    following sd_journal_test_cursor() call fail, as the
+    boot_id/seqnum_id/... of the current position don't match with the
+    cursor
+
+To fix this, let's track the journal file that holds the exact cursor
+match, and override the chosen candidate if needed once we process all
+open journals.
+
+Resolves: #31516
+
+diff --git a/src/libsystemd/sd-journal/sd-journal.c b/src/libsystemd/sd-journal/sd-journal.c
+index d67d269f1f..2340ecebe4 100644
+--- a/src/libsystemd/sd-journal/sd-journal.c
++++ b/src/libsystemd/sd-journal/sd-journal.c
+@@ -1127,7 +1127,7 @@ static int compare_locations(sd_journal *j, JournalFile *af, JournalFile *bf) {
+ }
+ 
+ static int real_journal_next(sd_journal *j, direction_t direction) {
+-        JournalFile *new_file = NULL;
++        JournalFile *new_file = NULL, *exact_match = NULL;
+         unsigned n_files;
+         const void **files;
+         Object *o;
+@@ -1163,7 +1163,22 @@ static int real_journal_next(sd_journal *j, direction_t direction) {
+ 
+                 if (found)
+                         new_file = f;
+-        }
++
++                /* Track the file that holds the cursor's exact entry (matching seqnum_id and seqnum). On
++                 * systems without a reliable (or missing) RTC, compare_boot_ids() can produce incorrect
++                 * cross-boot ordering causing compare_locations() above to prefer a wrong file. We detect
++                 * this after the loop and override the choice if needed.
++                 *
++                 * See https://github.com/systemd/systemd/issues/31516 */
++                if (j->current_location.type == LOCATION_SEEK &&
++                    j->current_location.seqnum_set &&
++                    sd_id128_equal(f->header->seqnum_id, j->current_location.seqnum_id) &&
++                    f->current_seqnum == j->current_location.seqnum)
++                        exact_match = f;
++        }
++
++        if (exact_match)
++                new_file = exact_match;
+ 
+         if (!new_file)
+                 return 0;
+diff --git a/src/libsystemd/sd-journal/test-journal-interleaving.c b/src/libsystemd/sd-journal/test-journal-interleaving.c
+index df5605f1bc..e94e177bb7 100644
+--- a/src/libsystemd/sd-journal/test-journal-interleaving.c
++++ b/src/libsystemd/sd-journal/test-journal-interleaving.c
+@@ -1328,6 +1328,84 @@ TEST(seek_time) {
+         }
+ }
+ 
++static void append_number_at(
++                JournalFile *f,
++                unsigned n,
++                const sd_id128_t *boot_id,
++                uint64_t realtime,
++                uint64_t monotonic) {
++
++        _cleanup_free_ char *p = NULL, *q = NULL;
++        dual_timestamp ts = { .realtime = realtime, .monotonic = monotonic };
++        struct iovec iovec[2];
++        size_t n_iov = 0;
++
++        ASSERT_OK(asprintf(&p, "NUMBER=%u", n));
++        iovec[n_iov++] = IOVEC_MAKE_STRING(p);
++
++        if (boot_id) {
++                ASSERT_NOT_NULL((q = strjoin("_BOOT_ID=", SD_ID128_TO_STRING(*boot_id))));
++                iovec[n_iov++] = IOVEC_MAKE_STRING(q);
++        }
++
++        ASSERT_OK(journal_file_append_entry(f, &ts, boot_id, iovec, n_iov, NULL, NULL, NULL, NULL));
++}
++
++TEST(cursor_broken_rtc) {
++        /* Reproducer for https://github.com/systemd/systemd/issues/31516.
++         *
++         * On systems without a reliable (or missing) RTC, the realtime clock can go backwards across
++         * reboots. This creates journal files where a later boot's first entries have lower realtime
++         * timestamps than the previous boot's last entries.
++         *
++         * compare_boot_ids() orders boots by their newest realtime timestamp, so it considers boot 1
++         * "earlier" than boot 2 (since boot 2 eventually catches up). But when seeking to a cursor pointing
++         * at boot 2's first entry (which has low realtime), the realtime-based positioning in boot 1's file
++         * finds a nearby entry, and compare_locations() (via compare_boot_ids()) incorrectly picks that
++         * entry because boot 1 is globally "earlier".
++         *
++         * A minimal setup for such scenario - 2 files with 3 entries:
++         *
++         *   one.journal (boot 1): entry at realtime=2s
++         *   two.journal (boot 2): entry at realtime=1s (earlier than boot 1), then entry at realtime=3s */
++        _cleanup_(test_donep) char *t = NULL;
++        _cleanup_(sd_journal_closep) sd_journal *j = NULL;
++
++        mkdtemp_chdir_chattr("/var/tmp/journal-cursor-rtc-XXXXXX", &t);
++
++        {
++                _cleanup_(journal_file_offline_closep) JournalFile *f1 = NULL, *f2 = NULL;
++                sd_id128_t boot1, boot2;
++
++                f1 = test_open("one.journal");
++                f2 = test_open("two.journal");
++
++                ASSERT_OK(sd_id128_randomize(&boot1));
++                ASSERT_OK(sd_id128_randomize(&boot2));
++
++                log_info("boot1: %s, boot2: %s",
++                         SD_ID128_TO_STRING(boot1), SD_ID128_TO_STRING(boot2));
++
++                append_number_at(f1, 1, &boot1, 2 * USEC_PER_SEC, 100 * USEC_PER_MSEC);
++                append_number_at(f2, 2, &boot2, 1 * USEC_PER_SEC, 100 * USEC_PER_MSEC);
++                append_number_at(f2, 3, &boot2, 3 * USEC_PER_SEC, 200 * USEC_PER_MSEC);
++        }
++
++        ASSERT_OK(sd_journal_open_directory(&j, t, SD_JOURNAL_ASSUME_IMMUTABLE));
++
++        /* Test cursor seeking */
++        test_cursor(j);
++
++        /* Also verify forward and backward iterations */
++        ASSERT_OK(sd_journal_seek_head(j));
++        ASSERT_OK_POSITIVE(sd_journal_next(j));
++        test_check_numbers_down(j, 3);
++
++        ASSERT_OK(sd_journal_seek_tail(j));
++        ASSERT_OK_POSITIVE(sd_journal_previous(j));
++        test_check_numbers_up(j, 3);
++}
++
+ static int intro(void) {
+         /* journal_file_open() requires a valid machine id */
+         if (access("/etc/machine-id", F_OK) != 0)
+
