@@ -1,0 +1,41 @@
+From 8ba111463db94f4a31605c97c0aa7f961c0b6f2f Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Sun, 24 Dec 2023 09:11:48 +0800
+Subject: [PATCH] core,format-table: use strna/ersatz for formatting fdstore
+ dump
+
+Currently, the code doesn't handle anonymous inodes correctly.
+
+diff --git a/src/core/service.c b/src/core/service.c
+index 7bd4e99b11..495b183321 100644
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -903,12 +903,12 @@ static void service_dump_fdstore(Service *s, FILE *f, const char *prefix) {
+                         "%s%s '%s' (type=%s; dev=" DEVNUM_FORMAT_STR "; inode=%" PRIu64 "; rdev=" DEVNUM_FORMAT_STR "; path=%s; access=%s)\n",
+                         prefix, i == s->fd_store ? "File Descriptor Store Entry:" : "                            ",
+                         i->fdname,
+-                        inode_type_to_string(st.st_mode),
++                        strna(inode_type_to_string(st.st_mode)),
+                         DEVNUM_FORMAT_VAL(st.st_dev),
+                         (uint64_t) st.st_ino,
+                         DEVNUM_FORMAT_VAL(st.st_rdev),
+                         strna(path),
+-                        accmode_to_string(flags));
++                        strna(accmode_to_string(flags)));
+         }
+ }
+ 
+diff --git a/src/shared/format-table.c b/src/shared/format-table.c
+index 41471dade0..572fda4411 100644
+--- a/src/shared/format-table.c
++++ b/src/shared/format-table.c
+@@ -2003,7 +2003,7 @@ static const char *table_data_format(Table *t, TableData *d, bool avoid_uppercas
+                 if (d->mode == MODE_INVALID)
+                         return table_ersatz_string(t);
+ 
+-                return inode_type_to_string(d->mode);
++                return inode_type_to_string(d->mode) ?: table_ersatz_string(t);
+ 
+         case TABLE_DEVNUM:
+                 if (devnum_is_zero(d->devnum))
+
