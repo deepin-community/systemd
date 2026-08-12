@@ -1,3 +1,9 @@
+systemd (255.2-4deepin66) unstable; urgency=medium
+
+  * Fix double-free in exec_context_get_restrict_filesystems() caused by incorrect use of _cleanup_strv_free_ on set_get_strv() return value (PR#37113)
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 12 Aug 2026 11:14:07 +0800
+
 systemd (255.2-4deepin65) unstable; urgency=medium
 
   * Backport sd-journal: potentially reduce number of fstat call (PR#30209)

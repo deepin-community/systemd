@@ -1,0 +1,49 @@
+From 7065494e7e1b1b8fa94bb94053f28827d155bad6 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Sun, 13 Apr 2025 00:17:54 +0200
+Subject: [PATCH] core/execute: set_get_strv() does not transfer ownership of
+ strings
+
+Prompted by #37090
+
+Index: repo/src/core/dbus-execute.c
+===================================================================
+--- repo.orig/src/core/dbus-execute.c
++++ repo/src/core/dbus-execute.c
+@@ -433,7 +433,7 @@ static int property_get_restrict_filesys
+                 sd_bus_error *error) {
+ 
+         ExecContext *c = ASSERT_PTR(userdata);
+-        _cleanup_free_ char **l = NULL;
++        _cleanup_free_ char **l = NULL; /* Strings are owned by 'c->restrict_filesystems'! */
+         int r;
+ 
+         assert(bus);
+Index: repo/src/core/execute.c
+===================================================================
+--- repo.orig/src/core/execute.c
++++ repo/src/core/execute.c
+@@ -1785,19 +1785,17 @@ char** exec_context_get_address_families
+ }
+ 
+ char** exec_context_get_restrict_filesystems(const ExecContext *c) {
+-        _cleanup_strv_free_ char **l = NULL;
+-
+         assert(c);
+ 
+ #if HAVE_LIBBPF
+-        l = set_get_strv(c->restrict_filesystems);
++        char **l = set_get_strv(c->restrict_filesystems);
+         if (!l)
+                 return NULL;
+ 
+-        strv_sort(l);
++        return strv_sort(l);
++#else
++        return strv_new(NULL);
+ #endif
+-
+-        return l ? TAKE_PTR(l) : strv_new(NULL);
+ }
+ 
+ void exec_status_start(ExecStatus *s, pid_t pid) {
