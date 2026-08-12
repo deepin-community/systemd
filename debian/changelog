@@ -1,3 +1,9 @@
+systemd (255.2-4deepin66) unstable; urgency=medium
+
+  * Use strna/ersatz for formatting fdstore dump to handle anonymous inodes correctly
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 12 Aug 2026 11:10:28 +0800
+
 systemd (255.2-4deepin65) unstable; urgency=medium
 
   * Backport sd-journal: potentially reduce number of fstat call (PR#30209)
