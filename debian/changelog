@@ -1,3 +1,9 @@
+systemd (255.2-4deepin66) unstable; urgency=medium
+
+  * Fix several OS image handling issues: use-after-free in Rename() DBus method, acquire Image object from cache for main interface methods, sync Image.limit and Image.read_only flags (PR#32907)
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 13 Aug 2026 10:29:41 +0800
+
 systemd (255.2-4deepin65) unstable; urgency=medium
 
   * Backport sd-journal: potentially reduce number of fstat call (PR#30209)

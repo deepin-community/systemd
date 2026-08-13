@@ -1,0 +1,350 @@
+From 290766d72bdc5487cff49e5cf4ffaf0dc428167b Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Sun, 19 May 2024 21:10:40 +0200
+Subject: [PATCH] Merge pull request #32907 from yuwata/image-fix
+
+several fixes for os image handling
+
+From 96ac6d3fccfe84eeda806da3d132a1374f8b5216 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 18 May 2024 05:46:24 +0900
+Subject: [PATCH] discover-image: also update Image.limit in image_set_limit()
+
+Same as the previous commit, but for SetLimit DBus method vs Limit
+property and friends.
+
+diff --git a/src/shared/discover-image.c b/src/shared/discover-image.c
+index 8467815efc..1079d28200 100644
+--- a/src/shared/discover-image.c
++++ b/src/shared/discover-image.c
+@@ -282,6 +282,44 @@ static int extract_image_basename(
+         return 0;
+ }
+ 
++static int image_update_quota(Image *i, int fd) {
++        _cleanup_close_ int fd_close = -EBADF;
++        int r;
++
++        assert(i);
++
++        if (IMAGE_IS_VENDOR(i) || IMAGE_IS_HOST(i))
++                return -EROFS;
++
++        if (i->type != IMAGE_SUBVOLUME)
++                return -EOPNOTSUPP;
++
++        if (fd < 0) {
++                fd_close = open(i->path, O_CLOEXEC|O_NOCTTY|O_DIRECTORY);
++                if (fd_close < 0)
++                        return -errno;
++                fd = fd_close;
++        }
++
++        r = btrfs_quota_scan_ongoing(fd);
++        if (r < 0)
++                return r;
++        if (r > 0)
++                return 0;
++
++        BtrfsQuotaInfo quota;
++        r = btrfs_subvol_get_subtree_quota_fd(fd, 0, &quota);
++        if (r < 0)
++                return r;
++
++        i->usage = quota.referenced;
++        i->usage_exclusive = quota.exclusive;
++        i->limit = quota.referenced_max;
++        i->limit_exclusive = quota.exclusive_max;
++
++        return 1;
++}
++
+ static int image_make(
+                 ImageClass c,
+                 const char *pretty,
+@@ -375,19 +413,7 @@ static int image_make(
+                                 if (r < 0)
+                                         return r;
+ 
+-                                if (btrfs_quota_scan_ongoing(fd) == 0) {
+-                                        BtrfsQuotaInfo quota;
+-
+-                                        r = btrfs_subvol_get_subtree_quota_fd(fd, 0, &quota);
+-                                        if (r >= 0) {
+-                                                (*ret)->usage = quota.referenced;
+-                                                (*ret)->usage_exclusive = quota.exclusive;
+-
+-                                                (*ret)->limit = quota.referenced_max;
+-                                                (*ret)->limit_exclusive = quota.exclusive_max;
+-                                        }
+-                                }
+-
++                                (void) image_update_quota(*ret, fd);
+                                 return 0;
+                         }
+                 }
+@@ -1396,6 +1422,8 @@ int image_path_lock(
+ }
+ 
+ int image_set_limit(Image *i, uint64_t referenced_max) {
++        int r;
++
+         assert(i);
+ 
+         if (IMAGE_IS_VENDOR(i) || IMAGE_IS_HOST(i))
+@@ -1411,7 +1439,12 @@ int image_set_limit(Image *i, uint64_t referenced_max) {
+ 
+         (void) btrfs_qgroup_set_limit(i->path, 0, referenced_max);
+         (void) btrfs_subvol_auto_qgroup(i->path, 0, true);
+-        return btrfs_subvol_set_subtree_quota_limit(i->path, 0, referenced_max);
++        r = btrfs_subvol_set_subtree_quota_limit(i->path, 0, referenced_max);
++        if (r < 0)
++                return r;
++
++        (void) image_update_quota(i, -EBADF);
++        return 0;
+ }
+ 
+ int image_read_metadata(Image *i, const ImagePolicy *image_policy) {
+
+From c6aeb9b596749b263145346c7fa2c6bf7fbd3867 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 18 May 2024 05:33:48 +0900
+Subject: [PATCH] machine: also acquire Image object from cache when a dbus
+ method in the main interface is called
+
+Previously, Image objects were only cached when reading properties or
+methods in the org.freedesktop.machine1.Image interface are called.
+
+This makes that, when a method in the main interface (org.freedesktop.machine1)
+for an image is called, also acquire the Image object from the cache,
+and if not cached, create Image object and put into the cache, like we
+do for org.freedesktop.machine1.Image.
+
+Otherwise, if some properties of an image are updated by methods in the main
+interface, e.g. MarkImageReadOnly(), the changes do not applied to the cached
+Image object, and subsequent read of proerties through the interface for the
+image, e.g. ReadOnly property, may provide outdated values.
+
+Follow-up for 1ddb263d21099ae42195c2bc382bdf72a7f24f82.
+
+Fixes #32888.
+
+diff --git a/src/machine/machined-dbus.c b/src/machine/machined-dbus.c
+index dbb03f3d67..944b52efd4 100644
+--- a/src/machine/machined-dbus.c
++++ b/src/machine/machined-dbus.c
+@@ -550,8 +550,8 @@ static int method_get_machine_uid_shift(sd_bus_message *message, void *userdata,
+ }
+ 
+ static int redirect_method_to_image(sd_bus_message *message, Manager *m, sd_bus_error *error, sd_bus_message_handler_t method) {
+-        _cleanup_(image_unrefp) Image* i = NULL;
+         const char *name;
++        Image *i;
+         int r;
+ 
+         assert(message);
+@@ -565,13 +565,12 @@ static int redirect_method_to_image(sd_bus_message *message, Manager *m, sd_bus_
+         if (!image_name_is_valid(name))
+                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Image name '%s' is invalid.", name);
+ 
+-        r = image_find(IMAGE_MACHINE, name, NULL, &i);
++        r = manager_acquire_image(m, name, &i);
+         if (r == -ENOENT)
+                 return sd_bus_error_setf(error, BUS_ERROR_NO_SUCH_IMAGE, "No image '%s' known", name);
+         if (r < 0)
+                 return r;
+ 
+-        i->userdata = m;
+         return method(message, i, error);
+ }
+
+From 3b1b2d4e3d544c593399e914fd1c3a5f61d7e827 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 18 May 2024 06:14:50 +0900
+Subject: [PATCH] machine: fix use-after-free in Rename() DBus method
+
+Fixes a bug introduced by 1ddb263d21099ae42195c2bc382bdf72a7f24f82.
+
+Note, this requires the previous two commits, and cannot backport without them.
+
+Note, before the previous commit, the use-after-free could be triggered
+only by Rename() DBus method, and could not by RenameImage(), as we did not
+cache Image object when RenameImage() method is called. And machinectl
+always uses RenameImage(). Hence, the issue could be triggered only when
+Rename() DBus method is explicitly called by e.g. busctl.
+
+With the previous commit, the Image object passed to the function is
+always cached. Hence, the issue could be triggered even with machinectl
+command, and this fix is important.
+
+diff --git a/src/machine/image-dbus.c b/src/machine/image-dbus.c
+index 801ecd419a..d8068cdfcd 100644
+--- a/src/machine/image-dbus.c
++++ b/src/machine/image-dbus.c
+@@ -127,9 +127,17 @@ int bus_image_method_rename(
+         if (r == 0)
+                 return 1; /* Will call us back */
+ 
++        /* The image is cached with its name, hence it is necessary to remove from the cache before renaming. */
++        assert_se(hashmap_remove_value(m->image_cache, image->name, image));
++
+         r = image_rename(image, new_name);
+-        if (r < 0)
++        if (r < 0) {
++                image_unref(image);
+                 return r;
++        }
++
++        /* Then save the object again in the cache. */
++        assert_se(hashmap_put(m->image_cache, image->name, image) > 0);
+ 
+         return sd_bus_reply_method_return(message, NULL);
+ }
+
+From 6d917da1409eae3b6988ed56cc4812252058ecdb Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 18 May 2024 05:31:16 +0900
+Subject: [PATCH] machine: split out manager_acquire_image() from
+ image_object_find()
+
+Preparation for the next commit. No functional change.
+
+diff --git a/src/machine/image-dbus.c b/src/machine/image-dbus.c
+index 69039de2e6..801ecd419a 100644
+--- a/src/machine/image-dbus.c
++++ b/src/machine/image-dbus.c
+@@ -378,30 +378,17 @@ static int image_flush_cache(sd_event_source *s, void *userdata) {
+         return 0;
+ }
+ 
+-static int image_object_find(sd_bus *bus, const char *path, const char *interface, void *userdata, void **found, sd_bus_error *error) {
+-        _cleanup_free_ char *e = NULL;
+-        Manager *m = userdata;
+-        Image *image = NULL;
+-        const char *p;
++int manager_acquire_image(Manager *m, const char *name, Image **ret) {
+         int r;
+ 
+-        assert(bus);
+-        assert(path);
+-        assert(interface);
+-        assert(found);
++        assert(m);
++        assert(name);
+ 
+-        p = startswith(path, "/org/freedesktop/machine1/image/");
+-        if (!p)
++        Image *existing = hashmap_get(m->image_cache, name);
++        if (existing) {
++                if (ret)
++                        *ret = existing;
+                 return 0;
+-
+-        e = bus_label_unescape(p);
+-        if (!e)
+-                return -ENOMEM;
+-
+-        image = hashmap_get(m->image_cache, e);
+-        if (image) {
+-                *found = image;
+-                return 1;
+         }
+ 
+         if (!m->image_cache_defer_event) {
+@@ -418,19 +405,49 @@ static int image_object_find(sd_bus *bus, const char *path, const char *interfac
+         if (r < 0)
+                 return r;
+ 
+-        r = image_find(IMAGE_MACHINE, e, NULL, &image);
+-        if (r == -ENOENT)
+-                return 0;
++        _cleanup_(image_unrefp) Image *image = NULL;
++        r = image_find(IMAGE_MACHINE, name, NULL, &image);
+         if (r < 0)
+                 return r;
+ 
+         image->userdata = m;
+ 
+         r = hashmap_ensure_put(&m->image_cache, &image_hash_ops, image->name, image);
+-        if (r < 0) {
+-                image_unref(image);
++        if (r < 0)
++                return r;
++
++        if (ret)
++                *ret = image;
++
++        TAKE_PTR(image);
++        return 0;
++}
++
++static int image_object_find(sd_bus *bus, const char *path, const char *interface, void *userdata, void **found, sd_bus_error *error) {
++        _cleanup_free_ char *e = NULL;
++        Manager *m = userdata;
++        Image *image;
++        const char *p;
++        int r;
++
++        assert(bus);
++        assert(path);
++        assert(interface);
++        assert(found);
++
++        p = startswith(path, "/org/freedesktop/machine1/image/");
++        if (!p)
++                return 0;
++
++        e = bus_label_unescape(p);
++        if (!e)
++                return -ENOMEM;
++
++        r = manager_acquire_image(m, e, &image);
++        if (r == -ENOENT)
++                return 0;
++        if (r < 0)
+                 return r;
+-        }
+ 
+         *found = image;
+         return 1;
+diff --git a/src/machine/image-dbus.h b/src/machine/image-dbus.h
+index 4b00203bff..0c4fab1b0a 100644
+--- a/src/machine/image-dbus.h
++++ b/src/machine/image-dbus.h
+@@ -2,10 +2,12 @@
+ #pragma once
+ 
+ #include "bus-object.h"
++#include "discover-image.h"
+ #include "machined.h"
+ 
+ extern const BusObjectImplementation image_object;
+ 
++int manager_acquire_image(Manager *m, const char *name, Image **ret);
+ char *image_bus_path(const char *name);
+ 
+ int bus_image_method_remove(sd_bus_message *message, void *userdata, sd_bus_error *error);
+
+From 608c321f232105966e509265c13ae061c03b9f77 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 18 May 2024 05:10:42 +0900
+Subject: [PATCH] discover-image: update Image.read_only flag in
+ image_read_only()
+
+Otherwise, ReadOnly DBus property in org.freedesktop.machine1.Image or
+org.freedesktop.portable1.Image will not be updated by MarkReadOnly DBus
+method.
+
+diff --git a/src/shared/discover-image.c b/src/shared/discover-image.c
+index 09bad987ad..8467815efc 100644
+--- a/src/shared/discover-image.c
++++ b/src/shared/discover-image.c
+@@ -1287,6 +1287,7 @@ int image_read_only(Image *i, bool b) {
+                 return -EOPNOTSUPP;
+         }
+ 
++        i->read_only = b;
+         return 0;
+ }
+
