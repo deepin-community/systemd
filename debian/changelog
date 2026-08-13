@@ -1,3 +1,9 @@
+systemd (255.2-4deepin66) unstable; urgency=medium
+
+  * Add basic validation on reboot arguments to block potential kernel-level buffer overflow risk (PR#32601)
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 13 Aug 2026 10:51:59 +0800
+
 systemd (255.2-4deepin65) unstable; urgency=medium
 
   * Backport sd-journal: potentially reduce number of fstat call (PR#30209)
