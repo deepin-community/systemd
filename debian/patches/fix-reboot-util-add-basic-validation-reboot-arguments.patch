@@ -1,0 +1,205 @@
+From b7ad4778794b6bfc63d4b11c7c39cfe5a21228a4 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Wed, 1 May 2024 10:28:34 +0200
+Subject: [PATCH] reboot-util: Add some basic validation on reboot arguments
+
+Let's only accept valid ASCII and put a size limit on reboot arguments.
+
+diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
+index 9e8ff2cc13..bb8a477e59 100644
+--- a/src/core/dbus-unit.c
++++ b/src/core/dbus-unit.c
+@@ -2238,7 +2238,7 @@ static int bus_unit_set_transient_property(
+                 return bus_set_transient_emergency_action(u, name, &u->job_timeout_action, message, flags, error);
+ 
+         if (streq(name, "JobTimeoutRebootArgument"))
+-                return bus_set_transient_string(u, name, &u->job_timeout_reboot_arg, message, flags, error);
++                return bus_set_transient_reboot_parameter(u, name, &u->job_timeout_reboot_arg, message, flags, error);
+ 
+         if (streq(name, "StartLimitIntervalUSec"))
+                 return bus_set_transient_usec(u, name, &u->start_ratelimit.interval, message, flags, error);
+@@ -2262,7 +2262,7 @@ static int bus_unit_set_transient_property(
+                 return bus_set_transient_exit_status(u, name, &u->success_action_exit_status, message, flags, error);
+ 
+         if (streq(name, "RebootArgument"))
+-                return bus_set_transient_string(u, name, &u->reboot_arg, message, flags, error);
++                return bus_set_transient_reboot_parameter(u, name, &u->reboot_arg, message, flags, error);
+ 
+         if (streq(name, "CollectMode"))
+                 return bus_set_transient_collect_mode(u, name, &u->collect_mode, message, flags, error);
+diff --git a/src/core/dbus-util.c b/src/core/dbus-util.c
+index 822a17e49f..b871d89368 100644
+--- a/src/core/dbus-util.c
++++ b/src/core/dbus-util.c
+@@ -6,6 +6,7 @@
+ #include "escape.h"
+ #include "parse-util.h"
+ #include "path-util.h"
++#include "reboot-util.h"
+ #include "unit-printf.h"
+ #include "user-util.h"
+ #include "unit.h"
+@@ -39,6 +40,7 @@ static bool valid_user_group_name_or_id_relaxed(const char *u) {
+ 
+ BUS_DEFINE_SET_TRANSIENT_STRING_WITH_CHECK(user_relaxed, valid_user_group_name_or_id_relaxed);
+ BUS_DEFINE_SET_TRANSIENT_STRING_WITH_CHECK(path, path_is_absolute);
++BUS_DEFINE_SET_TRANSIENT_STRING_WITH_CHECK(reboot_parameter, reboot_parameter_is_valid);
+ 
+ int bus_set_transient_string(
+                 Unit *u,
+diff --git a/src/core/dbus-util.h b/src/core/dbus-util.h
+index ee944c166c..0fc3a94961 100644
+--- a/src/core/dbus-util.h
++++ b/src/core/dbus-util.h
+@@ -239,6 +239,7 @@ int bus_set_transient_mode_t(Unit *u, const char *name, mode_t *p, sd_bus_messag
+ int bus_set_transient_unsigned(Unit *u, const char *name, unsigned *p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
+ int bus_set_transient_user_relaxed(Unit *u, const char *name, char **p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
+ int bus_set_transient_path(Unit *u, const char *name, char **p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
++int bus_set_transient_reboot_parameter(Unit *u, const char *name, char **p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
+ int bus_set_transient_string(Unit *u, const char *name, char **p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
+ int bus_set_transient_bool(Unit *u, const char *name, bool *p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
+ int bus_set_transient_tristate(Unit *u, const char *name, int *p, sd_bus_message *message, UnitWriteFlags flags, sd_bus_error *error);
+diff --git a/src/core/load-fragment-gperf.gperf.in b/src/core/load-fragment-gperf.gperf.in
+index 5c75dcb155..df219d86df 100644
+--- a/src/core/load-fragment-gperf.gperf.in
++++ b/src/core/load-fragment-gperf.gperf.in
+@@ -327,7 +327,7 @@ Unit.IgnoreOnSnapshot,                   config_parse_warn_compat,
+ Unit.JobTimeoutSec,                      config_parse_job_timeout_sec,                0,                                  0
+ Unit.JobRunningTimeoutSec,               config_parse_job_running_timeout_sec,        0,                                  0
+ Unit.JobTimeoutAction,                   config_parse_emergency_action,               0,                                  offsetof(Unit, job_timeout_action)
+-Unit.JobTimeoutRebootArgument,           config_parse_unit_string_printf,             0,                                  offsetof(Unit, job_timeout_reboot_arg)
++Unit.JobTimeoutRebootArgument,           config_parse_reboot_parameter,               0,                                  offsetof(Unit, job_timeout_reboot_arg)
+ Unit.StartLimitIntervalSec,              config_parse_sec,                            0,                                  offsetof(Unit, start_ratelimit.interval)
+ {# The following is a legacy alias name for compatibility #}
+ Unit.StartLimitInterval,                 config_parse_sec,                            0,                                  offsetof(Unit, start_ratelimit.interval)
+@@ -337,7 +337,7 @@ Unit.FailureAction,                      config_parse_emergency_action,
+ Unit.SuccessAction,                      config_parse_emergency_action,               0,                                  offsetof(Unit, success_action)
+ Unit.FailureActionExitStatus,            config_parse_exit_status,                    0,                                  offsetof(Unit, failure_action_exit_status)
+ Unit.SuccessActionExitStatus,            config_parse_exit_status,                    0,                                  offsetof(Unit, success_action_exit_status)
+-Unit.RebootArgument,                     config_parse_unit_string_printf,             0,                                  offsetof(Unit, reboot_arg)
++Unit.RebootArgument,                     config_parse_reboot_parameter,               0,                                  offsetof(Unit, reboot_arg)
+ Unit.ConditionPathExists,                config_parse_unit_condition_path,            CONDITION_PATH_EXISTS,              offsetof(Unit, conditions)
+ Unit.ConditionPathExistsGlob,            config_parse_unit_condition_path,            CONDITION_PATH_EXISTS_GLOB,         offsetof(Unit, conditions)
+ Unit.ConditionPathIsDirectory,           config_parse_unit_condition_path,            CONDITION_PATH_IS_DIRECTORY,        offsetof(Unit, conditions)
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+index d1bcdfe24e..a8e13907ce 100644
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -57,6 +57,7 @@
+ #include "pcre2-util.h"
+ #include "percent-util.h"
+ #include "process-util.h"
++#include "reboot-util.h"
+ #include "seccomp-util.h"
+ #include "securebits-util.h"
+ #include "selinux-util.h"
+@@ -362,6 +363,40 @@ int config_parse_unit_string_printf(
+         return config_parse_string(unit, filename, line, section, section_line, lvalue, ltype, k, data, userdata);
+ }
+ 
++int config_parse_reboot_parameter(
++                const char *unit,
++                const char *filename,
++                unsigned line,
++                const char *section,
++                unsigned section_line,
++                const char *lvalue,
++                int ltype,
++                const char *rvalue,
++                void *data,
++                void *userdata) {
++
++        _cleanup_free_ char *k = NULL;
++        const Unit *u = ASSERT_PTR(userdata);
++        int r;
++
++        assert(filename);
++        assert(line);
++        assert(rvalue);
++
++        r = unit_full_printf(u, rvalue, &k);
++        if (r < 0) {
++                log_syntax(unit, LOG_WARNING, filename, line, r, "Failed to resolve unit specifiers in '%s', ignoring: %m", rvalue);
++                return 0;
++        }
++
++        if (!reboot_parameter_is_valid(k)) {
++                log_syntax(unit, LOG_WARNING, filename, line, 0, "Invalid reboot parameter '%s', ignoring.", k);
++                return 0;
++        }
++
++        return config_parse_string(unit, filename, line, section, section_line, lvalue, ltype, k, data, userdata);
++}
++
+ int config_parse_unit_strv_printf(
+                 const char *unit,
+                 const char *filename,
+diff --git a/src/core/load-fragment.h b/src/core/load-fragment.h
+index 9394347d68..005b915106 100644
+--- a/src/core/load-fragment.h
++++ b/src/core/load-fragment.h
+@@ -23,6 +23,7 @@ void unit_dump_config_items(FILE *f);
+ CONFIG_PARSER_PROTOTYPE(config_parse_unit_deps);
+ CONFIG_PARSER_PROTOTYPE(config_parse_obsolete_unit_deps);
+ CONFIG_PARSER_PROTOTYPE(config_parse_unit_string_printf);
++CONFIG_PARSER_PROTOTYPE(config_parse_reboot_parameter);
+ CONFIG_PARSER_PROTOTYPE(config_parse_unit_strv_printf);
+ CONFIG_PARSER_PROTOTYPE(config_parse_unit_path_printf);
+ CONFIG_PARSER_PROTOTYPE(config_parse_colon_separated_paths);
+diff --git a/src/login/logind-dbus.c b/src/login/logind-dbus.c
+index eb19577e79..38bfaa56be 100644
+--- a/src/login/logind-dbus.c
++++ b/src/login/logind-dbus.c
+@@ -2844,6 +2844,9 @@ static int method_set_reboot_parameter(
+         if (r < 0)
+                 return r;
+ 
++        if (!reboot_parameter_is_valid(arg))
++                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid reboot parameter '%s'.", arg);
++
+         r = detect_container();
+         if (r < 0)
+                 return r;
+diff --git a/src/shared/reboot-util.c b/src/shared/reboot-util.c
+index 62ff697fe2..b1c1aa75e6 100644
+--- a/src/shared/reboot-util.c
++++ b/src/shared/reboot-util.c
+@@ -23,8 +23,15 @@
+ #include "reboot-util.h"
+ #include "string-util.h"
+ #include "umask-util.h"
++#include "utf8.h"
+ #include "virt.h"
+ 
++bool reboot_parameter_is_valid(const char *parameter) {
++        assert(parameter);
++
++        return ascii_is_valid(parameter) && strlen(parameter) <= NAME_MAX;
++}
++
+ int update_reboot_parameter_and_warn(const char *parameter, bool keep) {
+         int r;
+ 
+@@ -42,6 +49,9 @@ int update_reboot_parameter_and_warn(const char *parameter, bool keep) {
+                 return 0;
+         }
+ 
++        if (!reboot_parameter_is_valid(parameter))
++                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid reboot parameter '%s'.", parameter);
++
+         WITH_UMASK(0022) {
+                 r = write_string_file("/run/systemd/reboot-param", parameter,
+                                       WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_ATOMIC);
+diff --git a/src/shared/reboot-util.h b/src/shared/reboot-util.h
+index ccd15c7b35..2ac478f784 100644
+--- a/src/shared/reboot-util.h
++++ b/src/shared/reboot-util.h
+@@ -1,6 +1,7 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ #pragma once
+ 
++bool reboot_parameter_is_valid(const char *parameter);
+ int update_reboot_parameter_and_warn(const char *parameter, bool keep);
+ 
+ typedef enum RebootFlags {
+
