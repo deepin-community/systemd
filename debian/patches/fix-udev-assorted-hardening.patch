@@ -1,0 +1,101 @@
+From ed178351b252378a50458b33f1fc1869f437e49a Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Tue, 14 Jul 2026 23:21:53 +0100
+Subject: [PATCH] Assorted udev hardening fixes flagged by kres  (#42903)
+
+Backport of upstream systemd PR #42903 "Assorted udev hardening fixes
+flagged by kres", comprising two functional commits (the third commit,
+ed178351b252378a50458b33f1fc1869f437e49a, is the squash merge of the PR):
+
+* libudev: replace unique list entries in place (dcfd156705d9ce7b3ff128d84a6628c946c3553a)
+
+  udev_list_entry_add() freed the existing entry for a name before
+  inserting its replacement. Today that cannot lose the old entry, but
+  only because re-adding the key that was just removed never makes the
+  hashmap grow, which is an internal detail of the hashmap. Replace it
+  with a single in-place replace step so that replacing an existing entry
+  neither allocates nor can drop the previous value under OOM. Also use
+  hashmap_remove_value() in udev_list_entry_free() so that the entry
+  being removed from the unique hashmap is the one actually being freed.
+
+  Follow-up for c01130824f22ec3835a35c8ab5f9aea65195a40f
+
+* udev/net: reset the config list head in link_configs_free() (24dee4afc57e926575458d043c0bf82c695f88a3)
+
+  link_configs_free() freed every LinkConfig via LIST_FOREACH but left
+  ctx->configs pointing at the (freed) former list head. That is harmless
+  for link_config_ctx_free(), which frees the context immediately
+  afterwards, but link_config_load() calls link_configs_free() up front to
+  clear the context before (re)loading, and the dangling head then makes
+  the subsequent LIST_PREPEND() and the eventual teardown dereference
+  freed memory. Use LIST_CLEAR(), which pops and frees each entry and
+  resets the head to NULL.
+
+  Follow-up for af6f0d422c521374ee6a2dd92df5935a5a476ae5
+
+Adapted for the 255.2 base:
+  - hashmap_ensure_replace() does not exist in 255.2, so the in-place
+    replace is expressed as hashmap_ensure_allocated() followed by
+    hashmap_replace(), which is semantically equivalent (hashmap_replace()
+    reuses the existing bucket for an already known key and only allocates
+    when inserting a genuinely new key).
+  - The hash ops argument stays &string_hash_ops (the 255.2 value); the
+    &udev_list_entry_hash_ops used upstream was introduced in a later
+    release and does not exist in 255.2.
+  - The accompanying test rewrite (src/udev/net/test-link.c) from upstream
+    is not included: it relies on ASSERT_OK, the three-argument test_table()
+    macro and the IRQ_AFFINITY_POLICY table, none of which exist in 255.2.
+    The existing src/udev/net/test-link-config-tables.c is retained.
+
+diff --git a/src/libudev/libudev-list.c b/src/libudev/libudev-list.c
+index 0adc1d5..2694c0c 100644
+--- a/src/libudev/libudev-list.c
++++ b/src/libudev/libudev-list.c
+@@ -40,7 +40,7 @@ static struct udev_list_entry *udev_list_entry_free(struct udev_list_entry *entr
+ 
+         if (entry->list) {
+                 if (entry->list->unique && entry->name)
+-                        hashmap_remove(entry->list->unique_entries, entry->name);
++                        hashmap_remove_value(entry->list->unique_entries, entry->name, entry);
+ 
+                 if (!entry->list->unique || entry->list->uptodate)
+                         LIST_REMOVE(entries, entry->list->entries, entry);
+@@ -95,11 +95,22 @@ struct udev_list_entry *udev_list_entry_add(struct udev_list *list, const char *
+         };
+ 
+         if (list->unique) {
+-                udev_list_entry_free(hashmap_get(list->unique_entries, entry->name));
++                struct udev_list_entry *old;
+ 
+-                if (hashmap_ensure_put(&list->unique_entries, &string_hash_ops, entry->name, entry) < 0)
++                /* Replace the entry for an already known name in a single step. hashmap_replace() reuses the
++                 * existing bucket and hence never allocates, so an existing entry is never dropped, not even
++                 * under memory pressure. Allocating may only fail when adding a genuinely new name, in which
++                 * case there is nothing to lose. */
++                old = hashmap_get(list->unique_entries, entry->name);
++
++                if (hashmap_ensure_allocated(&list->unique_entries, &string_hash_ops) < 0)
++                        return NULL;
++
++                if (hashmap_replace(list->unique_entries, entry->name, entry) < 0)
+                         return NULL;
+ 
++                udev_list_entry_free(old);
++
+                 list->uptodate = false;
+         } else
+                 LIST_APPEND(entries, list->entries, entry);
+diff --git a/src/udev/net/link-config.c b/src/udev/net/link-config.c
+index 910ec27..4c17c72 100644
+--- a/src/udev/net/link-config.c
++++ b/src/udev/net/link-config.c
+@@ -74,8 +74,7 @@ static void link_configs_free(LinkConfigContext *ctx) {
+ 
+         ctx->stats_by_path = hashmap_free(ctx->stats_by_path);
+ 
+-        LIST_FOREACH(configs, config, ctx->configs)
+-                link_config_free(config);
++        LIST_CLEAR(configs, ctx->configs, link_config_free);
+ }
+ 
+ LinkConfigContext *link_config_ctx_free(LinkConfigContext *ctx) {
