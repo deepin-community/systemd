@@ -70,3 +70,4 @@ fix-login-scope-error-handling.patch
 fix-doc-various-fixes-and-resolved-id-rename.patch
 fix-resolved-reduce-dnssec-transactions.patch
 fix-sd-journal-reduce-fstat-and-immutable-flag.patch
+feat-creds-util-implement-tpm2-srk-pinning.patch

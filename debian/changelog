@@ -1,3 +1,9 @@
+systemd (255.2-4deepin66) unstable; urgency=medium
+
+  * Implement TPM2 SRK pinning for credentials (PR#41193)
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 17 Aug 2026 10:57:32 +0800
+
 systemd (255.2-4deepin65) unstable; urgency=medium
 
   * Backport sd-journal: potentially reduce number of fstat call (PR#30209)

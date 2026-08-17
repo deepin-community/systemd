@@ -1,0 +1,495 @@
+From 70cfb11d4bf6175a3548520025e6d6b25d55ff17 Mon Sep 17 00:00:00 2001
+From: Popax21 <popax@popax21.dev>
+Date: Thu, 19 Mar 2026 03:33:26 +0100
+Subject: [PATCH] creds-util: implement TPM2 SRK pinning
+
+Stores the TPM2 SRK within the credential header, allowing for parameter decryption to be utilized when decrypting the credential.
+A new dimension is added to the credential ID matrix to encode this capability.
+
+This also allows for usage of TPM2-bound credentials when a TPM owner password is set since `Esys_CreatePrimary` is no longer used for sealing credentials.
+
+diff --git a/NEWS b/NEWS
+index 80f83da243..8461b44623 100644
+--- a/NEWS
++++ b/NEWS
+@@ -16,6 +16,17 @@ CHANGES WITH 262:
+           have been provided. This clears the way for a new
+           "systemd-sysupdate@.service" unit for varlink activation of sysupdate.
+ 
++        * TPM-sealed credentials are now pinned to the TPM's SRK. This prevents
++          MITM interposer attacks from stealing the decrypted credentials by
++          ensuring that communication with the TPM is protected by a private key
++          only known to the same TPM the credential was sealed to. Additionally,
++          this allows usage of TPM-sealed credentials when the TPM's owner
++          hierarchy is protected with a PIN.
++
++          TPM-bound credentials minted after this change are not recognized by
++          older systemd versions, however systemd continues to accept TPM-sealed
++          credentials that were created before this change.
++
+         Changes in the system and service manager:
+ 
+         * The manager now embeds a basic set of unit files (basic.target,
+diff --git a/man/systemd-creds.xml b/man/systemd-creds.xml
+index a35e534bfa..7e7655d8a0 100644
+--- a/man/systemd-creds.xml
++++ b/man/systemd-creds.xml
+@@ -346,6 +346,10 @@
+         available but still work on systems lacking support for this. The special value
+         <literal>help</literal> may be used to list supported key types.</para>
+ 
++        <para>systemd v262 and later additionally pin the encrypted credential to the TPM2's SRK to defend
++        against MITM interposer attacks when decrypting credentials. This makes the resulting
++        credentials incompatible with earlier systemd versions.</para>
++
+         <para>The <option>-H</option> switch is a shortcut for <option>--with-key=host</option>. Similar,
+         <option>-T</option> is a shortcut for <option>--with-key=tpm2</option>.</para>
+ 
+diff --git a/mime/io.systemd.xml b/mime/io.systemd.xml
+index 3b668e1e88..23092a0e99 100644
+--- a/mime/io.systemd.xml
++++ b/mime/io.systemd.xml
+@@ -48,6 +48,12 @@
+       <match type="string" value="70rBNnmpSA6n22iJf58WX" offset="0"/>
+       <match type="string" value="r0lQqEkTTrGnOEYwT/MMB" offset="0"/>
+       <match type="string" value="rbxMo++2QgG6iBtvLkCV6" offset="0"/>
++      <match type="string" value="1AYt+3GtTIaAS0DvEYDx/" offset="0"/>
++      <match type="string" value="Xi1cdgNyTq+EPG+19kCY9" offset="0"/>
++      <match type="string" value="FBQliBiiQM2QC86GLbXHu" offset="0"/>
++      <match type="string" value="Kh+HekJ1Qxqz+e0fXY9mA" offset="0"/>
++      <match type="string" value="r7/qrOtqSjeVQZ0TXEfze" offset="0"/>
++      <match type="string" value="FuSSlJ+UQAKGdY+Ut8Urx" offset="0"/>
+       <match type="string" value="BYRp2vb1QySABUnaD46i+" offset="0"/>
+     </magic>
+   </mime-type>
+diff --git a/src/creds/creds.c b/src/creds/creds.c
+index fed10ad5b0..765185dbe7 100644
+--- a/src/creds/creds.c
++++ b/src/creds/creds.c
+@@ -125,12 +125,12 @@ static sd_id128_t cred_key_id[_CRED_KEY_TYPE_MAX] = {
+         [CRED_KEY_TYPE_AUTO]             = _CRED_AUTO,
+         [CRED_KEY_TYPE_AUTO_INITRD]      = _CRED_AUTO_INITRD,
+         [CRED_KEY_TYPE_HOST]             = CRED_AES256_GCM_BY_HOST,
+-        [CRED_KEY_TYPE_TPM2]             = CRED_AES256_GCM_BY_TPM2_HMAC,
+-        [CRED_KEY_TYPE_TPM2_PUBLIC]      = CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK,
+-        [CRED_KEY_TYPE_HOST_TPM2]        = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC,
+-        [CRED_KEY_TYPE_TPM2_HOST]        = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC,
+-        [CRED_KEY_TYPE_HOST_TPM2_PUBLIC] = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,
+-        [CRED_KEY_TYPE_TPM2_PUBLIC_HOST] = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,
++        [CRED_KEY_TYPE_TPM2]             = CRED_AES256_GCM_BY_TPM2_HMAC_PINNED_SRK,
++        [CRED_KEY_TYPE_TPM2_PUBLIC]      = CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK_PINNED_SRK,
++        [CRED_KEY_TYPE_HOST_TPM2]        = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK,
++        [CRED_KEY_TYPE_TPM2_HOST]        = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK,
++        [CRED_KEY_TYPE_HOST_TPM2_PUBLIC] = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK,
++        [CRED_KEY_TYPE_TPM2_PUBLIC_HOST] = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK,
+         [CRED_KEY_TYPE_NULL]             = CRED_AES256_GCM_BY_NULL,
+         [CRED_KEY_TYPE_TPM2_ABSENT]      = CRED_AES256_GCM_BY_NULL,
+ };
+@@ -1037,6 +1037,10 @@ static int parse_argv(int argc, char *argv[], char ***ret_args) {
+                         arg_with_key = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED;
+                 else if (sd_id128_in_set(arg_with_key, CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK, CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED))
+                         arg_with_key = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED;
++                else if (sd_id128_in_set(arg_with_key, CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK, CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK))
++                        arg_with_key = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK;
++                else if (sd_id128_in_set(arg_with_key, CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK, CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK))
++                        arg_with_key = CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK;
+                 else
+                         return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Selected key not available in --uid= scoped mode, refusing.");
+         }
+diff --git a/src/shared/creds-util.c b/src/shared/creds-util.c
+index b1b4c8a34d..58207d4d00 100644
+--- a/src/shared/creds-util.c
++++ b/src/shared/creds-util.c
+@@ -726,6 +726,12 @@ struct _packed_ tpm2_public_key_credential_header {
+         /* Followed by NUL bytes until next 8 byte boundary */
+ };
+ 
++struct _packed_ tpm2_pinned_srk_credential_header {
++        le32_t size;          /* Size of pinned SRK */
++        uint8_t data[];       /* Pinned SRK */
++        /* Followed by NUL bytes until next 8 byte boundary */
++};
++
+ struct _packed_ scoped_credential_header {
+         le64_t flags;         /* SCOPE_HASH_DATA_BASE_FLAGS for now */
+ };
+@@ -866,7 +872,7 @@ int encrypt_credential_and_warn(
+                 CredentialFlags flags,
+                 struct iovec *ret) {
+ 
+-        _cleanup_(iovec_done) struct iovec tpm2_blob = {}, tpm2_policy_hash = {}, iv = {}, pubkey = {};
++        _cleanup_(iovec_done) struct iovec tpm2_blob = {}, tpm2_srk = {}, tpm2_policy_hash = {}, iv = {}, pubkey = {};
+         _cleanup_(iovec_done_erase) struct iovec tpm2_key = {}, output = {}, host_key = {};
+         _cleanup_(EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
+         _cleanup_free_ struct metadata_credential_header *m = NULL;
+@@ -1018,7 +1024,7 @@ int encrypt_credential_and_warn(
+                               &blobs,
+                               &n_blobs,
+                               &tpm2_primary_alg,
+-                              /* ret_srk= */ NULL);
++                              CRED_KEY_WANTS_TPM2_PINNED_SRK(with_key) || CRED_KEY_REQUIRES_TPM2_PINNED_SRK(with_key) ? &tpm2_srk : NULL);
+                 if (r < 0) {
+                         if (sd_id128_equal(with_key, _CRED_AUTO_INITRD))
+                                 log_warning("TPM2 present and used, but we didn't manage to talk to it. Credential will be refused if SecureBoot is enabled.");
+@@ -1036,19 +1042,21 @@ int encrypt_credential_and_warn(
+ 
+                 assert(tpm2_blob.iov_len <= CREDENTIAL_FIELD_SIZE_MAX);
+                 assert(tpm2_policy_hash.iov_len <= CREDENTIAL_FIELD_SIZE_MAX);
++                assert(tpm2_srk.iov_len <= CREDENTIAL_FIELD_SIZE_MAX);
+         }
+ #endif
+ 
+         if (CRED_KEY_IS_AUTO(with_key)) {
+                 /* Let's settle the key type in auto mode now. */
++                assert(!iovec_is_set(&tpm2_key) || iovec_is_set(&tpm2_srk));
+ 
+                 if (iovec_is_set(&host_key) && iovec_is_set(&tpm2_key))
+                         id = iovec_is_set(&pubkey) ? (sd_id128_equal(with_key, _CRED_AUTO_SCOPED) ?
+-                                                      CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED : CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK)
++                                                      CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK : CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK)
+                                                    : (sd_id128_equal(with_key, _CRED_AUTO_SCOPED) ?
+-                                                      CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED : CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC);
++                                                      CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK : CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK);
+                 else if (iovec_is_set(&tpm2_key) && !sd_id128_equal(with_key, _CRED_AUTO_SCOPED))
+-                        id = iovec_is_set(&pubkey) ? CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK : CRED_AES256_GCM_BY_TPM2_HMAC;
++                        id = iovec_is_set(&pubkey) ? CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK_PINNED_SRK : CRED_AES256_GCM_BY_TPM2_HMAC_PINNED_SRK;
+                 else if (iovec_is_set(&host_key))
+                         id = sd_id128_equal(with_key, _CRED_AUTO_SCOPED) ? CRED_AES256_GCM_BY_HOST_SCOPED : CRED_AES256_GCM_BY_HOST;
+                 else if (sd_id128_equal(with_key, _CRED_AUTO_INITRD))
+@@ -1113,6 +1121,7 @@ int encrypt_credential_and_warn(
+                 ALIGN8(offsetof(struct encrypted_credential_header, iv) + ivsz) +
+                 ALIGN8(iovec_is_set(&tpm2_key) ? offsetof(struct tpm2_credential_header, policy_hash_and_blob) + tpm2_blob.iov_len + tpm2_policy_hash.iov_len : 0) +
+                 ALIGN8(iovec_is_set(&pubkey) ? offsetof(struct tpm2_public_key_credential_header, data) + pubkey.iov_len : 0) +
++                ALIGN8(iovec_is_set(&tpm2_srk) ? offsetof(struct tpm2_pinned_srk_credential_header, data) + tpm2_srk.iov_len : 0) +
+                 ALIGN8(uid_is_valid(uid) ? sizeof(struct scoped_credential_header) : 0) +
+                 ALIGN8(offsetof(struct metadata_credential_header, name) + strlen_ptr(name)) +
+                 input->iov_len + 2U * (size_t) bsz +
+@@ -1161,6 +1170,16 @@ int encrypt_credential_and_warn(
+                 p += ALIGN8(offsetof(struct tpm2_public_key_credential_header, data) + pubkey.iov_len);
+         }
+ 
++        if (iovec_is_set(&tpm2_srk)) {
++                struct tpm2_pinned_srk_credential_header *z;
++
++                z = (struct tpm2_pinned_srk_credential_header*) ((uint8_t*) output.iov_base + p);
++                z->size = htole32(tpm2_srk.iov_len);
++                memcpy(z->data, tpm2_srk.iov_base, tpm2_srk.iov_len);
++
++                p += ALIGN8(offsetof(struct tpm2_pinned_srk_credential_header, data) + tpm2_srk.iov_len);
++        }
++
+         if (uid_is_valid(uid)) {
+                 struct scoped_credential_header *w;
+ 
+@@ -1395,6 +1414,7 @@ int decrypt_credential_and_warn(
+             ALIGN8(offsetof(struct encrypted_credential_header, iv) + le32toh(h->iv_size)) +
+             ALIGN8(CRED_KEY_REQUIRES_TPM2(h->id) ? offsetof(struct tpm2_credential_header, policy_hash_and_blob) : 0) +
+             ALIGN8(CRED_KEY_REQUIRES_TPM2_PK(h->id) ? offsetof(struct tpm2_public_key_credential_header, data) : 0) +
++            ALIGN8(CRED_KEY_REQUIRES_TPM2_PINNED_SRK(h->id) ? offsetof(struct tpm2_pinned_srk_credential_header, data) : 0) +
+             ALIGN8(CRED_KEY_IS_SCOPED(h->id) ? sizeof(struct scoped_credential_header) : 0) +
+             ALIGN8(offsetof(struct metadata_credential_header, name)) +
+             le32toh(h->tag_size))
+@@ -1405,7 +1425,8 @@ int decrypt_credential_and_warn(
+         if (CRED_KEY_REQUIRES_TPM2(h->id)) {
+ #if HAVE_TPM2
+                 struct tpm2_credential_header* t = (struct tpm2_credential_header*) ((uint8_t*) input->iov_base + p);
+-                struct tpm2_public_key_credential_header *z = NULL;
++                struct tpm2_public_key_credential_header *z_pubkey = NULL;
++                struct tpm2_pinned_srk_credential_header *z_srk = NULL;
+ 
+                 if (!TPM2_PCR_MASK_VALID(t->pcr_mask))
+                         return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "TPM2 PCR mask out of range.");
+@@ -1424,6 +1445,7 @@ int decrypt_credential_and_warn(
+                     p +
+                     ALIGN8(offsetof(struct tpm2_credential_header, policy_hash_and_blob) + le32toh(t->blob_size) + le32toh(t->policy_hash_size)) +
+                     ALIGN8(CRED_KEY_REQUIRES_TPM2_PK(h->id) ? offsetof(struct tpm2_public_key_credential_header, data) : 0) +
++                    ALIGN8(CRED_KEY_REQUIRES_TPM2_PINNED_SRK(h->id) ? offsetof(struct tpm2_pinned_srk_credential_header, data) : 0) +
+                     ALIGN8(CRED_KEY_IS_SCOPED(h->id) ? sizeof(struct scoped_credential_header) : 0) +
+                     ALIGN8(offsetof(struct metadata_credential_header, name)) +
+                     le32toh(h->tag_size))
+@@ -1434,23 +1456,42 @@ int decrypt_credential_and_warn(
+                             le32toh(t->policy_hash_size));
+ 
+                 if (CRED_KEY_REQUIRES_TPM2_PK(h->id)) {
+-                        z = (struct tpm2_public_key_credential_header*) ((uint8_t*) input->iov_base + p);
++                        z_pubkey = (struct tpm2_public_key_credential_header*) ((uint8_t*) input->iov_base + p);
+ 
+-                        if (!TPM2_PCR_MASK_VALID(le64toh(z->pcr_mask)) || le64toh(z->pcr_mask) == 0)
++                        if (!TPM2_PCR_MASK_VALID(le64toh(z_pubkey->pcr_mask)) || le64toh(z_pubkey->pcr_mask) == 0)
+                                 return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "TPM2 PCR mask out of range.");
+-                        if (le32toh(z->size) > PUBLIC_KEY_MAX)
++                        if (le32toh(z_pubkey->size) > PUBLIC_KEY_MAX)
+                                 return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Unexpected public key size.");
+ 
+                         if (input->iov_len <
+                             p +
+-                            ALIGN8(offsetof(struct tpm2_public_key_credential_header, data) + le32toh(z->size)) +
++                            ALIGN8(offsetof(struct tpm2_public_key_credential_header, data) + le32toh(z_pubkey->size)) +
++                            ALIGN8(CRED_KEY_REQUIRES_TPM2_PINNED_SRK(h->id) ? offsetof(struct tpm2_pinned_srk_credential_header, data) : 0) +
+                             ALIGN8(CRED_KEY_IS_SCOPED(h->id) ? sizeof(struct scoped_credential_header) : 0) +
+                             ALIGN8(offsetof(struct metadata_credential_header, name)) +
+                             le32toh(h->tag_size))
+                                 return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Encrypted file too short.");
+ 
+                         p += ALIGN8(offsetof(struct tpm2_public_key_credential_header, data) +
+-                                    le32toh(z->size));
++                                    le32toh(z_pubkey->size));
++                }
++
++                if (CRED_KEY_REQUIRES_TPM2_PINNED_SRK(h->id)) {
++                        z_srk = (struct tpm2_pinned_srk_credential_header*) ((uint8_t*) input->iov_base + p);
++
++                        if (le32toh(z_srk->size) > CREDENTIAL_FIELD_SIZE_MAX)
++                                return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Unexpected pinned SRK size.");
++
++                        if (input->iov_len <
++                            p +
++                            ALIGN8(offsetof(struct tpm2_pinned_srk_credential_header, data) + le32toh(z_srk->size)) +
++                            ALIGN8(CRED_KEY_IS_SCOPED(h->id) ? sizeof(struct scoped_credential_header) : 0) +
++                            ALIGN8(offsetof(struct metadata_credential_header, name)) +
++                            le32toh(h->tag_size))
++                                return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Encrypted file too short.");
++
++                        p += ALIGN8(offsetof(struct tpm2_pinned_srk_credential_header, data) +
++                                    le32toh(z_srk->size));
+                 }
+ 
+                 _cleanup_(tpm2_context_unrefp) Tpm2Context *tpm2_context = NULL;
+@@ -1458,14 +1499,12 @@ int decrypt_credential_and_warn(
+                 if (r < 0)
+                         return r;
+ 
+-                 // TODO: Add the SRK data to the credential structure so it can be plumbed
+-                 // through and used to verify the TPM session.
+                 r = tpm2_unseal(tpm2_context,
+                                 le64toh(t->pcr_mask),
+                                 le16toh(t->pcr_bank),
+-                                z ? &IOVEC_MAKE(z->data, le32toh(z->size)) : NULL,
++                                z_pubkey ? &IOVEC_MAKE(z_pubkey->data, le32toh(z_pubkey->size)) : NULL,
+                                 /* pubkey_policy_ref= */ NULL,
+-                                z ? le64toh(z->pcr_mask) : 0,
++                                z_pubkey ? le64toh(z_pubkey->pcr_mask) : 0,
+                                 signature_json,
+                                 /* pin= */ NULL,
+                                 /* pcrlock_policy= */ NULL,
+@@ -1474,7 +1513,7 @@ int decrypt_credential_and_warn(
+                                 /* n_blobs= */ 1,
+                                 &IOVEC_MAKE(t->policy_hash_and_blob + le32toh(t->blob_size), le32toh(t->policy_hash_size)),
+                                 /* n_known_policy_hash= */ 1,
+-                                /* srk= */ NULL,
++                                z_srk ? &IOVEC_MAKE(z_srk->data, le32toh(z_srk->size)) : NULL,
+                                 &tpm2_key);
+                 if (r == -EREMOTE)
+                         return log_error_errno(r, "TPM key integrity check failed. Key most likely does not belong to this TPM.");
+diff --git a/src/shared/creds-util.h b/src/shared/creds-util.h
+index 3d058ecf6a..6dfad385fa 100644
+--- a/src/shared/creds-util.h
++++ b/src/shared/creds-util.h
+@@ -88,12 +88,24 @@ bool credential_boot_policy_accepts_null(CredentialBootPolicy policy, bool first
+ #define CRED_AES256_GCM_BY_TPM2_HMAC          SD_ID128_MAKE(0c,7c,c0,7b,11,76,45,91,9c,4b,0b,ea,08,bc,20,fe)
+ #define CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK  SD_ID128_MAKE(fa,f7,eb,93,41,e3,41,2c,a1,a4,36,f9,5a,29,36,2f)
+ #define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC SD_ID128_MAKE(93,a8,94,09,48,74,44,90,90,ca,f2,fc,93,ca,b5,53)
+-#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED            \
++#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED                    \
+                                               SD_ID128_MAKE(ef,4a,c1,36,79,a9,48,0e,a7,db,68,89,7f,9f,16,5d)
+-#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK           \
++#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK                   \
+                                               SD_ID128_MAKE(af,49,50,a8,49,13,4e,b1,a7,38,46,30,4f,f3,0c,05)
+-#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED    \
++#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED            \
+                                               SD_ID128_MAKE(ad,bc,4c,a3,ef,b6,42,01,ba,88,1b,6f,2e,40,95,ea)
++#define CRED_AES256_GCM_BY_TPM2_HMAC_PINNED_SRK                         \
++                                              SD_ID128_MAKE(d4,06,2d,fb,71,ad,4c,86,80,4b,40,ef,11,80,f1,fc)
++#define CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK_PINNED_SRK                 \
++                                              SD_ID128_MAKE(5e,2d,5c,76,03,72,4e,af,84,3c,6f,b5,f6,40,98,f5)
++#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK                \
++                                              SD_ID128_MAKE(14,14,25,88,18,a2,40,cd,90,0b,ce,86,2d,b5,c7,b9)
++#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK         \
++                                              SD_ID128_MAKE(2a,1f,87,7a,42,75,43,1a,b3,f9,ed,1f,5d,8f,66,01)
++#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK        \
++                                              SD_ID128_MAKE(af,bf,ea,ac,eb,6a,4a,37,95,41,9d,13,5c,47,f3,7b)
++#define CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK \
++                                              SD_ID128_MAKE(16,e4,92,94,9f,94,40,02,86,75,8f,94,b7,c5,2b,c7)
+ #define CRED_AES256_GCM_BY_NULL               SD_ID128_MAKE(05,84,69,da,f6,f5,43,24,80,05,49,da,0f,8e,a2,fb)
+ 
+ /* Five special IDs to pick a general automatic mode. These IDs will never be stored on disk, but are useful
+@@ -115,63 +127,84 @@ bool credential_boot_policy_accepts_null(CredentialBootPolicy policy, bool first
+ /* Like _CRED_AUTO, but with per-UID scoping */
+ #define _CRED_AUTO_SCOPED                     SD_ID128_MAKE(23,88,96,85,6f,74,48,8a,9c,78,6f,6a,b0,e7,3b,6a)
+ 
+-#define CRED_KEY_IS_VALID(key)                                          \
+-        sd_id128_in_set((key),                                          \
+-                        CRED_AES256_GCM_BY_HOST,                        \
+-                        CRED_AES256_GCM_BY_HOST_SCOPED,                 \
+-                        CRED_AES256_GCM_BY_TPM2_HMAC,                   \
+-                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK,           \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC,          \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED,   \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,  \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED, \
++#define CRED_KEY_IS_VALID(key)                                                          \
++        sd_id128_in_set((key),                                                          \
++                        CRED_AES256_GCM_BY_HOST,                                        \
++                        CRED_AES256_GCM_BY_HOST_SCOPED,                                 \
++                        CRED_AES256_GCM_BY_TPM2_HMAC,                                   \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK,                           \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC,                          \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED,                   \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,                  \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED,           \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_PINNED_SRK,                        \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK_PINNED_SRK,                \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK,               \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK,        \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK,       \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK,\
+                         CRED_AES256_GCM_BY_NULL)
+-#define CRED_KEY_IS_AUTO(key)                                           \
+-        sd_id128_in_set((key),                                          \
+-                        _CRED_AUTO,                                     \
+-                        _CRED_AUTO_TPM2,                                \
+-                        _CRED_AUTO_HOST_AND_TPM2,                       \
+-                        _CRED_AUTO_INITRD,                              \
++#define CRED_KEY_IS_AUTO(key)                                                           \
++        sd_id128_in_set((key),                                                          \
++                        _CRED_AUTO,                                                     \
++                        _CRED_AUTO_TPM2,                                                \
++                        _CRED_AUTO_HOST_AND_TPM2,                                       \
++                        _CRED_AUTO_INITRD,                                              \
+                         _CRED_AUTO_SCOPED)
+-#define CRED_KEY_IS_SCOPED(key)                                         \
+-        sd_id128_in_set((key),                                          \
+-                        _CRED_AUTO_SCOPED,                              \
+-                        CRED_AES256_GCM_BY_HOST_SCOPED,                 \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED,   \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED)
+-#define CRED_KEY_REQUIRES_HOST(key)                                     \
+-        sd_id128_in_set((key),                                          \
+-                        _CRED_AUTO_HOST_AND_TPM2,                       \
+-                        CRED_AES256_GCM_BY_HOST,                        \
+-                        CRED_AES256_GCM_BY_HOST_SCOPED,                 \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC,          \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED,   \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,  \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED)
++#define CRED_KEY_IS_SCOPED(key)                                                         \
++        sd_id128_in_set((key),                                                          \
++                        _CRED_AUTO_SCOPED,                                              \
++                        CRED_AES256_GCM_BY_HOST_SCOPED,                                 \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED,                   \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED,           \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK,        \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK)
++#define CRED_KEY_REQUIRES_HOST(key)                                                     \
++        sd_id128_in_set((key),                                                          \
++                        _CRED_AUTO_HOST_AND_TPM2,                                       \
++                        CRED_AES256_GCM_BY_HOST,                                        \
++                        CRED_AES256_GCM_BY_HOST_SCOPED,                                 \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC,                          \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED,                   \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,                  \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED,           \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK,               \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK,        \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK,       \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK)
+ #define CRED_KEY_WANTS_HOST(key)                                        \
+         sd_id128_in_set((key),                                          \
+                         _CRED_AUTO,                                     \
+                         _CRED_AUTO_SCOPED)
+-#define CRED_KEY_REQUIRES_TPM2(key)                                     \
+-        sd_id128_in_set((key),                                          \
+-                        _CRED_AUTO_TPM2,                                \
+-                        _CRED_AUTO_HOST_AND_TPM2,                       \
+-                        CRED_AES256_GCM_BY_TPM2_HMAC,                   \
+-                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK,           \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC,          \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED,   \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,  \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED)
++#define CRED_KEY_REQUIRES_TPM2(key)                                                     \
++        sd_id128_in_set((key),                                                          \
++                        _CRED_AUTO_TPM2,                                                \
++                        _CRED_AUTO_HOST_AND_TPM2,                                       \
++                        CRED_AES256_GCM_BY_TPM2_HMAC,                                   \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK,                           \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC,                          \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED,                   \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,                  \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED,           \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_PINNED_SRK,                        \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK_PINNED_SRK,                \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK,               \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK,        \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK,       \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK)
+ #define CRED_KEY_WANTS_TPM2(key)                                        \
+         sd_id128_in_set((key),                                          \
+                         _CRED_AUTO,                                     \
+                         _CRED_AUTO_INITRD,                              \
+                         _CRED_AUTO_SCOPED)
+-#define CRED_KEY_REQUIRES_TPM2_PK(key)                                  \
+-        sd_id128_in_set((key),                                          \
+-                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK,           \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,  \
+-                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED)
++#define CRED_KEY_REQUIRES_TPM2_PK(key)                                                  \
++        sd_id128_in_set((key),                                                          \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK,                           \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,                  \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED,           \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK_PINNED_SRK,                \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK,       \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK)
+ #define CRED_KEY_WANTS_TPM2_PK(key)                                     \
+         sd_id128_in_set((key),                                          \
+                         _CRED_AUTO,                                     \
+@@ -179,6 +212,21 @@ bool credential_boot_policy_accepts_null(CredentialBootPolicy policy, bool first
+                         _CRED_AUTO_HOST_AND_TPM2,                       \
+                         _CRED_AUTO_INITRD,                              \
+                         _CRED_AUTO_SCOPED)
++#define CRED_KEY_REQUIRES_TPM2_PINNED_SRK(key)                                          \
++        sd_id128_in_set((key),                                                          \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_PINNED_SRK,                        \
++                        CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK_PINNED_SRK,                \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK,               \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK,        \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK,       \
++                        CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK)
++#define CRED_KEY_WANTS_TPM2_PINNED_SRK(key)                             \
++        sd_id128_in_set((key),                                          \
++                        _CRED_AUTO,                                     \
++                        _CRED_AUTO_TPM2,                                \
++                        _CRED_AUTO_HOST_AND_TPM2,                       \
++                        _CRED_AUTO_INITRD,                              \
++                        _CRED_AUTO_SCOPED)
+ 
+ int encrypt_credential_and_warn(sd_id128_t with_key, const char *name, usec_t timestamp, usec_t not_after, const char *tpm2_device, uint32_t tpm2_hash_pcr_mask, const char *tpm2_pubkey_path, uint32_t tpm2_pubkey_pcr_mask, uid_t uid, const struct iovec *input, CredentialFlags flags, struct iovec *ret);
+ int decrypt_credential_and_warn(const char *validate_name, usec_t validate_timestamp, const char *tpm2_device, const char *tpm2_signature_path, uid_t uid, const struct iovec *input, CredentialFlags flags, struct iovec *ret);
+diff --git a/src/test/test-creds.c b/src/test/test-creds.c
+index cbcf0c3444..bd18e1c2c2 100644
+--- a/src/test/test-creds.c
++++ b/src/test/test-creds.c
+@@ -222,6 +222,9 @@ TEST(credential_encrypt_decrypt) {
+                 test_encrypt_decrypt_with(CRED_AES256_GCM_BY_TPM2_HMAC, UID_INVALID);
+                 test_encrypt_decrypt_with(CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC, UID_INVALID);
+                 test_encrypt_decrypt_with(CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED, 0);
++                test_encrypt_decrypt_with(CRED_AES256_GCM_BY_TPM2_HMAC_PINNED_SRK, UID_INVALID);
++                test_encrypt_decrypt_with(CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK, UID_INVALID);
++                test_encrypt_decrypt_with(CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK, 0);
+         }
+ 
+         if (ec)
+@@ -268,6 +271,12 @@ TEST(mime_type_matches) {
+                 CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED,
+                 CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK,
+                 CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED,
++                CRED_AES256_GCM_BY_TPM2_HMAC_PINNED_SRK,
++                CRED_AES256_GCM_BY_TPM2_HMAC_WITH_PK_PINNED_SRK,
++                CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_PINNED_SRK,
++                CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_SCOPED_PINNED_SRK,
++                CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_PINNED_SRK,
++                CRED_AES256_GCM_BY_HOST_AND_TPM2_HMAC_WITH_PK_SCOPED_PINNED_SRK,
+                 CRED_AES256_GCM_BY_NULL,
+         };
+
