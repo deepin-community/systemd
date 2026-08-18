@@ -1,0 +1,475 @@
+From 507ba1e51c8b46fc89dff2b623af98a4386359fa Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Thu, 30 Jul 2026 14:15:15 +0800
+Subject: [PATCH] core: fix bind paths whitespace parsing
+
+Stop warning on extra spaces in BindPaths= and BindReadOnlyPaths=.
+Keep bind path parsing and serialization consistent.
+
+Fixes: #43214
+
+diff --git a/src/core/execute-serialize.c b/src/core/execute-serialize.c
+index 6c62bdf..2b59b19 100644
+--- a/src/core/execute-serialize.c
++++ b/src/core/execute-serialize.c
+@@ -2263,17 +2263,17 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
+         FOREACH_ARRAY(mount, c->bind_mounts, c->n_bind_mounts) {
+                 _cleanup_free_ char *src_escaped = NULL, *dst_escaped = NULL;
+ 
+-                src_escaped = shell_escape(mount->source, ":");
++                src_escaped = shell_escape(mount->source, ":\"");
+                 if (!src_escaped)
+                         return log_oom_debug();
+ 
+-                dst_escaped = shell_escape(mount->destination, ":");
++                dst_escaped = shell_escape(mount->destination, ":\"");
+                 if (!dst_escaped)
+                         return log_oom_debug();
+ 
+                 r = serialize_item_format(f,
+                                           mount->read_only ? "exec-context-bind-read-only-path" : "exec-context-bind-path",
+-                                          "%s%s:%s:%s",
++                                          "\"%s%s:%s:%s\"",
+                                           mount->ignore_enoent ? "-" : "",
+                                           src_escaped,
+                                           dst_escaped,
+@@ -2576,6 +2576,72 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
+         return 0;
+ }
+ 
++static int exec_context_deserialize_bind_mount(ExecContext *c, const char *value, bool read_only) {
++        bool have_entry = false;
++        int r;
++
++        assert(c);
++        assert(value);
++
++        for (const char *p = value;;) {
++                _cleanup_free_ char *tuple = NULL, *source = NULL, *destination = NULL, *options = NULL,
++                                   *extra = NULL;
++                bool rbind = true, ignore_enoent = false;
++                char *s, *d;
++                int n_fields;
++
++                r = extract_first_word(&p, &tuple, /* separators= */ NULL, EXTRACT_UNQUOTE|EXTRACT_RETAIN_ESCAPE);
++                if (r < 0)
++                        return r;
++                if (r == 0)
++                        return have_entry ? 0 : -EINVAL;
++                have_entry = true;
++
++                const char *q = tuple;
++                r = extract_many_words(&q, ":", EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS|EXTRACT_DONT_COALESCE_SEPARATORS,
++                                       &source, &destination, &options, &extra);
++                if (r < 0)
++                        return r;
++                if (r == 0 || extra)
++                        continue;
++                n_fields = r;
++
++                s = source;
++                if (s[0] == '-') {
++                        ignore_enoent = true;
++                        s++;
++                }
++
++                if (n_fields >= 2) {
++                        if (isempty(destination))
++                                continue;
++
++                        d = destination;
++                } else
++                        d = s;
++
++                if (n_fields >= 3) {
++                        if (isempty(options) || streq(options, "rbind"))
++                                rbind = true;
++                        else if (streq(options, "norbind"))
++                                rbind = false;
++                        else
++                                continue;
++                }
++
++                r = bind_mount_add(&c->bind_mounts, &c->n_bind_mounts,
++                                   &(BindMount) {
++                                           .source = s,
++                                           .destination = d,
++                                           .read_only = read_only,
++                                           .recursive = rbind,
++                                           .ignore_enoent = ignore_enoent,
++                                   });
++                if (r < 0)
++                        return log_oom_debug();
++        }
++}
++
+ static int exec_context_deserialize(ExecContext *c, FILE *f) {
+         int r;
+ 
+@@ -3193,123 +3259,13 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
+                         if (r < 0)
+                                 return r;
+                 } else if ((val = startswith(l, "exec-context-bind-read-only-path="))) {
+-                        _cleanup_free_ char *source = NULL, *destination = NULL;
+-                        bool rbind = true, ignore_enoent = false;
+-                        char *s = NULL, *d = NULL;
+-
+-                        r = extract_first_word(&val,
+-                                               &source,
+-                                               ":" WHITESPACE,
+-                                               EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS|EXTRACT_UNESCAPE_SEPARATORS);
++                        r = exec_context_deserialize_bind_mount(c, val, /* read_only= */ true);
+                         if (r < 0)
+                                 return r;
+-                        if (r == 0)
+-                                return -EINVAL;
+-
+-                        s = source;
+-                        if (s[0] == '-') {
+-                                ignore_enoent = true;
+-                                s++;
+-                        }
+-
+-                        if (val && val[-1] == ':') {
+-                                r = extract_first_word(&val,
+-                                                       &destination,
+-                                                       ":" WHITESPACE,
+-                                                       EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS|EXTRACT_UNESCAPE_SEPARATORS);
+-                                if (r < 0)
+-                                        return r;
+-                                if (r == 0)
+-                                        continue;
+-
+-                                d = destination;
+-
+-                                if (val && val[-1] == ':') {
+-                                        _cleanup_free_ char *options = NULL;
+-
+-                                        r = extract_first_word(&val, &options, NULL, EXTRACT_UNQUOTE);
+-                                        if (r < 0)
+-                                                return -r;
+-
+-                                        if (isempty(options) || streq(options, "rbind"))
+-                                                rbind = true;
+-                                        else if (streq(options, "norbind"))
+-                                                rbind = false;
+-                                        else
+-                                                continue;
+-                                }
+-                        } else
+-                                d = s;
+-
+-                        r = bind_mount_add(&c->bind_mounts, &c->n_bind_mounts,
+-                                        &(BindMount) {
+-                                                .source = s,
+-                                                .destination = d,
+-                                                .read_only = true,
+-                                                .recursive = rbind,
+-                                                .ignore_enoent = ignore_enoent,
+-                                        });
+-                        if (r < 0)
+-                                return log_oom_debug();
+                 } else if ((val = startswith(l, "exec-context-bind-path="))) {
+-                        _cleanup_free_ char *source = NULL, *destination = NULL;
+-                        bool rbind = true, ignore_enoent = false;
+-                        char *s = NULL, *d = NULL;
+-
+-                        r = extract_first_word(&val,
+-                                               &source,
+-                                               ":" WHITESPACE,
+-                                               EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS|EXTRACT_UNESCAPE_SEPARATORS);
++                        r = exec_context_deserialize_bind_mount(c, val, /* read_only= */ false);
+                         if (r < 0)
+                                 return r;
+-                        if (r == 0)
+-                                return -EINVAL;
+-
+-                        s = source;
+-                        if (s[0] == '-') {
+-                                ignore_enoent = true;
+-                                s++;
+-                        }
+-
+-                        if (val && val[-1] == ':') {
+-                                r = extract_first_word(&val,
+-                                                       &destination,
+-                                                       ":" WHITESPACE,
+-                                                       EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS|EXTRACT_UNESCAPE_SEPARATORS);
+-                                if (r < 0)
+-                                        return r;
+-                                if (r == 0)
+-                                        continue;
+-
+-                                d = destination;
+-
+-                                if (val && val[-1] == ':') {
+-                                        _cleanup_free_ char *options = NULL;
+-
+-                                        r = extract_first_word(&val, &options, NULL, EXTRACT_UNQUOTE);
+-                                        if (r < 0)
+-                                                return -r;
+-
+-                                        if (isempty(options) || streq(options, "rbind"))
+-                                                rbind = true;
+-                                        else if (streq(options, "norbind"))
+-                                                rbind = false;
+-                                        else
+-                                                continue;
+-                                }
+-                        } else
+-                                d = s;
+-
+-                        r = bind_mount_add(&c->bind_mounts, &c->n_bind_mounts,
+-                                        &(BindMount) {
+-                                                .source = s,
+-                                                .destination = d,
+-                                                .read_only = false,
+-                                                .recursive = rbind,
+-                                                .ignore_enoent = ignore_enoent,
+-                                        });
+-                        if (r < 0)
+-                                return log_oom_debug();
+                 } else if ((val = startswith(l, "exec-context-temporary-filesystems="))) {
+                         _cleanup_free_ char *path = NULL, *options = NULL;
+ 
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+index f442bd8..27e252b 100644
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -5252,12 +5252,12 @@ int config_parse_bind_paths(
+         }
+ 
+         for (const char *p = rvalue;;) {
+-                _cleanup_free_ char *source = NULL, *destination = NULL;
+-                _cleanup_free_ char *sresolved = NULL, *dresolved = NULL;
++                _cleanup_free_ char *tuple = NULL, *source = NULL, *destination = NULL, *options = NULL,
++                                   *extra = NULL, *sresolved = NULL, *dresolved = NULL;
+                 char *s = NULL, *d = NULL;
+                 bool rbind = true, ignore_enoent = false;
+ 
+-                r = extract_first_word(&p, &source, ":" WHITESPACE, EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS);
++                r = extract_first_word(&p, &tuple, /* separators= */ NULL, EXTRACT_UNQUOTE|EXTRACT_RETAIN_ESCAPE);
+                 if (r == -ENOMEM)
+                         return log_oom();
+                 if (r < 0) {
+@@ -5267,6 +5267,21 @@ int config_parse_bind_paths(
+                 if (r == 0)
+                         break;
+ 
++                const char *q = tuple;
++                r = extract_many_words(&q, ":", EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS|EXTRACT_DONT_COALESCE_SEPARATORS,
++                                       &source, &destination, &options, &extra);
++                if (r == -ENOMEM)
++                        return log_oom();
++                if (r <= 0) {
++                        log_syntax(unit, LOG_WARNING, filename, line, r, "Failed to parse %s=, ignoring: %s", lvalue, tuple);
++                        continue;
++                }
++                if (extra) {
++                        log_syntax(unit, LOG_WARNING, filename, line, 0, "Too many parameters in %s=, ignoring: %s", lvalue, tuple);
++                        continue;
++                }
++                int n_fields = r;
++
+                 r = unit_full_printf_full(u, source, PATH_MAX, &sresolved);
+                 if (r < 0) {
+                         log_syntax(unit, LOG_WARNING, filename, line, r,
+@@ -5285,19 +5300,7 @@ int config_parse_bind_paths(
+                         continue;
+ 
+                 /* Optionally, the destination is specified. */
+-                if (p && p[-1] == ':') {
+-                        r = extract_first_word(&p, &destination, ":" WHITESPACE, EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS);
+-                        if (r == -ENOMEM)
+-                                return log_oom();
+-                        if (r < 0) {
+-                                log_syntax(unit, LOG_WARNING, filename, line, r, "Failed to parse %s, ignoring: %s", lvalue, rvalue);
+-                                return 0;
+-                        }
+-                        if (r == 0) {
+-                                log_syntax(unit, LOG_WARNING, filename, line, 0, "Missing argument after ':', ignoring: %s", s);
+-                                continue;
+-                        }
+-
++                if (n_fields >= 2) {
+                         r = unit_path_printf(u, destination, &dresolved);
+                         if (r < 0) {
+                                 log_syntax(unit, LOG_WARNING, filename, line, r,
+@@ -5310,31 +5313,21 @@ int config_parse_bind_paths(
+                                 continue;
+ 
+                         d = dresolved;
+-
+-                        /* Optionally, there's also a short option string specified */
+-                        if (p && p[-1] == ':') {
+-                                _cleanup_free_ char *options = NULL;
+-
+-                                r = extract_first_word(&p, &options, NULL, EXTRACT_UNQUOTE);
+-                                if (r == -ENOMEM)
+-                                        return log_oom();
+-                                if (r < 0) {
+-                                        log_syntax(unit, LOG_WARNING, filename, line, r, "Failed to parse %s=, ignoring: %s", lvalue, rvalue);
+-                                        return 0;
+-                                }
+-
+-                                if (isempty(options) || streq(options, "rbind"))
+-                                        rbind = true;
+-                                else if (streq(options, "norbind"))
+-                                        rbind = false;
+-                                else {
+-                                        log_syntax(unit, LOG_WARNING, filename, line, 0, "Invalid option string, ignoring setting: %s", options);
+-                                        continue;
+-                                }
+-                        }
+                 } else
+                         d = s;
+ 
++                /* Optionally, there's also a short option string specified */
++                if (n_fields >= 3) {
++                        if (isempty(options) || streq(options, "rbind"))
++                                rbind = true;
++                        else if (streq(options, "norbind"))
++                                rbind = false;
++                        else {
++                                log_syntax(unit, LOG_WARNING, filename, line, 0, "Invalid option string, ignoring setting: %s", options);
++                                continue;
++                        }
++                }
++
+                 r = bind_mount_add(&c->bind_mounts, &c->n_bind_mounts,
+                                    &(BindMount) {
+                                            .source = s,
+diff --git a/src/test/test-execute.c b/src/test/test-execute.c
+index 6d51ad7..43b1254 100644
+--- a/src/test/test-execute.c
++++ b/src/test/test-execute.c
+@@ -251,11 +251,27 @@ static void _test_service(const char *file, unsigned line, const char *func,
+ static void test_exec_bindpaths(Manager *m) {
+         assert_se(mkdir_p("/tmp/test-exec-bindpaths", 0755) >= 0);
+         assert_se(mkdir_p("/tmp/test-exec-bindreadonlypaths", 0755) >= 0);
++        assert_se(mkdir_p("/tmp/test-exec-bindpaths source", 0755) >= 0);
++        assert_se(mkdir_p("/tmp/test-exec-bindpaths destination", 0755) >= 0);
++        assert_se(mkdir_p("/tmp/test-exec-bindpaths:source", 0755) >= 0);
++        assert_se(mkdir_p("/tmp/test-exec-bindpaths:destination", 0755) >= 0);
++        assert_se(mkdir_p("/tmp/test-exec-bindreadonlypaths source", 0755) >= 0);
++        assert_se(mkdir_p("/tmp/test-exec-bindreadonlypaths destination", 0755) >= 0);
++        assert_se(mkdir_p("/tmp/test-exec-bindreadonlypaths:source", 0755) >= 0);
++        assert_se(mkdir_p("/tmp/test-exec-bindreadonlypaths:destination", 0755) >= 0);
+ 
+         test(m, "exec-bindpaths.service", can_unshare ? 0 : EXIT_NAMESPACE, CLD_EXITED);
+ 
+         (void) rm_rf("/tmp/test-exec-bindpaths", REMOVE_ROOT|REMOVE_PHYSICAL);
+         (void) rm_rf("/tmp/test-exec-bindreadonlypaths", REMOVE_ROOT|REMOVE_PHYSICAL);
++        (void) rm_rf("/tmp/test-exec-bindpaths source", REMOVE_ROOT|REMOVE_PHYSICAL);
++        (void) rm_rf("/tmp/test-exec-bindpaths destination", REMOVE_ROOT|REMOVE_PHYSICAL);
++        (void) rm_rf("/tmp/test-exec-bindpaths:source", REMOVE_ROOT|REMOVE_PHYSICAL);
++        (void) rm_rf("/tmp/test-exec-bindpaths:destination", REMOVE_ROOT|REMOVE_PHYSICAL);
++        (void) rm_rf("/tmp/test-exec-bindreadonlypaths source", REMOVE_ROOT|REMOVE_PHYSICAL);
++        (void) rm_rf("/tmp/test-exec-bindreadonlypaths destination", REMOVE_ROOT|REMOVE_PHYSICAL);
++        (void) rm_rf("/tmp/test-exec-bindreadonlypaths:source", REMOVE_ROOT|REMOVE_PHYSICAL);
++        (void) rm_rf("/tmp/test-exec-bindreadonlypaths:destination", REMOVE_ROOT|REMOVE_PHYSICAL);
+ }
+ 
+ static void test_exec_cpuaffinity(Manager *m) {
+diff --git a/src/test/test-load-fragment.c b/src/test/test-load-fragment.c
+index 8d2cec0..bcb1043 100644
+--- a/src/test/test-load-fragment.c
++++ b/src/test/test-load-fragment.c
+@@ -88,6 +88,13 @@ static void check_execcommand(ExecCommand *c,
+         assert_se(!!(c->flags & EXEC_COMMAND_IGNORE_FAILURE) == ignore);
+ }
+ 
++static void count_syntax_warnings(_unused_ const char *unit, int level, void *userdata) {
++        unsigned *n_syntax_warnings = ASSERT_PTR(userdata);
++
++        if (level <= LOG_WARNING)
++                (*n_syntax_warnings)++;
++}
++
+ TEST(config_parse_exec) {
+         /* int config_parse_exec(
+                  const char *unit,
+@@ -447,6 +454,59 @@ TEST(config_parse_exec) {
+         exec_command_free_list(c);
+ }
+ 
++TEST(config_parse_bind_paths) {
++        _cleanup_(manager_freep) Manager *m = NULL;
++        _cleanup_(unit_freep) Unit *u = NULL;
++        ExecContext c = {};
++        unsigned n_syntax_warnings = 0;
++        int r;
++
++        r = manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
++        if (manager_errno_skip_test(r)) {
++                log_notice_errno(r, "Skipping test: manager_new: %m");
++                return;
++        }
++
++        assert_se(r >= 0);
++        assert_se(manager_startup(m, NULL, NULL, NULL) >= 0);
++
++        assert_se(u = unit_new(m, sizeof(Service)));
++        assert_se(unit_add_name(u, "foobar.service") >= 0);
++
++        {
++                _unused_ _cleanup_(clear_log_syntax_callback) dummy_t dummy;
++
++                set_log_syntax_callback(count_syntax_warnings, &n_syntax_warnings);
++                assert_se(config_parse_bind_paths(NULL, "fake", 1, "section", 1,
++                                                  "BindReadOnlyPaths", 0,
++                                                  "  /usr/bin  /usr/lib     /lib64   ",
++                                                  &c, u) >= 0);
++        }
++
++        assert_se(n_syntax_warnings == 0);
++        assert_se(c.n_bind_mounts == 3);
++
++        assert_se(streq(c.bind_mounts[0].source, "/usr/bin"));
++        assert_se(streq(c.bind_mounts[0].destination, "/usr/bin"));
++        assert_se(c.bind_mounts[0].read_only);
++        assert_se(c.bind_mounts[0].recursive);
++        assert_se(!c.bind_mounts[0].ignore_enoent);
++
++        assert_se(streq(c.bind_mounts[1].source, "/usr/lib"));
++        assert_se(streq(c.bind_mounts[1].destination, "/usr/lib"));
++        assert_se(c.bind_mounts[1].read_only);
++        assert_se(c.bind_mounts[1].recursive);
++        assert_se(!c.bind_mounts[1].ignore_enoent);
++
++        assert_se(streq(c.bind_mounts[2].source, "/lib64"));
++        assert_se(streq(c.bind_mounts[2].destination, "/lib64"));
++        assert_se(c.bind_mounts[2].read_only);
++        assert_se(c.bind_mounts[2].recursive);
++        assert_se(!c.bind_mounts[2].ignore_enoent);
++
++        exec_context_done(&c);
++}
++
+ TEST(config_parse_log_extra_fields) {
+         /* int config_parse_log_extra_fields(
+                 const char *unit,
+diff --git a/test/test-execute/exec-bindpaths.service b/test/test-execute/exec-bindpaths.service
+index bf6968f..310b330 100644
+--- a/test/test-execute/exec-bindpaths.service
++++ b/test/test-execute/exec-bindpaths.service
+@@ -12,7 +12,19 @@ ExecStart=test -f /tmp/thisisasimpletest
+ ExecStart=test -f /tmp/test-exec-bindreadonlypaths/thisisasimpletest
+ # The file cannot modify through /tmp/test-exec-bindreadonlypaths
+ ExecStart=/bin/sh -x -c '! touch /tmp/test-exec-bindreadonlypaths/thisisasimpletest'
++ExecStart=/bin/sh -x -c 'touch "/tmp/test-exec-bindpaths destination/space test"'
++ExecStart=/bin/sh -x -c 'test -f "/tmp/test-exec-bindpaths source/space test"'
++ExecStart=/bin/sh -x -c 'touch "/tmp/test-exec-bindpaths:destination/colon-test"'
++ExecStart=/bin/sh -x -c 'test -f "/tmp/test-exec-bindpaths:source/colon-test"'
++ExecStart=/bin/sh -x -c 'touch "/tmp/test-exec-bindreadonlypaths source/space test"'
++ExecStart=/bin/sh -x -c 'test -f "/tmp/test-exec-bindreadonlypaths destination/space test"'
++ExecStart=/bin/sh -x -c '! touch "/tmp/test-exec-bindreadonlypaths destination/space test forbidden"'
++ExecStart=/bin/sh -x -c 'touch "/tmp/test-exec-bindreadonlypaths:source/colon-test"'
++ExecStart=/bin/sh -x -c 'test -f "/tmp/test-exec-bindreadonlypaths:destination/colon-test"'
++ExecStart=/bin/sh -x -c '! touch "/tmp/test-exec-bindreadonlypaths:destination/colon-test-forbidden"'
+ # Cleanup
+ ExecStart=rm /tmp/thisisasimpletest
+ BindPaths=/tmp:/tmp/test-exec-bindpaths
++BindPaths="/tmp/test-exec-bindpaths source:/tmp/test-exec-bindpaths destination"   /tmp/test-exec-bindpaths\:source:/tmp/test-exec-bindpaths\:destination
+ BindReadOnlyPaths=/tmp:/tmp/test-exec-bindreadonlypaths
++BindReadOnlyPaths="/tmp/test-exec-bindreadonlypaths source:/tmp/test-exec-bindreadonlypaths destination"   /tmp/test-exec-bindreadonlypaths\:source:/tmp/test-exec-bindreadonlypaths\:destination
