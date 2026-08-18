@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * dhcp-server: reject pool offsets beyond the subnet (PR#43389)
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 18 Aug 2026 22:03:47 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
