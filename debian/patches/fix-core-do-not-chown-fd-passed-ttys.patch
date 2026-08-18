@@ -1,0 +1,32 @@
+From e98c68104b15459be34c67af54ce736fd3bff3a5 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Mon, 10 Aug 2026 09:59:40 +0800
+Subject: [PATCH] core: do not chown fd-passed TTYs
+
+When stdio is passed as file descriptors, the provider of those
+descriptors remains responsible for their ownership and access mode.
+
+This keeps run0 in a pipeline from changing the caller's TTY ownership
+to the target user, which can otherwise break later terminal access from
+the original user.
+
+Fixes #43336
+
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+index ae3001418a..f54caf44ce 100644
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -5722,7 +5722,12 @@ int exec_invoke(
+         }
+ #endif
+ 
+-        if (uid_is_valid(uid)) {
++        /* Only adjust ownership for TTYs we acquired via StandardInput=tty*. If stdin is passed
++         * as an fd, its ownership is managed by the provider of the fd, see exec_context_revert_tty(). */
++        if (uid_is_valid(uid) &&
++            params->stdin_fd < 0 &&
++            exec_input_is_terminal(context->std_input) &&
++            exec_context_tty_path(context)) {
+                 r = chown_terminal(STDIN_FILENO, uid);
+                 if (r < 0) {
+                         *exit_status = EXIT_STDIN;
