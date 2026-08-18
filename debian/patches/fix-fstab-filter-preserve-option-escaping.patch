@@ -1,0 +1,121 @@
+From eb5ee83c1f7e0b8287c9ca9b1535d3e94845476a Mon Sep 17 00:00:00 2001
+From: wyu <97944796+wyu71@users.noreply.github.com>
+Date: Wed, 12 Aug 2026 09:43:55 +0800
+Subject: [PATCH] fstab-filter: preserve fstab option escaping in the filtered
+ output
+
+fstab_filter_options() used strv_split_full(..., EXTRACT_UNESCAPE_SEPARATORS |
+EXTRACT_UNESCAPE_RELAX), which unescapes "\," and "\\" while splitting, and then
+strv_join_full(escape_separator=true) to re-escape the kept options. The round-trip
+was lossy for invalid escapes kept verbatim by RELAX (e.g. an option value "\xff"
+became "\\xff"), so the generated Options= line diverged from the input. A trailing
+backslash was also collapsed: "val1\\" in the fstab became "val1\" in the split
+word, which let the backslash escape the option separator in Options= (issue #42787).
+
+Rework fstab_filter_options() to split with EXTRACT_UNESCAPE_RELAX only, so the
+escape sequences of kept options are preserved verbatim and the filtered output is
+assembled with the plain strv_join(); the matching option values are unescaped
+manually so callers keep getting the unescaped form they had before.
+
+Fixes a bug introduced by d4d9f034b13acef37375daec5074d9d271e21eed.
+Fixes #42787.
+
+diff --git a/src/shared/fstab-util.c b/src/shared/fstab-util.c
+index 55e76b6..3287434 100644
+--- a/src/shared/fstab-util.c
++++ b/src/shared/fstab-util.c
+@@ -140,6 +140,34 @@ int fstab_is_mount_point_full(const char *where, const char *path) {
+         return false;
+ }
+ 
++static char* fstab_unescape_option(const char *s) {
++        /* Undo the fstab option escaping: "\," -> ",", "\\" -> "\", and keep any
++         * other "\x" verbatim (matches EXTRACT_UNESCAPE_SEPARATORS|EXTRACT_UNESCAPE_RELAX). */
++        char *ret, *e;
++
++        assert(s);
++
++        ret = new(char, strlen(s) + 1);
++        if (!ret)
++                return NULL;
++
++        e = ret;
++        for (const char *p = s; *p; p++) {
++                if (*p == '\\' && p[1] != '\0') {
++                        if (IN_SET(p[1], ',', '\\')) {
++                                *e++ = p[1];
++                                p++;
++                                continue;
++                        }
++                        /* Keep the backslash and the following character verbatim. */
++                        *e++ = *p++;
++                }
++                *e++ = *p;
++        }
++        *e = '\0';
++        return ret;
++}
++
+ int fstab_filter_options(
+                 const char *opts,
+                 const char *names,
+@@ -171,8 +199,10 @@ int fstab_filter_options(
+ 
+         if (ret_filtered || ret_value || ret_values) {
+                 /* For backwards compatibility, we need to pass-through escape characters.
+-                 * The only ones we "consume" are the ones used as "\," or "\\". */
+-                r = strv_split_full(&stor, opts, ",", EXTRACT_UNESCAPE_SEPARATORS | EXTRACT_UNESCAPE_RELAX);
++                 * The only ones we "consume" are the ones used as "\," or "\\". The option
++                 * values are not unescaped by strv_split_full() here; matching option values are
++                 * unescaped manually below so that callers keep getting the unescaped form. */
++                r = strv_split_full(&stor, opts, ",", EXTRACT_UNESCAPE_RELAX);
+                 if (r < 0)
+                         return r;
+ 
+@@ -199,14 +229,22 @@ int fstab_filter_options(
+                         continue;
+                 found:
+                         if (ret_value || ret_values) {
++                                _cleanup_free_ char *unescaped = NULL;
++
+                                 assert(IN_SET(*x, '=', '\0'));
+ 
++                                if ((ret_value && *x == '=') || ret_values) {
++                                        unescaped = fstab_unescape_option(x + 1);
++                                        if (!unescaped)
++                                                return -ENOMEM;
++                                }
++
+                                 if (ret_value) {
+-                                        r = free_and_strdup(&value, *x == '=' ? x + 1 : NULL);
++                                        r = free_and_replace(value, unescaped);
+                                         if (r < 0)
+                                                 return r;
+                                 } else if (*x) {
+-                                        r = strv_extend(&values, x + 1);
++                                        r = strv_extend(&values, unescaped);
+                                         if (r < 0)
+                                                 return r;
+                                 }
+@@ -257,7 +295,7 @@ answer:
+         if (ret_filtered) {
+                 char *f;
+ 
+-                f = strv_join_full(filtered, ",", NULL, true);
++                f = strv_join(filtered, ",");
+                 if (!f)
+                         return -ENOMEM;
+ 
+diff --git a/src/test/test-fstab-util.c b/src/test/test-fstab-util.c
+index 89365b0..de1faa8 100644
+--- a/src/test/test-fstab-util.c
++++ b/src/test/test-fstab-util.c
+@@ -125,7 +125,7 @@ TEST(fstab_filter_options) {
+ 
+         /* escaped characters */
+         do_fstab_filter_options("opt1=\\\\,opt2=\\xff", "opt1\0", 1, 1, "opt1", "\\", "\\", "opt2=\\xff");
+-        do_fstab_filter_options("opt1=\\\\,opt2=\\xff", "opt2\0", 1, 1, "opt2", "\\xff", "\\xff", "opt1=\\");
++        do_fstab_filter_options("opt1=\\\\,opt2=\\xff", "opt2\0", 1, 1, "opt2", "\\xff", "\\xff", "opt1=\\\\");
+ }
+ 
+ TEST(fstab_find_pri) {
