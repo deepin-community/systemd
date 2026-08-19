@@ -1,0 +1,30 @@
+From 9725124635dbc061768ee61760c5a92c763cab91 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Mon, 13 Jul 2026 10:30:25 +0800
+Subject: [PATCH] udev: avoid reading before empty capability masks
+
+When input_id prints a decoded capability bitmap, an all-zero
+bitmap can decrement the index to zero.
+
+Check the index before reading bitmask[val - 1].
+
+Reproducer:
+  udevadm test-builtin input_id with an all-zero capability mask
+
+Follow-up:
+  912541b0246ef315d4d851237483b98c9dd3f992
+
+diff --git a/src/udev/udev-builtin-input_id.c b/src/udev/udev-builtin-input_id.c
+index ec232f3e93..532e3ed60b 100644
+--- a/src/udev/udev-builtin-input_id.c
++++ b/src/udev/udev-builtin-input_id.c
+@@ -118,7 +118,7 @@ static void get_cap_mask(
+ 
+                 val = bitmask_size / sizeof (unsigned long);
+                 /* skip trailing zeros */
+-                while (bitmask[val-1] == 0 && val > 0)
++                while (val > 0 && bitmask[val-1] == 0)
+                         --val;
+ 
+                 /* IN_SET() cannot be used in assert_cc(). */
+
