@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * rm-rf: fail closed when the root check fails
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 12:08:37 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING

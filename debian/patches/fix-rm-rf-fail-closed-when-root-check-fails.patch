@@ -1,0 +1,66 @@
+From 9dd2dab37e91ab4b000802d98aa7c4713836d53a Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Fri, 10 Jul 2026 18:22:34 +0100
+Subject: [PATCH] rm-rf: fail closed when the root check fails
+
+path_is_root_at() returns a negative errno when it cannot determine whether
+a target is the root file system. rm_rf_at() treats those errors as a
+negative answer and continued with destructive operations.
+
+Propagate root-check errors before modifying the target, while preserving
+REMOVE_MISSING_OK for an absent path.
+
+Follow-up for c0228b4fa3e4e633afa5eb8417e6cd3e311cd250
+
+diff --git a/src/shared/rm-rf.c b/src/shared/rm-rf.c
+index 573d6aeb04..56a56ed9ab 100644
+--- a/src/shared/rm-rf.c
++++ b/src/shared/rm-rf.c
+@@ -443,7 +443,20 @@ int rm_rf_at(int dir_fd, const char *path, RemoveFlags flags) {
+ 
+         /* We refuse to clean the root file system with this call. This is extra paranoia to never cause a
+          * really seriously broken system. */
+-        if (path_is_root_at(dir_fd, path) > 0)
++        r = path_is_root_at(dir_fd, path);
++        if (r == -ENOENT) {
++                struct stat st;
++
++                if (fstatat(dir_fd, path, &st, AT_SYMLINK_NOFOLLOW) < 0)
++                        r = -errno;
++                else
++                        r = 0; /* The entry exists, but is most likely a dangling symlink. */
++        }
++        if (FLAGS_SET(flags, REMOVE_MISSING_OK) && r == -ENOENT)
++                return 0;
++        if (r < 0)
++                return log_error_errno(r, "Failed to determine whether '%s' is the root file system: %m", path);
++        if (r > 0)
+                 return log_error_errno(SYNTHETIC_ERRNO(EPERM),
+                                        "Attempted to remove entire root file system, and we can't allow that.");
+ 
+diff --git a/src/test/test-rm-rf.c b/src/test/test-rm-rf.c
+index d029f608e2..3a59be7d97 100644
+--- a/src/test/test-rm-rf.c
++++ b/src/test/test-rm-rf.c
+@@ -119,4 +119,20 @@ TEST(rm_rf_chmod) {
+         test_rm_rf_chmod_inner();
+ }
+ 
++TEST(rm_rf_dangling_symlink) {
++        _cleanup_(rm_rf_physical_and_freep) char *d = NULL;
++        const char *link;
++
++        ASSERT_OK(mkdtemp_malloc("/tmp/test-rm-rf-dangling.XXXXXXX", &d));
++        link = strjoina(d, "/link");
++
++        ASSERT_OK_ERRNO(symlink("missing", link));
++        ASSERT_OK(rm_rf(link, REMOVE_ROOT|REMOVE_PHYSICAL));
++        ASSERT_ERROR_ERRNO(lstat(link, &(struct stat) {}), ENOENT);
++
++        ASSERT_OK_ERRNO(symlink("missing", link));
++        ASSERT_OK(rm_rf(link, REMOVE_ROOT|REMOVE_PHYSICAL|REMOVE_MISSING_OK));
++        ASSERT_ERROR_ERRNO(lstat(link, &(struct stat) {}), ENOENT);
++}
++
+ DEFINE_TEST_MAIN(LOG_DEBUG);
+
