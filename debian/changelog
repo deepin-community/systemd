@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * Fix sd-event/glib integration: skip sd_event_prepare() when event is already ARMED to avoid assertion crash when GLib skips check() between two prepare() calls.
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 12:08:08 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
