@@ -1,0 +1,144 @@
+From 2ff5250ae7141a6e57c95744c0e07b30644abd72 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Mon, 20 Jul 2026 12:55:08 +0800
+Subject: [PATCH] homework: skip LUKS fallocate for metadata operations
+
+UpdateHomeEx needs to set up the home temporarily so that it can
+write the refreshed identity records. Inspect and password changes use
+the same setup path for metadata-oriented work.
+
+For LUKS homes with luksDiscard=no, home_setup_luks() fully
+allocates the backing image while setting it up. If diskSize=max was
+previously written to a sparse image, this can fail with ENOSPC before
+the user can disable auto-resize mode again.
+
+Add a setup flag that lets metadata operations skip the full-image
+fallocate step. Real create, activate, and resize paths keep the
+existing allocation behavior.
+
+Before, reproduced on Ubuntu 26.04 with /home on tmpfs:
+
+  homectl create reprohomed \
+          --storage=luks \
+          --fs-type=btrfs \
+          --disk-size=300M \
+          --auto-resize-mode=shrink-and-grow \
+          --luks-discard=no
+  homectl update reprohomed --disk-size=max
+  dd if=/dev/zero of=/var/tmp/homed-repro/filler bs=1M count=500
+  systemctl restart systemd-homed.service
+  homectl update reprohomed --auto-resize-mode=off
+
+  Operation on home reprohomed failed:
+  Not enough disk space for home reprohomed
+
+Fixes #34527
+
+Follow-up for: ab3b6fcb4016afbc40d11844b3467a3579705e14
+
+diff --git a/src/home/homework-luks.c b/src/home/homework-luks.c
+index f51b6f6fbf..7132c7e389 100644
+--- a/src/home/homework-luks.c
++++ b/src/home/homework-luks.c
+@@ -1430,7 +1430,7 @@ int home_setup_luks(
+                 if (run_mark_dirty(setup->image_fd, true) > 0)
+                         setup->do_mark_clean = true;
+ 
+-                if (!user_record_luks_discard(h)) {
++                if (!FLAGS_SET(flags, HOME_SETUP_LUKS_DONT_FALLOCATE) && !user_record_luks_discard(h)) {
+                         r = run_fallocate(setup->image_fd, &st);
+                         if (r < 0)
+                                 return r;
+@@ -1505,7 +1505,9 @@ int home_setup_luks(
+                 if (user_record_luks_discard(h))
+                         (void) run_fitrim(setup->root_fd);
+ 
+-                setup->do_offline_fallocate = !(setup->do_offline_fitrim = user_record_luks_offline_discard(h));
++                setup->do_offline_fitrim = user_record_luks_offline_discard(h);
++                setup->do_offline_fallocate = !setup->do_offline_fitrim;
++                setup->tolerate_offline_fallocate_enospc = FLAGS_SET(flags, HOME_SETUP_LUKS_DONT_FALLOCATE);
+         }
+ 
+         if (!sd_id128_is_null(found_partition_uuid))
+@@ -1609,7 +1611,7 @@ int home_activate_luks(
+ 
+         r = home_setup_luks(
+                         h,
+-                        0,
++                        flags,
+                         NULL,
+                         setup,
+                         cache,
+diff --git a/src/home/homework.c b/src/home/homework.c
+index 2aebe46f95..08762a8022 100644
+--- a/src/home/homework.c
++++ b/src/home/homework.c
+@@ -436,7 +436,10 @@ int home_setup_done(HomeSetup *setup) {
+         if (setup->image_fd >= 0) {
+                 if (setup->do_offline_fallocate) {
+                         q = run_fallocate(setup->image_fd, NULL);
+-                        if (q < 0)
++                        if (setup->tolerate_offline_fallocate_enospc &&
++                            ERRNO_IS_NEG_DISK_SPACE(q))
++                                log_warning_errno(q, "Failed to allocate backing file, ignoring: %m");
++                        else if (q < 0)
+                                 r = q;
+                 }
+ 
+@@ -468,6 +471,7 @@ int home_setup_done(HomeSetup *setup) {
+         setup->undo_dm = false;
+         setup->do_offline_fitrim = false;
+         setup->do_offline_fallocate = false;
++        setup->tolerate_offline_fallocate_enospc = false;
+         setup->do_mark_clean = false;
+ 
+         setup->dm_name = mfree(setup->dm_name);
+@@ -1686,7 +1690,7 @@ static int home_update(UserRecord *h, Hashmap *blobs, UserRecord **ret) {
+                 return user_record_clone(h, USER_RECORD_LOAD_MASK_SECRET|USER_RECORD_PERMISSIVE, ret);
+         }
+ 
+-        r = home_setup(h, flags, &setup, &cache, &header_home);
++        r = home_setup(h, flags | HOME_SETUP_LUKS_DONT_FALLOCATE, &setup, &cache, &header_home);
+         if (r < 0)
+                 return r;
+ 
+@@ -1788,7 +1792,7 @@ static int home_passwd(UserRecord *h, UserRecord **ret_home) {
+         if (r < 0)
+                 return r;
+ 
+-        r = home_setup(h, flags, &setup, &cache, &header_home);
++        r = home_setup(h, flags | HOME_SETUP_LUKS_DONT_FALLOCATE, &setup, &cache, &header_home);
+         if (r < 0)
+                 return r;
+ 
+@@ -1866,7 +1870,7 @@ static int home_inspect(UserRecord *h, UserRecord **ret_home) {
+         if (r < 0)
+                 return r;
+ 
+-        r = home_setup(h, flags, &setup, &cache, &header_home);
++        r = home_setup(h, flags | HOME_SETUP_LUKS_DONT_FALLOCATE, &setup, &cache, &header_home);
+         if (r < 0)
+                 return r;
+ 
+diff --git a/src/home/homework.h b/src/home/homework.h
+index 493ddbf294..75eea1835d 100644
+--- a/src/home/homework.h
++++ b/src/home/homework.h
+@@ -48,6 +48,7 @@ typedef struct HomeSetup {
+         bool undo_mount:1;            /* Whether to unmount /run/systemd/user-home-mount */
+         bool do_offline_fitrim:1;
+         bool do_offline_fallocate:1;
++        bool tolerate_offline_fallocate_enospc:1;
+         bool do_mark_clean:1;
+         bool do_drop_caches:1;
+ 
+@@ -82,6 +83,9 @@ typedef enum HomeSetupFlags {
+         HOME_SETUP_RESIZE_DONT_GROW            = 1 << 4, /* If the resize would grow, gracefully terminate operation */
+         HOME_SETUP_RESIZE_DONT_SHRINK          = 1 << 5, /* If the resize would shrink, gracefully terminate operation */
+         HOME_SETUP_RESIZE_DONT_UNDO            = 1 << 6, /* Leave loopback/DM device context open after successful operation */
++
++        /* LUKS backend: */
++        HOME_SETUP_LUKS_DONT_FALLOCATE         = 1 << 7, /* Skip setup-time backing file allocation */
+ } HomeSetupFlags;
+ 
+ int home_setup_done(HomeSetup *setup);
