@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * sysusers: add u! modifier to create fully locked system user accounts (upstream PR #34876), improving security for non-password authentication such as SSH.
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 27 Aug 2026 10:24:37 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
