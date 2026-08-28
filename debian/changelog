@@ -1,3 +1,21 @@
+systemd (255.2-4deepin70) unstable; urgency=medium
+
+  * fix(cve): CVE-2026-29111
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 28 Aug 2026 13:44:38 +0800
+
+systemd (255.2-4deepin69) unstable; urgency=medium
+
+  * fix(cve): CVE-2026-15059
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 26 Aug 2026 12:54:39 +0800
+
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * fix(cve): CVE-2026-16742
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 26 Aug 2026 12:29:19 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
