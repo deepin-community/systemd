@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * string-util: make sure strrepa() doesn't doubly evaluate expressions
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 02 Sep 2026 21:37:12 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
