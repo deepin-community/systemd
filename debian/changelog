@@ -1,3 +1,13 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * time-util: copy input string before fork()
+
+  The input string may live in argv memory, which can be overwritten when
+  the forked child execs, corrupting the parent's memory. Copy it with
+  strdup() before safe_fork().
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 03:44:25 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
