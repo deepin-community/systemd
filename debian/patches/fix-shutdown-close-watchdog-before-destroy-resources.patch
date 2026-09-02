@@ -1,0 +1,29 @@
+From 79645d7376a5173c1a09172aaf2fa30e6c0958dd Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 29 May 2024 17:40:28 +0200
+Subject: [PATCH] shutdown: explicitly close watchdog with disarm=false before
+ we destroy watchdog resources
+
+Otherwise we'll close the device disarming it as side-effect of
+watchdog_free_device(), which is not intended. Hence, let's close the fd
+first explicitly leaving it armed.
+
+Fixes: #33075
+
+diff --git a/src/shutdown/shutdown.c b/src/shutdown/shutdown.c
+index 67f44e16e9..d998bc5473 100644
+--- a/src/shutdown/shutdown.c
++++ b/src/shutdown/shutdown.c
+@@ -561,7 +561,10 @@ int main(int argc, char *argv[]) {
+         }
+ 
+         /* We're done with the watchdog. Note that the watchdog is explicitly not stopped here. It remains
+-         * active to guard against any issues during the rest of the shutdown sequence. */
++         * active to guard against any issues during the rest of the shutdown sequence. Note that we
++         * explicitly close the device with disarm=false here, before releasing the rest of the watchdog
++         * data. */
++        watchdog_close(/* disarm= */ false);
+         watchdog_free_device();
+ 
+         arguments[0] = NULL; /* Filled in by execute_directories(), when needed */
+
