@@ -1,0 +1,84 @@
+From 7e322c3dd05ed3d1cfd0f8538b88742f928bdc86 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Mon, 28 Oct 2024 23:32:50 +0900
+Subject: [PATCH] sd-netlink,network: do not set NLM_F_CREATE and NLM_F_EXCL
+ flags if an interface index is specified
+
+If an ifindex is specified, we are modifying the existing interface.
+Hence, these flags should not be set. Otherwise, the request will be
+refused with -EEXIST.
+
+diff --git a/src/libsystemd/sd-netlink/netlink-message-rtnl.c b/src/libsystemd/sd-netlink/netlink-message-rtnl.c
+index 29c3af1fec..986e10c623 100644
+--- a/src/libsystemd/sd-netlink/netlink-message-rtnl.c
++++ b/src/libsystemd/sd-netlink/netlink-message-rtnl.c
+@@ -342,7 +342,7 @@ int sd_rtnl_message_new_link(sd_netlink *rtnl, sd_netlink_message **ret, uint16_
+         if (r < 0)
+                 return r;
+ 
+-        if (nlmsg_type == RTM_NEWLINK)
++        if (nlmsg_type == RTM_NEWLINK && ifindex == 0)
+                 (*ret)->hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_EXCL;
+         else if (nlmsg_type == RTM_NEWLINKPROP)
+                 (*ret)->hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_EXCL | NLM_F_APPEND;
+diff --git a/src/network/netdev/bridge.c b/src/network/netdev/bridge.c
+index 4dfc393830..da5b332277 100644
+--- a/src/network/netdev/bridge.c
++++ b/src/network/netdev/bridge.c
+@@ -166,10 +166,6 @@ static int netdev_bridge_post_create(NetDev *netdev, Link *link) {
+         if (r < 0)
+                 return log_netdev_error_errno(netdev, r, "Could not allocate netlink message: %m");
+ 
+-        r = sd_netlink_message_set_flags(req, NLM_F_REQUEST | NLM_F_ACK);
+-        if (r < 0)
+-                return log_link_error_errno(link, r, "Could not set netlink message flags: %m");
+-
+         r = netdev_bridge_post_create_message(netdev, req);
+         if (r < 0)
+                 return log_netdev_error_errno(netdev, r, "Could not create netlink message: %m");
+diff --git a/src/network/netdev/ipoib.c b/src/network/netdev/ipoib.c
+index 0065a5452e..6932c62e2a 100644
+--- a/src/network/netdev/ipoib.c
++++ b/src/network/netdev/ipoib.c
+@@ -53,10 +53,6 @@ int ipoib_set_netlink_message(Link *link, sd_netlink_message *m) {
+         assert(link->network);
+         assert(m);
+ 
+-        r = sd_netlink_message_set_flags(m, NLM_F_REQUEST | NLM_F_ACK);
+-        if (r < 0)
+-                return r;
+-
+         r = sd_netlink_message_open_container(m, IFLA_LINKINFO);
+         if (r < 0)
+                 return r;
+diff --git a/src/network/networkd-can.c b/src/network/networkd-can.c
+index a5b003ad22..9457104a0e 100644
+--- a/src/network/networkd-can.c
++++ b/src/network/networkd-can.c
+@@ -20,10 +20,6 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
+         assert(link->network);
+         assert(m);
+ 
+-        r = sd_netlink_message_set_flags(m, NLM_F_REQUEST | NLM_F_ACK);
+-        if (r < 0)
+-                return r;
+-
+         r = sd_netlink_message_open_container(m, IFLA_LINKINFO);
+         if (r < 0)
+                 return r;
+diff --git a/src/network/networkd-setlink.c b/src/network/networkd-setlink.c
+index b1a2623dcd..8519e6e7a0 100644
+--- a/src/network/networkd-setlink.c
++++ b/src/network/networkd-setlink.c
+@@ -191,10 +191,6 @@ static int link_configure_fill_message(
+                         return r;
+                 break;
+         case REQUEST_TYPE_SET_LINK_BOND:
+-                r = sd_netlink_message_set_flags(req, NLM_F_REQUEST | NLM_F_ACK);
+-                if (r < 0)
+-                        return r;
+-
+                 r = sd_netlink_message_open_container(req, IFLA_LINKINFO);
+                 if (r < 0)
+                         return r;
+
