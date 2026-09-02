@@ -29,7 +29,7 @@ uniontech-increase-ratelimit-of-mount.patch
 #uniontech-add-tpmfs.patch
 uniontech-fix_zh_TW_HK_translation.patch
 uniontech-add-ug-bo-translation.patch
-uniontech-escape-spaces-when-serializing-as-well.patch
+fix-core-escape-spaces-when-serializing-as-well.patch
 uniontech-resolved-off-multidns.patch
 uniontech-implement-USEC-with-libusec.patch
 uniontech-resolved-short-ptr-timeout.patch

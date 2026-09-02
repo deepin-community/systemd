@@ -1,4 +1,4 @@
-From 8e1db771ff2bc129e5cf985185a9f1144573b255 Mon Sep 17 00:00:00 2001
+From 5b1aa0e19a6df603336894604a85df74204d04f9 Mon Sep 17 00:00:00 2001
 From: Frantisek Sumsal <frantisek@sumsal.cz>
 Date: Mon, 12 Feb 2024 18:32:03 +0100
 Subject: [PATCH] core: escape spaces when serializing as well
@@ -6,13 +6,9 @@ Subject: [PATCH] core: escape spaces when serializing as well
 Otherwise they might get stripped when reading the serialized data back.
 
 Resolves: #31214
----
- src/shared/serialize.c                  |  2 +-
- test/units/testsuite-07.exec-context.sh | 33 +++++++++++++++++++++++++
- 2 files changed, 34 insertions(+), 1 deletion(-)
 
 diff --git a/src/shared/serialize.c b/src/shared/serialize.c
-index 7099f67f92cd4..483cbc7419b25 100644
+index 7099f67f92..483cbc7419 100644
 --- a/src/shared/serialize.c
 +++ b/src/shared/serialize.c
 @@ -46,7 +46,7 @@ int serialize_item_escaped(FILE *f, const char *key, const char *value) {
@@ -25,7 +21,7 @@ index 7099f67f92cd4..483cbc7419b25 100644
                  return log_oom();
  
 diff --git a/test/units/testsuite-07.exec-context.sh b/test/units/testsuite-07.exec-context.sh
-index dd63163008ee7..e1e4367cc63f5 100755
+index dd63163008..e1e4367cc6 100755
 --- a/test/units/testsuite-07.exec-context.sh
 +++ b/test/units/testsuite-07.exec-context.sh
 @@ -338,6 +338,39 @@ if [[ ! -v ASAN_OPTIONS ]] && systemctl --version | grep "+BPF_FRAMEWORK" && ker
@@ -68,3 +64,4 @@ index dd63163008ee7..e1e4367cc63f5 100755
  # Ensure that clean-up codepaths work correctly if activation ultimately fails
  touch /run/not-a-directory
  mkdir /tmp/root
+
