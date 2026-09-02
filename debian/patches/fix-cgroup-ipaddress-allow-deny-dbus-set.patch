@@ -1,0 +1,38 @@
+From 77bbd9f1bd2b01bcb2a49ed42c6dc06613532bcf Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 16 Oct 2024 12:45:34 +0900
+Subject: [PATCH] core/cgroup: fix IPAddressAllow=/IPAddressDeny= set through
+ DBus
+
+Fixes a regression caused by 84ebe6f01381c21b88e37e856956c9c9ee6781d6 (v250).
+Fixes #34773.
+
+diff --git a/src/core/dbus-cgroup.c b/src/core/dbus-cgroup.c
+index 459fa6f774..a145afab19 100644
+--- a/src/core/dbus-cgroup.c
++++ b/src/core/dbus-cgroup.c
+@@ -1977,11 +1977,12 @@ int bus_cgroup_set_property(
+                         prefixes = streq(name, "IPAddressAllow") ? &c->ip_address_allow : &c->ip_address_deny;
+                         reduced = streq(name, "IPAddressAllow") ? &c->ip_address_allow_reduced : &c->ip_address_deny_reduced;
+ 
++                        fputs(name, f);
++                        fputs("=\n", f);
++
+                         if (n == 0) {
+                                 *reduced = true;
+                                 *prefixes = set_free(*prefixes);
+-                                fputs(name, f);
+-                                fputs("=\n", f);
+                         } else {
+                                 *reduced = false;
+ 
+@@ -1990,7 +1991,7 @@ int bus_cgroup_set_property(
+                                         return r;
+ 
+                                 const struct in_addr_prefix *p;
+-                                SET_FOREACH(p, new_prefixes)
++                                SET_FOREACH(p, *prefixes)
+                                         fprintf(f, "%s=%s\n", name,
+                                                 IN_ADDR_PREFIX_TO_STRING(p->family, &p->address, p->prefixlen));
+                         }
+
