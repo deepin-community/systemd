@@ -1,0 +1,21 @@
+From 9ba53499b97d59cc57ce763b8ba7f272a876dd25 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?J=C3=B6rg=20Behrmann?= <behrmann@physik.fu-berlin.de>
+Date: Fri, 11 Oct 2024 14:34:15 +0200
+Subject: [PATCH] ukify: Require both key and cert be set in generate_keys
+
+If either is None the write in this branch of the code will fail.
+
+diff --git a/src/ukify/ukify.py b/src/ukify/ukify.py
+index 8d122aaa42..80d4bfd7e7 100755
+--- a/src/ukify/ukify.py
++++ b/src/ukify/ukify.py
+@@ -1176,7 +1176,7 @@ def generate_keys(opts: argparse.Namespace) -> None:
+ 
+     # This will generate keys and certificates and write them to the paths that
+     # are specified as input paths.
+-    if opts.sb_key or opts.sb_cert:
++    if opts.sb_key and opts.sb_cert:
+         fqdn = socket.getfqdn()
+         cn = f'SecureBoot signing key on host {fqdn}'
+         key_pem, cert_pem = generate_key_cert_pair(
+
