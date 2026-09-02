@@ -1,0 +1,23 @@
+From 11781f37aca1703a2d8e4e470a44f911fcf9c7d4 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Tue, 27 Aug 2024 15:26:20 +0200
+Subject: [PATCH] image-policy: Fix strv size calculation
+
+We want the logarithm of the next power of two, which is the same
+as the mask + 1, so add one to the mask to make sure the size is
+sufficient to fit all flags.
+
+diff --git a/src/shared/image-policy.c b/src/shared/image-policy.c
+index e7bd84e144..914dd08039 100644
+--- a/src/shared/image-policy.c
++++ b/src/shared/image-policy.c
+@@ -376,7 +376,7 @@ int image_policy_from_string(const char *s, ImagePolicy **ret) {
+ 
+ int partition_policy_flags_to_string(PartitionPolicyFlags flags, bool simplify, char **ret) {
+         _cleanup_free_ char *buf = NULL;
+-        const char *l[CONST_LOG2U(_PARTITION_POLICY_MASK) + 1]; /* one string per known flag at most */
++        const char *l[CONST_LOG2U(_PARTITION_POLICY_MASK + 1) + 1]; /* one string per known flag at most */
+         size_t m = 0;
+ 
+         assert(ret);
+
