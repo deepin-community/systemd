@@ -1,0 +1,33 @@
+From f2f9c199d100e0393c1909b00df4800b3ec0ca5c Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Wed, 4 Sep 2024 00:02:46 +0100
+Subject: [PATCH] systemctl: keep ignoring sessions on shutdown as root
+
+The change was supposed to be about respecting inhibitors, but
+it was extended to also error out when there are active user
+sessions, which was not intentional. Previously systemctl skipped
+all checks if the caller was root or root-equivalent. Restore the
+previous behaviour and again avoid blocking systemctl reboot by root
+if there are active sessions, as long as there are no active
+inhibitors.
+
+Fixes https://github.com/systemd/systemd/issues/34086
+
+Follow-up for 804874d26ac73e0af07c4c5d7165c95372f03f6d
+
+diff --git a/src/systemctl/systemctl-logind.c b/src/systemctl/systemctl-logind.c
+index e4ef7cf915..fc64e60c64 100644
+--- a/src/systemctl/systemctl-logind.c
++++ b/src/systemctl/systemctl-logind.c
+@@ -204,6 +204,10 @@ int logind_check_inhibitors(enum action a) {
+         if (r < 0)
+                 return bus_log_parse_error(r);
+ 
++        /* root respects inhibitors since v257 but keeps ignoring sessions by default */
++        if (arg_check_inhibitors < 0 && c == 0 && geteuid() == 0)
++                return 0;
++
+         /* Check for current sessions */
+         sd_get_sessions(&sessions);
+         STRV_FOREACH(s, sessions) {
+
