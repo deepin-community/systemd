@@ -1,0 +1,48 @@
+From dd80e5a348bdb8185e040f66ede00fd4ffdee777 Mon Sep 17 00:00:00 2001
+From: Milan Kyselica <mil.kyselica@gmail.com>
+Date: Thu, 9 Apr 2026 19:43:14 +0200
+Subject: [PATCH] resolved: replace assert() with error return in DNSSEC verify
+ functions
+
+dnssec_rsa_verify_raw() asserts that RSA_size(key) matches the RRSIG
+signature size, and dnssec_ecdsa_verify_raw() asserts that
+EC_KEY_check_key() succeeds. Both conditions depend on parsed DNS
+record content. Replace with proper error returns.
+
+The actual crypto verify calls (EVP_PKEY_verify / ECDSA_do_verify)
+handle mismatches fine on their own, so the asserts were also redundant.
+
+While at it, fix the misleading "EC_POINT_bn2point failed" log message
+that actually refers to an EC_KEY_set_public_key() failure.
+
+Fixes: https://github.com/systemd/systemd/issues/41569
+
+diff --git a/src/resolve/resolved-dns-dnssec.c b/src/resolve/resolved-dns-dnssec.c
+index c82569ccf9..ff4df7b78a 100644
+--- a/src/resolve/resolved-dns-dnssec.c
++++ b/src/resolve/resolved-dns-dnssec.c
+@@ -100,7 +100,8 @@ static int dnssec_rsa_verify_raw(
+                 return -EIO;
+         e = m = NULL;
+ 
+-        assert((size_t) RSA_size(rpubkey) == signature_size);
++        if ((size_t) RSA_size(rpubkey) != signature_size)
++                return -EINVAL;
+ 
+         epubkey = EVP_PKEY_new();
+         if (!epubkey)
+@@ -230,9 +231,11 @@ static int dnssec_ecdsa_verify_raw(
+ 
+         if (EC_KEY_set_public_key(eckey, p) <= 0)
+                 return log_debug_errno(SYNTHETIC_ERRNO(EIO),
+-                                       "EC_POINT_bn2point failed: 0x%lx", ERR_get_error());
++                                       "EC_KEY_set_public_key failed: 0x%lx", ERR_get_error());
+ 
+-        assert(EC_KEY_check_key(eckey) == 1);
++        if (EC_KEY_check_key(eckey) != 1)
++                return log_debug_errno(SYNTHETIC_ERRNO(EIO),
++                                       "EC_KEY_check_key failed: 0x%lx", ERR_get_error());
+ 
+         r = BN_bin2bn(signature_r, signature_r_size, NULL);
+         if (!r)
+
