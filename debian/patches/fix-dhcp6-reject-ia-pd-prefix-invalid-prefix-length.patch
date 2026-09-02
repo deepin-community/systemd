@@ -1,0 +1,71 @@
+From f98629421b673f5d4cb8206a9dc14b6f1855a9f3 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Wed, 24 Jun 2026 13:20:56 +0100
+Subject: [PATCH] dhcp6: reject IA_PD_PREFIX with invalid prefix length
+
+dhcp6_option_parse_ia_pdprefix() validates the lifetimes but never the
+prefixlen byte, so a delegated prefix with prefixlen == 0 or > 128 is
+stored in the lease and handed over.
+
+RFC 8415 defines the prefix length as 1 to 128, and the send-side
+option_append_pd_prefix() already rejects 0, so reject the out-of-range
+values on the receive path too.
+
+Follow-up for f8ad4dd45d761d839de49ddff9d7fbf46892c148
+
+diff --git a/src/libsystemd-network/dhcp6-option.c b/src/libsystemd-network/dhcp6-option.c
+index d62fd70588..1c6b29b8cb 100644
+--- a/src/libsystemd-network/dhcp6-option.c
++++ b/src/libsystemd-network/dhcp6-option.c
+@@ -672,6 +672,13 @@ static int dhcp6_option_parse_ia_pdprefix(sd_dhcp6_client *client, DHCP6IA *ia,
+                                               FORMAT_TIMESPAN(lt_pref, USEC_PER_SEC),
+                                               FORMAT_TIMESPAN(lt_valid, USEC_PER_SEC));
+ 
++        /* RFC 8415 defines the prefix length as 1…128; reject the out-of-range values the sender-side
++         * counterpart option_append_pd_prefix() also refuses. */
++        if (a->iapdprefix.prefixlen == 0 || a->iapdprefix.prefixlen > 128)
++                return log_dhcp6_client_errno(client, SYNTHETIC_ERRNO(EINVAL),
++                                              "Received a PD prefix with invalid prefix length %u, ignoring.",
++                                              a->iapdprefix.prefixlen);
++
+         if (len > sizeof(struct iapdprefix)) {
+                 r = dhcp6_option_parse_ia_options(client, data + sizeof(struct iapdprefix), len - sizeof(struct iapdprefix));
+                 if (r < 0)
+diff --git a/src/libsystemd-network/test-dhcp6-client.c b/src/libsystemd-network/test-dhcp6-client.c
+index f2b6ce8598..08dda7ce18 100644
+--- a/src/libsystemd-network/test-dhcp6-client.c
++++ b/src/libsystemd-network/test-dhcp6-client.c
+@@ -324,6 +324,17 @@ TEST(option_status) {
+                 /* PD prefix status option */
+                 0x00, 0x0d, 0x00, 0x02, 0x00, 0x00,
+         };
++        static const uint8_t option6[] = {
++                /* IA PD */
++                0x00, 0x19, 0x00, 0x29, 0x1a, 0x1d, 0x1a, 0x1d,
++                0x00, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x02,
++                /* IA PD Prefix, with an invalid prefix length of 0 */
++                0x00, 0x1a, 0x00, 0x19,
++                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
++                0x00, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00,
++                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++                0x00,
++        };
+         _cleanup_(dhcp6_ia_freep) DHCP6IA *ia = NULL;
+         DHCP6Option *option;
+         be32_t iaid;
+@@ -379,6 +390,14 @@ TEST(option_status) {
+         assert_se(ia);
+         assert_se(ia->addresses);
+         ia = dhcp6_ia_free(ia);
++
++        /* An IA_PD whose only prefix carries an invalid (zero) prefix length must be refused, leaving no
++         * valid prefix behind. */
++        option = (DHCP6Option*) option6;
++        assert_se(sizeof(option6) == sizeof(DHCP6Option) + be16toh(option->len));
++        r = dhcp6_option_parse_ia(NULL, iaid, be16toh(option->code), be16toh(option->len), option->data, &ia);
++        assert_se(r == -ENODATA);
++        assert_se(!ia);
+ }
+ 
+ TEST(client_parse_message_issue_22099) {
+
