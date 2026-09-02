@@ -1,0 +1,23 @@
+From 2fb438cc88826399f39305765a7881cbf63b5e49 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Tue, 8 Apr 2025 16:43:28 +0200
+Subject: [PATCH] core/exec-invoke: never override acquired user cred with
+ fallback one
+
+
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+index 7e2cdd8c46..1c01a46615 100644
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -1973,7 +1973,9 @@ static int build_environment(
+          * could cause problem for e.g. getty, since login doesn't override $HOME, and $LOGNAME and $SHELL don't
+          * really make much sense since we're not logged in. Hence we conditionalize the three based on
+          * SetLoginEnvironment= switch. */
+-        if (!c->user && !c->dynamic_user && p->runtime_scope == RUNTIME_SCOPE_SYSTEM) {
++        if (!username && !c->dynamic_user && p->runtime_scope == RUNTIME_SCOPE_SYSTEM) {
++                assert(!c->user);
++
+                 r = get_fixed_user("root", &username, NULL, NULL, &home, &shell);
+                 if (r < 0)
+                         return log_exec_debug_errno(c,
+
