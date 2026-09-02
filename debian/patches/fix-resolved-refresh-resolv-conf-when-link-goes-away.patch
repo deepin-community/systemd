@@ -1,0 +1,25 @@
+From 562f7bde8872b4fd03db11bf25c9dd294fd2c186 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Fri, 18 Oct 2024 11:30:12 +0200
+Subject: [PATCH] resolved: refresh resolv.conf files when link goes away
+
+This might have the effect that some DNS server or search domain
+disappears, hence rewrite the relevant files.
+
+See: #27543
+
+diff --git a/src/resolve/resolved-manager.c b/src/resolve/resolved-manager.c
+index e6d112964a..dbaad81734 100644
+--- a/src/resolve/resolved-manager.c
++++ b/src/resolve/resolved-manager.c
+@@ -97,6 +97,9 @@ static int manager_process_link(sd_netlink *rtnl, sd_netlink_message *mm, void *
+                         log_debug("Removing link %i/%s", l->ifindex, l->ifname);
+                         link_remove_user(l);
+                         link_free(l);
++
++                        /* Make sure DNS servers are dropped from written resolv.conf if their link goes away */
++                        manager_write_resolv_conf(m);
+                 }
+ 
+                 break;
+
