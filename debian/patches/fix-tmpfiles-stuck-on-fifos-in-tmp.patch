@@ -1,0 +1,21 @@
+From 25e6ce1c11a3881cf68d41d4d16711684ef56267 Mon Sep 17 00:00:00 2001
+From: r-vdp <ramses@well-founded.dev>
+Date: Mon, 29 Jan 2024 11:21:12 +0100
+Subject: [PATCH] Fix bug where systemd-tmpfiles gets stuck on fifos in tmp.
+
+Fixes #30690.
+
+diff --git a/src/tmpfiles/tmpfiles.c b/src/tmpfiles/tmpfiles.c
+index 9601c538bc..dbe9156f06 100644
+--- a/src/tmpfiles/tmpfiles.c
++++ b/src/tmpfiles/tmpfiles.c
+@@ -822,7 +822,7 @@ static int dir_cleanup(
+ 
+                         fd = xopenat(dirfd(d),
+                                      de->d_name,
+-                                     O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NOATIME,
++                                     O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NOATIME|O_NONBLOCK,
+                                      /* xopen_flags = */ 0,
+                                      /* mode = */ 0);
+                         if (fd < 0 && !IN_SET(fd, -ENOENT, -ELOOP))
+
