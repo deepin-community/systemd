@@ -1,0 +1,30 @@
+From a45fb074fedb488f5d16a0a3a50bd0e866453756 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Wed, 25 Feb 2026 09:26:44 +0100
+Subject: [PATCH] core/namespace: rename() might return ENOTEMPTY if target dir
+ exists
+
+
+diff --git a/src/core/namespace.c b/src/core/namespace.c
+index d363ac0973..aa80570885 100644
+--- a/src/core/namespace.c
++++ b/src/core/namespace.c
+@@ -3338,6 +3338,8 @@ static int make_tmp_prefix(const char *prefix) {
+         _cleanup_close_ int fd = -EBADF;
+         int r;
+ 
++        assert(prefix);
++
+         /* Don't do anything unless we know the dir is actually missing */
+         r = access(prefix, F_OK);
+         if (r >= 0)
+@@ -3369,7 +3371,7 @@ static int make_tmp_prefix(const char *prefix) {
+         r = RET_NERRNO(rename(t, prefix));
+         if (r < 0) {
+                 (void) rmdir(t);
+-                return r == -EEXIST ? 0 : r; /* it's fine if someone else created the dir by now */
++                return IN_SET(r, -EEXIST, -ENOTEMPTY) ? 0 : r; /* it's fine if someone else created the dir by now */
+         }
+ 
+         return 0;
+
