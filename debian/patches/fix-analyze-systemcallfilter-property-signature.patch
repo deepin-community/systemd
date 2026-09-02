@@ -1,0 +1,27 @@
+From 7827db326fa1f83e4d1564751510403c1ac3061d Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Wed, 10 Jun 2026 18:25:33 +0100
+Subject: [PATCH] analyze: fix SystemCallFilter property signature
+
+The SystemCallFilter entry in the security info map declared signature "(as)" but
+its property_read_system_call_filter callback reads a "(bas)" (the manager exports
+it as "(bas)"), matching the sibling RestrictAddressFamilies entry. The mismatch was
+harmless while the declared signature was never checked, but becomes a dropped
+property once it is enforced. Declare "(bas)".
+
+Follow-up for ec16f3b6dd8b03e3ce6eff1fa9f21432208ef42b
+
+diff --git a/src/analyze/analyze-security.c b/src/analyze/analyze-security.c
+index 7f8576e52a..c9f5a21e02 100644
+--- a/src/analyze/analyze-security.c
++++ b/src/analyze/analyze-security.c
+@@ -2338,7 +2338,7 @@ static int acquire_security_info(sd_bus *bus, const char *name, SecurityInfo *in
+                 { "RootImage",               "s",       NULL,                                    offsetof(SecurityInfo, root_image)                },
+                 { "SupplementaryGroups",     "as",      NULL,                                    offsetof(SecurityInfo, supplementary_groups)      },
+                 { "SystemCallArchitectures", "as",      property_read_syscall_archs,             0                                                 },
+-                { "SystemCallFilter",        "(as)",    property_read_system_call_filter,        0                                                 },
++                { "SystemCallFilter",        "(bas)",   property_read_system_call_filter,        0                                                 },
+                 { "Type",                    "s",       NULL,                                    offsetof(SecurityInfo, type)                      },
+                 { "UMask",                   "u",       property_read_umask,                     0                                                 },
+                 { "User",                    "s",       NULL,                                    offsetof(SecurityInfo, user)                      },
+
