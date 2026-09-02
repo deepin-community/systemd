@@ -1,0 +1,189 @@
+From 1df2c9a59742d9d044cedd5c4814ce0426f6d389 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Fri, 10 May 2024 12:40:30 +0200
+Subject: [PATCH] Merge pull request #32741 from
+ yuwata/network-dhcp4-route-to-dns
+
+network/dhcp4: fix assignment of routes to DNS or NTP servers
+
+diff --git a/src/network/networkd-dhcp4.c b/src/network/networkd-dhcp4.c
+index cb470ec4e1..4dd6044b18 100644
+--- a/src/network/networkd-dhcp4.c
++++ b/src/network/networkd-dhcp4.c
+@@ -147,12 +147,11 @@ static int dhcp4_find_gateway_for_destination(
+                 Link *link,
+                 const struct in_addr *destination,
+                 uint8_t prefixlength,
+-                bool allow_null,
+                 struct in_addr *ret) {
+ 
+         _cleanup_free_ sd_dhcp_route **routes = NULL;
+         size_t n_routes = 0;
+-        bool is_classless, reachable;
++        bool is_classless;
+         uint8_t max_prefixlen = UINT8_MAX;
+         struct in_addr gw;
+         int r;
+@@ -165,14 +164,21 @@ static int dhcp4_find_gateway_for_destination(
+         /* This tries to find the most suitable gateway for an address or address range.
+          * E.g. if the server provides the default gateway 192.168.0.1 and a classless static route for
+          * 8.0.0.0/8 with gateway 192.168.0.2, then this returns 192.168.0.2 for 8.8.8.8/32, and 192.168.0.1
+-         * for 9.9.9.9/32. If 'allow_null' flag is set, and the input address or address range is in the
+-         * assigned network, then the default gateway will be ignored and the null address will be returned
+-         * unless a matching non-default gateway found. */
++         * for 9.9.9.9/32. If the input address or address range is in the assigned network, then the null
++         * address will be returned. */
+ 
++        /* First, check with the assigned prefix, and if the destination is in the prefix, set the null
++         * address for the gateway, and return it unless more suitable static route is found. */
+         r = dhcp4_prefix_covers(link, destination, prefixlength);
+         if (r < 0)
+                 return r;
+-        reachable = r > 0;
++        if (r > 0) {
++                r = sd_dhcp_lease_get_prefix(link->dhcp_lease, NULL, &max_prefixlen);
++                if (r < 0)
++                        return r;
++
++                gw = (struct in_addr) {};
++        }
+ 
+         r = dhcp4_get_classless_static_or_static_routes(link, &routes, &n_routes);
+         if (r < 0 && r != -ENODATA)
+@@ -208,25 +214,17 @@ static int dhcp4_find_gateway_for_destination(
+                 max_prefixlen = len;
+         }
+ 
+-        /* Found a suitable gateway in classless static routes or static routes. */
++        /* The destination is reachable. Note, the gateway address returned here may be NULL. */
+         if (max_prefixlen != UINT8_MAX) {
+-                if (max_prefixlen == 0 && reachable && allow_null)
+-                        /* Do not return the default gateway, if the destination is in the assigned network. */
+-                        *ret = (struct in_addr) {};
+-                else
+-                        *ret = gw;
+-                return 0;
+-        }
+-
+-        /* When the destination is in the assigned network, return the null address if allowed. */
+-        if (reachable && allow_null) {
+-                *ret = (struct in_addr) {};
++                *ret = gw;
+                 return 0;
+         }
+ 
+         /* According to RFC 3442: If the DHCP server returns both a Classless Static Routes option and
+          * a Router option, the DHCP client MUST ignore the Router option. */
+         if (!is_classless) {
++                /* No matching static route is found, and the destination is not in the acquired network,
++                 * falling back to the Router option. */
+                 r = dhcp4_get_router(link, ret);
+                 if (r >= 0)
+                         return 0;
+@@ -234,11 +232,7 @@ static int dhcp4_find_gateway_for_destination(
+                         return r;
+         }
+ 
+-        if (!reachable)
+-                return -EHOSTUNREACH; /* Not in the same network, cannot reach the destination. */
+-
+-        assert(!allow_null);
+-        return -ENODATA; /* No matching gateway found. */
++        return -EHOSTUNREACH; /* Cannot reach the destination. */
+ }
+ 
+ static int dhcp4_remove_address_and_routes(Link *link, bool only_marked) {
+@@ -651,8 +645,8 @@ static int dhcp4_request_semi_static_routes(Link *link) {
+ 
+                 assert(rt->family == AF_INET);
+ 
+-                r = dhcp4_find_gateway_for_destination(link, &rt->dst.in, rt->dst_prefixlen, /* allow_null = */ false, &gw);
+-                if (IN_SET(r, -EHOSTUNREACH, -ENODATA)) {
++                r = dhcp4_find_gateway_for_destination(link, &rt->dst.in, rt->dst_prefixlen, &gw);
++                if (r == -EHOSTUNREACH) {
+                         log_link_debug_errno(link, r, "DHCP: Cannot find suitable gateway for destination %s of semi-static route, ignoring: %m",
+                                              IN4_ADDR_PREFIX_TO_STRING(&rt->dst.in, rt->dst_prefixlen));
+                         continue;
+@@ -660,6 +654,12 @@ static int dhcp4_request_semi_static_routes(Link *link) {
+                 if (r < 0)
+                         return r;
+ 
++                if (in4_addr_is_null(&gw)) {
++                        log_link_debug(link, "DHCP: Destination %s of semi-static route is in the acquired network, skipping configuration.",
++                                       IN4_ADDR_PREFIX_TO_STRING(&rt->dst.in, rt->dst_prefixlen));
++                        continue;
++                }
++
+                 r = dhcp4_request_route_to_gateway(link, &gw);
+                 if (r < 0)
+                         return r;
+@@ -697,7 +697,7 @@ static int dhcp4_request_routes_to_servers(
+                 if (in4_addr_is_null(dst))
+                         continue;
+ 
+-                r = dhcp4_find_gateway_for_destination(link, dst, 32, /* allow_null = */ true, &gw);
++                r = dhcp4_find_gateway_for_destination(link, dst, 32, &gw);
+                 if (r == -EHOSTUNREACH) {
+                         log_link_debug_errno(link, r, "DHCP: Cannot find suitable gateway for destination %s, ignoring: %m",
+                                              IN4_ADDR_PREFIX_TO_STRING(dst, 32));
+diff --git a/src/test/test-in-addr-util.c b/src/test/test-in-addr-util.c
+index 0d15966940..fcc9a0a72d 100644
+--- a/src/test/test-in-addr-util.c
++++ b/src/test/test-in-addr-util.c
+@@ -405,4 +405,55 @@ TEST(in_addr_prefixlen_to_netmask) {
+         }
+ }
+ 
++static void in_addr_prefix_covers_full_one(const char *prefix, const char *address, int expected) {
++        union in_addr_union p, a;
++        unsigned char plen, alen;
++        int family, r;
++
++        assert_se(in_addr_prefix_from_string_auto(prefix, &family, &p, &plen) >= 0);
++        assert_se(in_addr_prefix_from_string(address, family, &a, &alen) >= 0);
++        r = in_addr_prefix_covers_full(family, &p, plen, &a, alen);
++        if (r != expected)
++                log_error("in_addr_prefix_covers_full(%s, %s)=%i (expected=%i)", prefix, address, r, expected);
++        assert_se(r == expected);
++}
++
++TEST(in_addr_prefix_covers_full) {
++        /* From issue #32715. */
++        in_addr_prefix_covers_full_one("192.168.235.129/32", "192.168.0.128/32", 0);
++        in_addr_prefix_covers_full_one("192.168.235.130/32", "192.168.0.128/32", 0);
++        in_addr_prefix_covers_full_one("169.254.0.0/17", "192.168.0.128/32", 0);
++        in_addr_prefix_covers_full_one("169.254.128.0/17", "192.168.0.128/32", 0);
++        in_addr_prefix_covers_full_one("0.0.0.0/1", "192.168.0.128/32", 0);
++        in_addr_prefix_covers_full_one("128.0.0.0/1", "192.168.0.128/32", 1);
++        in_addr_prefix_covers_full_one("0.0.0.0/0", "192.168.0.128/32", 1);
++
++        for (unsigned i = 0; i <= 32; i++) {
++                _cleanup_free_ char *prefix = NULL;
++
++                assert_se(asprintf(&prefix, "192.168.0.128/%u", i) >= 0);
++
++                for (unsigned j = 0; j <= 32; j++) {
++                        _cleanup_free_ char *address = NULL;
++
++                        assert_se(asprintf(&address, "192.168.0.128/%u", j) >= 0);
++                        in_addr_prefix_covers_full_one(prefix, address, i <= j);
++                }
++        }
++
++        for (unsigned i = 0; i <= 32; i++) {
++                _cleanup_free_ char *prefix = NULL;
++
++                assert_se(asprintf(&prefix, "192.168.235.129/%u", i) >= 0);
++                in_addr_prefix_covers_full_one(prefix, "192.168.0.128/32", i <= 16);
++        }
++
++        for (unsigned i = 0; i <= 128; i++) {
++                _cleanup_free_ char *prefix = NULL;
++
++                assert_se(asprintf(&prefix, "dead:beef::/%u", i) >= 0);
++                in_addr_prefix_covers_full_one(prefix, "dead:0:beef::1/128", i <= 16);
++        }
++}
++
+ DEFINE_TEST_MAIN(LOG_DEBUG);
+
