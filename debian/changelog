@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * coredump: do not remove PID1/journal coredumps if Storage=journal is used
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 02:45:23 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
