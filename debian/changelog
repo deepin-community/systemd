@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * sd-ndisc: disable timer event source only when a valid RA is received (fixes stray RAs)
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 06:26:49 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
