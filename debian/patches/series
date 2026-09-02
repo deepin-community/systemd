@@ -72,3 +72,4 @@ fix-resolved-reduce-dnssec-transactions.patch
 fix-sd-journal-reduce-fstat-and-immutable-flag.patch
 fix-sysusers-gracefully-handle-existing-group-in-gshadow.patch
 fix-dbus-skip-flush-when-bus-not-running.patch
+fix-network-handle-bound-by-list-before-reconfigure.patch
