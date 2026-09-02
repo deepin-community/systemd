@@ -1,0 +1,28 @@
+From d181939e2e382631d9b067e0b4cfbf11b709a297 Mon Sep 17 00:00:00 2001
+From: David Tardon <dtardon@redhat.com>
+Date: Thu, 30 May 2024 13:33:57 +0200
+Subject: [PATCH] cryptsetup-generator: always process cmdline devices
+
+
+diff --git a/src/cryptsetup/cryptsetup-generator.c b/src/cryptsetup/cryptsetup-generator.c
+index 56350b9b12..6a3ff961fc 100644
+--- a/src/cryptsetup/cryptsetup-generator.c
++++ b/src/cryptsetup/cryptsetup-generator.c
+@@ -939,14 +939,9 @@ static int run(const char *dest, const char *dest_early, const char *dest_late)
+                 return 0;
+ 
+         r = add_crypttab_devices();
+-        if (r < 0)
+-                return r;
+-
+-        r = add_proc_cmdline_devices();
+-        if (r < 0)
+-                return r;
++        RET_GATHER(r, add_proc_cmdline_devices());
+ 
+-        return 0;
++        return r;
+ }
+ 
+ DEFINE_MAIN_GENERATOR_FUNCTION(run);
+
