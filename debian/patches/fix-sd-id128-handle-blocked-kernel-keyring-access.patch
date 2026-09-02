@@ -1,0 +1,29 @@
+From f2e38b01e052ebd50eaf98763bd9709e880c0a75 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Sun, 2 Mar 2025 07:51:05 +0100
+Subject: [PATCH] sd-id128: gracefully handle systems where kernel keyring
+ access is blocked
+
+In various scenarios we invoke containers with access to the kernel
+keyring blocked. Let's make sure we can handle this properly: when the
+invocation ID is stored in in the kernel keyring and we try to read it
+and get EPERM we should handle it gracefully, like EOPNOTSUPP.
+
+diff --git a/src/libsystemd/sd-id128/sd-id128.c b/src/libsystemd/sd-id128/sd-id128.c
+index fc1107b4e8..5028e56bbd 100644
+--- a/src/libsystemd/sd-id128/sd-id128.c
++++ b/src/libsystemd/sd-id128/sd-id128.c
+@@ -214,8 +214,10 @@ static int get_invocation_from_keyring(sd_id128_t *ret) {
+ 
+         key = request_key("user", "invocation_id", NULL, 0);
+         if (key == -1) {
+-                /* Keyring support not available? No invocation key stored? */
+-                if (IN_SET(errno, ENOSYS, ENOKEY))
++                /* Keyring support not available? Keyring access locked down? No invocation key stored? */
++                if (ERRNO_IS_NOT_SUPPORTED(errno) ||
++                    ERRNO_IS_PRIVILEGE(errno) ||
++                    errno == ENOKEY)
+                         return -ENXIO;
+ 
+                 return -errno;
+
