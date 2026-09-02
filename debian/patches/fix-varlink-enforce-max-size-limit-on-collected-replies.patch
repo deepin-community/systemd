@@ -1,0 +1,32 @@
+From 0430a11eb41f07788bbeb75f327379acec56fd31 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 7 Feb 2024 11:41:20 +0100
+Subject: [PATCH] varlink: enforce a maximum size limit on replies collected
+ via varlink_collect()
+
+We should not allow servers to blow up client's memory without bounds,
+hence set a (high) limit on replies we'll collect before failing.
+
+diff --git a/src/shared/varlink.c b/src/shared/varlink.c
+index 1e1e4d48f9..80e239bf78 100644
+--- a/src/shared/varlink.c
++++ b/src/shared/varlink.c
+@@ -37,6 +37,7 @@
+ #define VARLINK_DEFAULT_TIMEOUT_USEC (45U*USEC_PER_SEC)
+ #define VARLINK_BUFFER_MAX (16U*1024U*1024U)
+ #define VARLINK_READ_SIZE (64U*1024U)
++#define VARLINK_COLLECT_MAX 1024U
+ 
+ typedef enum VarlinkState {
+         /* Client side states */
+@@ -2348,6 +2349,9 @@ static int collect_callback(
+                 return 0;
+         }
+ 
++        if (json_variant_elements(context->parameters) >= VARLINK_COLLECT_MAX)
++                return varlink_log_errno(v, SYNTHETIC_ERRNO(E2BIG), "Number of reply messages grew too large (%zu) while collecting.", json_variant_elements(context->parameters));
++
+         r = json_variant_append_array(&context->parameters, parameters);
+         if (r < 0)
+                 return varlink_log_errno(v, r, "Failed to append JSON object to array: %m");
+
