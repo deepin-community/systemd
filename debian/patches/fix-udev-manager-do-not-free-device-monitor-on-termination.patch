@@ -1,0 +1,27 @@
+From 32333754ae9a0352cd1850d2071e8c7676bc810d Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 20 Mar 2025 17:22:13 +0900
+Subject: [PATCH] udev-manager: do not free device monitor when asked to
+ terminate
+
+Otherwise, if a worker process exited abnormally, the manager cannot
+broadcast the kernel event assigned to the worker.
+
+diff --git a/src/udev/udev-manager.c b/src/udev/udev-manager.c
+index 8648fad126..dd6a249473 100644
+--- a/src/udev/udev-manager.c
++++ b/src/udev/udev-manager.c
+@@ -236,7 +236,11 @@ void manager_exit(Manager *manager) {
+         manager->inotify_event = sd_event_source_disable_unref(manager->inotify_event);
+         manager->inotify_fd = safe_close(manager->inotify_fd);
+ 
+-        manager->monitor = sd_device_monitor_unref(manager->monitor);
++        /* Disable the device monitor but do not free device monitor, as it may be used when a worker failed,
++         * and the manager needs to broadcast the kernel event assigned to the worker to libudev listeners.
++         * Note, hwere we cannot use sd_device_monitor_stop(), as it changes the multicast group of the socket. */
++        (void) sd_event_source_set_enabled(sd_device_monitor_get_event_source(manager->monitor), SD_EVENT_OFF);
++        (void) sd_device_monitor_detach_event(manager->monitor);
+ 
+         /* discard queued events and kill workers */
+         event_queue_cleanup(manager, EVENT_QUEUED);
+
