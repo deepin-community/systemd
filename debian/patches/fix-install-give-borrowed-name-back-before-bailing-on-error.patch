@@ -1,0 +1,30 @@
+From 0a869d3882fe6fe8b3c2f16639133d675149471c Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Wed, 1 Jul 2026 16:55:28 +0100
+Subject: [PATCH] shared/install: give the borrowed name back before bailing on
+ error
+
+In the unmask path, when install_changes_add() fails the borrowed
+*name was not handed back via TAKE_PTR() before returning, so
+install_info_clear() freed the caller's strv entry, leaving a dangling
+pointer that is double-freed at the caller's strv_free().
+
+Follow-up for f31f10a6207efc9ae9e0b1f73975b5b610914017
+
+diff --git a/src/shared/install.c b/src/shared/install.c
+index 6fc43a8df4..affa4d3033 100644
+--- a/src/shared/install.c
++++ b/src/shared/install.c
+@@ -2438,8 +2438,10 @@ int unit_file_unmask(
+                                    path_is_generator(&lp, info.path)) {
+                                 r = install_changes_add(changes, n_changes,
+                                                         INSTALL_CHANGE_IS_MASKED_GENERATOR, info.name, info.path);
+-                                if (r < 0)
++                                if (r < 0) {
++                                        TAKE_PTR(info.name); /* Return the borrowed name before bailing */
+                                         return r;
++                                }
+                         }
+ 
+                         TAKE_PTR(info.name);  /* … and give it back here */
+

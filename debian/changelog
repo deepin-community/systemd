@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * shared/install: give the borrowed name back before bailing on error
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 02 Sep 2026 14:13:38 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
