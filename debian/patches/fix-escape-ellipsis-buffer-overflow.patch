@@ -1,0 +1,85 @@
+From 17260a97c8e539e4afee705d1db1b474675677f4 Mon Sep 17 00:00:00 2001
+From: jmestwa-coder <jmestwa@gmail.com>
+Date: Tue, 9 Jun 2026 10:36:58 +0530
+Subject: [PATCH] fix ellipsis buffer overflow in xescape_full and utf8
+ escapers
+
+
+Adapted for the v255 codebase: ASSERT_STREQ() does not exist here, use
+assert_se(streq()) instead.
+
+diff --git a/src/basic/escape.c b/src/basic/escape.c
+index 75a1d68..97ffd47 100644
+--- a/src/basic/escape.c
++++ b/src/basic/escape.c
+@@ -375,12 +375,13 @@ char* xescape_full(const char *s, const char *bad, size_t console_width, XEscape
+         if (console_width == 0)
+                 return strdup("");
+ 
+-        ans = new(char, MIN(strlen(s), console_width) * 4 + 1);
++        size_t body = MIN(strlen(s), console_width) * 4;
++        ans = new(char, body + STRLEN("...") + 1);
+         if (!ans)
+                 return NULL;
+ 
+-        memset(ans, '_', MIN(strlen(s), console_width) * 4);
+-        ans[MIN(strlen(s), console_width) * 4] = 0;
++        memset(ans, '_', body);
++        ans[body] = 0;
+ 
+         bool force_ellipsis = FLAGS_SET(flags, XESCAPE_FORCE_ELLIPSIS);
+ 
+diff --git a/src/basic/utf8.c b/src/basic/utf8.c
+index 36e1e0f..7f98fa4 100644
+--- a/src/basic/utf8.c
++++ b/src/basic/utf8.c
+@@ -217,7 +217,8 @@ char *utf8_escape_non_printable_full(const char *str, size_t console_width, bool
+         if (console_width == 0)
+                 return strdup("");
+ 
+-        p = s = prev_s = malloc(strlen(str) * 4 + 1);
++        size_t body = strlen(str) * 4;
++        p = s = prev_s = malloc(body + STRLEN("…") + 1);
+         if (!p)
+                 return NULL;
+ 
+diff --git a/src/test/test-escape.c b/src/test/test-escape.c
+index 21786ae..f6e5a51 100644
+--- a/src/test/test-escape.c
++++ b/src/test/test-escape.c
+@@ -64,6 +64,15 @@ TEST(xescape_full) {
+         test_xescape_full_one(true);
+ }
+ 
++TEST(xescape_full_ellipsis) {
++        _cleanup_free_ char *t = NULL;
++
++        /* Every byte escapes to four columns, so the escaped output fills strlen*4 bytes and the
++         * forced ellipsis used to be written past the end of the buffer. */
++        assert_se(t = xescape_full("\001\001\001", /* bad= */ NULL, 80, XESCAPE_FORCE_ELLIPSIS));
++        assert_se(streq(t, "\\x01\\x01\\x01..."));
++}
++
+ TEST(cunescape) {
+         _cleanup_free_ char *unescaped = NULL;
+ 
+diff --git a/src/test/test-utf8.c b/src/test/test-utf8.c
+index a0d7dc1..dbf5385 100644
+--- a/src/test/test-utf8.c
++++ b/src/test/test-utf8.c
+@@ -167,6 +167,15 @@ TEST(utf8_escape_non_printable_full) {
+                 }
+ }
+ 
++TEST(utf8_escape_non_printable_full_ellipsis) {
++        _cleanup_free_ char *p = NULL;
++
++        /* Every byte escapes to four columns, so the escaped output fills strlen*4 bytes and the
++         * forced ellipsis used to be written past the end of the buffer. */
++        assert_se(p = utf8_escape_non_printable_full("\001\001\001", 80, /* force_ellipsis= */ true));
++        assert_se(streq(p, "\\x01\\x01\\x01…"));
++}
++
+ TEST(utf16_to_utf8) {
+         const char16_t utf16[] = { htole16('a'), htole16(0xd800), htole16('b'), htole16(0xdc00), htole16('c'), htole16(0xd801), htole16(0xdc37) };
+         static const char utf8[] = { 'a', 'b', 'c', 0xf0, 0x90, 0x90, 0xb7 };
