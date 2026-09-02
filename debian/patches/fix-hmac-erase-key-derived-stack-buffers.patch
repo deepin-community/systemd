@@ -1,0 +1,46 @@
+From 0ffefb8a4da960ec58b2aa711139898118be9f06 Mon Sep 17 00:00:00 2001
+From: Michal Rybecky <michalrybec@protonmail.com>
+Date: Wed, 1 Apr 2026 10:00:14 +0200
+Subject: [PATCH] hmac: erase key-derived stack buffers before returning
+
+hmac_sha256() leaves four stack buffers containing key-derived material
+(inner_padding, outer_padding, replacement_key, hash state) on the stack
+after returning. The inner_padding and outer_padding arrays contain
+key XOR 0x36 and key XOR 0x5c respectively, which are trivially
+reversible to recover the original HMAC key.
+
+This function is called with security-sensitive keys including the LUKS
+volume key (cryptsetup-util.c), TPM2 PIN (tpm2-util.c), and boot secret
+(tpm2-swtpm.c). The key material persists on the stack until overwritten
+by later unrelated function calls.
+
+Add CLEANUP_ERASE() to all four local buffers, following the same
+pattern applied to tpm2-util.c in commit 6c80ce6 (PR #41394).
+
+diff --git a/src/basic/hmac.c b/src/basic/hmac.c
+index d70b874e2c..3697fe2252 100644
+--- a/src/basic/hmac.c
++++ b/src/basic/hmac.c
+@@ -3,6 +3,7 @@
+ #include <string.h>
+ 
+ #include "hmac.h"
++#include "memory-util.h"
+ #include "sha256.h"
+ 
+ #define HMAC_BLOCK_SIZE 64
+@@ -16,9 +17,13 @@ void hmac_sha256(const void *key,
+                  uint8_t res[static SHA256_DIGEST_SIZE]) {
+ 
+         uint8_t inner_padding[HMAC_BLOCK_SIZE] = { };
++        CLEANUP_ERASE(inner_padding);
+         uint8_t outer_padding[HMAC_BLOCK_SIZE] = { };
++        CLEANUP_ERASE(outer_padding);
+         uint8_t replacement_key[SHA256_DIGEST_SIZE];
++        CLEANUP_ERASE(replacement_key);
+         struct sha256_ctx hash;
++        CLEANUP_ERASE(hash);
+ 
+         assert(key);
+         assert(key_size > 0);
+
