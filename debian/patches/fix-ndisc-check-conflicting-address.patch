@@ -1,0 +1,51 @@
+From e720ad88f37e0c983df6b13d4e417968aa565b5e Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 14 Feb 2024 13:39:48 +0900
+Subject: [PATCH] network/ndisc: check if there exists a conflicting address
+
+Follow-up for 0a0c2672dbd22dc85d660e5baa7e1bef701beb88.
+
+Before the commit, if a conflicting address exists or already requested,
+then the configuration of newly requested address (especially, prefix
+length) is mostly ignored silently.
+
+However, after the commit, even if there exists a conflicting address,
+networkd anyway tries to configure the newly requested address, and
+enter failed state. Such situation can be triggered, e.g. when the DHCPv6
+client is started earlier than NDisc, by WithoutRA=solicit.
+
+Fixes #31263.
+
+diff --git a/src/network/networkd-ndisc.c b/src/network/networkd-ndisc.c
+index 7e6758714b..030b4a4339 100644
+--- a/src/network/networkd-ndisc.c
++++ b/src/network/networkd-ndisc.c
+@@ -269,7 +269,26 @@ static int ndisc_request_address(Address *address, Link *link, sd_ndisc_router *
+         if (r < 0)
+                 return r;
+ 
+-        is_new = address_get(link, address, NULL) < 0;
++        Address *existing;
++        if (address_get_harder(link, address, &existing) < 0)
++                is_new = true;
++        else if (address_can_update(existing, address))
++                is_new = false;
++        else if (existing->source == NETWORK_CONFIG_SOURCE_DHCP6) {
++                /* SLAAC address is preferred over DHCPv6 address. */
++                log_link_debug(link, "Conflicting DHCPv6 address %s exists, removing.",
++                               IN_ADDR_PREFIX_TO_STRING(existing->family, &existing->in_addr, existing->prefixlen));
++                r = address_remove(existing, link);
++                if (r < 0)
++                        return r;
++
++                is_new = true;
++        } else {
++                /* Conflicting static address is configured?? */
++                log_link_debug(link, "Conflicting address %s exists, ignoring request.",
++                               IN_ADDR_PREFIX_TO_STRING(existing->family, &existing->in_addr, existing->prefixlen));
++                return 0;
++        }
+ 
+         r = link_request_address(link, address, &link->ndisc_messages,
+                                  ndisc_address_handler, NULL);
+
