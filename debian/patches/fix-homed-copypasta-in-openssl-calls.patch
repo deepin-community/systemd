@@ -1,0 +1,35 @@
+From c6815436809268cf2adc797be85e050a65a7280d Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Thu, 12 Mar 2026 20:39:23 +0000
+Subject: [PATCH] homed: fix copypasta in openssl calls
+
+decrypted_size/encrypted_size are sizes, not pointers to buffers
+
+Reported on yeswehack.com as:
+YWH-PGM9780-134
+
+Follow-up for 70a5db5822c8056b53d9a4a9273ad12cb5f87a92
+
+diff --git a/src/home/homework-fscrypt.c b/src/home/homework-fscrypt.c
+index 1c70099982..c2134142de 100644
+--- a/src/home/homework-fscrypt.c
++++ b/src/home/homework-fscrypt.c
+@@ -256,7 +256,7 @@ static int fscrypt_slot_try_one(
+ 
+         assert((size_t) decrypted_size_out1 <= decrypted_size);
+ 
+-        if (EVP_DecryptFinal_ex(context, (uint8_t*) decrypted_size + decrypted_size_out1, &decrypted_size_out2) != 1)
++        if (EVP_DecryptFinal_ex(context, (uint8_t*) decrypted + decrypted_size_out1, &decrypted_size_out2) != 1)
+                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to finish decryption of volume key.");
+ 
+         assert((size_t) decrypted_size_out1 + (size_t) decrypted_size_out2 < decrypted_size);
+@@ -520,7 +520,7 @@ static int fscrypt_slot_set(
+ 
+         assert((size_t) encrypted_size_out1 <= encrypted_size);
+ 
+-        if (EVP_EncryptFinal_ex(context, (uint8_t*) encrypted_size + encrypted_size_out1, &encrypted_size_out2) != 1)
++        if (EVP_EncryptFinal_ex(context, (uint8_t*) encrypted + encrypted_size_out1, &encrypted_size_out2) != 1)
+                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to finish encryption of volume key.");
+ 
+         assert((size_t) encrypted_size_out1 + (size_t) encrypted_size_out2 < encrypted_size);
+
