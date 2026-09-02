@@ -1,0 +1,30 @@
+From f52e9ed62bc27cbb04f8f41bb2c60d2b540e023e Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Sat, 2 Mar 2024 21:22:51 +0800
+Subject: [PATCH] core/service: don't transition to start-post on cgroup empty
+ event with ExitType=cgroup
+
+It's not clear to me what the rationale of the logic was
+when ExitType=cgroup got introduced. But similar to
+the previous commit, I think we should not transition to
+'start-post' on cgroup empty event. This is especially
+important for Type=dbus/notify services.
+
+diff --git a/src/core/service.c b/src/core/service.c
+index a2a8e4af69..a9047be1ca 100644
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -3604,8 +3604,10 @@ static void service_notify_cgroup_empty_event(Unit *u) {
+                         break;
+                 }
+ 
+-                if (s->exit_type == SERVICE_EXIT_CGROUP && main_pid_good(s) <= 0)
+-                        service_enter_start_post(s);
++                if (s->exit_type == SERVICE_EXIT_CGROUP && main_pid_good(s) <= 0) {
++                        service_enter_stop_post(s, SERVICE_SUCCESS);
++                        break;
++                }
+ 
+                 _fallthrough_;
+         case SERVICE_START_POST:
+
