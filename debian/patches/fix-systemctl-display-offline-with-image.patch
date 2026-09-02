@@ -1,0 +1,26 @@
+From b551a687a47413a17c4ce61dacee5c0a50520fc4 Mon Sep 17 00:00:00 2001
+From: Antonio Alvarez Feijoo <antonio.feijoo@suse.com>
+Date: Mon, 15 Jan 2024 10:55:31 +0100
+Subject: [PATCH] systemctl-is-system-running: display "offline" with --image
+
+With the `--image` option, the `running_in_chroot` check is not enough. E.g.:
+
+```
+> build/systemctl --image /tmp/20240108-openSUSE.raw is-system-running
+running
+```
+
+diff --git a/src/systemctl/systemctl-is-system-running.c b/src/systemctl/systemctl-is-system-running.c
+index 6b521c9347..59be6a7a7e 100644
+--- a/src/systemctl/systemctl-is-system-running.c
++++ b/src/systemctl/systemctl-is-system-running.c
+@@ -29,7 +29,7 @@ int verb_is_system_running(int argc, char *argv[], void *userdata) {
+         sd_bus *bus;
+         int r;
+ 
+-        if (running_in_chroot() > 0 || (arg_transport == BUS_TRANSPORT_LOCAL && !sd_booted())) {
++        if (!isempty(arg_root) || running_in_chroot() > 0 || (arg_transport == BUS_TRANSPORT_LOCAL && !sd_booted())) {
+                 if (!arg_quiet)
+                         puts("offline");
+                 return EXIT_FAILURE;
+
