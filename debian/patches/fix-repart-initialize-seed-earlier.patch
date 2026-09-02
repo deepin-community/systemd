@@ -1,0 +1,36 @@
+From b8a8000aba4620a1d93ac1d04dbb86050d9c5fe8 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 5 Sep 2024 15:49:09 +0900
+Subject: [PATCH] repart: initialize seed earlier
+
+As the seed is used by context_load_partition_table() -> derive_uuid().
+
+Fixes #34257.
+
+diff --git a/src/partition/repart.c b/src/partition/repart.c
+index 6e76cb011a..8d8d133c05 100644
+--- a/src/partition/repart.c
++++ b/src/partition/repart.c
+@@ -8483,6 +8483,10 @@ static int run(int argc, char *argv[]) {
+         if (!context)
+                 return log_oom();
+ 
++        r = context_read_seed(context, arg_root);
++        if (r < 0)
++                return r;
++
+         r = context_copy_from(context);
+         if (r < 0)
+                 return r;
+@@ -8560,10 +8564,6 @@ static int run(int argc, char *argv[]) {
+                         return r;
+         }
+ 
+-        r = context_read_seed(context, arg_root);
+-        if (r < 0)
+-                return r;
+-
+         /* Make sure each partition has a unique UUID and unique label */
+         r = context_acquire_partition_uuids_and_labels(context);
+         if (r < 0)
+
