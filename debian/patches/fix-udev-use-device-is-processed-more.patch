@@ -1,0 +1,100 @@
+From 54e6172550226362e4b88fd297e09266f981ea27 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 4 Apr 2024 05:40:52 +0900
+Subject: [PATCH] tree-wide: use device_is_processed() more
+
+diff --git a/src/nspawn/nspawn-network.c b/src/nspawn/nspawn-network.c
+index c661f1d..c6641ab 100644
+--- a/src/nspawn/nspawn-network.c
++++ b/src/nspawn/nspawn-network.c
+@@ -480,7 +480,7 @@ static int test_network_interface_initialized(const char *name) {
+         if (r < 0)
+                 return log_error_errno(r, "Failed to get device %s: %m", name);
+ 
+-        r = sd_device_get_is_initialized(d);
++        r = device_is_processed(d);
+         if (r < 0)
+                 return log_error_errno(r, "Failed to determine whether interface %s is initialized: %m", name);
+         if (r == 0)
+diff --git a/src/shared/udev-util.c b/src/shared/udev-util.c
+index cf28ba8..9ba647a 100644
+--- a/src/shared/udev-util.c
++++ b/src/shared/udev-util.c
+@@ -146,7 +146,7 @@ static int device_wait_for_initialization_internal(
+         }
+ 
+         if (device) {
+-                if (sd_device_get_is_initialized(device) > 0) {
++                if (device_is_processed(device) > 0) {
+                         if (ret)
+                                 *ret = sd_device_ref(device);
+                         return 0;
+@@ -209,7 +209,7 @@ static int device_wait_for_initialization_internal(
+                 if (r < 0 && !ERRNO_IS_DEVICE_ABSENT(r))
+                         return log_error_errno(r, "Failed to create sd-device object from %s: %m", devlink);
+         }
+-        if (device && sd_device_get_is_initialized(device) > 0) {
++        if (device && device_is_processed(device) > 0) {
+                 if (ret)
+                         *ret = sd_device_ref(device);
+                 return 0;
+@@ -246,6 +246,34 @@ int device_is_renaming(sd_device *dev) {
+         return true;
+ }
+ 
++int device_is_processed(sd_device *dev) {
++        const char *value;
++        int r;
++
++        assert(dev);
++
++        /* sd_device_get_is_initialized() only checks if the udev database file exists. However, even if the
++         * database file exist, systemd-udevd may be still processing the device, e.g. when the udev rules
++         * for the device have RUN tokens. See issue #30056. Hence, to check if the device is really
++         * processed by systemd-udevd, we also need to read ID_PROCESSING property. */
++
++        r = sd_device_get_is_initialized(dev);
++        if (r <= 0)
++                return r;
++
++        r = sd_device_get_property_value(dev, "ID_PROCESSING", &value);
++        if (r == -ENOENT)
++                return true; /* If the property does not exist, then it means that the device is processed. */
++        if (r < 0)
++                return r;
++
++        r = parse_boolean(value);
++        if (r < 0)
++                return r;
++
++        return !r;
++}
++
+ bool device_for_action(sd_device *dev, sd_device_action_t a) {
+         sd_device_action_t b;
+ 
+diff --git a/src/shared/udev-util.h b/src/shared/udev-util.h
+index 651d335..d3b5001 100644
+--- a/src/shared/udev-util.h
++++ b/src/shared/udev-util.h
+@@ -12,6 +12,7 @@ int udev_parse_config(void);
+ int device_wait_for_initialization(sd_device *device, const char *subsystem, usec_t timeout_usec, sd_device **ret);
+ int device_wait_for_devlink(const char *path, const char *subsystem, usec_t timeout_usec, sd_device **ret);
+ int device_is_renaming(sd_device *dev);
++int device_is_processed(sd_device *dev);
+ 
+ bool device_for_action(sd_device *dev, sd_device_action_t action);
+ 
+diff --git a/src/udev/udevadm-wait.c b/src/udev/udevadm-wait.c
+index e6620c2..6ffc86b 100644
+--- a/src/udev/udevadm-wait.c
++++ b/src/udev/udevadm-wait.c
+@@ -67,7 +67,7 @@ static int check_device(const char *path) {
+                 return r;
+ 
+         if (arg_wait_until == WAIT_UNTIL_INITIALIZED)
+-                return sd_device_get_is_initialized(dev);
++                return device_is_processed(dev);
+ 
+         return true;
+ }
