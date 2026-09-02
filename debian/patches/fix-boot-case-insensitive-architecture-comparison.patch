@@ -1,0 +1,35 @@
+From f819a516dbbddb16724f33dcef5badcb6fe8b80b Mon Sep 17 00:00:00 2001
+From: Daniel Martinez <danielmartinez@cock.li>
+Date: Sat, 5 Oct 2024 23:39:43 -0400
+Subject: [PATCH] Use case insensitive comparison for the machine's
+ architechture
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+boot loader specification states:
+
+architecture: refers to the architecture this entry is for. The argument
+should be an architecture identifier, using the architecture vocabulary
+defined by the EFI specification (i.e. IA32, x64, IA64, ARM, AA64, …).
+If specified and it does not match the local system architecture this
+entry should be hidden. The comparison should be done case-insensitively.
+
+Example: architecture aa64
+
+https://uapi-group.org/specifications/specs/boot_loader_specification/#type-1-boot-loader-entry-keys
+
+diff --git a/src/boot/efi/boot.c b/src/boot/efi/boot.c
+index 16d3d6a426..213c012e3f 100644
+--- a/src/boot/efi/boot.c
++++ b/src/boot/efi/boot.c
+@@ -1491,7 +1491,7 @@ static void boot_entry_add_type1(
+ 
+                 } else if (streq8(key, "architecture")) {
+                         /* do not add an entry for an EFI image of architecture not matching with that of the image */
+-                        if (!streq8(value, EFI_MACHINE_TYPE_NAME)) {
++                        if (!strcaseeq8(value, EFI_MACHINE_TYPE_NAME)) {
+                                 entry->type = LOADER_UNDEFINED;
+                                 break;
+                         }
+
