@@ -1,0 +1,50 @@
+From 2933881ea52fa5a4945444dc86d8ade703e9e327 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 2 Feb 2024 09:51:08 +0900
+Subject: [PATCH] Merge pull request #31032 from yuwata/pam-session-close
+
+pam: fix warning "Attempted to close sd-bus after fork, this should not happen." on session close
+
+diff --git a/src/shared/pam-util.c b/src/shared/pam-util.c
+index 13b68234c9..0e24af450d 100644
+--- a/src/shared/pam-util.c
++++ b/src/shared/pam-util.c
+@@ -5,6 +5,7 @@
+ #include <stdlib.h>
+ 
+ #include "alloc-util.h"
++#include "bus-internal.h"
+ #include "errno-util.h"
+ #include "format-util.h"
+ #include "macro.h"
+@@ -88,8 +89,14 @@ static void pam_bus_data_destroy(pam_handle_t *handle, void *data, int error_sta
+          * internally anyway. That said, we still generate a warning message, since this really shouldn't
+          * happen. */
+ 
+-        if (error_status & PAM_DATA_SILENT)
+-                pam_syslog(handle, LOG_DEBUG, "Attempted to close sd-bus after fork, this should not happen.");
++        if (!data)
++                return;
++
++        PamBusData *d = data;
++        if (FLAGS_SET(error_status, PAM_DATA_SILENT) &&
++            d->bus && bus_origin_changed(d->bus))
++                /* Please adjust test/units/end.sh when updating the log message. */
++                pam_syslog(handle, LOG_DEBUG, "Attempted to close sd-bus after fork whose connection is opened before the fork, this should not happen.");
+ 
+         pam_bus_data_free(data);
+ }
+diff --git a/test/units/end.sh b/test/units/end.sh
+index dd50654f8d..230b716e2f 100755
+--- a/test/units/end.sh
++++ b/test/units/end.sh
+@@ -6,5 +6,8 @@ set -o pipefail
+ 
+ (! journalctl -q -o short-monotonic --grep "didn't pass validation" >>/failed)
+ 
++# Here, the redundant '[.]' at the end is for making not the logged self command hit the grep.
++(! journalctl -q -o short-monotonic --grep 'Attempted to close sd-bus after fork whose connection is opened before the fork, this should not happen[.]' >>/failed)
++
+ systemctl poweroff --no-block
+ exit 0
+
