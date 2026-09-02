@@ -1,0 +1,27 @@
+From cafe40ec8201db31c6d3519474ef40a72541d511 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Mon, 27 May 2024 01:52:11 +0100
+Subject: [PATCH] executor: check for all permission related errnos when
+ setting up IPC namespace
+
+Denials from AppArmor are raised as EACCES, so EPERM is not enough. Do
+the same check as PrivateNetwork above.
+
+Fixes https://github.com/systemd/systemd/issues/31037
+
+Related to 06384eb3c5044f632f50304a0210a402460f1189
+
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+index e88f524893..ee8db04e76 100644
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -4753,7 +4753,7 @@ int exec_invoke(
+ 
+                 if (ns_type_supported(NAMESPACE_IPC)) {
+                         r = setup_shareable_ns(runtime->shared->ipcns_storage_socket, CLONE_NEWIPC);
+-                        if (r == -EPERM)
++                        if (ERRNO_IS_NEG_PRIVILEGE(r))
+                                 log_exec_warning_errno(context, params, r,
+                                                        "PrivateIPC=yes is configured, but IPC namespace setup failed, ignoring: %m");
+                         else if (r < 0) {
+
