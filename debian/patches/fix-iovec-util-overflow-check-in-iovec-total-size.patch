@@ -1,0 +1,25 @@
+From 9628b3118628343f6e156d49b9f2de040f6d675b Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 18 Apr 2026 07:21:38 +0900
+Subject: [PATCH] iovec-util: add overflow check in iovec_total_size()
+
+Mostly theoretical. But for safety.
+
+diff --git a/src/basic/iovec-util.c b/src/basic/iovec-util.c
+index ec8af57e64..cd2c1a736e 100644
+--- a/src/basic/iovec-util.c
++++ b/src/basic/iovec-util.c
+@@ -21,8 +21,11 @@ size_t iovec_total_size(const struct iovec *iovec, size_t n) {
+ 
+         assert(iovec || n == 0);
+ 
+-        FOREACH_ARRAY(j, iovec, n)
++        FOREACH_ARRAY(j, iovec, n) {
++                if (j->iov_len > SIZE_MAX - sum)
++                        return SIZE_MAX; /* Indicate overflow. */
+                 sum += j->iov_len;
++        }
+ 
+         return sum;
+ }
+
