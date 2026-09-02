@@ -1,0 +1,38 @@
+From b1d9127c39f918b2f6eb61ed8e8c97ae07ac11c2 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Tue, 14 Apr 2026 19:15:48 +0100
+Subject: [PATCH] resolved: check for reset-statistics polkit action via D-Bus
+ too
+
+The varlink method checks for polkit authorization, so also
+update the D-Bus method to match it.
+
+Follow-up for cf01bbb7a45fb1eec28cd0a813bd68fde413410f
+
+diff --git a/src/resolve/resolved-bus.c b/src/resolve/resolved-bus.c
+index 9e075277ec..e20c975de8 100644
+--- a/src/resolve/resolved-bus.c
++++ b/src/resolve/resolved-bus.c
+@@ -1722,9 +1722,21 @@ static int bus_property_get_resolv_conf_mode(
+ 
+ static int bus_method_reset_statistics(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+         Manager *m = ASSERT_PTR(userdata);
++        int r;
+ 
+         assert(message);
+ 
++        r = bus_verify_polkit_async(
++                        message,
++                        "org.freedesktop.resolve1.reset-statistics",
++                        /* details= */ NULL,
++                        &m->polkit_registry,
++                        error);
++        if (r < 0)
++                return r;
++        if (r == 0)
++                return 1; /* Polkit will call us back */
++
+         bus_client_log(message, "statistics reset");
+ 
+         dns_manager_reset_statistics(m);
+
