@@ -1,0 +1,45 @@
+From 98b1ecc9175a8bb241292f6f441a754b6759dd97 Mon Sep 17 00:00:00 2001
+From: rhellstrom <97554405+rhellstrom@users.noreply.github.com>
+Date: Thu, 27 Jun 2024 11:00:00 +0300
+Subject: [PATCH]     Conditional PSI check to reflect changes done in 5.13
+
+cpu.pressure 'full' is undefined for system-wide checks since 5.13 but still reported with values set to 0 for backwards compatibility. Made changes to reflect this for system-wide checks so that the conditional comparison is not made against the 0 value and instead fall back to 'some'.
+
+https://www.kernel.org/doc/html/latest/accounting/psi.html
+
+diff --git a/src/shared/condition.c b/src/shared/condition.c
+index b53b2eff24..1f72ba8b0f 100644
+--- a/src/shared/condition.c
++++ b/src/shared/condition.c
+@@ -1009,6 +1009,7 @@ static int condition_test_psi(Condition *c, char **env) {
+         loadavg_t *current, limit;
+         ResourcePressure pressure;
+         int r;
++        PressureType preferred_pressure_type = PRESSURE_TYPE_FULL;
+ 
+         assert(c);
+         assert(c->parameter);
+@@ -1029,6 +1030,10 @@ static int condition_test_psi(Condition *c, char **env) {
+                 return log_debug_errno(r < 0 ? r : SYNTHETIC_ERRNO(EINVAL), "Failed to parse condition parameter %s: %m", c->parameter);
+         /* If only one parameter is passed, then we look at the global system pressure rather than a specific cgroup. */
+         if (r == 1) {
++                /* cpu.pressure 'full' is reported but undefined at system level */
++                if(c->type == CONDITION_CPU_PRESSURE)
++                        preferred_pressure_type = PRESSURE_TYPE_SOME;
++
+                 pressure_path = path_join("/proc/pressure", pressure_type);
+                 if (!pressure_path)
+                         return log_oom_debug();
+@@ -1133,8 +1138,9 @@ static int condition_test_psi(Condition *c, char **env) {
+         if (r < 0)
+                 return log_debug_errno(r, "Failed to parse loadavg: %s", c->parameter);
+ 
+-        r = read_resource_pressure(pressure_path, PRESSURE_TYPE_FULL, &pressure);
+-        if (r == -ENODATA) /* cpu.pressure 'full' was added recently, fall back to 'some'. */
++        r = read_resource_pressure(pressure_path, preferred_pressure_type, &pressure);
++        /* cpu.pressure 'full' was recently added at cgroup level, fall back to 'some' */
++        if (r == -ENODATA && preferred_pressure_type == PRESSURE_TYPE_FULL)
+                 r = read_resource_pressure(pressure_path, PRESSURE_TYPE_SOME, &pressure);
+         if (r == -ENOENT) {
+                 /* We already checked that /proc/pressure exists, so this means we were given a cgroup
+
