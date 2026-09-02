@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * Fix exiting event loop when sd_bus_set_exit_on_disconnect is used
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 07:21:04 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
