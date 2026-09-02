@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * cryptenroll: explicitly pick PCR bank if literal PCR binding is off but signed PCR binding is on
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 05:11:14 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
