@@ -1,0 +1,69 @@
+From 49ff90c70debc59f5a52e5cec5a92507d9868b9d Mon Sep 17 00:00:00 2001
+From: MaxHearnden <maxoscarhearnden@gmail.com>
+Date: Tue, 15 Apr 2025 01:16:48 +0100
+Subject: [PATCH] resolve: query the parent zone for DS records
+
+RFC 4035 Section 4.2 requires that missing DS records are queried for in
+the parent zone rather than the child zone, the old behaviour could
+cause subdomains under home.arpa (RFC 8375) to fail validation.
+
+This commit assumes that QDCOUNT = 1 as per RFC 9619
+
+Fixes https://github.com/systemd/systemd/issues/19496
+
+diff --git a/src/resolve/resolved-dns-question.c b/src/resolve/resolved-dns-question.c
+index 6832a4766c..84ddb999f4 100644
+--- a/src/resolve/resolved-dns-question.c
++++ b/src/resolve/resolved-dns-question.c
+@@ -548,3 +548,12 @@ int dns_question_merge(DnsQuestion *a, DnsQuestion *b, DnsQuestion **ret) {
+         *ret = TAKE_PTR(k);
+         return 0;
+ }
++
++bool dns_question_contains_key_type(DnsQuestion *q, uint16_t type) {
++        DnsResourceKey *t;
++        DNS_QUESTION_FOREACH(t, q)
++                if (t->type == type)
++                        return true;
++
++        return false;
++}
+diff --git a/src/resolve/resolved-dns-question.h b/src/resolve/resolved-dns-question.h
+index a2fe219886..b986c42997 100644
+--- a/src/resolve/resolved-dns-question.h
++++ b/src/resolve/resolved-dns-question.h
+@@ -61,6 +61,8 @@ static inline bool dns_question_isempty(DnsQuestion *q) {
+ 
+ int dns_question_merge(DnsQuestion *a, DnsQuestion *b, DnsQuestion **ret);
+ 
++bool dns_question_contains_key_type(DnsQuestion *q, uint16_t type);
++
+ DEFINE_TRIVIAL_CLEANUP_FUNC(DnsQuestion*, dns_question_unref);
+ 
+ #define _DNS_QUESTION_FOREACH(u, k, q)                                     \
+diff --git a/src/resolve/resolved-dns-scope.c b/src/resolve/resolved-dns-scope.c
+index 33e1732183..78fa6015d2 100644
+--- a/src/resolve/resolved-dns-scope.c
++++ b/src/resolve/resolved-dns-scope.c
+@@ -713,6 +713,11 @@ DnsScopeMatch dns_scope_good_domain(
+                 if (!dns_scope_get_dns_server(s))
+                         return DNS_SCOPE_NO;
+ 
++                /* Route DS requests to the parent */
++                const char *route_domain = domain;
++                if (dns_question_contains_key_type(question, DNS_TYPE_DS))
++                        (void) dns_name_parent(&route_domain);
++
+                 /* Always honour search domains for routing queries, except if this scope lacks DNS servers. Note that
+                  * we return DNS_SCOPE_YES here, rather than just DNS_SCOPE_MAYBE, which means other wildcard scopes
+                  * won't be considered anymore. */
+@@ -721,7 +726,7 @@ DnsScopeMatch dns_scope_good_domain(
+                         if (!d->route_only && !dns_name_is_root(d->name))
+                                 has_search_domains = true;
+ 
+-                        if (dns_name_endswith(domain, d->name) > 0) {
++                        if (dns_name_endswith(route_domain, d->name) > 0) {
+                                 int c;
+ 
+                                 c = dns_name_count_labels(d->name);
+
