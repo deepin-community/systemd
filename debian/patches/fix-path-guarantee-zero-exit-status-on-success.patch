@@ -1,0 +1,27 @@
+From 060e2512cdb1bf985965d991e0bb746ff21362ee Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Tue, 10 Dec 2024 14:05:04 +0100
+Subject: [PATCH] systemd-path: guarantee that tool exit status is zero on
+ success
+
+Let's not inherit the error code from an earlier function invocation.
+
+diff --git a/src/path/path.c b/src/path/path.c
+index 604e4c170b..8abfc6c7f2 100644
+--- a/src/path/path.c
++++ b/src/path/path.c
+@@ -238,10 +238,11 @@ static int run(int argc, char* argv[]) {
+         if (r <= 0)
+                 return r;
+ 
+-        if (argc > optind)
++        if (argc > optind) {
++                r = 0;
+                 for (int i = optind; i < argc; i++)
+                         RET_GATHER(r, print_path(argv[i]));
+-        else
++        } else
+                 r = list_paths();
+ 
+         return r;
+
