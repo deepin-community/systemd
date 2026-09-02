@@ -1,0 +1,265 @@
+From b4b66b26620bfaf5818c95d5cffafd85207694e7 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 9 Sep 2024 17:53:03 +0200
+Subject: [PATCH] shutdown: replace unbounded fsync() with bounded
+ sync_with_progress()
+
+Let's put a time-out on this syncing.
+
+Inspired-by: #34289 #34283
+
+
+Backport also includes the prerequisite upstream commit (needed for building against
+the v255-based sync_with_progress() implementation):
+
+From 13b5225d6278af15e84ebd1889f04cfe81b47787 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 9 Sep 2024 17:49:33 +0200
+Subject: [PATCH] shutdown: teach sync_with_progress() to optionally sync a
+ specific fd only
+
+This is preparation for reusing the logic for syncing DM and other
+devices with a timeout applied.
+
+
+diff --git a/src/shared/async.c b/src/shared/async.c
+index 41f6b97..563daed 100644
+--- a/src/shared/async.c
++++ b/src/shared/async.c
+@@ -34,6 +34,28 @@ int asynchronous_sync(pid_t *ret_pid) {
+         return 0;
+ }
+ 
++int asynchronous_fsync(int fd, pid_t *ret_pid) {
++        int r;
++
++        assert(fd >= 0);
++        /* Same as asynchronous_sync() above, but calls fsync() on a specific fd */
++
++        r = safe_fork_full("(sd-fsync)",
++                           /* stdio_fds= */ NULL,
++                           /* except_fds= */ &fd,
++                           /* n_except_fds= */ 1,
++                           FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|(ret_pid ? 0 : FORK_DETACH), ret_pid);
++        if (r < 0)
++                return r;
++        if (r == 0) {
++                /* Child process */
++                fsync(fd);
++                _exit(EXIT_SUCCESS);
++        }
++
++        return 0;
++}
++
+ /* We encode the fd to close in the userdata pointer as an unsigned value. The highest bit indicates whether
+  * we need to fork again */
+ #define NEED_DOUBLE_FORK (1U << (sizeof(unsigned) * 8 - 1))
+diff --git a/src/shared/async.h b/src/shared/async.h
+index 96148f9..2f5bbd5 100644
+--- a/src/shared/async.h
++++ b/src/shared/async.h
+@@ -20,6 +20,7 @@
+  * for avoiding threads. */
+ 
+ int asynchronous_sync(pid_t *ret_pid);
++int asynchronous_fsync(int fd, pid_t *ret_pid);
+ int asynchronous_close(int fd);
+ int asynchronous_rm_rf(const char *p, RemoveFlags flags);
+ 
+diff --git a/src/shutdown/detach-dm.c b/src/shutdown/detach-dm.c
+index 8b8f72d..0d1b0fc 100644
+--- a/src/shutdown/detach-dm.c
++++ b/src/shutdown/detach-dm.c
+@@ -15,7 +15,7 @@
+ #include "devnum-util.h"
+ #include "errno-util.h"
+ #include "fd-util.h"
+-#include "sync-util.h"
++#include "shutdown.h"
+ 
+ typedef struct DeviceMapper {
+         char *path;
+@@ -93,7 +93,6 @@ static int dm_list_get(DeviceMapper **head) {
+ 
+ static int delete_dm(DeviceMapper *m) {
+         _cleanup_close_ int fd = -EBADF;
+-        int r;
+ 
+         assert(m);
+         assert(major(m->devnum) != 0);
+@@ -103,9 +102,11 @@ static int delete_dm(DeviceMapper *m) {
+         if (fd < 0)
+                 return -errno;
+ 
+-        r = fsync_path_at(AT_FDCWD, m->path);
+-        if (r < 0)
+-                log_debug_errno(r, "Failed to sync DM block device %s, ignoring: %m", m->path);
++        _cleanup_close_ int block_fd = open(m->path, O_RDONLY|O_CLOEXEC|O_NONBLOCK);
++        if (block_fd < 0)
++                log_debug_errno(errno, "Failed to open DM block device %s for syncing, ignoring: %m", m->path);
++        else
++                (void) sync_with_progress(block_fd);
+ 
+         return RET_NERRNO(ioctl(fd, DM_DEV_REMOVE, &(struct dm_ioctl) {
+                 .version = {
+diff --git a/src/shutdown/detach-loopback.c b/src/shutdown/detach-loopback.c
+index 267509f..8778a9e 100644
+--- a/src/shutdown/detach-loopback.c
++++ b/src/shutdown/detach-loopback.c
+@@ -18,6 +18,7 @@
+ #include "detach-loopback.h"
+ #include "device-util.h"
+ #include "fd-util.h"
++#include "shutdown.h"
+ 
+ typedef struct LoopbackDevice {
+         char *path;
+@@ -111,8 +112,7 @@ static int delete_loopback(const char *device) {
+ 
+         /* Loopback block devices don't sync in-flight blocks when we clear the fd, hence sync explicitly
+          * first */
+-        if (fsync(fd) < 0)
+-                log_debug_errno(errno, "Failed to sync loop block device %s, ignoring: %m", device);
++        (void) sync_with_progress(fd);
+ 
+         if (ioctl(fd, LOOP_CLR_FD, 0) < 0) {
+                 if (errno == ENXIO) /* Nothing bound, didn't do anything */
+diff --git a/src/shutdown/detach-md.c b/src/shutdown/detach-md.c
+index cf3130d..513bbdc 100644
+--- a/src/shutdown/detach-md.c
++++ b/src/shutdown/detach-md.c
+@@ -17,6 +17,7 @@
+ #include "devnum-util.h"
+ #include "errno-util.h"
+ #include "fd-util.h"
++#include "shutdown.h"
+ #include "string-util.h"
+ 
+ typedef struct RaidDevice {
+@@ -133,8 +134,7 @@ static int delete_md(RaidDevice *m) {
+         if (fd < 0)
+                 return -errno;
+ 
+-        if (fsync(fd) < 0)
+-                log_debug_errno(errno, "Failed to sync MD block device %s, ignoring: %m", m->path);
++        (void) sync_with_progress(fd);
+ 
+         return RET_NERRNO(ioctl(fd, STOP_ARRAY, NULL));
+ }
+diff --git a/src/shutdown/shutdown.c b/src/shutdown/shutdown.c
+index b709078..2624e0d 100644
+--- a/src/shutdown/shutdown.c
++++ b/src/shutdown/shutdown.c
+@@ -40,6 +40,7 @@
+ #include "process-util.h"
+ #include "reboot-util.h"
+ #include "rlimit-util.h"
++#include "shutdown.h"
+ #include "signal-util.h"
+ #include "string-util.h"
+ #include "switch-root.h"
+@@ -227,9 +228,10 @@ static int sync_making_progress(unsigned long long *prev_dirty) {
+         return ret;
+ }
+ 
+-static void sync_with_progress(void) {
++int sync_with_progress(int fd) {
+         unsigned long long dirty = ULLONG_MAX;
+-        unsigned checks;
++        _cleanup_free_ char *path = NULL;
++        const char *what;
+         pid_t pid;
+         int r;
+ 
+@@ -238,38 +240,45 @@ static void sync_with_progress(void) {
+         /* Due to the possibility of the sync operation hanging, we fork a child process and monitor
+          * the progress. If the timeout lapses, the assumption is that the particular sync stalled. */
+ 
+-        r = asynchronous_sync(&pid);
+-        if (r < 0) {
+-                log_error_errno(r, "Failed to fork sync(): %m");
+-                return;
++        if (fd >= 0) {
++                r = asynchronous_fsync(fd, &pid);
++                if (r < 0)
++                        return log_error_errno(r, "Failed to fork fsync(): %m");
++
++                (void) fd_get_path(fd, &path);
++        } else {
++                r = asynchronous_sync(&pid);
++                if (r < 0)
++                        return log_error_errno(r, "Failed to fork sync(): %m");
+         }
+ 
+-        log_info("Syncing filesystems and block devices.");
++        what = path ?: "filesystems and block devices";
++        log_info("Syncing %s.", what);
+ 
+         /* Start monitoring the sync operation. If more than
+          * SYNC_PROGRESS_ATTEMPTS lapse without progress being made,
+          * we assume that the sync is stalled */
+-        for (checks = 0; checks < SYNC_PROGRESS_ATTEMPTS; checks++) {
++        for (unsigned checks = 0; checks < SYNC_PROGRESS_ATTEMPTS; checks++) {
+                 r = wait_for_terminate_with_timeout(pid, SYNC_TIMEOUT_USEC);
+                 if (r == 0)
+                         /* Sync finished without error.
+                          * (The sync itself does not return an error code) */
+-                        return;
+-                else if (r == -ETIMEDOUT) {
+-                        /* Reset the check counter if the "Dirty" value is
+-                         * decreasing */
+-                        if (sync_making_progress(&dirty) > 0)
+-                                checks = 0;
+-                } else {
+-                        log_error_errno(r, "Failed to sync filesystems and block devices: %m");
+-                        return;
+-                }
++                        return 0;
++                if (r != -ETIMEDOUT)
++                        return log_error_errno(r, "Failed to sync %s: %m", what);
++
++                /* Reset the check counter if we made some progress */
++                if (sync_making_progress(&dirty) > 0)
++                        checks = 0;
+         }
+ 
+         /* Only reached in the event of a timeout. We should issue a kill
+          * to the stray process. */
+-        log_error("Syncing filesystems and block devices - timed out, issuing SIGKILL to PID "PID_FMT".", pid);
+         (void) kill(pid, SIGKILL);
++        return log_error_errno(SYNTHETIC_ERRNO(ETIMEDOUT),
++                               "Syncing %s - timed out, issuing SIGKILL to PID "PID_FMT".",
++                               what,
++                               pid);
+ }
+ 
+ static int read_current_sysctl_printk_log_level(void) {
+@@ -424,7 +433,7 @@ int main(int argc, char *argv[]) {
+          * desperately trying to sync IO to disk within their timeout. Do not remove this sync, data corruption will
+          * result. */
+         if (!in_container)
+-                sync_with_progress();
++                (void) sync_with_progress(-EBADF);
+ 
+         disable_coredumps();
+         disable_binfmt();
+@@ -587,7 +596,7 @@ int main(int argc, char *argv[]) {
+          * which might have caused IO, hence let's do it once more. Do not remove this sync, data corruption
+          * will result. */
+         if (!in_container)
+-                sync_with_progress();
++                (void) sync_with_progress(-EBADF);
+ 
+         if (streq(arg_verb, "exit")) {
+                 if (in_container) {
+diff --git a/src/shutdown/shutdown.h b/src/shutdown/shutdown.h
+new file mode 100644
+index 0000000..99aaec6
+--- /dev/null
++++ b/src/shutdown/shutdown.h
+@@ -0,0 +1,4 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++int sync_with_progress(int fd);
