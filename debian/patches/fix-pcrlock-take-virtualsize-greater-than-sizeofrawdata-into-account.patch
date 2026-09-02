@@ -1,0 +1,39 @@
+From b53f2d5ed8ad0e537e9086daf84f9c2bf69fb72b Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Mon, 7 Oct 2024 17:39:27 +0200
+Subject: [PATCH] pcrlock: Take VirtualSize > SizeOfRawData into account
+
+If VirtualSize > SizeOfRawData, measure extra zeros to take into
+account the extra zeros also measured by the stub.
+
+diff --git a/src/pcrlock/pehash.c b/src/pcrlock/pehash.c
+index 06d1f6afc7..7e9dade1f7 100644
+--- a/src/pcrlock/pehash.c
++++ b/src/pcrlock/pehash.c
+@@ -216,10 +216,24 @@ int uki_hash(int fd,
+                 if (EVP_DigestInit_ex(mdctx, md, NULL) != 1)
+                         return log_debug_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE), "Failed to allocate message digest.");
+ 
+-                r = hash_file(fd, mdctx, section->PointerToRawData, section->VirtualSize);
++                r = hash_file(fd, mdctx, section->PointerToRawData, MIN(section->VirtualSize, section->SizeOfRawData));
+                 if (r < 0)
+                         return r;
+ 
++                if (section->SizeOfRawData < section->VirtualSize) {
++                        uint8_t zeroes[1024] = {};
++                        size_t remaining = section->VirtualSize - section->SizeOfRawData;
++
++                        while (remaining > 0) {
++                                size_t sz = MIN(sizeof(zeroes), remaining);
++
++                                if (EVP_DigestUpdate(mdctx, zeroes, sz) != 1)
++                                        return log_debug_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE), "Unable to hash data.");
++
++                                remaining -= sz;
++                        }
++                }
++
+                 hashes[i] = malloc(hsz);
+                 if (!hashes[i])
+                         return log_oom_debug();
+
