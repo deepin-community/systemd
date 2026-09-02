@@ -1,0 +1,37 @@
+From 68b59ca74fc53e1f2115d6e35244f350c7336ef5 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Thu, 25 Jun 2026 16:40:28 +0800
+Subject: [PATCH] systemctl: fix continue placement in clean-or-freeze error
+ handling
+
+When sd_bus_call() fails, the continue was inside the
+'if (ret == EXIT_SUCCESS)' guard, so only the first failure skipped
+adding the unit to the job waiter. On the second and subsequent
+failures, the unit was still passed to bus_wait_for_units_add_unit()
+despite no job being started, causing bus_wait_for_units_run() to
+hang indefinitely.
+
+Move continue outside the guard so any failure skips the waiter
+registration. The guard still prevents ret from being overwritten by
+a later error code.
+
+Signed-off-by: dongshengyuan <dongshengyuan@uniontech.com>
+
+diff --git a/src/systemctl/systemctl-clean-or-freeze.c b/src/systemctl/systemctl-clean-or-freeze.c
+index dfaff2adbc..1022fd0d12 100644
+--- a/src/systemctl/systemctl-clean-or-freeze.c
++++ b/src/systemctl/systemctl-clean-or-freeze.c
+@@ -83,10 +83,9 @@ int verb_clean_or_freeze(int argc, char *argv[], uintptr_t _data, void *userdata
+                 r = sd_bus_call(bus, m, 0, &error, NULL);
+                 if (r < 0) {
+                         log_error_errno(r, "Failed to %s unit %s: %s", argv[0], *name, bus_error_message(&error, r));
+-                        if (ret == EXIT_SUCCESS) {
++                        if (ret == EXIT_SUCCESS)
+                                 ret = r;
+-                                continue;
+-                        }
++                        continue;
+                 }
+ 
+                 if (w) {
+
