@@ -1,0 +1,37 @@
+From 4ffb60319bcea88b09afe24736208bd0e0e03618 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20Dre=C3=9Fler?= <verdre@v0yd.nl>
+Date: Thu, 30 Apr 2026 20:27:43 +0200
+Subject: [PATCH] sysupdate: Ensure that end of the MatchPattern is matched
+ correctly
+
+An error snuck into the pattern parsing of the `MatchPattern` key in the
+sysupdate transfer files. If there's two files "part1-v2.raw", and
+"part1-v2.raw.tar" in the source folder, and MatchPattern="part1-@v.raw",
+sysupdate will incorrectly choose "part1-v2.raw.tar" instead of
+"part1-v2.raw".
+
+While the pattern matching works perfectly fine, after the full pattern
+is successfully matched to the string, we don't ensure that the string
+actually ends when the pattern just did.
+
+This means we can end up choosing a wrong file for the update, if the
+filename/path happens to start with the same MatchPattern.
+
+Fix it by ensuring the string ends after our match pattern ended.
+
+diff --git a/src/sysupdate/sysupdate-pattern.c b/src/sysupdate/sysupdate-pattern.c
+index 76155dcd29..58aa524a5d 100644
+--- a/src/sysupdate/sysupdate-pattern.c
++++ b/src/sysupdate/sysupdate-pattern.c
+@@ -426,6 +426,10 @@ int pattern_match(const char *pattern, const char *s, InstanceMetadata *ret) {
+                 p = n;
+         }
+ 
++        /* We matched the whole pattern, but if the string continues over the end of the pattern, refuse */
++        if (*p != '\0')
++                goto nope;
++
+         if (ret) {
+                 *ret = found;
+                 found = (InstanceMetadata) INSTANCE_METADATA_NULL;
+
