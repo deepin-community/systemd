@@ -1,0 +1,31 @@
+From ab6d4275473a3ddd4440202197a81514d94df994 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 13 Nov 2024 14:13:01 +0900
+Subject: [PATCH] network/netdev: set interface name only when creating a new
+ netdev
+
+Otherwise, the kernel older than v6.2 will refuse the netlink message.
+
+diff --git a/src/network/netdev/netdev.c b/src/network/netdev/netdev.c
+index 85760c741d..6c8ad1b3e9 100644
+--- a/src/network/netdev/netdev.c
++++ b/src/network/netdev/netdev.c
+@@ -662,9 +662,14 @@ static bool netdev_can_set_mtu(NetDev *netdev, uint32_t mtu) {
+ static int netdev_create_message(NetDev *netdev, Link *link, sd_netlink_message *m) {
+         int r;
+ 
+-        r = sd_netlink_message_append_string(m, IFLA_IFNAME, netdev->ifname);
+-        if (r < 0)
+-                return r;
++        if (netdev->ifindex <= 0) {
++                /* Set interface name when it is newly created. Otherwise, the kernel older than
++                 * bd039b5ea2a91ea707ee8539df26456bd5be80af (v6.2) will refuse the netlink message even if
++                 * the name is unchanged. */
++                r = sd_netlink_message_append_string(m, IFLA_IFNAME, netdev->ifname);
++                if (r < 0)
++                        return r;
++        }
+ 
+         struct hw_addr_data hw_addr;
+         r = netdev_generate_hw_addr(netdev, link, netdev->ifname, &netdev->hw_addr, &hw_addr);
+
