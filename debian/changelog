@@ -1,3 +1,12 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * journal: fix byte-order conversion in journal_file_append_data()
+    Replace locally-carried fix-byte-order-conversion.patch with the
+    equivalent upstream commit (htole64 instead of le64toh for
+    field.head_data_offset), fixing journal traversal on big-endian.
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 01:42:28 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING

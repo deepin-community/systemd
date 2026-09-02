@@ -43,7 +43,7 @@ exec-invoke-chdir-after-chroot.patch
 uniontech-skip-clock-restore-for-timesyncd.patch
 fix-tmpfiles-x11-cleanup.patch
 fix-hibernation-err-log.patch
-fix-byte-order-conversion.patch
+fix-journal-byte-order-conversion-journal-file-append-data.patch
 update-po-file-about-bo-and-ug.patch
 fix-double-free.patch
 fix-wrong-err-log.patch
