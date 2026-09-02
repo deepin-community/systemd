@@ -1,0 +1,32 @@
+From 32165a1a480402eb49a433eb15883624b2dd6cad Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Thu, 25 Jun 2026 16:19:14 +0800
+Subject: [PATCH] network: roll back ipv6ll_address on link_ipv6ll_gained()
+ failure
+
+If link_ipv6ll_gained() fails after ipv6ll_address is set, the address
+remains non-null and the null-guard in address_update() never triggers
+again, permanently suppressing SLAAC, DHCPv6 and RA on that link.
+
+Clear ipv6ll_address on the failure path so the guard can fire when
+the address is re-announced.
+
+Signed-off-by: dongshengyuan <dongshengyuan@uniontech.com>
+
+diff --git a/src/network/networkd-address.c b/src/network/networkd-address.c
+index 11337126e5..582069cf39 100644
+--- a/src/network/networkd-address.c
++++ b/src/network/networkd-address.c
+@@ -811,8 +811,10 @@ static int address_update(Address *address) {
+                 link->ipv6ll_address = address->in_addr.in6;
+ 
+                 r = link_ipv6ll_gained(link);
+-                if (r < 0)
++                if (r < 0) {
++                        link->ipv6ll_address = (const struct in6_addr) {};
+                         return r;
++                }
+         }
+ 
+         if (IN_SET(link->state, LINK_STATE_FAILED, LINK_STATE_LINGER))
+
