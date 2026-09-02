@@ -1,0 +1,29 @@
+From 4b32ab5a36aea7752be26c18dabc3a554189b19d Mon Sep 17 00:00:00 2001
+From: Milan Kyselica <mil.kyselica@gmail.com>
+Date: Thu, 9 Apr 2026 19:45:19 +0200
+Subject: [PATCH] udev: fix bounds check in dev_if_packed_info()
+
+The check compared bLength against (size - sizeof(descriptor)), which
+is an absolute limit unrelated to the current buffer position. Since
+bLength is uint8_t (max 255), this can never exceed size - 9 for any
+realistic input, making the check dead code.
+
+Use (size - pos) instead so the check actually catches descriptors
+that extend past the end of the read data.
+
+Fixes: https://github.com/systemd/systemd/issues/41570
+
+diff --git a/src/udev/udev-builtin-usb_id.c b/src/udev/udev-builtin-usb_id.c
+index 80597ea89e..61250b7072 100644
+--- a/src/udev/udev-builtin-usb_id.c
++++ b/src/udev/udev-builtin-usb_id.c
+@@ -168,7 +168,7 @@ static int dev_if_packed_info(sd_device *dev, char *ifs_str, size_t len) {
+                 desc = (struct usb_interface_descriptor *) (buf + pos);
+                 if (desc->bLength < 3)
+                         break;
+-                if (desc->bLength > size - sizeof(struct usb_interface_descriptor))
++                if (desc->bLength > (size_t) size - pos)
+                         return log_device_debug_errno(dev, SYNTHETIC_ERRNO(EIO),
+                                                       "Corrupt data read from \"%s\"", filename);
+                 pos += desc->bLength;
+
