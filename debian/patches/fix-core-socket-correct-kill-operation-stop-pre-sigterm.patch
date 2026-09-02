@@ -1,0 +1,26 @@
+From 240457204bc7f49e5da24a66ae4e10714ba2076b Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Tue, 17 Dec 2024 13:51:24 +0100
+Subject: [PATCH] core/socket: use correct kill operation for
+ SOCKET_STOP_PRE_SIGTERM
+
+Follow-up for a232ebcc2cd3d5e16b0d0fb0be61549f25fb8239
+
+diff --git a/src/core/socket.c b/src/core/socket.c
+index 446d3bf9a9..9234a91876 100644
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -2104,8 +2104,10 @@ static void socket_enter_stop_post(Socket *s, SocketResult f) {
+ }
+ 
+ static int state_to_kill_operation(Socket *s, SocketState state) {
+-        if (state == SOCKET_STOP_PRE_SIGTERM && unit_has_job_type(UNIT(s), JOB_RESTART))
+-                return KILL_RESTART;
++        assert(s);
++
++        if (state == SOCKET_STOP_PRE_SIGTERM)
++                return unit_has_job_type(UNIT(s), JOB_RESTART) ? KILL_RESTART : KILL_TERMINATE;
+ 
+         if (state == SOCKET_FINAL_SIGTERM)
+                 return KILL_TERMINATE;
+
