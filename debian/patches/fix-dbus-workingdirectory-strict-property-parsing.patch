@@ -1,0 +1,74 @@
+From 14631951cea807de2d482a430841c604c2040718 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 5 Feb 2024 16:16:59 +0100
+Subject: [PATCH] dbus: make dbus property parsing of WorkingDirectory= equally
+ strict as loading it from the unit files
+
+[Backport note for deepin (systemd 255.2): upstream commit 14631951cea8 also
+ rejects WorkingDirectory= paths below the API VFS via path_below_api_vfs(),
+ a helper that does not exist in this release (it was added by upstream
+ commit 0fb08bd5e309, later in the same PR #31210). The corresponding check
+ is dropped here, which keeps dbus property parsing exactly as strict as
+ loading WorkingDirectory= from unit files in v255 — the goal of this
+ commit.]
+
+diff --git a/src/core/dbus-execute.c b/src/core/dbus-execute.c
+index cad6a200b5..b2e5ae4f85 100644
+--- a/src/core/dbus-execute.c
++++ b/src/core/dbus-execute.c
+@@ -2721,8 +2721,9 @@ int bus_exec_context_set_transient_property(
+                 return 1;
+ 
+         } else if (streq(name, "WorkingDirectory")) {
++                _cleanup_free_ char *simplified = NULL;
++                bool missing_ok, is_home;
+                 const char *s;
+-                bool missing_ok;
+ 
+                 r = sd_bus_message_read(message, "s", &s);
+                 if (r < 0)
+@@ -2734,23 +2735,30 @@ int bus_exec_context_set_transient_property(
+                 } else
+                         missing_ok = false;
+ 
+-                if (!isempty(s) && !streq(s, "~") && !path_is_absolute(s))
+-                        return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "WorkingDirectory= expects an absolute path or '~'");
++                if (isempty(s))
++                        is_home = false;
++                else if (streq(s, "~"))
++                        is_home = true;
++                else {
++                        if (!path_is_absolute(s))
++                                return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "WorkingDirectory= expects an absolute path or '~'");
+ 
+-                if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
+-                        if (streq(s, "~")) {
+-                                c->working_directory = mfree(c->working_directory);
+-                                c->working_directory_home = true;
+-                        } else {
+-                                r = free_and_strdup(&c->working_directory, empty_to_null(s));
+-                                if (r < 0)
+-                                        return r;
++                        r = path_simplify_alloc(s, &simplified);
++                        if (r < 0)
++                                return r;
+ 
+-                                c->working_directory_home = false;
+-                        }
++                        if (!path_is_normalized(simplified))
++                                return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "WorkingDirectory= expects a normalized path or '~'");
++
++                        is_home = false;
++                }
+ 
++                if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
++                        free_and_replace(c->working_directory, simplified);
++                        c->working_directory_home = is_home;
+                         c->working_directory_missing_ok = missing_ok;
+-                        unit_write_settingf(u, flags|UNIT_ESCAPE_SPECIFIERS, name, "WorkingDirectory=%s%s", missing_ok ? "-" : "", s);
++
++                        unit_write_settingf(u, flags|UNIT_ESCAPE_SPECIFIERS, name, "WorkingDirectory=%s%s", missing_ok ? "-" : "", c->working_directory_home ? "+" : ASSERT_PTR(c->working_directory));
+                 }
+ 
+                 return 1;
+
