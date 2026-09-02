@@ -1,0 +1,87 @@
+From f94025a13681e001011dd52e0dcecc143b4501b9 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 5 Feb 2024 17:10:40 +0100
+Subject: [PATCH] nspawn: also refuse paths below API VFS in nspawn's --chdir=
+ field
+
+Include the prerequisite helper commit 0fb08bd5e3097ecd79def22872ef3c522d2a3114
+("mountpoint-util: add small helper that checks if a path is below the API VFS
+hierarchies") so that path_below_api_vfs() is available on this branch.
+
+Upstream-PR: https://github.com/systemd/systemd/pull/31210
+
+diff --git a/src/basic/mountpoint-util.c b/src/basic/mountpoint-util.c
+index 0ff1ed6018..5f1887c6c9 100644
+--- a/src/basic/mountpoint-util.c
++++ b/src/basic/mountpoint-util.c
+@@ -785,3 +785,10 @@ int mount_option_supported(const char *fstype, const char *key, const char *valu
+ 
+         return true; /* works! */
+ }
++
++bool path_below_api_vfs(const char *p) {
++        assert(p);
++
++        /* API VFS are either directly mounted on any of these three paths, or below it. */
++        return PATH_STARTSWITH_SET(p, "/dev", "/sys", "/proc");
++}
+diff --git a/src/basic/mountpoint-util.h b/src/basic/mountpoint-util.h
+index 499403a4d8..b95d1985fa 100644
+--- a/src/basic/mountpoint-util.h
++++ b/src/basic/mountpoint-util.h
+@@ -69,3 +69,5 @@ bool mount_new_api_supported(void);
+ unsigned long ms_nosymfollow_supported(void);
+ 
+ int mount_option_supported(const char *fstype, const char *key, const char *value);
++
++bool path_below_api_vfs(const char *p);
+diff --git a/src/shutdown/umount.c b/src/shutdown/umount.c
+index 1a9b99d761..ca6d36e054 100644
+--- a/src/shutdown/umount.c
++++ b/src/shutdown/umount.c
+@@ -95,7 +95,7 @@ int mount_points_list_get(const char *mountinfo, MountPoint **head) {
+                  * we might lack the rights to unmount these things, hence don't bother. */
+                 if (mount_point_is_api(path) ||
+                     mount_point_ignore(path) ||
+-                    PATH_STARTSWITH_SET(path, "/dev", "/sys", "/proc"))
++                    path_below_api_vfs(path))
+                         continue;
+ 
+                 is_api_vfs = fstype_is_api_vfs(fstype);
+
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+index c0ec076b24..957bc58217 100644
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -1368,17 +1368,27 @@ static int parse_argv(int argc, char *argv[]) {
+ 
+                         break;
+ 
+-                case ARG_CHDIR:
++                case ARG_CHDIR: {
++                        _cleanup_free_ char *wd = NULL;
++
+                         if (!path_is_absolute(optarg))
+                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                        "Working directory %s is not an absolute path.", optarg);
+ 
+-                        r = free_and_strdup(&arg_chdir, optarg);
++                        r = path_simplify_alloc(optarg, &wd);
+                         if (r < 0)
+-                                return log_oom();
++                                return log_error_errno(r, "Failed to simplify path %s: %m", optarg);
++
++                        if (!path_is_normalized(wd))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Working dirctory path is not normalized: %s", wd);
+ 
++                        if (path_below_api_vfs(wd))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Working directory is below API VFS, refusing: %s", wd);
++
++                        free_and_replace(arg_chdir, wd);
+                         arg_settings_mask |= SETTING_WORKING_DIRECTORY;
+                         break;
++                }
+ 
+                 case ARG_PIVOT_ROOT:
+                         r = pivot_root_parse(&arg_pivot_root_new, &arg_pivot_root_old, optarg);
+
