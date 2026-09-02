@@ -1,0 +1,38 @@
+From e5d4adb173ccff55bad21238ef82914e0c9d6a1d Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Wed, 3 Apr 2024 12:10:10 +0100
+Subject: [PATCH] bpf: actually check for errors when loading symbols
+
+Also restructure ifdef to avoid confusing vscode
+
+Follow-up for 87e462f71361a47b154865dc14032a27580dd4cb
+
+diff --git a/src/shared/bpf-dlopen.c b/src/shared/bpf-dlopen.c
+index 70b1ffbf99..1b4aa903e6 100644
+--- a/src/shared/bpf-dlopen.c
++++ b/src/shared/bpf-dlopen.c
+@@ -82,11 +82,12 @@ int dlopen_bpf(void) {
+ #if MODERN_LIBBPF
+                                 /* Don't exist anymore in new libbpf, hence cannot type check them */
+                                 DLSYM_ARG_FORCE(bpf_create_map),
+-                                DLSYM_ARG_FORCE(bpf_probe_prog_type));
++                                DLSYM_ARG_FORCE(bpf_probe_prog_type)
+ #else
+                                 DLSYM_ARG(bpf_create_map),
+-                                DLSYM_ARG(bpf_probe_prog_type));
++                                DLSYM_ARG(bpf_probe_prog_type)
+ #endif
++                );
+         } else {
+                 /* symbols available from 0.7.0 */
+                 r = dlsym_many_or_warn(
+@@ -101,6 +102,8 @@ int dlopen_bpf(void) {
+ #endif
+                 );
+         }
++        if (r < 0)
++                return r;
+ 
+         r = dlsym_many_or_warn(
+                         dl, LOG_DEBUG,
+
