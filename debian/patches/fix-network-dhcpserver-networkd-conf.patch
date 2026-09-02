@@ -1,0 +1,21 @@
+From 38b4ecf78959694e18071aea00a2a7539d8bd941 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 28 Mar 2024 10:39:26 +0900
+Subject: [PATCH] network: make [DHCPServer] in networkd.conf work
+
+Follow-up for a3ed665a29ea9355c78a2a6b3a032b9504499dd6.
+
+Fixes https://github.com/systemd/systemd/pull/31977#discussion_r1542196572.
+
+Index: b/src/network/networkd-conf.c
+===================================================================
+--- a/src/network/networkd-conf.c
++++ b/src/network/networkd-conf.c
+@@ -18,6 +18,7 @@ int manager_parse_config_file(Manager *m
+                                      "Network\0"
+                                      "DHCPv4\0"
+                                      "DHCPv6\0"
++                                     "DHCPServer\0"
+                                      "DHCP\0",
+                                      config_item_perf_lookup, networkd_gperf_lookup,
+                                      CONFIG_PARSE_WARN,
