@@ -1,0 +1,93 @@
+From 9d15e09d5c5bf74eb9fefe1e9acf6e8422d5d200 Mon Sep 17 00:00:00 2001
+From: Cyrus Xi <xi.cyrus@gmail.com>
+Date: Tue, 10 Mar 2026 11:36:21 -0700
+Subject: [PATCH] core/cgroup: fix TasksMaxScale percentage serialization
+ (#41011)
+
+bus_cgroup_set_tasks_max_scale() used a hand-rolled percentage format
+that produced values ~10x too small (e.g., "TasksMax=4.0%" instead of
+"TasksMax=40.00%").
+
+On daemon-reload, the incorrect value was re-read, silently reducing
+the effective TasksMax by ~10x and causing fork rejections on systems
+with high thread counts.
+
+Fix by using the existing PERMYRIAD macros, consistent with memory
+property handlers (MemoryMax, MemoryHigh, MemoryLow, etc.).
+
+Fixes: #41009
+
+diff --git a/src/core/dbus-cgroup.c b/src/core/dbus-cgroup.c
+index dcb27f80f8..0c71017f93 100644
+--- a/src/core/dbus-cgroup.c
++++ b/src/core/dbus-cgroup.c
+@@ -1010,9 +1010,9 @@ static int bus_cgroup_set_tasks_max_scale(
+                 *p = (CGroupTasksMax) { v, UINT32_MAX }; /* .scale is not 0, so this is interpreted as v/UINT32_MAX. */
+                 unit_invalidate_cgroup(u, CGROUP_MASK_PIDS);
+ 
+-                uint32_t scaled = DIV_ROUND_UP((uint64_t) v * 100U, (uint64_t) UINT32_MAX);
+-                unit_write_settingf(u, flags, name, "%s=%" PRIu32 ".%" PRIu32 "%%", "TasksMax",
+-                                    scaled / 10, scaled % 10);
++                int scaled = UINT32_SCALE_TO_PERMYRIAD(v);
++                unit_write_settingf(u, flags, name, "TasksMax=" PERMYRIAD_AS_PERCENT_FORMAT_STR,
++                                   PERMYRIAD_AS_PERCENT_FORMAT_VAL(scaled));
+         }
+ 
+         return 1;
+diff --git a/test/units/TEST-19-CGROUP.tasks-max-scale.sh b/test/units/TEST-19-CGROUP.tasks-max-scale.sh
+new file mode 100755
+index 0000000000..d9b2793cc0
+--- /dev/null
++++ b/test/units/TEST-19-CGROUP.tasks-max-scale.sh
+@@ -0,0 +1,50 @@
++#!/usr/bin/env bash
++# SPDX-License-Identifier: LGPL-2.1-or-later
++set -ex
++set -o pipefail
++
++# shellcheck source=test/units/test-control.sh
++. "$(dirname "$0")"/test-control.sh
++# shellcheck source=test/units/util.sh
++. "$(dirname "$0")"/util.sh
++
++testcase_tasks_max_scale_serialize() {
++    # Regression test for https://github.com/systemd/systemd/issues/41009
++    # TasksMaxScale was serialized as 4.0% instead of 40.00%, causing 10x reduction on daemon-reload
++
++    local unit="test-tasks-max.slice"
++    local unit_file="/run/systemd/system/${unit}"
++    local dropin_dir="/run/systemd/system.control/${unit}.d"
++
++    # shellcheck disable=SC2329
++    cleanup() (
++        set +e
++        rm -rf "${dropin_dir}"
++        rm -f "${unit_file}"
++        systemctl daemon-reload
++    )
++    trap cleanup RETURN
++
++    printf '[Slice]\n' >"${unit_file}"
++
++    systemctl daemon-reload
++
++    # Set TasksMax=40% via D-Bus — exercises bus_cgroup_set_tasks_max_scale()
++    systemctl set-property --runtime "${unit}" TasksMax=40%
++
++    # Verify drop-in file contains correct percentage (40.00%, not 4.0%)
++    grep -q '^TasksMax=40\.00%$' "${dropin_dir}/50-TasksMaxScale.conf"
++
++    # Capture value before daemon-reload
++    local tasks_max_before
++    tasks_max_before=$(systemctl show -P TasksMax "${unit}")
++
++    # Reload and verify value is preserved (the actual bug: value dropped 10x here)
++    systemctl daemon-reload
++
++    local tasks_max_after
++    tasks_max_after=$(systemctl show -P TasksMax "${unit}")
++    assert_eq "${tasks_max_before}" "${tasks_max_after}"
++}
++
++run_testcases
+
