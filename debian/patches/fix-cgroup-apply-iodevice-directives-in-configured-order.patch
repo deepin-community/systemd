@@ -1,0 +1,125 @@
+From 0fa0dfa04465651a18107d503f9967f84bd761d1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Michal=20Koutn=C3=BD?= <mkoutny@suse.com>
+Date: Fri, 13 Sep 2024 19:27:13 +0200
+Subject: [PATCH] core/cgroup: Apply IODevice*= directives in configured order
+
+Different device paths may resolve to same device node
+(lookup_block_device()), e.g.
+        IOReadBandwidthMax=/dev/sda1 18879
+        IOReadBandwidthMax=/dev/sda2 18878
+where both partitions resolve to /dev/sda and when these values are
+applied (they are associated with original paths, i.e. as if applied for
+different device) in the order from io_device_limits.
+
+The parsing code prepends, so they end up in reverse order wrt config
+file. Switch the direction so that the order of application matches the
+order of configuration -- i.e. semantics in all other unit file
+directives.
+
+Apply same change to all directives that use per-device lists. (The
+question whether partitions should be resolved to base device is
+independent.)
+
+And apply the changes equally to DBus properties write handlers.
+
+Fixes #34126
+
+diff --git a/src/core/dbus-cgroup.c b/src/core/dbus-cgroup.c
+index 49e84b44e3..459fa6f774 100644
+--- a/src/core/dbus-cgroup.c
++++ b/src/core/dbus-cgroup.c
+@@ -1424,7 +1424,7 @@ int bus_cgroup_set_property(
+                                         for (type = 0; type < _CGROUP_IO_LIMIT_TYPE_MAX; type++)
+                                                 a->limits[type] = cgroup_io_limit_defaults[type];
+ 
+-                                        LIST_PREPEND(device_limits, c->io_device_limits, a);
++                                        LIST_APPEND(device_limits, c->io_device_limits, a);
+                                 }
+ 
+                                 a->limits[iol_type] = u64;
+@@ -1504,7 +1504,7 @@ int bus_cgroup_set_property(
+                                                 free(a);
+                                                 return -ENOMEM;
+                                         }
+-                                        LIST_PREPEND(device_weights, c->io_device_weights, a);
++                                        LIST_APPEND(device_weights, c->io_device_weights, a);
+                                 }
+ 
+                                 a->weight = weight;
+@@ -1578,7 +1578,7 @@ int bus_cgroup_set_property(
+                                                 free(a);
+                                                 return -ENOMEM;
+                                         }
+-                                        LIST_PREPEND(device_latencies, c->io_device_latencies, a);
++                                        LIST_APPEND(device_latencies, c->io_device_latencies, a);
+                                 }
+ 
+                                 a->target_usec = target;
+@@ -1659,7 +1659,7 @@ int bus_cgroup_set_property(
+                                                 return -ENOMEM;
+                                         }
+ 
+-                                        LIST_PREPEND(device_bandwidths, c->blockio_device_bandwidths, a);
++                                        LIST_APPEND(device_bandwidths, c->blockio_device_bandwidths, a);
+                                 }
+ 
+                                 if (read)
+@@ -1753,7 +1753,7 @@ int bus_cgroup_set_property(
+                                                 free(a);
+                                                 return -ENOMEM;
+                                         }
+-                                        LIST_PREPEND(device_weights, c->blockio_device_weights, a);
++                                        LIST_APPEND(device_weights, c->blockio_device_weights, a);
+                                 }
+ 
+                                 a->weight = weight;
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+index 7cb8648743..8a94e06265 100644
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -4262,7 +4262,7 @@ int config_parse_io_device_weight(
+         w->path = TAKE_PTR(resolved);
+         w->weight = u;
+ 
+-        LIST_PREPEND(device_weights, c->io_device_weights, w);
++        LIST_APPEND(device_weights, c->io_device_weights, w);
+         return 0;
+ }
+ 
+@@ -4333,7 +4333,7 @@ int config_parse_io_device_latency(
+         l->path = TAKE_PTR(resolved);
+         l->target_usec = usec;
+ 
+-        LIST_PREPEND(device_latencies, c->io_device_latencies, l);
++        LIST_APPEND(device_latencies, c->io_device_latencies, l);
+         return 0;
+ }
+ 
+@@ -4419,7 +4419,7 @@ int config_parse_io_limit(
+                 for (CGroupIOLimitType i = 0; i < _CGROUP_IO_LIMIT_TYPE_MAX; i++)
+                         l->limits[i] = cgroup_io_limit_defaults[i];
+ 
+-                LIST_PREPEND(device_limits, c->io_device_limits, l);
++                LIST_APPEND(device_limits, c->io_device_limits, l);
+         }
+ 
+         l->limits[type] = num;
+@@ -4500,7 +4500,7 @@ int config_parse_blockio_device_weight(
+         w->path = TAKE_PTR(resolved);
+         w->weight = u;
+ 
+-        LIST_PREPEND(device_weights, c->blockio_device_weights, w);
++        LIST_APPEND(device_weights, c->blockio_device_weights, w);
+         return 0;
+ }
+ 
+@@ -4587,7 +4587,7 @@ int config_parse_blockio_bandwidth(
+                 b->rbps = CGROUP_LIMIT_MAX;
+                 b->wbps = CGROUP_LIMIT_MAX;
+ 
+-                LIST_PREPEND(device_bandwidths, c->blockio_device_bandwidths, b);
++                LIST_APPEND(device_bandwidths, c->blockio_device_bandwidths, b);
+         }
+ 
+         if (read)
+
