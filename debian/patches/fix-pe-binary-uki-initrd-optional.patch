@@ -1,0 +1,27 @@
+From 2e93331605e6b6a919121fd957a852431b0b8a19 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 16 May 2024 06:08:27 +0900
+Subject: [PATCH] pe-binary: .initrd section is optional for UKI
+
+.osrel is also optional, but sd-boot and bootctl requires it.
+So, let's keep .osrel section at least now.
+
+Fixes #32774.
+
+diff --git a/src/shared/pe-binary.c b/src/shared/pe-binary.c
+index 4c05323d95..997e0e49a6 100644
+--- a/src/shared/pe-binary.c
++++ b/src/shared/pe-binary.c
+@@ -234,8 +234,9 @@ bool pe_is_uki(const PeHeader *pe_header, const IMAGE_SECTION_HEADER *sections)
+         if (le16toh(pe_header->optional.Subsystem) != IMAGE_SUBSYSTEM_EFI_APPLICATION)
+                 return false;
+ 
++        /* Note that the UKI spec only requires .linux, but we are stricter here, and require .osrel too,
++         * since for sd-boot it just doesn't make sense to not have that. */
+         return
+                 pe_header_find_section(pe_header, sections, ".osrel") &&
+-                pe_header_find_section(pe_header, sections, ".linux") &&
+-                pe_header_find_section(pe_header, sections, ".initrd");
++                pe_header_find_section(pe_header, sections, ".linux");
+ }
+
