@@ -1,0 +1,54 @@
+From d97896b647690d5e73686ed3f26b739bd27d62cb Mon Sep 17 00:00:00 2001
+From: huchangzai <czhuh@isoftstone.com>
+Date: Tue, 17 Mar 2026 10:01:42 +0800
+Subject: [PATCH] hwdb: fix ABS_PRESSURE axis range for Goodix GXTP5100
+ touchpad
+
+The Goodix GXTP5100 touchpad (HID bus 0x0018, vendor 0x27C6, product
+0x01E9), found in the Lenovo ThinkBook 16 G7+ IAH and ThinkPad X9 15
+Gen 1, has a kernel driver bug where ABS_PRESSURE (axis 24 / 0x18) is
+reported with min=0, max=0.
+
+This invalid axis range causes libinput to reject the device with:
+  "kernel bug: ABS_PRESSURE has min == max (both 0)"
+
+The touchpad hardware itself is functional and reports valid ranges for
+all other axes:
+  ABS_X:  min=0, max=4149, resolution=31
+  ABS_Y:  min=0, max=2147, resolution=27
+  ABS_MT_POSITION_X/Y: valid ranges
+
+Root cause: the kernel hid-multitouch driver applies a "GT7868Q report
+descriptor fixup" to this device (the HID descriptor is malformed and
+fails hid-generic probe with EINVAL). The fixup corrects most axes but
+leaves ABS_PRESSURE with an invalid 0:0 range.
+
+This hwdb entry overrides ABS_PRESSURE to a valid 0:255 range, allowing
+libinput to accept and initialize the device.
+
+Kernel version: 6.17.0-19-generic
+Device path: /sys/bus/hid/drivers/hid-multitouch/0018:27C6:01E9.0001
+
+diff --git a/hwdb.d/60-evdev.hwdb b/hwdb.d/60-evdev.hwdb
+index 92b43fe1b2..767b63f835 100644
+--- a/hwdb.d/60-evdev.hwdb
++++ b/hwdb.d/60-evdev.hwdb
+@@ -421,6 +421,17 @@ evdev:name:Atmel maXTouch Touch*:dmi:bvn*:bvr*:bd*:svnGOOGLE:pnSamus:*
+  EVDEV_ABS_35=::10
+  EVDEV_ABS_36=::10
+ 
++#########################################
++# Goodix
++#########################################
++
++# Goodix GXTP5100 Forcepad (Lenovo ThinkBook 16 G7+ IAH, ThinkPad X9 15 Gen 1)
++# The kernel hid-multitouch driver reports ABS_PRESSURE with min==max==0,
++# an invalid range that causes libinput to reject the device entirely.
++# Override ABS_PRESSURE (axis 0x18=24) to a valid range.
++evdev:input:b0018v27C6p01E9*
++ EVDEV_ABS_18=0:255:0:0
++
+ #########################################
+ # Granite Devices Simucube wheel bases
+ #########################################
+
