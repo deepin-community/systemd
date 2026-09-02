@@ -1,0 +1,36 @@
+From 1cdd8b1b66ec478ea2ed81ffa371e93f4b27c61e Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 17 Jan 2024 11:57:21 +0900
+Subject: [PATCH] sd-netlink: fix rtnl_resolve_link_alternative_name()
+
+Fixes a bug introduced by afdf6c3b6040ef43b05428b834f0f302c8ce9a1b.
+
+diff --git a/src/libsystemd/sd-netlink/netlink-util.c b/src/libsystemd/sd-netlink/netlink-util.c
+index 636af1a2d5..832159a649 100644
+--- a/src/libsystemd/sd-netlink/netlink-util.c
++++ b/src/libsystemd/sd-netlink/netlink-util.c
+@@ -376,7 +376,7 @@ int rtnl_resolve_link_alternative_name(sd_netlink **rtnl, const char *name, char
+         assert(ifindex > 0);
+ 
+         if (ret) {
+-                r = sd_netlink_message_read_string_strdup(message, IFLA_IFNAME, ret);
++                r = sd_netlink_message_read_string_strdup(reply, IFLA_IFNAME, ret);
+                 if (r < 0)
+                         return r;
+         }
+diff --git a/src/libsystemd/sd-netlink/test-netlink.c b/src/libsystemd/sd-netlink/test-netlink.c
+index 4c2d3173fb..13aedc4dbe 100644
+--- a/src/libsystemd/sd-netlink/test-netlink.c
++++ b/src/libsystemd/sd-netlink/test-netlink.c
+@@ -677,6 +677,10 @@ TEST(rtnl_set_link_name) {
+         assert_se(!strv_contains(alternative_names, "testlongalternativename"));
+         assert_se(strv_contains(alternative_names, "test-additional-name"));
+         assert_se(!strv_contains(alternative_names, "test-shortname"));
++
++        _cleanup_free_ char *resolved = NULL;
++        assert_se(rtnl_resolve_link_alternative_name(&rtnl, "test-additional-name", &resolved) == ifindex);
++        assert_se(streq_ptr(resolved, "test-shortname"));
+ }
+ 
+ DEFINE_TEST_MAIN(LOG_DEBUG);
+
