@@ -1,0 +1,33 @@
+From 1e8c0c671e3076db811804343b3b8d744bcf27ac Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Zbigniew=20J=C4=99drzejewski-Szmek?= <zbyszek@in.waw.pl>
+Date: Tue, 26 Mar 2024 18:46:23 +0100
+Subject: [PATCH] shared/logs-show: restore infinite loop avoidance for
+ corrupted journals
+
+Fixes a bug introduced in e44f06065bf20e8d0e4adacff61350ebd36f299e: it was
+supposed to be a refactoring, but unfortunately FOREACH_ARRAY is implemented
+using a for loop, so when the 'goto finish' was replaced by 'break', it only
+broke the inner loop, leading to a infinite loop.
+
+diff --git a/src/shared/logs-show.c b/src/shared/logs-show.c
+index 3b6988b018..85dd3db278 100644
+--- a/src/shared/logs-show.c
++++ b/src/shared/logs-show.c
+@@ -2056,7 +2056,7 @@ int journal_get_boots(sd_journal *j, BootId **ret_boots, size_t *ret_n_boots) {
+                         if (sd_id128_equal(i->id, boot.id))
+                                 /* The boot id is already stored, something wrong with the journal files.
+                                  * Exiting as otherwise this problem would cause an infinite loop. */
+-                                break;
++                                goto finish;
+ 
+                 if (!GREEDY_REALLOC(boots, n_boots + 1))
+                         return -ENOMEM;
+@@ -2064,6 +2064,7 @@ int journal_get_boots(sd_journal *j, BootId **ret_boots, size_t *ret_n_boots) {
+                 boots[n_boots++] = boot;
+         }
+ 
++ finish:
+         *ret_boots = TAKE_PTR(boots);
+         *ret_n_boots = n_boots;
+         return n_boots > 0;
+
