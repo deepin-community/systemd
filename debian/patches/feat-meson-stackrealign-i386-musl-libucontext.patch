@@ -1,0 +1,81 @@
+From 4483a8ffc7c45d634d5709b70ca7178546650979 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 17 Jun 2026 12:25:14 +0900
+Subject: [PATCH] meson: add -mstackrealign on i386 with musl and libucontext
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On i386 with musl and libucontext, many tests crash with SIGSEGV
+when using fibers implemented on top of ucontext APIs.
+
+For example:
+```
+ 929/1498 libsystemd - systemd:test-event-future                                   FAIL             0.97s   killed by signal 11 SIGSEGV
+/* test_sd_event_run_timer */
+run-suspend-timer: Scheduling fiber
+/home/pmos/build/src/systemd-261-rc3/tools/test-crash-trace.sh: line 18: 19994 Segmentation fault         (core dumped) "$@"
+===== exit 139 — replaying under gdb =====
+/* test_sd_event_run_timer */
+run-suspend-timer: Scheduling fiber
+
+Program received signal SIGSEGV, Segmentation fault.
+0xf7d68be3 in sd_event_add_time_relative (e=0xf7ffd3f0, ret=0xf7b01fa0, clock=1, usec=10000, accuracy=0, callback=0x565564ad <inner_timer_handler>, userdata=0xf7b01fa4) at ../src/libsystemd/sd-event/sd-event.c:1455
+1455	                void *userdata) {
+
+Thread 1 (process 20485 "test-event-futu"):
+ #0  0xf7d68be3 in sd_event_add_time_relative (e=0xf7ffd3f0, ret=0xf7b01fa0, clock=1, usec=10000, accuracy=0, callback=0x565564ad <inner_timer_handler>, userdata=0xf7b01fa4) at ../src/libsystemd/sd-event/sd-event.c:1455
+        t = 17868423377094431728
+        r = <optimized out>
+ #1  0x565574c7 in sd_event_run_timer_fiber (userdata=0x0) at ../src/libsystemd/sd-event/test-event-future.c:329
+        inner = 0xf7ffd3f0
+        source = 0x0
+        counter = 0
+        r = <optimized out>
+ #2  0xf7dab308 in fiber_entry_point () at ../src/libsystemd/sd-future/fiber.c:208
+        _cleanup_log_unset_prefix_5 = 0x0
+        __unique_prefix_c6 = 0x5655bb30
+        f = 0xf7b06840
+        __func__ = "fiber_entry_point"
+        fake_stack_save = <optimized out>
+ #3  0xf7b032ae in setcontext () from /lib/libucontext.so.1
+ No symbol table info available.
+ #4  0x00000000 in ?? ()
+ No symbol table info available.
+```
+
+Building systemd with -mstackrealign makes all observed failures
+disappear, suggesting a stack alignment issue in the interaction
+between compiler-generated code and the ucontext implementation.
+
+This resembles historical stack alignment issues in glibc's i386
+makecontext() implementation, which required fixes to preserve the
+expected stack alignment.
+
+As a workaround, add -mstackrealign when building on i386 with musl
+and libucontext.
+
+Suggested-by: ChatGPT (OpenAI)
+
+Index: repo/meson.build
+===================================================================
+--- repo.orig/meson.build
++++ repo/meson.build
+@@ -458,6 +458,17 @@ if get_option('mode') == 'developer'
+         possible_cc_flags += '-fno-omit-frame-pointer'
+ endif
+ 
++# Work around stack alignment issues observed with musl + libucontext on i386.
++# Note: the 'libc' meson option does not exist in this release series, so
++# detect musl by checking that __GLIBC__ is not defined instead.
++if host_machine.cpu_family() == 'x86' and not cc.compiles('''
++#ifndef __GLIBC__
++#error glibc required
++#endif
++''', name : 'glibc available')
++        possible_cc_flags += '-mstackrealign'
++endif
++
+ add_project_arguments(
+         cc.get_supported_arguments(
+                 basic_disabled_warnings,
