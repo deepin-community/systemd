@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * home/resize-fs: replace XFS_SB_MAGIC with XFS_SUPER_MAGIC to fix XFS filesystem recognition
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 05:43:43 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING

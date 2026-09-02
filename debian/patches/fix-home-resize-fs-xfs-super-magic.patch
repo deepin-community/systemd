@@ -1,0 +1,55 @@
+From e1dad0610076961b415616eaa8d636193103eae4 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 10 Apr 2024 06:38:07 +0900
+Subject: [PATCH] home,resize-fs: replace XFS_SB_MAGIC -> XFS_SUPER_MAGIC
+
+
+diff --git a/src/home/homework-luks.c b/src/home/homework-luks.c
+index d70926fe33..194089ea73 100644
+--- a/src/home/homework-luks.c
++++ b/src/home/homework-luks.c
+@@ -2553,7 +2553,7 @@ static int can_resize_fs(int fd, uint64_t old_size, uint64_t new_size) {
+ 
+                 /* btrfs can grow and shrink online */
+ 
+-        } else if (is_fs_type(&sfs, XFS_SB_MAGIC)) {
++        } else if (is_fs_type(&sfs, XFS_SUPER_MAGIC)) {
+ 
+                 if (new_size < XFS_MINIMAL_SIZE)
+                         return log_error_errno(SYNTHETIC_ERRNO(ERANGE), "New file system size too small for xfs (needs to be 14M at least).");
+diff --git a/src/home/homework-quota.c b/src/home/homework-quota.c
+index 508c0c01b2..7400937e95 100644
+--- a/src/home/homework-quota.c
++++ b/src/home/homework-quota.c
+@@ -99,7 +99,7 @@ int home_update_quota_auto(UserRecord *h, const char *path) {
+         if (statfs(path, &sfs) < 0)
+                 return log_error_errno(errno, "Failed to statfs() file system: %m");
+ 
+-        if (is_fs_type(&sfs, XFS_SB_MAGIC) ||
++        if (is_fs_type(&sfs, XFS_SUPER_MAGIC) ||
+             is_fs_type(&sfs, EXT4_SUPER_MAGIC))
+                 return home_update_quota_classic(h, path);
+ 
+diff --git a/src/shared/resize-fs.c b/src/shared/resize-fs.c
+index 178aefac21..b1c4a49da1 100644
+--- a/src/shared/resize-fs.c
++++ b/src/shared/resize-fs.c
+@@ -61,7 +61,7 @@ int resize_fs(int fd, uint64_t sz, uint64_t *ret_size) {
+                 if (ret_size)
+                         *ret_size = sz;
+ 
+-        } else if (is_fs_type(&sfs, XFS_SB_MAGIC)) {
++        } else if (is_fs_type(&sfs, XFS_SUPER_MAGIC)) {
+                 xfs_fsop_geom_t geo;
+                 xfs_growfs_data_t d;
+ 
+@@ -95,7 +95,7 @@ uint64_t minimal_size_by_fs_magic(statfs_f_type_t magic) {
+         case (statfs_f_type_t) EXT4_SUPER_MAGIC:
+                 return EXT4_MINIMAL_SIZE;
+ 
+-        case (statfs_f_type_t) XFS_SB_MAGIC:
++        case (statfs_f_type_t) XFS_SUPER_MAGIC:
+                 return XFS_MINIMAL_SIZE;
+ 
+         case (statfs_f_type_t) BTRFS_SUPER_MAGIC:
+
