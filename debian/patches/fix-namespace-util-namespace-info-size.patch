@@ -1,0 +1,23 @@
+From 30957ced45a62a576d4d87b704bd9042a085b2e4 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Mon, 22 Jul 2024 20:02:03 +0200
+Subject: [PATCH] namespace-util: explicitly specify namespace_info[]'s size
+
+We do this already in all string lookup tables. This way
+it's guaranteed that iterators which ends with _NAMESPACE_TYPE_MAX
+wouldn't overrun the array.
+
+diff --git a/src/basic/namespace-util.c b/src/basic/namespace-util.c
+index 5b4e43f921..739867672e 100644
+--- a/src/basic/namespace-util.c
++++ b/src/basic/namespace-util.c
+@@ -17,7 +17,7 @@
+ #include "stdio-util.h"
+ #include "user-util.h"
+ 
+-const struct namespace_info namespace_info[] = {
++const struct namespace_info namespace_info[_NAMESPACE_TYPE_MAX + 1] = {
+         [NAMESPACE_CGROUP] =  { "cgroup", "ns/cgroup", CLONE_NEWCGROUP,                          },
+         [NAMESPACE_IPC]    =  { "ipc",    "ns/ipc",    CLONE_NEWIPC,                             },
+         [NAMESPACE_NET]    =  { "net",    "ns/net",    CLONE_NEWNET,                             },
+
