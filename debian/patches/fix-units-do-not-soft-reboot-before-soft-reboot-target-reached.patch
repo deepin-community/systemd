@@ -1,0 +1,52 @@
+From bf71770960d779d6767afae2cd5590b19074caff Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Fri, 17 May 2024 14:06:44 +0800
+Subject: [PATCH] Merge pull request #32880 from yuwata/unit-soft-reboot
+
+units: do not soft-reboot before soft-reboot.target reached
+
+diff --git a/units/soft-reboot.target b/units/soft-reboot.target
+index 6a6c772875..4bca192454 100644
+--- a/units/soft-reboot.target
++++ b/units/soft-reboot.target
+@@ -11,8 +11,10 @@
+ Description=Reboot System Userspace
+ Documentation=man:systemd.special(7)
+ DefaultDependencies=no
++Requires=shutdown.target umount.target final.target
++After=shutdown.target umount.target final.target
+ Requires=systemd-soft-reboot.service
+-After=systemd-soft-reboot.service
++Before=systemd-soft-reboot.service
+ AllowIsolate=yes
+ JobTimeoutSec=30min
+ JobTimeoutAction=soft-reboot-force
+diff --git a/units/systemd-journald@.service.in b/units/systemd-journald@.service.in
+index c3bcb08533..b705ce08ff 100644
+--- a/units/systemd-journald@.service.in
++++ b/units/systemd-journald@.service.in
+@@ -13,11 +13,6 @@ Documentation=man:systemd-journald.service(8) man:journald.conf(5)
+ Requires=systemd-journald@%i.socket systemd-journald-varlink@%i.socket
+ After=systemd-journald@%i.socket systemd-journald-varlink@%i.socket
+ 
+-# To avoid journald SIGKILLed during soft-reboot and corrupting journals.
+-# See https://github.com/systemd/systemd/issues/30195
+-Before=soft-reboot.target
+-Conflicts=soft-reboot.target
+-
+ [Service]
+ CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_SYS_PTRACE CAP_CHOWN CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETUID CAP_SETGID CAP_MAC_OVERRIDE
+ DevicePolicy=closed
+diff --git a/units/systemd-soft-reboot.service b/units/systemd-soft-reboot.service
+index 35ba3a9fc4..da9f463821 100644
+--- a/units/systemd-soft-reboot.service
++++ b/units/systemd-soft-reboot.service
+@@ -11,6 +11,5 @@
+ Description=Reboot System Userspace
+ Documentation=man:systemd-soft-reboot.service(8)
+ DefaultDependencies=no
+-Requires=shutdown.target umount.target final.target
+-After=shutdown.target umount.target final.target
++Requires=soft-reboot.target
+ SuccessAction=soft-reboot-force
+
