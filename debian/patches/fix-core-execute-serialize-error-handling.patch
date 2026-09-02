@@ -1,0 +1,28 @@
+From cd13dc16c3651678a541289dc51c4a4e5131f405 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Sat, 7 Mar 2026 05:53:14 +0100
+Subject: [PATCH] core/execute-serialize: fix error handling
+
+
+diff --git a/src/core/execute-serialize.c b/src/core/execute-serialize.c
+index 953b0d9894..55a5216042 100644
+--- a/src/core/execute-serialize.c
++++ b/src/core/execute-serialize.c
+@@ -3229,7 +3229,7 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
+ 
+                                         r = extract_first_word(&val, &options, NULL, EXTRACT_UNQUOTE);
+                                         if (r < 0)
+-                                                return -r;
++                                                return r;
+ 
+                                         if (isempty(options) || streq(options, "rbind"))
+                                                 rbind = true;
+@@ -3288,7 +3288,7 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
+ 
+                                         r = extract_first_word(&val, &options, NULL, EXTRACT_UNQUOTE);
+                                         if (r < 0)
+-                                                return -r;
++                                                return r;
+ 
+                                         if (isempty(options) || streq(options, "rbind"))
+                                                 rbind = true;
