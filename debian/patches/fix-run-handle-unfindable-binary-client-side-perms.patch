@@ -1,0 +1,29 @@
+From 9810899ef2f28fbb42cf659e6892b1a5074cfc83 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Tue, 5 Nov 2024 11:54:14 +0100
+Subject: [PATCH] run: handle gracefully if we can't find binary client-side
+ due to perms
+
+Fixes: #35022
+
+diff --git a/src/run/run.c b/src/run/run.c
+index e4bcc5d599..5a1df9ce8f 100644
+--- a/src/run/run.c
++++ b/src/run/run.c
+@@ -2576,10 +2576,12 @@ static int run(int argc, char* argv[]) {
+ 
+                 _cleanup_free_ char *command = NULL;
+                 r = find_executable(arg_cmdline[0], &command);
+-                if (r < 0)
++                if (ERRNO_IS_NEG_PRIVILEGE(r))
++                        log_debug_errno(r, "Failed to find executable '%s' due to permission problems, leaving path as is: %m", arg_cmdline[0]);
++                else if (r < 0)
+                         return log_error_errno(r, "Failed to find executable %s: %m", arg_cmdline[0]);
+-
+-                free_and_replace(arg_cmdline[0], command);
++                else
++                        free_and_replace(arg_cmdline[0], command);
+         }
+ 
+         if (!arg_description) {
+
