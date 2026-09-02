@@ -1,0 +1,31 @@
+From baa90b4b81da6fd28b2fe7f4f37c8c546881f3a0 Mon Sep 17 00:00:00 2001
+From: mille-feuille <gtpgx305@gmail.com>
+Date: Thu, 8 Feb 2024 23:47:24 +0900
+Subject: [PATCH] detect-virt: fix Google Compute Engine support
+
+Follow-up for 9b0688f491674b53ef7a52bdf561a430c53673d6
+
+diff --git a/src/basic/virt.c b/src/basic/virt.c
+index 465f339c14..375ef28216 100644
+--- a/src/basic/virt.c
++++ b/src/basic/virt.c
+@@ -455,7 +455,7 @@ Virtualization detect_vm(void) {
+ 
+         /* We have to use the correct order here:
+          *
+-         * → First, try to detect Oracle Virtualbox, Amazon EC2 Nitro, and Parallels, even if they use KVM,
++         * → First, try to detect Oracle Virtualbox, Amazon EC2 Nitro, Parallels, and Google Compute Engine, even if they use KVM,
+          *   as well as Xen even if it cloaks as Microsoft Hyper-V. Attempt to detect uml at this stage also
+          *   since it runs as a user-process nested inside other VMs. Also check for Xen now, because Xen PV
+          *   mode does not override CPUID when nested inside another hypervisor.
+@@ -470,7 +470,8 @@ Virtualization detect_vm(void) {
+                    VIRTUALIZATION_ORACLE,
+                    VIRTUALIZATION_XEN,
+                    VIRTUALIZATION_AMAZON,
+-                   VIRTUALIZATION_PARALLELS)) {
++                   VIRTUALIZATION_PARALLELS,
++                   VIRTUALIZATION_GOOGLE)) {
+                 v = dmi;
+                 goto finish;
+         }
+
