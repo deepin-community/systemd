@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * units: do not soft-reboot before soft-reboot.target reached
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 05:20:38 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING

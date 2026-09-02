@@ -1,0 +1,45 @@
+From 4263d7617f0e6ea741e227db223ac6085479165f Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 17 May 2024 11:38:16 +0900
+Subject: [PATCH] units: do not soft-reboot before soft-reboot.target reached
+
+Otherwise, at the time systemd-soft-reboot.service succeeds,
+services which has Conflicts= and Before=soft-reboot.target may
+not be stopped yet, and may be SIGKILLed.
+
+Especially, systemd-journald.service has the dependencies, thus
+journal may be corrupted. See #32223.
+
+Follow-up for 13ffc60749df0ca7c76cfcac317b41a05679b364.
+
+Fixes #32834.
+
+diff --git a/units/soft-reboot.target b/units/soft-reboot.target
+index 6a6c772875..4bca192454 100644
+--- a/units/soft-reboot.target
++++ b/units/soft-reboot.target
+@@ -11,8 +11,10 @@
+ Description=Reboot System Userspace
+ Documentation=man:systemd.special(7)
+ DefaultDependencies=no
++Requires=shutdown.target umount.target final.target
++After=shutdown.target umount.target final.target
+ Requires=systemd-soft-reboot.service
+-After=systemd-soft-reboot.service
++Before=systemd-soft-reboot.service
+ AllowIsolate=yes
+ JobTimeoutSec=30min
+ JobTimeoutAction=soft-reboot-force
+diff --git a/units/systemd-soft-reboot.service b/units/systemd-soft-reboot.service
+index 35ba3a9fc4..da9f463821 100644
+--- a/units/systemd-soft-reboot.service
++++ b/units/systemd-soft-reboot.service
+@@ -11,6 +11,5 @@
+ Description=Reboot System Userspace
+ Documentation=man:systemd-soft-reboot.service(8)
+ DefaultDependencies=no
+-Requires=shutdown.target umount.target final.target
+-After=shutdown.target umount.target final.target
++Requires=soft-reboot.target
+ SuccessAction=soft-reboot-force
+
