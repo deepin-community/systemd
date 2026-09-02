@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * chase: fix shortcut so chaseat() does not take the fast path when CHASE_PARENT is set, returning a wrong fd
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 03:50:35 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
