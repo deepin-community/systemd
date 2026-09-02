@@ -1,0 +1,24 @@
+From a86763c70b29a3a6b2fc543fef9ed5502c9c8991 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 9 Feb 2024 14:50:46 +0900
+Subject: [PATCH] network/ndisc: also drop SLAAC addresses and routes on
+ reconfiguring
+
+Especially, this is important for routes, as link_drop_managed_routes()
+removes only static routes, rather than non-foreign routes.
+
+diff --git a/src/network/networkd-ndisc.c b/src/network/networkd-ndisc.c
+index 030b4a4339..5f93f45b3c 100644
+--- a/src/network/networkd-ndisc.c
++++ b/src/network/networkd-ndisc.c
+@@ -1640,7 +1640,8 @@ int ndisc_stop(Link *link) {
+ void ndisc_flush(Link *link) {
+         assert(link);
+ 
+-        /* Remove all RDNSS, DNSSL, and Captive Portal entries, without exception. */
++        /* Remove all addresses, routes, RDNSS, DNSSL, and Captive Portal entries, without exception. */
++        (void) ndisc_drop_outdated(link, /* timestamp_usec = */ USEC_INFINITY);
+ 
+         link->ndisc_rdnss = set_free(link->ndisc_rdnss);
+         link->ndisc_dnssl = set_free(link->ndisc_dnssl);
+
