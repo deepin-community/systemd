@@ -1,0 +1,53 @@
+From 5d5f9429feda8f5689bd049e63f0c89ad169f413 Mon Sep 17 00:00:00 2001
+From: Wolfgang Bumiller <w.bumiller@errno.eu>
+Date: Thu, 4 Jun 2026 17:00:37 +0200
+Subject: [PATCH] ukify: deal with non-list values in config_list_prepend
+
+`ConfigItem.config_list_prepend` assumed that the passed value was a
+list. This just happens to be the case for the `--initrd` and
+`--devicetree-auto` parameters, as those get special treatment in
+`ConfigItem.apply_config` as they use space separated lists.
+
+However, this is not generally the case: When trying to set
+`UKI/Firmware` the following error occurred:
+
+Traceback (most recent call last):
+  File "/usr/bin/ukify", line 2565, in <module>
+    main()
+    ~~~~^^
+  File "/usr/bin/ukify", line 2548, in main
+    opts = UkifyConfig.from_namespace(parse_args())
+                                      ~~~~~~~~~~^^
+  File "/usr/bin/ukify", line 2542, in parse_args
+    apply_config(opts)
+    ~~~~~~~~~~~~^^^^^^
+  File "/usr/bin/ukify", line 2295, in apply_config
+    item.apply_config(namespace, section_name, group, key, value)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/bin/ukify", line 1892, in apply_config
+    self.config_push(namespace, group, dest, value)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/bin/ukify", line 1765, in config_list_prepend
+    setattr(namespace, dest, value + old)
+                             ~~~~~~^~~~~
+TypeError: unsupported operand type(s) for +: 'PosixPath' and 'list'
+
+Since we can thus get both lists and strings, check the type and
+convert non-list values to `[value]`.
+
+Signed-off-by: Wolfgang Bumiller <w.bumiller@errno.eu>
+
+diff --git a/src/ukify/ukify.py b/src/ukify/ukify.py
+index 0377c57ea7..59078c98aa 100755
+--- a/src/ukify/ukify.py
++++ b/src/ukify/ukify.py
+@@ -1762,6 +1762,8 @@ class ConfigItem:
+         old = getattr(namespace, dest, [])
+         if old is None:
+             old = []
++        if not isinstance(value, list):
++            value = [value]
+         setattr(namespace, dest, value + old)
+ 
+     @staticmethod
+
