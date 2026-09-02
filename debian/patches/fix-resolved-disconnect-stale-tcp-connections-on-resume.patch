@@ -1,0 +1,105 @@
+From 7addc530ac0ca1928103c715d9d6b1dafbcb36be Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Fri, 1 Mar 2024 21:46:46 +0100
+Subject: [PATCH] resolved: explicitly disconnect all left-over TCP connections
+ when coming back from suspend
+
+Fixes:  #13730 (original reporter's log shows the TCP connection needed
+to time out first)
+
+diff --git a/src/resolve/resolved-bus.c b/src/resolve/resolved-bus.c
+index d9d967ec40..f83c654558 100644
+--- a/src/resolve/resolved-bus.c
++++ b/src/resolve/resolved-bus.c
+@@ -13,6 +13,7 @@
+ #include "missing_capability.h"
+ #include "resolved-bus.h"
+ #include "resolved-def.h"
++#include "resolved-dns-stream.h"
+ #include "resolved-dns-synthesize.h"
+ #include "resolved-dnssd-bus.h"
+ #include "resolved-dnssd.h"
+@@ -1843,6 +1844,7 @@ static int bus_method_reset_server_features(sd_bus_message *message, void *userd
+ 
+         bus_client_log(message, "server feature reset");
+ 
++        (void) dns_stream_disconnect_all(m);
+         manager_reset_server_features(m);
+ 
+         return sd_bus_reply_method_return(message, NULL);
+@@ -2231,9 +2233,15 @@ static int match_prepare_for_sleep(sd_bus_message *message, void *userdata, sd_b
+         if (b)
+                 return 0;
+ 
+-        log_debug("Coming back from suspend, verifying all RRs...");
++        log_debug("Coming back from suspend, closing all TCP connections...");
++        (void) dns_stream_disconnect_all(m);
++
++        log_debug("Coming back from suspend, resetting all probed server features...");
++        manager_reset_server_features(m);
+ 
++        log_debug("Coming back from suspend, verifying all RRs...");
+         manager_verify_all(m);
++
+         return 0;
+ }
+ 
+diff --git a/src/resolve/resolved-dns-stream.c b/src/resolve/resolved-dns-stream.c
+index ddd1db5e09..056ba7794f 100644
+--- a/src/resolve/resolved-dns-stream.c
++++ b/src/resolve/resolved-dns-stream.c
+@@ -593,3 +593,44 @@ void dns_stream_detach(DnsStream *s) {
+ 
+         dns_server_unref_stream(s->server);
+ }
++
++DEFINE_PRIVATE_HASH_OPS_WITH_KEY_DESTRUCTOR(
++                dns_stream_hash_ops,
++                void,
++                trivial_hash_func,
++                trivial_compare_func,
++                dns_stream_unref);
++
++int dns_stream_disconnect_all(Manager *m) {
++        _cleanup_(set_freep) Set *closed = NULL;
++        int r;
++
++        assert(m);
++
++        /* Terminates all TCP connections (called after system suspend for example, to speed up recovery) */
++
++        log_info("Closing all remaining TCP connections.");
++
++        bool restart;
++        do {
++                restart = false;
++
++                LIST_FOREACH(streams, s, m->dns_streams) {
++                        r = set_ensure_put(&closed, &dns_stream_hash_ops, s);
++                        if (r < 0)
++                                return log_oom();
++                        if (r > 0) {
++                                /* Haven't seen this one before. Close it. */
++                                dns_stream_ref(s);
++                                (void) dns_stream_complete(s, ECONNRESET);
++
++                                /* This might have a ripple effect, let's hence no look at the list further,
++                                 * but scan from the beginning again */
++                                restart = true;
++                                break;
++                        }
++                }
++        } while (restart);
++
++        return 0;
++}
+diff --git a/src/resolve/resolved-dns-stream.h b/src/resolve/resolved-dns-stream.h
+index ba4a59e41c..912b9bf431 100644
+--- a/src/resolve/resolved-dns-stream.h
++++ b/src/resolve/resolved-dns-stream.h
+@@ -126,3 +126,4 @@ static inline bool DNS_STREAM_QUEUED(DnsStream *s) {
+ }
+ 
+ void dns_stream_detach(DnsStream *s);
++int dns_stream_disconnect_all(Manager *m);
+
