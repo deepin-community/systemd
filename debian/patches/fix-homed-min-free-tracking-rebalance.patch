@@ -1,0 +1,30 @@
+From 294458fd00a483788c6d9b4aa3a8684d3599ca35 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Mon, 22 Jun 2026 13:38:05 +0800
+Subject: [PATCH] homed: fix min_free tracking in manager_rebalance_calculate()
+
+min_free is supposed to track the minimum free space across all home
+directories to scale the next rebalance interval. However, it was
+incorrectly assigned h->rebalance_size (the home's current total
+allocation) instead of new_free (the remaining allocatable space).
+
+This caused the rebalance interval to be computed from allocation sizes
+rather than free space, so a nearly-full home would not trigger the
+shorter intervals it should, delaying response to low-space conditions.
+
+Signed-off-by: dongshengyuan <dongshengyuan@uniontech.com>
+
+diff --git a/src/home/homed-manager.c b/src/home/homed-manager.c
+index bdee16d276..81b2e83763 100644
+--- a/src/home/homed-manager.c
++++ b/src/home/homed-manager.c
+@@ -1909,7 +1909,7 @@ static int manager_rebalance_calculate(Manager *m) {
+                 /* Keep track of home directory with the least amount of space left: we want to schedule the
+                  * next rebalance more quickly if this is low */
+                 if (new_free < min_free)
+-                        min_free = h->rebalance_size;
++                        min_free = new_free;
+ 
+                 if (new_free > UINT64_MAX - h->rebalance_usage)
+                         h->rebalance_goal = UINT64_MAX-1; /* maximum size */
+
