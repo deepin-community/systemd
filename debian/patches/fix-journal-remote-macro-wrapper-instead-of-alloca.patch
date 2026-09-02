@@ -1,0 +1,150 @@
+From 320ff932658fb1e3c2aeb1832ff6c10d755e5a56 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Zbigniew=20J=C4=99drzejewski-Szmek?= <zbyszek@in.waw.pl>
+Date: Fri, 12 Jan 2024 16:37:04 +0100
+Subject: [PATCH] journal-remote: use macro wrapper instead of alloca to extend
+ string
+
+We would use alloca to extend the format string with "\n". We do this
+automatically in order to not forget appending the newline everywhere.
+We can simplify the whole thing by using a macro to append the newline instead,
+which means that we don't need to copy the string.
+
+Because we concatenate the string argument with another literal string, we know
+it must a literal string. Thus it's not a problem that it is "evaluated" two
+times.
+
+Quoting Hristo Venev:
+> Since commit f5e757f1ce84c1d6ae932cf2b604238fb4cedc00, mhd_respond() adds a
+> newline to its argument before passing it on to mhd_respond_internal(). This
+> is done via an alloca()-allocated buffer. However, MHD_RESPMEM_PERSISTENT is
+> given as a flag to MHD_create_response_from_buffer(), leading to a
+> use-after-free later when the response is sent. Replacing
+> MHD_RESPMEM_PERSISTENT with MHD_RESPMEM_MUST_COPY appears to fix the issue.
+
+MHD_RESPMEM_MUST_COPY would work, but we also use mhd_respond() for mhd_oom(),
+and we don't want to allocate in an oom scenario in order to maximize the
+possibility that an answer will be delivered. Using the macro magic makes this
+nicer and we get rid of the code doing alloca.
+
+Fixes an issue reported by Hristo Venev.
+Fixes https://github.com/systemd/systemd/issues/9858.
+
+diff --git a/src/journal-remote/microhttpd-util.c b/src/journal-remote/microhttpd-util.c
+index 9e6c36f87d..c1e35b7ed3 100644
+--- a/src/journal-remote/microhttpd-util.c
++++ b/src/journal-remote/microhttpd-util.c
+@@ -25,11 +25,13 @@ void microhttpd_logger(void *arg, const char *fmt, va_list ap) {
+         REENABLE_WARNING;
+ }
+ 
+-static int mhd_respond_internal(struct MHD_Connection *connection,
+-                                enum MHD_RequestTerminationCode code,
+-                                const char *buffer,
+-                                size_t size,
+-                                enum MHD_ResponseMemoryMode mode) {
++int mhd_respond_internal(
++                struct MHD_Connection *connection,
++                enum MHD_RequestTerminationCode code,
++                const char *buffer,
++                size_t size,
++                enum MHD_ResponseMemoryMode mode) {
++
+         assert(connection);
+ 
+         _cleanup_(MHD_destroy_responsep) struct MHD_Response *response
+@@ -43,29 +45,16 @@ static int mhd_respond_internal(struct MHD_Connection *connection,
+         return MHD_queue_response(connection, code, response);
+ }
+ 
+-int mhd_respond(struct MHD_Connection *connection,
+-                enum MHD_RequestTerminationCode code,
+-                const char *message) {
+-
+-        const char *fmt;
+-
+-        fmt = strjoina(message, "\n");
+-
+-        return mhd_respond_internal(connection, code,
+-                                    fmt, strlen(message) + 1,
+-                                    MHD_RESPMEM_PERSISTENT);
+-}
+-
+ int mhd_respond_oom(struct MHD_Connection *connection) {
+-        return mhd_respond(connection, MHD_HTTP_SERVICE_UNAVAILABLE,  "Out of memory.");
++        return mhd_respond(connection, MHD_HTTP_SERVICE_UNAVAILABLE, "Out of memory.");
+ }
+ 
+-int mhd_respondf(struct MHD_Connection *connection,
+-                 int error,
+-                 enum MHD_RequestTerminationCode code,
+-                 const char *format, ...) {
++int mhd_respondf_internal(
++                struct MHD_Connection *connection,
++                int error,
++                enum MHD_RequestTerminationCode code,
++                const char *format, ...) {
+ 
+-        const char *fmt;
+         char *m;
+         int r;
+         va_list ap;
+@@ -76,11 +65,8 @@ int mhd_respondf(struct MHD_Connection *connection,
+         if (error < 0)
+                 error = -error;
+         errno = -error;
+-        fmt = strjoina(format, "\n");
+         va_start(ap, format);
+-        DISABLE_WARNING_FORMAT_NONLITERAL;
+-        r = vasprintf(&m, fmt, ap);
+-        REENABLE_WARNING;
++        r = vasprintf(&m, format, ap);
+         va_end(ap);
+ 
+         if (r < 0)
+diff --git a/src/journal-remote/microhttpd-util.h b/src/journal-remote/microhttpd-util.h
+index 140e7f6223..309c39aab0 100644
+--- a/src/journal-remote/microhttpd-util.h
++++ b/src/journal-remote/microhttpd-util.h
+@@ -62,17 +62,34 @@ void microhttpd_logger(void *arg, const char *fmt, va_list ap) _printf_(2, 0);
+ /* respond_oom() must be usable with return, hence this form. */
+ #define respond_oom(connection) log_oom(), mhd_respond_oom(connection)
+ 
+-int mhd_respondf(struct MHD_Connection *connection,
+-                 int error,
+-                 enum MHD_RequestTerminationCode code,
+-                 const char *format, ...) _printf_(4,5);
+-
+-int mhd_respond(struct MHD_Connection *connection,
++int mhd_respond_internal(
++                struct MHD_Connection *connection,
+                 enum MHD_RequestTerminationCode code,
+-                const char *message);
++                const char *buffer,
++                size_t size,
++                enum MHD_ResponseMemoryMode mode);
++
++#define mhd_respond(connection, code, message)                  \
++        mhd_respond_internal(                                   \
++             connection, code,                                  \
++             message "\n",                                      \
++             strlen(message) + 1,                               \
++             MHD_RESPMEM_PERSISTENT)
+ 
+ int mhd_respond_oom(struct MHD_Connection *connection);
+ 
++int mhd_respondf_internal(
++                struct MHD_Connection *connection,
++                int error,
++                enum MHD_RequestTerminationCode code,
++                const char *format, ...) _printf_(4,5);
++
++#define mhd_respondf(connection, error, code, format, ...)      \
++        mhd_respondf_internal(                                  \
++                connection, error, code,                        \
++                format "\n",                                    \
++                ##__VA_ARGS__)
++
+ int check_permissions(struct MHD_Connection *connection, int *code, char **hostname);
+ 
+ /* Set gnutls internal logging function to a callback which uses our
+
