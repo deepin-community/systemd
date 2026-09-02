@@ -1,0 +1,21 @@
+From 18cf8411b712e7264c56d80369c8945491af90ee Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Wed, 17 Jan 2024 17:20:29 +0800
+Subject: [PATCH] core/unit: check for correct function in vtable
+
+Prompted by https://github.com/systemd/systemd/pull/30974/commits/61e44e01325eca50e88fc9cd400ee340081e9134
+
+diff --git a/src/core/unit.c b/src/core/unit.c
+index 011261a7fc..663e7e1737 100644
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -6539,7 +6539,7 @@ int activation_details_append_pair(ActivationDetails *details, char ***strv) {
+                         return r;
+         }
+ 
+-        if (ACTIVATION_DETAILS_VTABLE(details)->append_env) {
++        if (ACTIVATION_DETAILS_VTABLE(details)->append_pair) {
+                 r = ACTIVATION_DETAILS_VTABLE(details)->append_pair(details, strv);
+                 if (r < 0)
+                         return r;
+
