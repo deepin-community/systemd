@@ -1,0 +1,115 @@
+From 42c8f1c761bee937d4416bdc1fadcbdb5f0eb665 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 30 Oct 2024 22:33:57 +0100
+Subject: [PATCH] machined: port to pty_open_peer_racefree()
+
+Open the PTY peer for machine shells via the new race-free TIOCGPTPEER
+ioctl() directly, instead of joining the machine's namespace and opening
+the peer by path. Fall back to the path-based open when the ioctl() is
+not supported.
+
+The pty_open_peer_racefree() helper is folded in from upstream commit
+fc9dc71a3f1aeafaada1fd327d3a228e53ed94b6 ("terminal-util: add
+pty_open_peer() helper"), which this change depends on.
+---
+ src/basic/terminal-util.c  | 30 ++++++++++++++++++++++++++++++
+ src/basic/terminal-util.h  |  2 ++
+ src/machine/machine-dbus.c | 13 ++++++++-----
+ 3 files changed, 40 insertions(+), 5 deletions(-)
+
+diff --git a/src/basic/terminal-util.c b/src/basic/terminal-util.c
+index 3355b74..8fe652f 100644
+--- a/src/basic/terminal-util.c
++++ b/src/basic/terminal-util.c
+@@ -23,6 +23,7 @@
+ #include "alloc-util.h"
+ #include "constants.h"
+ #include "devnum-util.h"
++#include "errno-util.h"
+ #include "env-util.h"
+ #include "fd-util.h"
+ #include "fileio.h"
+@@ -1551,3 +1552,32 @@ int set_terminal_cursor_position(int fd, unsigned int row, unsigned int column)
+ 
+         return 0;
+ }
++
++int pty_open_peer_racefree(int fd, int mode) {
++        assert(fd >= 0);
++
++        /* Opens the peer PTY using the new race-free TIOCGPTPEER ioctl() (kernel 4.13).
++         *
++         * This is safe to be called on TTYs from other namespaces. */
++
++        assert((mode & (O_CREAT|O_PATH|O_DIRECTORY|O_TMPFILE)) == 0);
++
++        /* This replicates the EIO retry logic of open_terminal() in a modified way. */
++        for (unsigned c = 0;; c++) {
++                int peer_fd = ioctl(fd, TIOCGPTPEER, mode);
++                if (peer_fd >= 0)
++                        return peer_fd;
++
++                if (ERRNO_IS_NOT_SUPPORTED(errno) || errno == EINVAL) /* new ioctl() is not supported, return a clear error */
++                        return -EOPNOTSUPP;
++
++                if (errno != EIO)
++                        return -errno;
++
++                /* Max 1s in total */
++                if (c >= 20)
++                        return -EIO;
++
++                (void) usleep_safe(50 * USEC_PER_MSEC);
++        }
++}
+diff --git a/src/basic/terminal-util.h b/src/basic/terminal-util.h
+index 2a7d48b..710b328 100644
+--- a/src/basic/terminal-util.h
++++ b/src/basic/terminal-util.h
+@@ -262,6 +262,8 @@ int openpt_allocate(int flags, char **ret_slave);
+ int openpt_allocate_in_namespace(pid_t pid, int flags, char **ret_slave);
+ int open_terminal_in_namespace(pid_t pid, const char *name, int mode);
+ 
++int pty_open_peer_racefree(int fd, int mode);
++
+ int vt_default_utf8(void);
+ int vt_reset_keyboard(int fd);
+ int vt_restore(int fd);
+diff --git a/src/machine/machine-dbus.c b/src/machine/machine-dbus.c
+index 4620f32..ba92ab1 100644
+--- a/src/machine/machine-dbus.c
++++ b/src/machine/machine-dbus.c
+@@ -592,7 +592,7 @@ int bus_machine_method_open_shell(sd_bus_message *message, void *userdata, sd_bu
+         _cleanup_strv_free_ char **env = NULL, **args_wire = NULL, **args = NULL;
+         _cleanup_free_ char *command_line = NULL;
+         Machine *m = ASSERT_PTR(userdata);
+-        const char *p, *unit, *user, *path, *description, *utmp_id;
++        const char *unit, *user, *path, *description, *utmp_id;
+         int r;
+ 
+         assert(message);
+@@ -672,10 +672,11 @@ int bus_machine_method_open_shell(sd_bus_message *message, void *userdata, sd_bu
+         if (master < 0)
+                 return master;
+ 
+-        p = path_startswith(pty_name, "/dev/pts/");
+-        assert(p);
+-
+-        slave = machine_open_terminal(m, pty_name, O_RDWR|O_NOCTTY|O_CLOEXEC);
++        /* First try to get an fd for the PTY peer via the new racefree ioctl(), directly. Otherwise go via
++         * joining the namespace, because it goes by path */
++        slave = pty_open_peer_racefree(master, O_RDWR|O_NOCTTY|O_CLOEXEC);
++        if (ERRNO_IS_NEG_NOT_SUPPORTED(slave))
++                slave = machine_open_terminal(m, pty_name, O_RDWR|O_NOCTTY|O_CLOEXEC);
+         if (slave < 0)
+                 return slave;
+ 
+@@ -693,6 +694,8 @@ int bus_machine_method_open_shell(sd_bus_message *message, void *userdata, sd_bu
+                 return r;
+ 
+         /* Name and mode */
++        const char *p = ASSERT_PTR(path_startswith(pty_name, "/dev/pts/"));
++
+         unit = strjoina("container-shell@", p, ".service");
+         r = sd_bus_message_append(tm, "ss", unit, "fail");
+         if (r < 0)
