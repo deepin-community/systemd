@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * import: check overflow when reading input file, fixing potential buffer overrun (CID#1548022, CID#1548075)
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 02 Sep 2026 21:33:21 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
