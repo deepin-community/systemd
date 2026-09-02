@@ -1,0 +1,20 @@
+From 0fa25bd5f4789e8b37be5dd7927bab81c18c2dcd Mon Sep 17 00:00:00 2001
+From: Antonio Alvarez Feijoo <antonio.feijoo@suse.com>
+Date: Tue, 30 Jan 2024 11:59:54 +0100
+Subject: [PATCH] conf-parser: fix OOM check
+
+
+diff --git a/src/shared/conf-parser.c b/src/shared/conf-parser.c
+index f5efc7618a..40d3675b7e 100644
+--- a/src/shared/conf-parser.c
++++ b/src/shared/conf-parser.c
+@@ -466,7 +466,7 @@ int hashmap_put_stats_by_path(Hashmap **stats_by_path, const char *path, const s
+                 return -ENOMEM;
+ 
+         path_copy = strdup(path);
+-        if (!path)
++        if (!path_copy)
+                 return -ENOMEM;
+ 
+         r = hashmap_put(*stats_by_path, path_copy, st_copy);
+
