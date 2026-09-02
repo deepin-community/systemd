@@ -1,0 +1,31 @@
+From f8b02771019a52e9f4a60378b93bf496d54f2c83 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 11 Apr 2025 08:42:52 +0900
+Subject: [PATCH] analyze: replace set_free_free() with set_free()
+
+set_put_strdup() uses &string_hash_ops_free, hence set_free() also
+frees stored contents.
+
+diff --git a/src/analyze/analyze-verify-util.c b/src/analyze/analyze-verify-util.c
+index 97f5449b0b..04d9de381e 100644
+--- a/src/analyze/analyze-verify-util.c
++++ b/src/analyze/analyze-verify-util.c
+@@ -31,7 +31,7 @@ static void log_syntax_callback(const char *unit, int level, void *userdata) {
+ 
+         r = set_put_strdup(s, unit);
+         if (r < 0) {
+-                set_free_free(*s);
++                set_free(*s);
+                 *s = POINTER_MAX;
+         }
+ }
+@@ -265,7 +265,7 @@ static int verify_unit(Unit *u, bool check_man, const char *root) {
+ static void set_destroy_ignore_pointer_max(Set **s) {
+         if (*s == POINTER_MAX)
+                 return;
+-        set_free_free(*s);
++        set_free(*s);
+ }
+ 
+ int verify_units(
+
