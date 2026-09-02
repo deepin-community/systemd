@@ -1,0 +1,51 @@
+From bed73f32acef7be6bb5d7d0184da89ddb41a8705 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Fri, 21 Jun 2024 17:05:26 +0200
+Subject: [PATCH] varlink: yet another fix around handling of IDL comments
+
+Skip over them when validating a message against the IDL.
+
+Add test case that tests this.
+
+diff --git a/src/shared/varlink-idl.c b/src/shared/varlink-idl.c
+index f81c38c53d..e6a4942ad8 100644
+--- a/src/shared/varlink-idl.c
++++ b/src/shared/varlink-idl.c
+@@ -1782,6 +1782,9 @@ static int varlink_idl_validate_symbol(const VarlinkSymbol *symbol, sd_json_vari
+ 
+                 for (const VarlinkField *field = symbol->fields; field->field_type != _VARLINK_FIELD_TYPE_END_MARKER; field++) {
+ 
++                        if (field->field_type == _VARLINK_FIELD_COMMENT)
++                                continue;
++
+                         assert(field->field_type == VARLINK_ENUM_VALUE);
+ 
+                         if (streq_ptr(field->name, s)) {
+@@ -1810,6 +1813,9 @@ static int varlink_idl_validate_symbol(const VarlinkSymbol *symbol, sd_json_vari
+ 
+                 for (const VarlinkField *field = symbol->fields; field->field_type != _VARLINK_FIELD_TYPE_END_MARKER; field++) {
+ 
++                        if (field->field_type == _VARLINK_FIELD_COMMENT)
++                                continue;
++
+                         if (field->field_direction != direction)
+                                 continue;
+ 
+diff --git a/src/test/test-varlink-idl.c b/src/test/test-varlink-idl.c
+index c2be1dfec0..92a714b5bd 100644
+--- a/src/test/test-varlink-idl.c
++++ b/src/test/test-varlink-idl.c
+@@ -279,7 +279,11 @@ TEST(validate_json) {
+         /* This one has (nested) enonymous enums and structs */
+         static const char text[] =
+                 "interface validate.test\n"
+-                "method Mymethod ( a:string, b:int, c:?bool, d:[]int, e:?[string]bool, f:?(piff, paff), g:(f:float) ) -> ()\n";
++                "method Mymethod ( \n"
++                "# piff   \n"
++                "a:string,\n"
++                "#paff\n"
++                "b:int, c:?bool, d:[]int, e:?[string]bool, f:?(piff, paff), g:(f:float) ) -> ()\n";
+ 
+         assert_se(varlink_idl_parse(text, NULL, NULL, &parsed) >= 0);
+         test_parse_format_one(parsed);
+
