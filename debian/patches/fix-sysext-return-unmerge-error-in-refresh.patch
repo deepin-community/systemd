@@ -1,0 +1,25 @@
+From 8ebfef5c96d09bed31a75e1ccba0b63a3cd1a332 Mon Sep 17 00:00:00 2001
+From: Antonio Alvarez Feijoo <antonio.feijoo@suse.com>
+Date: Fri, 5 Apr 2024 15:24:40 +0200
+Subject: [PATCH] sysext: do not return 0 if `unmerge()` fails in the
+ `refresh()` function.
+
+Actually, return the result of `unmerge()` if it is called in the `refresh()`
+function.
+
+Fixes 8662fcbcf1f31725998bd1ebe706ac813b053962
+
+diff --git a/src/sysext/sysext.c b/src/sysext/sysext.c
+index 7c97070546..9248e67127 100644
+--- a/src/sysext/sysext.c
++++ b/src/sysext/sysext.c
+@@ -2019,7 +2019,7 @@ static int refresh(
+          * 4. If there was no overlayfs mount so far, and no extensions installed, we implement a NOP.
+          */
+ 
+-        return 0;
++        return r;
+ }
+ 
+ static int verb_refresh(int argc, char **argv, void *userdata) {
+
