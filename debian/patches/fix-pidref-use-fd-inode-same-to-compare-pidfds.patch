@@ -1,0 +1,68 @@
+From 2f41f10bcd5eb1d52e8aeeafd92d93e7efa69091 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Mon, 11 Mar 2024 16:41:51 +0800
+Subject: [PATCH] pidref: use fd_inode_same to compare pidfds
+
+
+diff --git a/src/basic/pidref.c b/src/basic/pidref.c
+index abe372be2e..5f1042fae8 100644
+--- a/src/basic/pidref.c
++++ b/src/basic/pidref.c
+@@ -8,6 +8,33 @@
+ #include "pidref.h"
+ #include "process-util.h"
+ #include "signal-util.h"
++#include "stat-util.h"
++
++bool pidref_equal(const PidRef *a, const PidRef *b) {
++        int r;
++
++        if (pidref_is_set(a)) {
++                if (!pidref_is_set(b))
++                        return false;
++
++                if (a->pid != b->pid)
++                        return false;
++
++                if (a->fd < 0 || b->fd < 0)
++                        return true;
++
++                /* pidfds live in their own pidfs and each process comes with a unique inode number since
++                 * kernel 6.8. We can safely do this on older kernels too though, as previously anonymous
++                 * inode was used and inode number was the same for all pidfds. */
++                r = fd_inode_same(a->fd, b->fd);
++                if (r < 0)
++                        log_debug_errno(r, "Failed to check whether pidfds for pid " PID_FMT " are equal, assuming yes: %m",
++                                        a->pid);
++                return r != 0;
++        }
++
++        return !pidref_is_set(b);
++}
+ 
+ int pidref_set_pid(PidRef *pidref, pid_t pid) {
+         int fd;
+diff --git a/src/basic/pidref.h b/src/basic/pidref.h
+index c440c8b0e0..9920ebb9b3 100644
+--- a/src/basic/pidref.h
++++ b/src/basic/pidref.h
+@@ -19,17 +19,7 @@ static inline bool pidref_is_set(const PidRef *pidref) {
+         return pidref && pidref->pid > 0;
+ }
+ 
+-static inline bool pidref_equal(const PidRef *a, const PidRef *b) {
+-
+-        if (pidref_is_set(a)) {
+-                if (!pidref_is_set(b))
+-                        return false;
+-
+-                return a->pid == b->pid;
+-        }
+-
+-        return !pidref_is_set(b);
+-}
++bool pidref_equal(const PidRef *a, const PidRef *b);
+ 
+ /* This turns a pid_t into a PidRef structure, and acquires a pidfd for it, if possible. (As opposed to
+  * PIDREF_MAKE_FROM_PID() above, which does not acquire a pidfd.) */
+

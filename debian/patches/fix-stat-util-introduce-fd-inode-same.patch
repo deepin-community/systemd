@@ -1,0 +1,27 @@
+From 0cdb8df6202e1b18d219c7fd0d74dd262231de78 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Mon, 11 Mar 2024 16:28:30 +0800
+Subject: [PATCH] stat-util: introduce fd_inode_same
+
+---
+ src/basic/stat-util.h | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/basic/stat-util.h b/src/basic/stat-util.h
+index 47445d852a0f..c5dfd2db16a3 100644
+--- a/src/basic/stat-util.h
++++ b/src/basic/stat-util.h
+@@ -47,10 +47,12 @@ static inline int null_or_empty_path(const char *fn) {
+ int path_is_read_only_fs(const char *path);
+ 
+ int inode_same_at(int fda, const char *filea, int fdb, const char *fileb, int flags);
+-
+ static inline int inode_same(const char *filea, const char *fileb, int flags) {
+         return inode_same_at(AT_FDCWD, filea, AT_FDCWD, fileb, flags);
+ }
++static inline int fd_inode_same(int fda, int fdb) {
++        return inode_same_at(fda, NULL, fdb, NULL, AT_EMPTY_PATH);
++}
+ 
+ /* The .f_type field of struct statfs is really weird defined on
+  * different archs. Let's give its type a name. */

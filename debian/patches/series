@@ -72,3 +72,7 @@ fix-resolved-reduce-dnssec-transactions.patch
 fix-sd-journal-reduce-fstat-and-immutable-flag.patch
 fix-sysusers-gracefully-handle-existing-group-in-gshadow.patch
 fix-dbus-skip-flush-when-bus-not-running.patch
+fix-stat-util-optional-file-names-in-inode-same-at.patch
+fix-stat-util-introduce-fd-inode-same.patch
+fix-stat-util-st-dev-check-for-stat-initialization.patch
+fix-pidref-use-fd-inode-same-to-compare-pidfds.patch
