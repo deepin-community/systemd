@@ -1,0 +1,101 @@
+From 760fa203c2e335d437948355f1dc66b88b39b9f6 Mon Sep 17 00:00:00 2001
+From: Ronan Pigott <ronan@rjp.ie>
+Date: Tue, 20 Aug 2024 10:25:28 -0700
+Subject: [PATCH] resolved: use the fallback servers when no default dns is
+ configured
+
+This expands the role of fallback servers so they are applied not only
+when there are no dns servers configured, but when all the configured
+dns servers are configured only for non-default-route links.
+
+Adapted for v255: also fold in the small prerequisites this commit
+depends on from the same upstream PR, since they do not exist in this
+branch yet: dns_server_is_fallback() (upstream c00157ddc2a7) and
+link_set_default_route() (upstream 73e566bf1634).
+
+diff --git a/src/resolve/resolved-dns-server.c b/src/resolve/resolved-dns-server.c
+index b7db839..4408f95 100644
+--- a/src/resolve/resolved-dns-server.c
++++ b/src/resolve/resolved-dns-server.c
+@@ -899,7 +899,7 @@ DnsServer *manager_get_dns_server(Manager *m) {
+                  * servers */
+ 
+                 HASHMAP_FOREACH(l, m->links)
+-                        if (l->dns_servers) {
++                        if (l->dns_servers && l->default_route) {
+                                 found = true;
+                                 break;
+                         }
+diff --git a/src/resolve/resolved-dns-server.h b/src/resolve/resolved-dns-server.h
+index ed6560f..7fe3195 100644
+--- a/src/resolve/resolved-dns-server.h
++++ b/src/resolve/resolved-dns-server.h
+@@ -174,4 +174,8 @@ void dns_server_unref_stream(DnsServer *s);
+ 
+ DnsScope *dns_server_scope(DnsServer *s);
+ 
++static inline bool dns_server_is_fallback(DnsServer *s) {
++        return s && s->type == DNS_SERVER_FALLBACK;
++}
++
+ int dns_server_dump_state_to_json(DnsServer *server, JsonVariant **ret);
+diff --git a/src/resolve/resolved-link-bus.c b/src/resolve/resolved-link-bus.c
+index 4f8f591..6985a9e 100644
+--- a/src/resolve/resolved-link-bus.c
++++ b/src/resolve/resolved-link-bus.c
+@@ -458,8 +458,7 @@ int bus_link_method_set_default_route(sd_bus_message *message, void *userdata, s
+         bus_client_log(message, "dns default route change");
+ 
+         if (l->default_route != b) {
+-                l->default_route = b;
+-
++                link_set_default_route(l, b);
+                 (void) link_save_user(l);
+                 (void) manager_write_resolv_conf(l->manager);
+ 
+diff --git a/src/resolve/resolved-link.c b/src/resolve/resolved-link.c
+index dd5dadd..382a2c0 100644
+--- a/src/resolve/resolved-link.c
++++ b/src/resolve/resolved-link.c
+@@ -319,7 +319,7 @@ static int link_update_default_route(Link *l) {
+         if (r < 0)
+                 goto clear;
+ 
+-        l->default_route = r > 0;
++        link_set_default_route(l, r > 0);
+         return 0;
+ 
+ clear:
+@@ -766,6 +766,20 @@ void link_next_dns_server(Link *l, DnsServer *if_current) {
+         link_set_dns_server(l, l->dns_servers);
+ }
+ 
++void link_set_default_route(Link *l, bool b) {
++        assert(l);
++
++        if (l->default_route == b)
++                return;
++
++        l->default_route = b;
++
++        /* If we are currently using the fallback servers, changing a link to be default-route means
++         * we should reconsider whether or not the fallback servers are necessary. */
++        if (b && dns_server_is_fallback(l->manager->current_dns_server))
++                manager_set_dns_server(l->manager, NULL);
++}
++
+ DnsOverTlsMode link_get_dns_over_tls_mode(Link *l) {
+         assert(l);
+ 
+diff --git a/src/resolve/resolved-link.h b/src/resolve/resolved-link.h
+index 0695a6f..482a4b4 100644
+--- a/src/resolve/resolved-link.h
++++ b/src/resolve/resolved-link.h
+@@ -99,6 +99,7 @@ void link_allocate_scopes(Link *l);
+ DnsServer* link_set_dns_server(Link *l, DnsServer *s);
+ DnsServer* link_get_dns_server(Link *l);
+ void link_next_dns_server(Link *l, DnsServer *if_current);
++void link_set_default_route(Link *l, bool b);
+ 
+ DnssecMode link_get_dnssec_mode(Link *l);
+ bool link_dnssec_supported(Link *l);
