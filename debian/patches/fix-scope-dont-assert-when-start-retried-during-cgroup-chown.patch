@@ -1,0 +1,30 @@
+From 62c182f0d5c2ec6cbdfaf808d143a8a4c7e01f29 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Wed, 1 Jul 2026 17:01:27 +0100
+Subject: [PATCH] core/scope: don't assert when start is retried during cgroup
+ chown
+
+While a delegated scope waits for the async cgroup chown helper it sits
+in SCOPE_START_CHOWN (UNIT_ACTIVATING). unit_start() forwards to
+->start() while activating, so scope_start() could be re-entered in
+that state and trip assert(s->state == SCOPE_DEAD), aborting PID 1.
+Treat SCOPE_START_CHOWN as already-starting instead.
+
+Follow-up for 03860190fefce8bbea3a6f0e77919b882ade517c
+
+diff --git a/src/core/scope.c b/src/core/scope.c
+index 5e116a6f31..6d2e8836d8 100644
+--- a/src/core/scope.c
++++ b/src/core/scope.c
+@@ -437,6 +437,10 @@ static int scope_start(Unit *u) {
+         if (IN_SET(s->state, SCOPE_STOP_SIGTERM, SCOPE_STOP_SIGKILL))
+                 return -EAGAIN;
+ 
++        /* Already starting up (waiting for the async cgroup chown helper)? Then there's nothing to do. */
++        if (s->state == SCOPE_START_CHOWN)
++                return 0;
++
+         assert(s->state == SCOPE_DEAD);
+ 
+         if (!u->transient && !MANAGER_IS_RELOADING(u->manager))
+
