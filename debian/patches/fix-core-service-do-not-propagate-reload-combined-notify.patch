@@ -1,0 +1,75 @@
+From c337a1301f2de4105fc8023e45db20238c6a895a Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Wed, 26 Feb 2025 15:02:58 +0100
+Subject: [PATCH] core/service: do not propagate reload for combined
+ RELOADING=1 + READY=1 when notify-reload
+
+Follow-up for 3bd28bf721dc70722ff1c675026ed0b44ad968a3
+
+SERVICE_RELOAD_SIGNAL state can only be reached via explicit reload jobs,
+and we have a clear distinction between that and plain RELOADING=1
+notifications, the latter of which is issued by clients doing reload
+outside of our job engine. I.e. upon SERVICE_RELOAD_SIGNAL + RELOADING=1
+we don't propagate reload jobs again, since that's done during transaction
+construction stage already. The handling of combined RELOADING=1 + READY=1
+so far is bogus however, as it tries to propagate duplicate reload jobs.
+Amend this by following the logic for standalone RELOADING=1.
+
+diff --git a/src/core/service.c b/src/core/service.c
+index dca8a43cb4..112e4370a5 100644
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -4694,7 +4694,28 @@ static void service_notify_message(
+ 
+                 s->notify_state = NOTIFY_READY;
+ 
+-                /* Type=notify services inform us about completed initialization with READY=1 */
++                /* Combined RELOADING=1 and READY=1? Then this is indication that the service started and
++                 * immediately finished reloading. */
++                if (strv_contains(tags, "RELOADING=1")) {
++                        if (s->state == SERVICE_RELOAD_SIGNAL &&
++                            monotonic_usec != USEC_INFINITY &&
++                            monotonic_usec >= s->reload_begin_usec)
++                                /* Valid Type=notify-reload protocol? Then we're all good. */
++                                service_enter_running(s, SERVICE_SUCCESS);
++
++                        else if (s->state == SERVICE_RUNNING) {
++                                _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
++
++                                /* Propagate a reload explicitly for plain RELOADING=1 (semantically equivalent to
++                                 * service_enter_reload_by_notify() call in below) */
++                                r = manager_propagate_reload(UNIT(s)->manager, UNIT(s), JOB_FAIL, &error);
++                                if (r < 0)
++                                        log_unit_warning(UNIT(s), "Failed to schedule propagation of reload, ignoring: %s",
++                                                         bus_error_message(&error, r));
++                        }
++                }
++
++                /* Type=notify(-reload) services inform us about completed initialization with READY=1 */
+                 if (IN_SET(s->type, SERVICE_NOTIFY, SERVICE_NOTIFY_RELOAD) &&
+                     s->state == SERVICE_START)
+                         service_enter_start_post(s);
+@@ -4703,22 +4724,6 @@ static void service_notify_message(
+                 if (s->state == SERVICE_RELOAD_NOTIFY)
+                         service_enter_running(s, SERVICE_SUCCESS);
+ 
+-                /* Combined RELOADING=1 and READY=1? Then this is indication that the service started and
+-                 * immediately finished reloading. */
+-                if (s->state == SERVICE_RELOAD_SIGNAL &&
+-                    strv_contains(tags, "RELOADING=1") &&
+-                    monotonic_usec != USEC_INFINITY &&
+-                    monotonic_usec >= s->reload_begin_usec) {
+-                        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+-
+-                        /* Propagate a reload explicitly */
+-                        r = manager_propagate_reload(UNIT(s)->manager, UNIT(s), JOB_FAIL, &error);
+-                        if (r < 0)
+-                                log_unit_warning(UNIT(s), "Failed to schedule propagation of reload, ignoring: %s", bus_error_message(&error, r));
+-
+-                        service_enter_running(s, SERVICE_SUCCESS);
+-                }
+-
+                 notify_dbus = true;
+ 
+         } else if (strv_contains(tags, "RELOADING=1")) {
+
