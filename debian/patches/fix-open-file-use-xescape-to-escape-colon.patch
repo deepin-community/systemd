@@ -1,0 +1,44 @@
+From c1f9509f79b1edf53975ebfa2052a23b23c42a49 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Tue, 9 Apr 2024 21:54:30 +0800
+Subject: [PATCH] shared/open-file: use xescape to escape ':'
+
+Fixes #32179
+
+diff --git a/src/shared/open-file.c b/src/shared/open-file.c
+index 09062d8e6e..a9c2a11032 100644
+--- a/src/shared/open-file.c
++++ b/src/shared/open-file.c
+@@ -95,7 +95,7 @@ int open_file_to_string(const OpenFile *of, char **ret) {
+         assert(of);
+         assert(ret);
+ 
+-        s = shell_escape(of->path, ":");
++        s = xescape(of->path, ":");
+         if (!s)
+                 return -ENOMEM;
+ 
+diff --git a/src/test/test-open-file.c b/src/test/test-open-file.c
+index 1b938ec5f7..4c3ba57bc8 100644
+--- a/src/test/test-open-file.c
++++ b/src/test/test-open-file.c
+@@ -172,14 +172,12 @@ TEST(open_file_to_string) {
+         assert_se(streq(s, "/proc/1/ns/mnt::read-only"));
+ 
+         s = mfree(s);
+-        assert_se(free_and_strdup(&of->path, "/path:with:colon"));
+-        assert_se(free_and_strdup(&of->fdname, "path:with:colon"));
++        ASSERT_OK(free_and_strdup(&of->path, "/path:with:colon"));
++        ASSERT_OK(free_and_strdup(&of->fdname, "path:with:colon"));
+         of->flags = 0;
+ 
+-        r = open_file_to_string(of, &s);
+-
+-        assert_se(r >= 0);
+-        assert_se(streq(s, "/path\\:with\\:colon"));
++        ASSERT_OK(open_file_to_string(of, &s));
++        ASSERT_STREQ(s, "/path\\x3awith\\x3acolon");
+ }
+ 
+ DEFINE_TEST_MAIN(LOG_INFO);
+
