@@ -1,0 +1,48 @@
+From 99d4575e541fa1fb00dc80f7aad572f3a66db461 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?J=C3=B6rg=20Behrmann?= <behrmann@physik.fu-berlin.de>
+Date: Fri, 12 Jul 2024 10:43:54 +0200
+Subject: [PATCH] kernel-install: Remove existing loader entries and UKIs
+
+When boot counting is enabled, adding a new loader entry or UKI can conflict
+with an existing one that has booted successfully and therefore has its boot
+counter removed. systemd-bless-boot will fail to bless the new successful boot,
+since a file without a boot counter already exists. Since kernel-install will
+clobber existing files without boot counting, we should therefore remove files
+without a boot count as well, when we add a file with one.
+
+Fixes: #33504
+
+diff --git a/src/kernel-install/90-loaderentry.install.in b/src/kernel-install/90-loaderentry.install.in
+index 766d321595..4ef6aca169 100755
+--- a/src/kernel-install/90-loaderentry.install.in
++++ b/src/kernel-install/90-loaderentry.install.in
+@@ -101,6 +101,11 @@ if [ -f "$TRIES_FILE" ]; then
+         echo "$TRIES_FILE does not contain an integer." >&2
+         exit 1
+     fi
++    if [ -f "$LOADER_ENTRY" ]; then
++        [ "$KERNEL_INSTALL_VERBOSE" -gt 0 ] && \
++            echo "Removing previous loader entry '$LOADER_ENTRY' without boot counting." >&2
++        rm -f "$LOADER_ENTRY" "${LOADER_ENTRY%.conf}+"*.conf
++    fi
+     LOADER_ENTRY="${LOADER_ENTRY%.conf}+$TRIES.conf"
+ fi
+ 
+diff --git a/src/kernel-install/90-uki-copy.install b/src/kernel-install/90-uki-copy.install
+index d443c4b401..d6f71349cb 100755
+--- a/src/kernel-install/90-uki-copy.install
++++ b/src/kernel-install/90-uki-copy.install
+@@ -61,6 +61,12 @@ if [ -f "$TRIES_FILE" ]; then
+         echo "$TRIES_FILE does not contain an integer." >&2
+         exit 1
+     fi
++    if [ -f "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi" ]; then
++        [ "$KERNEL_INSTALL_VERBOSE" -gt 0 ] && \
++            echo "Removing previous UKI '$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi' without boot counting." >&2
++        rm -f "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi" "$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION+"*.efi
++    fi
++
+     UKI_FILE="$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION+$TRIES.efi"
+ else
+     UKI_FILE="$UKI_DIR/$ENTRY_TOKEN-$KERNEL_VERSION.efi"
+
