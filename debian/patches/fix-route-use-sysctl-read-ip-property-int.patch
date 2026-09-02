@@ -1,0 +1,114 @@
+From ea684ccb6df5a7ffcfa118b9862e60c8567be9a0 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Tue, 15 Oct 2024 06:52:19 +0900
+Subject: [PATCH] network/route: use sysctl_read_ip_property_int() for reading
+ route/max_size
+
+The kernel internally stores the route maximum sizes as int, so read
+"route/max_size" with sysctl_read_ip_property_int() instead of parsing
+the string with safe_atou(). This also fixes the IPv6 path, which
+previously missed the handling of the kernel's default "no limit" value
+(INT_MAX): for both IPv4 and IPv6, when the sysctl reads INT_MAX the
+default ROUTES_DEFAULT_MAX_PER_FAMILY (4096) is used instead of the
+~2^31 limit, avoiding excessive memory allocation when calculating the
+route table size.
+
+Backport note: includes the prerequisite commit d56d07fc1ed3
+("sysctl-util: introduce sysctl_read_ip_property_int() and _uint32()",
+same upstream PR) which adds the sysctl_read_ip_property_int() and
+sysctl_read_ip_property_uint32() helpers, adapted to this tree.
+
+---
+diff --git a/src/basic/sysctl-util.c b/src/basic/sysctl-util.c
+index b66a662..60645f2 100644
+--- a/src/basic/sysctl-util.c
++++ b/src/basic/sysctl-util.c
+@@ -10,6 +10,7 @@
+ #include "fileio.h"
+ #include "log.h"
+ #include "macro.h"
++#include "parse-util.h"
+ #include "path-util.h"
+ #include "socket-util.h"
+ #include "string-util.h"
+@@ -135,3 +136,29 @@ int sysctl_read_ip_property(int af, const char *ifname, const char *property, ch
+ 
+         return sysctl_read(p, ret);
+ }
++
++int sysctl_read_ip_property_int(int af, const char *ifname, const char *property, int *ret) {
++        _cleanup_free_ char *s = NULL;
++        int r;
++
++        assert(ret);
++
++        r = sysctl_read_ip_property(af, ifname, property, &s);
++        if (r < 0)
++                return r;
++
++        return safe_atoi(s, ret);
++}
++
++int sysctl_read_ip_property_uint32(int af, const char *ifname, const char *property, uint32_t *ret) {
++        _cleanup_free_ char *s = NULL;
++        int r;
++
++        assert(ret);
++
++        r = sysctl_read_ip_property(af, ifname, property, &s);
++        if (r < 0)
++                return r;
++
++        return safe_atou32(s, ret);
++}
+diff --git a/src/basic/sysctl-util.h b/src/basic/sysctl-util.h
+index 3236419..0d1a0f3 100644
+--- a/src/basic/sysctl-util.h
++++ b/src/basic/sysctl-util.h
+@@ -14,6 +14,8 @@ int sysctl_write(const char *property, const char *value);
+ int sysctl_writef(const char *property, const char *format, ...) _printf_(2, 3);
+ 
+ int sysctl_read_ip_property(int af, const char *ifname, const char *property, char **ret);
++int sysctl_read_ip_property_int(int af, const char *ifname, const char *property, int *ret);
++int sysctl_read_ip_property_uint32(int af, const char *ifname, const char *property, uint32_t *ret);
+ int sysctl_write_ip_property(int af, const char *ifname, const char *property, const char *value);
+ static inline int sysctl_write_ip_property_boolean(int af, const char *ifname, const char *property, bool value) {
+         return sysctl_write_ip_property(af, ifname, property, one_zero(value));
+diff --git a/src/network/networkd-route-util.c b/src/network/networkd-route-util.c
+index d49a0b9..fa5f43e 100644
+--- a/src/network/networkd-route-util.c
++++ b/src/network/networkd-route-util.c
+@@ -16,23 +16,26 @@
+ #include "strv.h"
+ #include "sysctl-util.h"
+ 
+-#define ROUTES_DEFAULT_MAX_PER_FAMILY 4096U
++#define ROUTES_DEFAULT_MAX_PER_FAMILY 4096
+ 
+ unsigned routes_max(void) {
+         static thread_local unsigned cached = 0;
+-        _cleanup_free_ char *s4 = NULL, *s6 = NULL;
+-        unsigned val4 = ROUTES_DEFAULT_MAX_PER_FAMILY, val6 = ROUTES_DEFAULT_MAX_PER_FAMILY;
++        int val4 = ROUTES_DEFAULT_MAX_PER_FAMILY, val6 = ROUTES_DEFAULT_MAX_PER_FAMILY;
+ 
+         if (cached > 0)
+                 return cached;
+ 
+-        if (sysctl_read_ip_property(AF_INET, NULL, "route/max_size", &s4) >= 0)
+-                if (safe_atou(s4, &val4) >= 0 && val4 == 2147483647U)
++        /* The kernel internally stores these maximum size in int. */
++
++        if (sysctl_read_ip_property_int(AF_INET, /* ifname = */ NULL, "route/max_size", &val4) >= 0)
++                if (val4 == INT_MAX)
+                         /* This is the default "no limit" value in the kernel */
+                         val4 = ROUTES_DEFAULT_MAX_PER_FAMILY;
+ 
+-        if (sysctl_read_ip_property(AF_INET6, NULL, "route/max_size", &s6) >= 0)
+-                (void) safe_atou(s6, &val6);
++        if (sysctl_read_ip_property_int(AF_INET6, /* ifname = */ NULL, "route/max_size", &val6) >= 0)
++                if (val6 == INT_MAX)
++                        /* This is the default "no limit" value in the kernel */
++                        val6 = ROUTES_DEFAULT_MAX_PER_FAMILY;
+ 
+         cached = MAX(ROUTES_DEFAULT_MAX_PER_FAMILY, val4) +
+                  MAX(ROUTES_DEFAULT_MAX_PER_FAMILY, val6);
