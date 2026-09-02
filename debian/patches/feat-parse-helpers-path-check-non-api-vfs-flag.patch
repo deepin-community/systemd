@@ -1,0 +1,177 @@
+From 0d1332841e96526a713c71d8618939b2443107b5 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 5 Feb 2024 15:38:55 +0100
+Subject: [PATCH] parse-helpers: add new PATH_CHECK_NON_API_VFS flag
+
+In various contexts it's a bit icky to allow paths below /proc/, /sys/,
+/dev/ i.e. file hierarchies where API VFS are placed. Let's add a new
+flag for path_simplify_and_warn() to check for this and refuse a path if
+in these paths.
+
+Enable this when parsing WorkingDirectory=.
+
+This is inspired by CVE-2024-21626, which uses trickery around the cwd
+and /proc/self/fd/.
+
+AFAICS we are not actually vulnerable to the same issue as explained in
+the CVE since we execute the WorkingDirectory= setting very late, i.e.
+long after we set up the new mount namespace. But let's filter out icky
+stuff better earlier than later, as extra safety precaution.
+
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+index 819cbb2772..6c2402b7f1 100644
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -2660,7 +2660,7 @@ int config_parse_working_directory(
+                         return missing_ok ? 0 : -ENOEXEC;
+                 }
+ 
+-                r = path_simplify_and_warn(k, PATH_CHECK_ABSOLUTE | (missing_ok ? 0 : PATH_CHECK_FATAL), unit, filename, line, lvalue);
++                r = path_simplify_and_warn(k, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS|(missing_ok ? 0 : PATH_CHECK_FATAL), unit, filename, line, lvalue);
+                 if (r < 0)
+                         return missing_ok ? 0 : -ENOEXEC;
+ 
+diff --git a/src/shared/parse-helpers.c b/src/shared/parse-helpers.c
+index bad3af8ebf..d397f73131 100644
+--- a/src/shared/parse-helpers.c
++++ b/src/shared/parse-helpers.c
+@@ -4,6 +4,7 @@
+ #include "extract-word.h"
+ #include "ip-protocol-list.h"
+ #include "log.h"
++#include "mountpoint-util.h"
+ #include "parse-helpers.h"
+ #include "parse-util.h"
+ #include "path-util.h"
+@@ -11,36 +12,38 @@
+ 
+ int path_simplify_and_warn(
+                 char *path,
+-                unsigned flag,
++                PathSimplifyWarnFlags flags,
+                 const char *unit,
+                 const char *filename,
+                 unsigned line,
+                 const char *lvalue) {
+ 
+-        bool fatal = flag & PATH_CHECK_FATAL;
++        bool fatal = flags & PATH_CHECK_FATAL;
+ 
+-        assert(!FLAGS_SET(flag, PATH_CHECK_ABSOLUTE | PATH_CHECK_RELATIVE));
++        assert(path);
++        assert(!FLAGS_SET(flags, PATH_CHECK_ABSOLUTE | PATH_CHECK_RELATIVE));
++        assert(lvalue);
+ 
+         if (!utf8_is_valid(path))
+                 return log_syntax_invalid_utf8(unit, LOG_ERR, filename, line, path);
+ 
+-        if (flag & (PATH_CHECK_ABSOLUTE | PATH_CHECK_RELATIVE)) {
++        if (flags & (PATH_CHECK_ABSOLUTE | PATH_CHECK_RELATIVE)) {
+                 bool absolute;
+ 
+                 absolute = path_is_absolute(path);
+ 
+-                if (!absolute && (flag & PATH_CHECK_ABSOLUTE))
++                if (!absolute && (flags & PATH_CHECK_ABSOLUTE))
+                         return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL),
+                                           "%s= path is not absolute%s: %s",
+                                           lvalue, fatal ? "" : ", ignoring", path);
+ 
+-                if (absolute && (flag & PATH_CHECK_RELATIVE))
++                if (absolute && (flags & PATH_CHECK_RELATIVE))
+                         return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL),
+                                           "%s= path is absolute%s: %s",
+                                           lvalue, fatal ? "" : ", ignoring", path);
+         }
+ 
+-        path_simplify_full(path, flag & PATH_KEEP_TRAILING_SLASH ? PATH_SIMPLIFY_KEEP_TRAILING_SLASH : 0);
++        path_simplify_full(path, flags & PATH_KEEP_TRAILING_SLASH ? PATH_SIMPLIFY_KEEP_TRAILING_SLASH : 0);
+ 
+         if (!path_is_valid(path))
+                 return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL),
+@@ -52,6 +55,12 @@ int path_simplify_and_warn(
+                                   "%s= path is not normalized%s: %s",
+                                   lvalue, fatal ? "" : ", ignoring", path);
+ 
++        if (FLAGS_SET(flags, PATH_CHECK_NON_API_VFS) && path_below_api_vfs(path))
++                return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL),
++                                  "%s= path is below API VFS%s: %s",
++                                  lvalue, fatal ? ", refusing" : ", ignoring",
++                                  path);
++
+         return 0;
+ }
+ 
+diff --git a/src/shared/parse-helpers.h b/src/shared/parse-helpers.h
+index 3abb7bfd30..6d1034b6de 100644
+--- a/src/shared/parse-helpers.h
++++ b/src/shared/parse-helpers.h
+@@ -3,16 +3,17 @@
+ 
+ #include <stdint.h>
+ 
+-enum {
+-        PATH_CHECK_FATAL    =      1 << 0,  /* If not set, then error message is appended with 'ignoring'. */
+-        PATH_CHECK_ABSOLUTE =      1 << 1,
+-        PATH_CHECK_RELATIVE =      1 << 2,
++typedef enum PathSimplifyWarnFlags {
++        PATH_CHECK_FATAL         = 1 << 0,  /* If not set, then error message is appended with 'ignoring'. */
++        PATH_CHECK_ABSOLUTE      = 1 << 1,
++        PATH_CHECK_RELATIVE      = 1 << 2,
+         PATH_KEEP_TRAILING_SLASH = 1 << 3,
+-};
++        PATH_CHECK_NON_API_VFS   = 1 << 4,
++} PathSimplifyWarnFlags;
+ 
+ int path_simplify_and_warn(
+                 char *path,
+-                unsigned flag,
++                PathSimplifyWarnFlags flags,
+                 const char *unit,
+                 const char *filename,
+                 unsigned line,
+diff --git a/src/test/test-parse-helpers.c b/src/test/test-parse-helpers.c
+index 4943871379..20d4c2f554 100644
+--- a/src/test/test-parse-helpers.c
++++ b/src/test/test-parse-helpers.c
+@@ -93,4 +93,39 @@ TEST(invalid_items) {
+         test_invalid_item("ipv6:tcp:6666\n zupa");
+ }
+ 
++static int test_path_simplify_and_warn_one(const char *p, const char *q, PathSimplifyWarnFlags f) {
++        _cleanup_free_ char *s = ASSERT_PTR(strdup(p));
++        int a, b;
++
++        a = path_simplify_and_warn(s, f, /* unit= */ NULL, /* filename= */ NULL, /* line= */ 0, "Foobar=");
++        assert(streq_ptr(s, q));
++
++        free(s);
++        s = ASSERT_PTR(strdup(p));
++
++        b = path_simplify_and_warn(s, f|PATH_CHECK_FATAL, /* unit= */ NULL, /* filename= */ NULL, /* line= */ 0, "Foobar=");
++        assert(streq_ptr(s, q));
++
++        assert(a == b);
++
++        return a;
++}
++
++TEST(path_simplify_and_warn) {
++
++        assert_se(test_path_simplify_and_warn_one("", "", 0) == -EINVAL);
++        assert_se(test_path_simplify_and_warn_one("/", "/", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("/foo/../bar", "/foo/../bar", 0) == -EINVAL);
++        assert_se(test_path_simplify_and_warn_one("/foo/./bar", "/foo/bar", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("/proc/self///fd", "/proc/self/fd", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("/proc/self///fd", "/proc/self/fd", PATH_CHECK_NON_API_VFS) == -EINVAL);
++        assert_se(test_path_simplify_and_warn_one("aaaa", "aaaa", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("aaaa", "aaaa", PATH_CHECK_ABSOLUTE) == -EINVAL);
++        assert_se(test_path_simplify_and_warn_one("aaaa", "aaaa", PATH_CHECK_RELATIVE) == 0);
++        assert_se(test_path_simplify_and_warn_one("/aaaa", "/aaaa", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("/aaaa", "/aaaa", PATH_CHECK_ABSOLUTE) == 0);
++        assert_se(test_path_simplify_and_warn_one("/aaaa", "/aaaa", PATH_CHECK_RELATIVE) == -EINVAL);
++
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);
+

@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * parse-helpers: add new PATH_CHECK_NON_API_VFS flag to reject WorkingDirectory= below API VFS (/proc, /sys, /dev), as defense-in-depth inspired by CVE-2024-21626
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 07:03:24 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
