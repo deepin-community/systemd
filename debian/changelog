@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * varlink: correctly collect error parameters in varlink_observe()
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 07:46:13 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
