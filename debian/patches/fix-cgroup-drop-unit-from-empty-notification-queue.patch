@@ -1,0 +1,49 @@
+From bb160976b0d2d84d3b23149ce6a4d5b89a665643 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 19 Mar 2025 16:54:27 +0100
+Subject: [PATCH] cgroup: whenever we migrate a PID to a unit, explicitly drop
+ unit from empty notification queue
+
+A unit might be pending in the empty queue still when we add a PID to
+the cgroup. At that point, let's explicitly remove the unit from that
+queue.
+
+Fixes: #36781
+
+diff --git a/src/core/cgroup.c b/src/core/cgroup.c
+index 2c1bafa29a..a0d3d8a861 100644
+--- a/src/core/cgroup.c
++++ b/src/core/cgroup.c
+@@ -54,6 +54,8 @@
+  * out specific attributes from us. */
+ #define LOG_LEVEL_CGROUP_WRITE(r) (IN_SET(abs(r), ENOENT, EROFS, EACCES, EPERM) ? LOG_DEBUG : LOG_WARNING)
+ 
++static void unit_remove_from_cgroup_empty_queue(Unit *u);
++
+ uint64_t cgroup_tasks_max_resolve(const CGroupTasksMax *tasks_max) {
+         if (tasks_max->scale == 0)
+                 return tasks_max->value;
+@@ -3072,6 +3074,10 @@ int unit_attach_pids_to_cgroup(Unit *u, Set *pids, const char *suffix_path) {
+                                 else {
+                                         if (ret >= 0)
+                                                 ret++; /* Count successful additions */
++
++                                        /* the cgroup is definitely not empty now, in case the unit was in
++                                         * the cgroup empty queue, drop it from there */
++                                        unit_remove_from_cgroup_empty_queue(u);
+                                         continue; /* When the bus thing worked via the bus we are fully done for this PID. */
+                                 }
+                         }
+@@ -3080,8 +3086,10 @@ int unit_attach_pids_to_cgroup(Unit *u, Set *pids, const char *suffix_path) {
+                                 ret = r; /* Remember first error */
+ 
+                         continue;
+-                } else if (ret >= 0)
++                } else if (ret >= 0) {
++                        unit_remove_from_cgroup_empty_queue(u);
+                         ret++; /* Count successful additions */
++                }
+ 
+                 r = cg_all_unified();
+                 if (r < 0)
+
