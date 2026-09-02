@@ -1,0 +1,25 @@
+From 5b603f4d0691f7035cfbef2f2824f839fa2420b9 Mon Sep 17 00:00:00 2001
+From: Antonio Alvarez Feijoo <antonio.feijoo@suse.com>
+Date: Fri, 2 Jan 2026 15:20:20 +0100
+Subject: [PATCH] systemctl-preset-all: do not return 0 if
+ unit_file_preset_all() fails
+
+Follow-up for ae9ff778cd141f9d24dd4743489b7e1000f22347
+
+diff --git a/src/systemctl/systemctl-preset-all.c b/src/systemctl/systemctl-preset-all.c
+index b9c4a6d5f3..bf681a6d36 100644
+--- a/src/systemctl/systemctl-preset-all.c
++++ b/src/systemctl/systemctl-preset-all.c
+@@ -27,9 +27,8 @@ int verb_preset_all(int argc, char *argv[], void *userdata) {
+ 
+                 r = unit_file_preset_all(arg_runtime_scope, unit_file_flags_from_args(), arg_root, arg_preset_mode, &changes, &n_changes);
+                 install_changes_dump(r, "preset", changes, n_changes, arg_quiet);
+-
+-                if (r > 0)
+-                        r = 0;
++                if (r < 0)
++                        return r;
+         } else {
+                 _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+                 _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+
