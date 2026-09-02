@@ -1,0 +1,444 @@
+From d50f58d641d32cddeb1fef550445724cafdae2f3 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Tue, 6 Feb 2024 12:41:43 +0000
+Subject: [PATCH] Merge pull request #31210 from poettering/chdir-hardening
+
+WorkingDirectory= hardening
+
+diff --git a/src/basic/mountpoint-util.c b/src/basic/mountpoint-util.c
+index 8014e91dc5..0fb146f0cf 100644
+--- a/src/basic/mountpoint-util.c
++++ b/src/basic/mountpoint-util.c
+@@ -784,3 +784,10 @@ int mount_option_supported(const char *fstype, const char *key, const char *valu
+ 
+         return true; /* works! */
+ }
++
++bool path_below_api_vfs(const char *p) {
++        assert(p);
++
++        /* API VFS are either directly mounted on any of these three paths, or below it. */
++        return PATH_STARTSWITH_SET(p, "/dev", "/sys", "/proc");
++}
+diff --git a/src/basic/mountpoint-util.h b/src/basic/mountpoint-util.h
+index 04f79bf76a..f867f6c955 100644
+--- a/src/basic/mountpoint-util.h
++++ b/src/basic/mountpoint-util.h
+@@ -73,3 +73,5 @@ bool mount_new_api_supported(void);
+ unsigned long ms_nosymfollow_supported(void);
+ 
+ int mount_option_supported(const char *fstype, const char *key, const char *value);
++
++bool path_below_api_vfs(const char *p);
+diff --git a/src/core/dbus-execute.c b/src/core/dbus-execute.c
+index cad6a200b5..b2e5ae4f85 100644
+--- a/src/core/dbus-execute.c
++++ b/src/core/dbus-execute.c
+@@ -2721,8 +2721,9 @@ int bus_exec_context_set_transient_property(
+                 return 1;
+ 
+         } else if (streq(name, "WorkingDirectory")) {
++                _cleanup_free_ char *simplified = NULL;
++                bool missing_ok, is_home;
+                 const char *s;
+-                bool missing_ok;
+ 
+                 r = sd_bus_message_read(message, "s", &s);
+                 if (r < 0)
+@@ -2734,23 +2735,33 @@ int bus_exec_context_set_transient_property(
+                 } else
+                         missing_ok = false;
+ 
+-                if (!isempty(s) && !streq(s, "~") && !path_is_absolute(s))
+-                        return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "WorkingDirectory= expects an absolute path or '~'");
++                if (isempty(s))
++                        is_home = false;
++                else if (streq(s, "~"))
++                        is_home = true;
++                else {
++                        if (!path_is_absolute(s))
++                                return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "WorkingDirectory= expects an absolute path or '~'");
+ 
+-                if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
+-                        if (streq(s, "~")) {
+-                                c->working_directory = mfree(c->working_directory);
+-                                c->working_directory_home = true;
+-                        } else {
+-                                r = free_and_strdup(&c->working_directory, empty_to_null(s));
+-                                if (r < 0)
+-                                        return r;
++                        r = path_simplify_alloc(s, &simplified);
++                        if (r < 0)
++                                return r;
+ 
+-                                c->working_directory_home = false;
+-                        }
++                        if (!path_is_normalized(simplified))
++                                return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "WorkingDirectory= expects a normalized path or '~'");
++
++                        if (path_below_api_vfs(simplified))
++                                return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "WorkingDirectory= may not be below /proc/, /sys/ or /dev/.");
++
++                        is_home = false;
++                }
+ 
++                if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
++                        free_and_replace(c->working_directory, simplified);
++                        c->working_directory_home = is_home;
+                         c->working_directory_missing_ok = missing_ok;
+-                        unit_write_settingf(u, flags|UNIT_ESCAPE_SPECIFIERS, name, "WorkingDirectory=%s%s", missing_ok ? "-" : "", s);
++
++                        unit_write_settingf(u, flags|UNIT_ESCAPE_SPECIFIERS, name, "WorkingDirectory=%s%s", missing_ok ? "-" : "", c->working_directory_home ? "+" : ASSERT_PTR(c->working_directory));
+                 }
+ 
+                 return 1;
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+index 3f64cc7827..81d243c5b2 100644
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -3337,31 +3337,39 @@ static int apply_working_directory(
+                 const char *home,
+                 int *exit_status) {
+ 
+-        const char *d, *wd;
++        const char *wd;
++        int r;
+ 
+         assert(context);
+         assert(exit_status);
+ 
+         if (context->working_directory_home) {
+-
+                 if (!home) {
+                         *exit_status = EXIT_CHDIR;
+                         return -ENXIO;
+                 }
+ 
+                 wd = home;
+-
+         } else
+                 wd = empty_to_root(context->working_directory);
+ 
+         if (params->flags & EXEC_APPLY_CHROOT)
+-                d = wd;
+-        else
+-                d = prefix_roota((runtime ? runtime->ephemeral_copy : NULL) ?: context->root_directory, wd);
++                r = RET_NERRNO(chdir(wd));
++        else {
++                _cleanup_close_ int dfd = -EBADF;
+ 
+-        if (chdir(d) < 0 && !context->working_directory_missing_ok) {
++                r = chase(wd,
++                          (runtime ? runtime->ephemeral_copy : NULL) ?: context->root_directory,
++                          CHASE_PREFIX_ROOT|CHASE_AT_RESOLVE_IN_ROOT,
++                          /* ret_path= */ NULL,
++                          &dfd);
++                if (r >= 0)
++                        r = RET_NERRNO(fchdir(dfd));
++        }
++
++        if (r < 0 && !context->working_directory_missing_ok) {
+                 *exit_status = EXIT_CHDIR;
+-                return -errno;
++                return r;
+         }
+ 
+         return 0;
+@@ -5032,8 +5040,10 @@ int exec_invoke(
+                 }
+         }
+ 
+-        /* Apply working directory here, because the working directory might be on NFS and only the user running
+-         * this service might have the correct privilege to change to the working directory */
++        /* Apply working directory here, because the working directory might be on NFS and only the user
++         * running this service might have the correct privilege to change to the working directory. Also, it
++         * is absolutely 💣 crucial 💣 we applied all mount namespacing rearrangements before this, so that
++         * the cwd cannot be used to pin directories outside of the sandbox. */
+         r = apply_working_directory(context, params, runtime, home, exit_status);
+         if (r < 0)
+                 return log_exec_error_errno(context, params, r, "Changing to the requested working directory failed: %m");
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+index 819cbb2772..8f1e5e1543 100644
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -606,7 +606,7 @@ int config_parse_socket_listen(
+                         return 0;
+                 }
+ 
+-                r = path_simplify_and_warn(k, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++                r = path_simplify_and_warn(k, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+                 if (r < 0)
+                         return 0;
+ 
+@@ -2660,7 +2660,7 @@ int config_parse_working_directory(
+                         return missing_ok ? 0 : -ENOEXEC;
+                 }
+ 
+-                r = path_simplify_and_warn(k, PATH_CHECK_ABSOLUTE | (missing_ok ? 0 : PATH_CHECK_FATAL), unit, filename, line, lvalue);
++                r = path_simplify_and_warn(k, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS|(missing_ok ? 0 : PATH_CHECK_FATAL), unit, filename, line, lvalue);
+                 if (r < 0)
+                         return missing_ok ? 0 : -ENOEXEC;
+ 
+@@ -5422,7 +5422,7 @@ int config_parse_mount_images(
+                         continue;
+                 }
+ 
+-                r = path_simplify_and_warn(sresolved, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++                r = path_simplify_and_warn(sresolved, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+                 if (r < 0)
+                         continue;
+ 
+@@ -5438,7 +5438,7 @@ int config_parse_mount_images(
+                         continue;
+                 }
+ 
+-                r = path_simplify_and_warn(dresolved, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++                r = path_simplify_and_warn(dresolved, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+                 if (r < 0)
+                         continue;
+ 
+@@ -5580,7 +5580,7 @@ int config_parse_extension_images(
+                         continue;
+                 }
+ 
+-                r = path_simplify_and_warn(sresolved, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++                r = path_simplify_and_warn(sresolved, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+                 if (r < 0)
+                         continue;
+ 
+@@ -5801,7 +5801,7 @@ int config_parse_pid_file(
+                 return log_oom();
+ 
+         /* Check that the result is a sensible path */
+-        r = path_simplify_and_warn(n, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++        r = path_simplify_and_warn(n, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+         if (r < 0)
+                 return r;
+ 
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+index ead1e4af8d..15d754ba9c 100644
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -1368,17 +1368,27 @@ static int parse_argv(int argc, char *argv[]) {
+ 
+                         break;
+ 
+-                case ARG_CHDIR:
++                case ARG_CHDIR: {
++                        _cleanup_free_ char *wd = NULL;
++
+                         if (!path_is_absolute(optarg))
+                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                        "Working directory %s is not an absolute path.", optarg);
+ 
+-                        r = free_and_strdup(&arg_chdir, optarg);
++                        r = path_simplify_alloc(optarg, &wd);
+                         if (r < 0)
+-                                return log_oom();
++                                return log_error_errno(r, "Failed to simplify path %s: %m", optarg);
++
++                        if (!path_is_normalized(wd))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Working dirctory path is not normalized: %s", wd);
+ 
++                        if (path_below_api_vfs(wd))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Working directory is below API VFS, refusing: %s", wd);
++
++                        free_and_replace(arg_chdir, wd);
+                         arg_settings_mask |= SETTING_WORKING_DIRECTORY;
+                         break;
++                }
+ 
+                 case ARG_PIVOT_ROOT:
+                         r = pivot_root_parse(&arg_pivot_root_new, &arg_pivot_root_old, optarg);
+@@ -3512,6 +3522,9 @@ static int inner_child(
+         if (!barrier_place_and_sync(barrier)) /* #5 */
+                 return log_error_errno(SYNTHETIC_ERRNO(ESRCH), "Parent died too early");
+ 
++        /* Note, this should be done this late (💣 and not moved earlier! 💣), so that all namespacing
++         * changes are already in effect by now, so that any resolved paths here definitely reference
++         * resources inside the container, and not outside of them. */
+         if (arg_chdir)
+                 if (chdir(arg_chdir) < 0)
+                         return log_error_errno(errno, "Failed to change to specified working directory %s: %m", arg_chdir);
+diff --git a/src/shared/parse-helpers.c b/src/shared/parse-helpers.c
+index bad3af8ebf..ca6842d363 100644
+--- a/src/shared/parse-helpers.c
++++ b/src/shared/parse-helpers.c
+@@ -4,6 +4,7 @@
+ #include "extract-word.h"
+ #include "ip-protocol-list.h"
+ #include "log.h"
++#include "mountpoint-util.h"
+ #include "parse-helpers.h"
+ #include "parse-util.h"
+ #include "path-util.h"
+@@ -11,47 +12,56 @@
+ 
+ int path_simplify_and_warn(
+                 char *path,
+-                unsigned flag,
++                PathSimplifyWarnFlags flags,
+                 const char *unit,
+                 const char *filename,
+                 unsigned line,
+                 const char *lvalue) {
+ 
+-        bool fatal = flag & PATH_CHECK_FATAL;
++        bool fatal = flags & PATH_CHECK_FATAL;
++        int level = fatal ? LOG_ERR : LOG_WARNING;
+ 
+-        assert(!FLAGS_SET(flag, PATH_CHECK_ABSOLUTE | PATH_CHECK_RELATIVE));
++        assert(path);
++        assert(!FLAGS_SET(flags, PATH_CHECK_ABSOLUTE | PATH_CHECK_RELATIVE));
++        assert(lvalue);
+ 
+         if (!utf8_is_valid(path))
+                 return log_syntax_invalid_utf8(unit, LOG_ERR, filename, line, path);
+ 
+-        if (flag & (PATH_CHECK_ABSOLUTE | PATH_CHECK_RELATIVE)) {
++        if (flags & (PATH_CHECK_ABSOLUTE | PATH_CHECK_RELATIVE)) {
+                 bool absolute;
+ 
+                 absolute = path_is_absolute(path);
+ 
+-                if (!absolute && (flag & PATH_CHECK_ABSOLUTE))
+-                        return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL),
++                if (!absolute && (flags & PATH_CHECK_ABSOLUTE))
++                        return log_syntax(unit, level, filename, line, SYNTHETIC_ERRNO(EINVAL),
+                                           "%s= path is not absolute%s: %s",
+                                           lvalue, fatal ? "" : ", ignoring", path);
+ 
+-                if (absolute && (flag & PATH_CHECK_RELATIVE))
+-                        return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL),
++                if (absolute && (flags & PATH_CHECK_RELATIVE))
++                        return log_syntax(unit, level, filename, line, SYNTHETIC_ERRNO(EINVAL),
+                                           "%s= path is absolute%s: %s",
+                                           lvalue, fatal ? "" : ", ignoring", path);
+         }
+ 
+-        path_simplify_full(path, flag & PATH_KEEP_TRAILING_SLASH ? PATH_SIMPLIFY_KEEP_TRAILING_SLASH : 0);
++        path_simplify_full(path, flags & PATH_KEEP_TRAILING_SLASH ? PATH_SIMPLIFY_KEEP_TRAILING_SLASH : 0);
+ 
+         if (!path_is_valid(path))
+-                return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL),
++                return log_syntax(unit, level, filename, line, SYNTHETIC_ERRNO(EINVAL),
+                                   "%s= path has invalid length (%zu bytes)%s.",
+                                   lvalue, strlen(path), fatal ? "" : ", ignoring");
+ 
+         if (!path_is_normalized(path))
+-                return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL),
++                return log_syntax(unit, level, filename, line, SYNTHETIC_ERRNO(EINVAL),
+                                   "%s= path is not normalized%s: %s",
+                                   lvalue, fatal ? "" : ", ignoring", path);
+ 
++        if (FLAGS_SET(flags, PATH_CHECK_NON_API_VFS) && path_below_api_vfs(path))
++                return log_syntax(unit, level, filename, line, SYNTHETIC_ERRNO(EINVAL),
++                                  "%s= path is below API VFS%s: %s",
++                                  lvalue, fatal ? ", refusing" : ", ignoring",
++                                  path);
++
+         return 0;
+ }
+ 
+diff --git a/src/shared/parse-helpers.h b/src/shared/parse-helpers.h
+index 3e4ad3c0a1..6d1034b6de 100644
+--- a/src/shared/parse-helpers.h
++++ b/src/shared/parse-helpers.h
+@@ -3,27 +3,28 @@
+ 
+ #include <stdint.h>
+ 
+-enum {
+-        PATH_CHECK_FATAL    =      1 << 0,  /* If not set, then error message is appended with 'ignoring'. */
+-        PATH_CHECK_ABSOLUTE =      1 << 1,
+-        PATH_CHECK_RELATIVE =      1 << 2,
++typedef enum PathSimplifyWarnFlags {
++        PATH_CHECK_FATAL         = 1 << 0,  /* If not set, then error message is appended with 'ignoring'. */
++        PATH_CHECK_ABSOLUTE      = 1 << 1,
++        PATH_CHECK_RELATIVE      = 1 << 2,
+         PATH_KEEP_TRAILING_SLASH = 1 << 3,
+-};
++        PATH_CHECK_NON_API_VFS   = 1 << 4,
++} PathSimplifyWarnFlags;
+ 
+ int path_simplify_and_warn(
+                 char *path,
+-                unsigned flag,
++                PathSimplifyWarnFlags flags,
+                 const char *unit,
+                 const char *filename,
+                 unsigned line,
+                 const char *lvalue);
+ 
+ int parse_socket_bind_item(
+-        const char *str,
+-        int *address_family,
+-        int *ip_protocol,
+-        uint16_t *nr_ports,
+-        uint16_t *port_min);
++                const char *str,
++                int *address_family,
++                int *ip_protocol,
++                uint16_t *nr_ports,
++                uint16_t *port_min);
+ 
+ int config_parse_path_or_ignore(
+                 const char *unit,
+diff --git a/src/shutdown/umount.c b/src/shutdown/umount.c
+index 1a9b99d761..ca6d36e054 100644
+--- a/src/shutdown/umount.c
++++ b/src/shutdown/umount.c
+@@ -95,7 +95,7 @@ int mount_points_list_get(const char *mountinfo, MountPoint **head) {
+                  * we might lack the rights to unmount these things, hence don't bother. */
+                 if (mount_point_is_api(path) ||
+                     mount_point_ignore(path) ||
+-                    PATH_STARTSWITH_SET(path, "/dev", "/sys", "/proc"))
++                    path_below_api_vfs(path))
+                         continue;
+ 
+                 is_api_vfs = fstype_is_api_vfs(fstype);
+diff --git a/src/test/test-parse-helpers.c b/src/test/test-parse-helpers.c
+index 4943871379..20d4c2f554 100644
+--- a/src/test/test-parse-helpers.c
++++ b/src/test/test-parse-helpers.c
+@@ -93,4 +93,39 @@ TEST(invalid_items) {
+         test_invalid_item("ipv6:tcp:6666\n zupa");
+ }
+ 
++static int test_path_simplify_and_warn_one(const char *p, const char *q, PathSimplifyWarnFlags f) {
++        _cleanup_free_ char *s = ASSERT_PTR(strdup(p));
++        int a, b;
++
++        a = path_simplify_and_warn(s, f, /* unit= */ NULL, /* filename= */ NULL, /* line= */ 0, "Foobar=");
++        assert(streq_ptr(s, q));
++
++        free(s);
++        s = ASSERT_PTR(strdup(p));
++
++        b = path_simplify_and_warn(s, f|PATH_CHECK_FATAL, /* unit= */ NULL, /* filename= */ NULL, /* line= */ 0, "Foobar=");
++        assert(streq_ptr(s, q));
++
++        assert(a == b);
++
++        return a;
++}
++
++TEST(path_simplify_and_warn) {
++
++        assert_se(test_path_simplify_and_warn_one("", "", 0) == -EINVAL);
++        assert_se(test_path_simplify_and_warn_one("/", "/", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("/foo/../bar", "/foo/../bar", 0) == -EINVAL);
++        assert_se(test_path_simplify_and_warn_one("/foo/./bar", "/foo/bar", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("/proc/self///fd", "/proc/self/fd", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("/proc/self///fd", "/proc/self/fd", PATH_CHECK_NON_API_VFS) == -EINVAL);
++        assert_se(test_path_simplify_and_warn_one("aaaa", "aaaa", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("aaaa", "aaaa", PATH_CHECK_ABSOLUTE) == -EINVAL);
++        assert_se(test_path_simplify_and_warn_one("aaaa", "aaaa", PATH_CHECK_RELATIVE) == 0);
++        assert_se(test_path_simplify_and_warn_one("/aaaa", "/aaaa", 0) == 0);
++        assert_se(test_path_simplify_and_warn_one("/aaaa", "/aaaa", PATH_CHECK_ABSOLUTE) == 0);
++        assert_se(test_path_simplify_and_warn_one("/aaaa", "/aaaa", PATH_CHECK_RELATIVE) == -EINVAL);
++
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);
+
