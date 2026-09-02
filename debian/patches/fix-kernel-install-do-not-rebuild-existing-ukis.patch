@@ -1,0 +1,32 @@
+From df94b28366db1636053bc7f833f0e97c66292635 Mon Sep 17 00:00:00 2001
+From: Vitaly Kuznetsov <vkuznets@redhat.com>
+Date: Mon, 25 Mar 2024 11:18:25 +0100
+Subject: [PATCH] kernel-install/60-ukify: do not rebuild existing UKIs
+
+In case kernel-install is called to install what's already a UKI, 60-ukify
+must be skipped. E.g. when distro shipped and signed UKI is being installed,
+it is counter-productive to try to rebuild it with ukify. Also, the existing
+script is not ready to handle UKIs with embedded initramfs.
+
+Note, it is already possible to disable 60-ukify by setting
+KERNEL_INSTALL_UKI_GENERATOR to something but in case it is not set, 60-ukify
+assumes it should run.
+
+diff --git a/src/kernel-install/60-ukify.install.in b/src/kernel-install/60-ukify.install.in
+index 3611737962..e08455b156 100755
+--- a/src/kernel-install/60-ukify.install.in
++++ b/src/kernel-install/60-ukify.install.in
+@@ -109,6 +109,12 @@ def parse_args(args=None):
+     return opts
+ 
+ def we_are_wanted() -> bool:
++    KERNEL_INSTALL_IMAGE_TYPE = os.getenv('KERNEL_INSTALL_IMAGE_TYPE')
++
++    if KERNEL_INSTALL_IMAGE_TYPE == 'uki':
++        log('The image being installed is already a UKI, quitting.')
++        return False
++
+     KERNEL_INSTALL_LAYOUT = os.getenv('KERNEL_INSTALL_LAYOUT')
+ 
+     if KERNEL_INSTALL_LAYOUT != 'uki':
+
