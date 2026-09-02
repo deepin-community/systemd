@@ -1,0 +1,56 @@
+From e4b4d9cc7adf245950e8676be0e0f4a813069500 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Thu, 24 Oct 2024 10:52:56 +0200
+Subject: [PATCH] core: make sure that if PAMName= is set we always do the full
+ user changing even if no user is specified explicitly
+
+When PAMName= is set this should be enough to go through our entire user
+changing story, so that PAM is definitely run, and environment variables
+definitely pulled in and so on.
+
+Previously, it would happen that under some circumstances we might no do
+this when transitioning from root to root itself even though PAM was
+enabled.
+
+Fixes: #34682
+
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+index cdfa9f823b..4b63e2a204 100644
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -4061,7 +4061,7 @@ int exec_invoke(
+         int r, ngids = 0;
+         _cleanup_free_ gid_t *supplementary_gids = NULL;
+         const char *username = NULL, *groupname = NULL;
+-        _cleanup_free_ char *home_buffer = NULL, *memory_pressure_path = NULL;
++        _cleanup_free_ char *home_buffer = NULL, *memory_pressure_path = NULL, *own_user = NULL;
+         const char *home = NULL, *shell = NULL;
+         char **final_argv = NULL;
+         dev_t journal_stream_dev = 0;
+@@ -4298,8 +4298,23 @@ int exec_invoke(
+                         username = runtime->dynamic_creds->user->name;
+ 
+         } else {
+-                if (context->user) {
+-                        r = get_fixed_user(context->user, &username, &uid, &gid, &home, &shell);
++                const char *u;
++
++                if (context->user)
++                        u = context->user;
++                else if (context->pam_name) {
++                        /* If PAM is enabled but no user name is explicitly selected, then use our own one. */
++                        own_user = getusername_malloc();
++                        if (!own_user) {
++                                *exit_status = EXIT_USER;
++                                return log_exec_error_errno(context, params, r, "Failed to determine my own user ID: %m");
++                        }
++                        u = own_user;
++                } else
++                        u = NULL;
++
++                if (u) {
++                        r = get_fixed_user(u, &username, &uid, &gid, &home, &shell);
+                         if (r < 0) {
+                                 *exit_status = EXIT_USER;
+                                 return log_exec_error_errno(context, params, r, "Failed to determine user credentials: %m");
+
