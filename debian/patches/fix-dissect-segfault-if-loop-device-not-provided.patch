@@ -1,0 +1,21 @@
+From a0a4e9d7d22296b856a9f6118eb158cab9826a8d Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Fri, 26 Dec 2025 22:36:21 +0100
+Subject: [PATCH] dissect: Fix segmentation fault if loop device is not
+ provided
+
+
+diff --git a/src/dissect/dissect.c b/src/dissect/dissect.c
+index bb0a0a16ef..a69bab8500 100644
+--- a/src/dissect/dissect.c
++++ b/src/dissect/dissect.c
+@@ -1799,7 +1799,7 @@ static int action_with(DissectedImage *m, LoopDevice *d) {
+                         _exit(EXIT_FAILURE);
+                 }
+ 
+-                if (setenv("SYSTEMD_DISSECT_DEVICE", d->node, /* overwrite= */ true) < 0) {
++                if (d && setenv("SYSTEMD_DISSECT_DEVICE", d->node, /* overwrite= */ true) < 0) {
+                         log_error_errno(errno, "Failed to set $SYSTEMD_DISSECT_DEVICE: %m");
+                         _exit(EXIT_FAILURE);
+                 }
+
