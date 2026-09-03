@@ -1,0 +1,48 @@
+From ac1b7b9e1933c14bc7bf36d4f32a888afb3f2f4d Mon Sep 17 00:00:00 2001
+From: Frantisek Sumsal <frantisek@sumsal.cz>
+Date: Sun, 24 Dec 2023 18:26:47 +0100
+Subject: [PATCH] resolve: don't add sockets to the graveyard on shutdown
+
+Since in that case the event loop is already finished and we'd hit an
+assertion:
+
+[ 1295.993300] testsuite-75.sh[50]: + systemctl stop systemd-resolved.service
+[ 1296.005152] systemd-resolved[298]: Assertion 'e->state != SD_EVENT_FINISHED' failed at src/libsystemd/sd-event/sd-event.c:1252, function sd_event_add_io(). Aborting.
+
+Thread 1 (Thread 0x7f17d25e2940 (LWP 298)):
+ #0  __pthread_kill_implementation (threadid=<optimized out>, signo=signo@entry=6, no_tid=no_tid@entry=0) at pthread_kill.c:44
+ #1  0x00007f17d16ac8a3 in __pthread_kill_internal (signo=6, threadid=<optimized out>) at pthread_kill.c:78
+ #2  0x00007f17d165c668 in __GI_raise (sig=sig@entry=6) at ../sysdeps/posix/raise.c:26
+ #3  0x00007f17d16444b8 in __GI_abort () at abort.c:79
+ #4  0x00007f17d2402d2d in log_assert_failed (text=<optimized out>, file=<optimized out>, line=<optimized out>, func=<optimized out>) at ../build/src/basic/log.c:968
+ #5  0x00007f17d240401c in log_assert_failed_return (text=text@entry=0x7f17d2533f13 "e->state != SD_EVENT_FINISHED", file=file@entry=0x7f17d25195d9 "src/libsystemd/sd-event/sd-event.c", line=line@entry=1252, func=func@entry=0x7f17d2567260 <__func__.140> "sd_event_add_io") at ../build/src/basic/log.c:987
+ #6  0x00007f17d24d011a in sd_event_add_io (e=0x55e5cb497270, ret=0x55e5cb4a5120, fd=fd@entry=26, events=events@entry=1, callback=callback@entry=0x55e5caff5466 <on_io_event>, userdata=0x55e5cb4a5110) at ../build/src/libsystemd/sd-event/sd-event.c:1252
+ #7  0x000055e5caff571c in manager_add_socket_to_graveyard (m=0x55e5cb43cf00, fd=26) at ../build/src/resolve/resolved-socket-graveyard.c:117
+ #8  0x000055e5cafd4253 in dns_transaction_close_connection (t=t@entry=0x55e5cb57c7d0, use_graveyard=use_graveyard@entry=true) at ../build/src/resolve/resolved-dns-transaction.c:78
+ #9  0x000055e5cafd8444 in dns_transaction_complete (t=t@entry=0x55e5cb57c7d0, state=state@entry=DNS_TRANSACTION_ABORTED) at ../build/src/resolve/resolved-dns-transaction.c:427
+ #10 0x000055e5cafc4969 in dns_scope_abort_transactions (s=s@entry=0x55e5cb4b1a70) at ../build/src/resolve/resolved-dns-scope.c:91
+ #11 0x000055e5cafc6aee in dns_scope_free (s=0x55e5cb4b1a70) at ../build/src/resolve/resolved-dns-scope.c:106
+ #12 0x000055e5cafe72d1 in link_free (l=0x55e5cb4a5160) at ../build/src/resolve/resolved-link.c:94
+ #13 0x000055e5cafedefc in manager_free (m=0x55e5cb43cf00) at ../build/src/resolve/resolved-manager.c:697
+ #14 0x000055e5caff99b6 in manager_freep (p=p@entry=0x7ffd71fab8f8) at ../build/src/resolve/resolved-manager.h:198
+ #15 0x000055e5caff9d66 in run (argc=argc@entry=1, argv=argv@entry=0x7ffd71faba78) at ../build/src/resolve/resolved.c:25
+ #16 0x000055e5caff9fe3 in main (argc=1, argv=0x7ffd71faba78) at ../build/src/resolve/resolved.c:99
+
+Resolves: #30618
+
+diff --git a/src/resolve/resolved-dns-transaction.c b/src/resolve/resolved-dns-transaction.c
+index fe88e502e7..afc9a2ed45 100644
+--- a/src/resolve/resolved-dns-transaction.c
++++ b/src/resolve/resolved-dns-transaction.c
+@@ -74,6 +74,10 @@ static void dns_transaction_close_connection(
+          * and the reply we might still get from the server will be eaten up instead of resulting in an ICMP
+          * port unreachable error message. */
+ 
++        /* Skip the graveyard stuff when we're shutting down, since that requires running event loop */
++        if (!t->scope->manager->event || sd_event_get_state(t->scope->manager->event) == SD_EVENT_FINISHED)
++                use_graveyard = false;
++
+         if (use_graveyard && t->dns_udp_fd >= 0 && t->sent && !t->received) {
+                 r = manager_add_socket_to_graveyard(t->scope->manager, t->dns_udp_fd);
+                 if (r < 0)
+
