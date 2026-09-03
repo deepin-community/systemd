@@ -1,0 +1,32 @@
+From 04d4086c228afc907fc1b70fcef892d651f7c0cc Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 3 Jan 2024 04:36:47 +0900
+Subject: [PATCH] resolve/mdns: do not append goodby packet entries to known
+ answers section
+
+When we receive a goodby packet about a host, and we have a cache entry about
+the host, we do not immediately remove the cache entry, but update it with TTL 1.
+See RFC 6762 section 10.1 and 3755027c2cada70345c96787a9b5569994dd23ed.
+
+If we receive a request soon after the goodby packet, previously the
+entry was included in the known answers section of the reply. But such
+information should not be appended.
+
+Follow-up for 3755027c2cada70345c96787a9b5569994dd23ed.
+
+diff --git a/src/resolve/resolved-dns-cache.c b/src/resolve/resolved-dns-cache.c
+index c5c5037cec..ec92406a7e 100644
+--- a/src/resolve/resolved-dns-cache.c
++++ b/src/resolve/resolved-dns-cache.c
+@@ -1303,6 +1303,10 @@ int dns_cache_export_shared_to_packet(DnsCache *cache, DnsPacket *p, usec_t ts,
+                         if (!j->shared_owner)
+                                 continue;
+ 
++                        /* Ignore cached goodby packet. See on_mdns_packet() and RFC 6762 section 10.1. */
++                        if (j->rr->ttl <= 1)
++                                continue;
++
+                         /* RFC6762 7.1: Don't append records with less than half the TTL remaining
+                          * as known answers. */
+                         if (usec_sub_unsigned(j->until, ts) < j->rr->ttl * USEC_PER_SEC / 2)
+
