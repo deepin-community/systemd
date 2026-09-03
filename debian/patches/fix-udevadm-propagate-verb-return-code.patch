@@ -1,0 +1,75 @@
+From e6bca182965723ff6ab5f6ace06910ad4075e874 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sun, 31 Dec 2023 04:51:09 +0900
+Subject: [PATCH] Merge pull request #30658 from
+ jnohlgard/udevadm-lock-return-code
+
+udevadm: Propagate return code from verb result
+
+diff --git a/src/udev/udevadm-test-builtin.c b/src/udev/udevadm-test-builtin.c
+index 5d1fafbd03..f5498a1e5b 100644
+--- a/src/udev/udevadm-test-builtin.c
++++ b/src/udev/udevadm-test-builtin.c
+@@ -104,9 +104,12 @@ int builtin_main(int argc, char *argv[], void *userdata) {
+         }
+ 
+         r = udev_builtin_run(event, cmd, arg_command, true);
+-        if (r < 0)
++        if (r < 0) {
+                 log_debug_errno(r, "Builtin command '%s' fails: %m", arg_command);
++                goto finish;
++        }
+ 
++        r = 0;
+ finish:
+         udev_builtin_exit();
+         return r;
+diff --git a/src/udev/udevadm.c b/src/udev/udevadm.c
+index 51dc041a29..687b927f72 100644
+--- a/src/udev/udevadm.c
++++ b/src/udev/udevadm.c
+@@ -137,4 +137,4 @@ static int run(int argc, char *argv[]) {
+         return udevadm_main(argc, argv);
+ }
+ 
+-DEFINE_MAIN_FUNCTION(run);
++DEFINE_MAIN_FUNCTION_WITH_POSITIVE_FAILURE(run);
+diff --git a/test/units/testsuite-17.10.sh b/test/units/testsuite-17.10.sh
+index 20f120a930..f229dcf25f 100755
+--- a/test/units/testsuite-17.10.sh
++++ b/test/units/testsuite-17.10.sh
+@@ -238,4 +238,17 @@ assert_rc 124 timeout 5 udevadm wait --removed /sys/class/net/$netdev
+ udevadm wait --settle /sys/class/net/$netdev
+ udevadm wait -h
+ 
++udevadm lock --help
++udevadm lock --version
++for i in /dev/block/*; do
++    udevadm lock --device "$i" --print
++    udevadm lock --device "$i" true
++    (! udevadm lock --device "$i" false)
++done
++for i in / /usr; do
++    udevadm lock --backing "$i" --print
++    udevadm lock --backing "$i" true
++    (! udevadm lock --backing "$i" false)
++done
++
+ exit 0
+diff --git a/test/units/testsuite-64.sh b/test/units/testsuite-64.sh
+index 81edb0ab7a..65e5f6cd91 100755
+--- a/test/units/testsuite-64.sh
++++ b/test/units/testsuite-64.sh
+@@ -396,6 +396,11 @@ EOF
+ 
+     udevadm control --reload
+ 
++    # initialize partition table
++    for disk in {0..9}; do
++        echo 'label: gpt' | udevadm lock --device="${devices[$disk]}" sfdisk -q "${devices[$disk]}"
++    done
++
+     # Delete the partitions, immediately recreate them, wait for udev to settle
+     # down, and then check if we have any dangling symlinks in /dev/disk/. Rinse
+     # and repeat.
+
