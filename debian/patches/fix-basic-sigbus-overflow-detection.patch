@@ -1,0 +1,42 @@
+From b4a9d19e4ec527a7b2d774a1349a6133f7739847 Mon Sep 17 00:00:00 2001
+From: Rose <83477269+AtariDreams@users.noreply.github.com>
+Date: Tue, 2 Jan 2024 10:13:27 -0500
+Subject: [PATCH] basic: fix overflow detection in sigbus_pop
+
+The current check checks for n_sigbus_queue
+being greater than or equal to SIGBUS_QUEUE_MAX,
+when it should be just greater than as
+n_sigbus_queue being SIGBUS_QUEUE_MAX indicates
+that the queue is full, but not overflowed.
+
+diff --git a/src/basic/sigbus.c b/src/basic/sigbus.c
+index 7e5a493f6b..47ab0b81d8 100644
+--- a/src/basic/sigbus.c
++++ b/src/basic/sigbus.c
+@@ -40,14 +40,14 @@ static void sigbus_push(void *addr) {
+         }
+ 
+         /* If we can't, make sure the queue size is out of bounds, to
+-         * mark it as overflow */
++         * mark it as overflowed */
+         for (;;) {
+                 sig_atomic_t c;
+ 
+                 __atomic_thread_fence(__ATOMIC_SEQ_CST);
+                 c = n_sigbus_queue;
+ 
+-                if (c > SIGBUS_QUEUE_MAX) /* already overflow */
++                if (c > SIGBUS_QUEUE_MAX) /* already overflowed */
+                         return;
+ 
+                 /* OK if we clobber c here, since we either immediately return
+@@ -70,7 +70,7 @@ int sigbus_pop(void **ret) {
+                 if (_likely_(c == 0))
+                         return 0;
+ 
+-                if (_unlikely_(c >= SIGBUS_QUEUE_MAX))
++                if (_unlikely_(c > SIGBUS_QUEUE_MAX))
+                         return -EOVERFLOW;
+ 
+                 for (u = 0; u < SIGBUS_QUEUE_MAX; u++) {
+
