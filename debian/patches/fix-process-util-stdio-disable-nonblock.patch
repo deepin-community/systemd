@@ -1,0 +1,62 @@
+From 3b1e80f7cb49971b98552f064c494f98b6243505 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 8 Jan 2024 22:25:22 +0100
+Subject: [PATCH] process-util: turn off O_NONBLOCK on stdio fds when
+ rearranging fds
+
+We often create our fds O_NONBLOCK, but when we want to invoke some
+program with them as stdin/stdout/stderr we really should turn it off
+again.
+
+diff --git a/src/basic/fd-util.c b/src/basic/fd-util.c
+index 1a279690d2..38866ebb78 100644
+--- a/src/basic/fd-util.c
++++ b/src/basic/fd-util.c
+@@ -170,6 +170,19 @@ int fd_nonblock(int fd, bool nonblock) {
+         return RET_NERRNO(fcntl(fd, F_SETFL, nflags));
+ }
+ 
++int stdio_disable_nonblock(void) {
++        int ret = 0;
++
++        /* stdin/stdout/stderr really should have O_NONBLOCK, which would confuse apps if left on, as
++         * write()s might unexpectedly fail with EAGAIN. */
++
++        RET_GATHER(ret, fd_nonblock(STDIN_FILENO, false));
++        RET_GATHER(ret, fd_nonblock(STDOUT_FILENO, false));
++        RET_GATHER(ret, fd_nonblock(STDERR_FILENO, false));
++
++        return ret;
++}
++
+ int fd_cloexec(int fd, bool cloexec) {
+         int flags, nflags;
+ 
+diff --git a/src/basic/fd-util.h b/src/basic/fd-util.h
+index 4bdd61fe54..6a1143b4f3 100644
+--- a/src/basic/fd-util.h
++++ b/src/basic/fd-util.h
+@@ -62,6 +62,8 @@ DEFINE_TRIVIAL_CLEANUP_FUNC_FULL(DIR*, closedir, NULL);
+ #define _cleanup_close_pair_ _cleanup_(close_pairp)
+ 
+ int fd_nonblock(int fd, bool nonblock);
++int stdio_disable_nonblock(void);
++
+ int fd_cloexec(int fd, bool cloexec);
+ int fd_cloexec_many(const int fds[], size_t n_fds, bool cloexec);
+ 
+diff --git a/src/basic/process-util.c b/src/basic/process-util.c
+index 4d5c01d2cf..0f6cace426 100644
+--- a/src/basic/process-util.c
++++ b/src/basic/process-util.c
+@@ -1667,6 +1667,9 @@ int safe_fork_full(
+                                 log_full_errno(prio, r, "Failed to rearrange stdio fds: %m");
+                                 _exit(EXIT_FAILURE);
+                         }
++
++                        /* Turn off O_NONBLOCK on the fdio fds, in case it was left on */
++                        stdio_disable_nonblock();
+                 } else {
+                         r = make_null_stdio();
+                         if (r < 0) {
+
