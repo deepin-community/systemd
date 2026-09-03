@@ -1,0 +1,116 @@
+From 0e1ab2261cd91f3f7beec1f24134498a853ea4d5 Mon Sep 17 00:00:00 2001
+From: Dmitry Konishchev <konishchev@gmail.com>
+Date: Sat, 16 Dec 2023 19:41:57 +0300
+Subject: [PATCH] Fix KeepCarrier tun/tap device option
+
+When KeepCarrier is set, networkd doesn't close tun/tap file descriptor
+preserving the active interface state, but doesn't disable its queue
+which makes kernel to think that it's still active and send packets to
+it.
+
+This patch disables the created queue right after tun/tap interface
+creation.
+
+Here is the steps to reproduce the bug:
+
+Having:
+
+systemd/network/10-tun-test.netdev:
+
+    [NetDev]
+    Name=tun-test
+    Kind=tun
+
+    [Tun]
+    MultiQueue=yes
+    KeepCarrier=yes
+
+systemd/network/10-tun-test.network:
+
+    [Match]
+    Name=tun-test
+
+    [Network]
+    DHCP=no
+    IPv6AcceptRA=false
+
+    LLMNR=false
+    MulticastDNS=false
+
+    Address=172.31.0.1/24
+
+app.c:
+
+    #include <fcntl.h>
+    #include <stdio.h>
+    #include <string.h>
+    #include <unistd.h>
+    #include <linux/if.h>
+    #include <sys/ioctl.h>
+    #include <linux/if_tun.h>
+
+    int main() {
+        int fd;
+        struct ifreq ifr;
+
+        memset(&ifr, 0, sizeof ifr);
+        strcpy(ifr.ifr_name, "tun-test");
+        ifr.ifr_flags = IFF_TUN | IFF_NO_PI | IFF_MULTI_QUEUE;
+
+        if((fd = open("/dev/net/tun", O_RDWR)) < 0) {
+            perror("Open error");
+            return 1;
+        }
+
+        if(ioctl(fd, TUNSETIFF, &ifr)) {
+            perror("Configure error");
+            return 1;
+        }
+
+        puts("Ready.");
+
+        char buf[1500];
+
+        while(1) {
+            int size = read(fd, buf, sizeof buf);
+            if(size < 0) {
+                perror("Read error");
+                return 1;
+            }
+            printf("Read %d bytes.\n", size);
+        }
+
+        return 0;
+    }
+
+Run:
+* gcc -o app app.c && ./app
+* ping -I tun-test 172.31.0.2
+
+Before the patch the app shows no pings, but after it works properly.
+
+diff --git a/src/network/netdev/tuntap.c b/src/network/netdev/tuntap.c
+index 1a37ba3465..9e909d1abc 100644
+--- a/src/network/netdev/tuntap.c
++++ b/src/network/netdev/tuntap.c
+@@ -137,6 +137,19 @@ static int netdev_create_tuntap(NetDev *netdev) {
+         if (ioctl(fd, TUNSETIFF, &ifr) < 0)
+                 return log_netdev_error_errno(netdev, errno, "TUNSETIFF failed: %m");
+ 
++        if (t->multi_queue) {
++                /* If we don't detach the queue, the kernel will send packets to our queue and they
++                 * will be dropped because we never read them, which is especially important in case
++                 * of KeepCarrier option which persists open FD. So detach our queue right after
++                 * device create/attach to make kernel not send the packets to it. The option is
++                 * available for multi-queue devices only.
++                 *
++                 * See https://github.com/systemd/systemd/pull/30504 for details. */
++                struct ifreq detach_request = { .ifr_flags = IFF_DETACH_QUEUE };
++                if (ioctl(fd, TUNSETQUEUE, &detach_request) < 0)
++                        return log_netdev_error_errno(netdev, errno, "TUNSETQUEUE failed: %m");
++        }
++
+         if (t->user_name) {
+                 const char *user = t->user_name;
+                 uid_t uid;
+
