@@ -1,0 +1,51 @@
+From 03d808c9f6ea75d74bfaf2b4e37aad8d4935c5cd Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Tue, 2 Jan 2024 17:44:53 +0100
+Subject: [PATCH] efi-loader: when detecting if we are booted in UKI measured
+ boot mode, imply a check for TPM2
+
+We simply don't carry any userspace support for TPM1.2 in our tree, and
+we shouldn't given it's too weak by today's standards. Hence, if we
+check if we are booted in UKI measured boot mode, don't just check if we
+are booted in EFI, but also check that we have a TPM2 chip (as opposed
+to none or only a TPM1.2 chip).
+
+This is an alternative to #30652 but more comprehensive (and simpler),
+since it covers all invocations of efi_measured_uki().
+
+Fixes: #30650
+Replaces: #30652
+
+diff --git a/src/shared/efi-loader.c b/src/shared/efi-loader.c
+index 0822364535..758aaa13c1 100644
+--- a/src/shared/efi-loader.c
++++ b/src/shared/efi-loader.c
+@@ -1,6 +1,7 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
+ #include "alloc-util.h"
++#include "efi-api.h"
+ #include "efi-loader.h"
+ #include "env-util.h"
+ #include "parse-util.h"
+@@ -247,8 +248,8 @@ int efi_measured_uki(int log_level) {
+         if (cached >= 0)
+                 return cached;
+ 
+-        /* Checks if we are booted on a kernel with sd-stub which measured the kernel into PCR 11. Or in
+-         * other words, if we are running on a TPM enabled UKI.
++        /* Checks if we are booted on a kernel with sd-stub which measured the kernel into PCR 11 on a TPM2
++         * chip. Or in other words, if we are running on a TPM enabled UKI. (TPM 1.2 situations are ignored.)
+          *
+          * Returns == 0 and > 0 depending on the result of the test. Returns -EREMOTE if we detected a stub
+          * being used, but it measured things into a different PCR than we are configured for in
+@@ -261,7 +262,7 @@ int efi_measured_uki(int log_level) {
+         if (r != -ENXIO)
+                 log_debug_errno(r, "Failed to parse $SYSTEMD_FORCE_MEASURE, ignoring: %m");
+ 
+-        if (!is_efi_boot())
++        if (!efi_has_tpm2())
+                 return (cached = 0);
+ 
+         r = efi_get_variable_string(EFI_LOADER_VARIABLE(StubPcrKernelImage), &pcr_string);
+

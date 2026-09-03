@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * efi-loader: imply a check for TPM2 when detecting if we are booted in UKI measured boot mode
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 08:42:31 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
