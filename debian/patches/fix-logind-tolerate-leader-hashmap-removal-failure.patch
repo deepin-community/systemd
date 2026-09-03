@@ -1,0 +1,23 @@
+From 889975bb00a0db26a30bee967df319df7605fd95 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Tue, 26 Dec 2023 14:20:36 +0800
+Subject: [PATCH] logind-session: be tolerant if we failed to remove leader
+ from hashmap
+
+If something wrong happened before hashmap_put(), session_free()
+may be called through gc logic, and the assertion is triggered.
+
+diff --git a/src/login/logind-session.c b/src/login/logind-session.c
+index b4277c33f1..3b105ab511 100644
+--- a/src/login/logind-session.c
++++ b/src/login/logind-session.c
+@@ -93,7 +93,7 @@ static void session_reset_leader(Session *s) {
+         if (!pidref_is_set(&s->leader))
+                 return;
+ 
+-        assert_se(hashmap_remove_value(s->manager->sessions_by_leader, &s->leader, s));
++        (void) hashmap_remove_value(s->manager->sessions_by_leader, &s->leader, s);
+ 
+         return pidref_done(&s->leader);
+ }
+
