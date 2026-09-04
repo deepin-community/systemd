@@ -30,7 +30,7 @@ uniontech-increase-ratelimit-of-mount.patch
 uniontech-fix_zh_TW_HK_translation.patch
 uniontech-add-ug-bo-translation.patch
 uniontech-escape-spaces-when-serializing-as-well.patch
-uniontech-resolved-off-multidns.patch
+uniontech-resolved-off-mdns-llmnr-dnssec.patch
 uniontech-implement-USEC-with-libusec.patch
 uniontech-resolved-short-ptr-timeout.patch
 uniontech-disable-shutdown-wall-messages.patch
