@@ -1,0 +1,19 @@
+Index: deepin-systemd/src/libsystemd/sd-journal/sd-journal.c
+===================================================================
+--- deepin-systemd.orig/src/libsystemd/sd-journal/sd-journal.c
++++ deepin-systemd/src/libsystemd/sd-journal/sd-journal.c
+@@ -2383,14 +2383,11 @@ fail:
+
+ _public_ void sd_journal_close(sd_journal *j) {
+         Directory *d;
+-        Prioq *p;
+
+         if (!j || journal_origin_changed(j))
+                 return;
+
+-        while ((p = hashmap_first(j->newest_by_boot_id)))
+-                journal_file_unlink_newest_by_boot_id(j, prioq_peek(p));
+-        hashmap_free(j->newest_by_boot_id);
++        journal_clear_newest_by_boot_id(j);
+
+         sd_journal_flush_matches(j);
