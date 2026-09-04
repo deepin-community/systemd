@@ -1,3 +1,9 @@
+systemd (255.2-4deepin68) unstable; urgency=medium
+
+  * resolve: disable LLMNR/MulticastDNS/DNSSEC by default
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 04 Sep 2026 12:00:49 +0800
+
 systemd (255.2-4deepin67) unstable; urgency=medium
 
   * core/dbus: do not flush a user manager's bus that is not RUNNING
