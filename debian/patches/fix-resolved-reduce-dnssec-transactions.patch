@@ -24,11 +24,40 @@ Consequently, this change results in an enourmous speed up in validating
 most names from our own cold-cache (10x or more), by eliminating a large
 number of superfluous dnssec transactions.
 
-diff --git a/src/resolve/resolved-dns-transaction.c b/src/resolve/resolved-dns-transaction.c
-index 5af550bc59..c90be47dbe 100644
---- a/src/resolve/resolved-dns-transaction.c
-+++ b/src/resolve/resolved-dns-transaction.c
-@@ -2437,6 +2437,8 @@ static bool dns_transaction_dnssec_supported_full(DnsTransaction *t) {
+Index: deepin-systemd/src/resolve/resolved-dns-transaction.c
+===================================================================
+--- deepin-systemd.orig/src/resolve/resolved-dns-transaction.c
++++ deepin-systemd/src/resolve/resolved-dns-transaction.c
+@@ -2214,7 +2214,7 @@ static int dns_transaction_add_dnssec_tr
+         return 1;
+ }
+ 
+-static int dns_transaction_request_dnssec_rr(DnsTransaction *t, DnsResourceKey *key) {
++static int dns_transaction_request_dnssec_rr_full(DnsTransaction *t, DnsResourceKey *key, DnsTransaction **ret) {
+         _cleanup_(dns_answer_unrefp) DnsAnswer *a = NULL;
+         DnsTransaction *aux;
+         int r;
+@@ -2245,11 +2245,19 @@ static int dns_transaction_request_dnsse
+                 r = dns_transaction_go(aux);
+                 if (r < 0)
+                         return r;
++                if (ret)
++                        *ret = aux;
+         }
+ 
+         return 1;
+ }
+ 
++static int dns_transaction_request_dnssec_rr(DnsTransaction *t, DnsResourceKey *key) {
++        assert(t);
++        assert(key);
++        return dns_transaction_request_dnssec_rr_full(t, key, NULL);
++}
++
+ static int dns_transaction_negative_trust_anchor_lookup(DnsTransaction *t, const char *name) {
+         int r;
+ 
+@@ -2350,6 +2358,8 @@ static bool dns_transaction_dnssec_suppo
  int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
          DnsResourceRecord *rr;
  
@@ -37,7 +66,7 @@ index 5af550bc59..c90be47dbe 100644
          int r;
  
          assert(t);
-@@ -2449,11 +2451,11 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
+@@ -2362,11 +2372,11 @@ int dns_transaction_request_dnssec_keys(
           * - For RRSIG we get the matching DNSKEY
           * - For DNSKEY we get the matching DS
           * - For unsigned SOA/NS we get the matching DS
@@ -53,7 +82,37 @@ index 5af550bc59..c90be47dbe 100644
           */
  
          if (FLAGS_SET(t->query_flags, SD_RESOLVED_NO_VALIDATE) || t->scope->dnssec_mode == DNSSEC_NO)
-@@ -2593,6 +2595,7 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
+@@ -2393,6 +2403,7 @@ int dns_transaction_request_dnssec_keys(
+                 case DNS_TYPE_RRSIG: {
+                         /* For each RRSIG we request the matching DNSKEY */
+                         _cleanup_(dns_resource_key_unrefp) DnsResourceKey *dnskey = NULL;
++                        DnsTransaction *aux = NULL;
+ 
+                         /* If this RRSIG is about a DNSKEY RR and the
+                          * signer is the same as the owner, then we
+@@ -2429,9 +2440,20 @@ int dns_transaction_request_dnssec_keys(
+ 
+                         log_debug("Requesting DNSKEY to validate transaction %" PRIu16" (%s, RRSIG with key tag: %" PRIu16 ").",
+                                   t->id, dns_resource_key_name(rr->key), rr->rrsig.key_tag);
+-                        r = dns_transaction_request_dnssec_rr(t, dnskey);
++                        r = dns_transaction_request_dnssec_rr_full(t, dnskey, &aux);
+                         if (r < 0)
+                                 return r;
++
++                        /* If we are requesting a DNSKEY, we can anticiapte that we will want the matching DS
++                         * in the near future. Let's request it in advance so we don't have to wait in the
++                         * common case. */
++                        if (aux) {
++                                _cleanup_(dns_resource_key_unrefp) DnsResourceKey *ds =
++                                        dns_resource_key_new(rr->key->class, DNS_TYPE_DS, dns_resource_key_name(dnskey));
++                                r = dns_transaction_request_dnssec_rr(t, ds);
++                                if (r < 0)
++                                        return r;
++                        }
+                         break;
+                 }
+ 
+@@ -2506,6 +2528,7 @@ int dns_transaction_request_dnssec_keys(
                          if (r > 0)
                                  continue;
  
@@ -61,7 +120,7 @@ index 5af550bc59..c90be47dbe 100644
                          ds = dns_resource_key_new(rr->key->class, DNS_TYPE_DS, dns_resource_key_name(rr->key));
                          if (!ds)
                                  return -ENOMEM;
-@@ -2609,11 +2612,11 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
+@@ -2522,11 +2545,11 @@ int dns_transaction_request_dnssec_keys(
                  case DNS_TYPE_DS:
                  case DNS_TYPE_CNAME:
                  case DNS_TYPE_DNAME: {
@@ -75,7 +134,7 @@ index 5af550bc59..c90be47dbe 100644
                           * unsigned CNAME/DNAME RRs, maybe that's the
                           * apex. But do all that only if this is
                           * actually a response to our original
-@@ -2647,13 +2650,13 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
+@@ -2560,13 +2583,13 @@ int dns_transaction_request_dnssec_keys(
                          if (r == 0)
                                  continue;
  
@@ -93,7 +152,7 @@ index 5af550bc59..c90be47dbe 100644
                          if (r < 0)
                                  return r;
  
-@@ -2661,11 +2664,11 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
+@@ -2574,11 +2597,11 @@ int dns_transaction_request_dnssec_keys(
                  }
  
                  default: {
@@ -107,7 +166,7 @@ index 5af550bc59..c90be47dbe 100644
                           * zone. However, do so only if they are
                           * directly relevant to our original
                           * question. */
-@@ -2682,13 +2685,13 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
+@@ -2595,13 +2618,13 @@ int dns_transaction_request_dnssec_keys(
                          if (r > 0)
                                  continue;
  
@@ -125,7 +184,7 @@ index 5af550bc59..c90be47dbe 100644
                          if (r < 0)
                                  return r;
                          break;
-@@ -2703,49 +2706,38 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
+@@ -2616,49 +2639,38 @@ int dns_transaction_request_dnssec_keys(
          if (r < 0)
                  return r;
          if (r > 0) {
@@ -134,16 +193,16 @@ index 5af550bc59..c90be47dbe 100644
 -
 -                name = dns_resource_key_name(dns_transaction_key(t));
 -                signed_status = dns_answer_contains_nsec_or_nsec3(t->answer) ? "signed" : "unsigned";
--
++                const char *name = dns_resource_key_name(dns_transaction_key(t));
++                bool was_signed = dns_answer_contains_nsec_or_nsec3(t->answer);
+ 
 -                /* If this was a SOA or NS request, then check if there's a DS RR for the same domain. Note that this
 -                 * could also be used as indication that we are not at a zone apex, but in real world setups there are
 -                 * too many broken DNS servers (Hello, incapdns.net!) where non-terminal zones return NXDOMAIN even
 -                 * though they have further children. If this was a DS request, then it's signed when the parent zone
 -                 * is signed, hence ask the parent SOA in that case. If this was any other RR then ask for the SOA RR,
 -                 * to see if that is signed. */
-+                const char *name = dns_resource_key_name(dns_transaction_key(t));
-+                bool was_signed = dns_answer_contains_nsec_or_nsec3(t->answer);
- 
+-
 -                if (dns_transaction_key(t)->type == DNS_TYPE_DS) {
 -                        r = dns_name_parent(&name);
 -                        if (r > 0) {
@@ -184,13 +243,13 @@ index 5af550bc59..c90be47dbe 100644
                  if (name) {
 -                        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *soa = NULL;
 +                        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *ds = NULL;
- 
--                        soa = dns_resource_key_new(dns_transaction_key(t)->class, type, name);
--                        if (!soa)
++
 +                        log_debug("Requesting DS (%s %s) to validate transaction %" PRIu16 " (%s empty response).",
 +                                  special_glyph(SPECIAL_GLYPH_ARROW_RIGHT), name, t->id,
 +                                  dns_resource_key_name(dns_transaction_key(t)));
-+
+ 
+-                        soa = dns_resource_key_new(dns_transaction_key(t)->class, type, name);
+-                        if (!soa)
 +                        ds = dns_resource_key_new(dns_transaction_key(t)->class, DNS_TYPE_DS, name);
 +                        if (!ds)
                                  return -ENOMEM;
@@ -200,7 +259,7 @@ index 5af550bc59..c90be47dbe 100644
                          if (r < 0)
                                  return r;
                  }
-@@ -2825,7 +2817,6 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
+@@ -2738,7 +2750,6 @@ static int dns_transaction_requires_rrsi
                  DnsTransaction *dt;
  
                  /* For SOA or NS RRs we look for a matching DS transaction */
@@ -208,7 +267,7 @@ index 5af550bc59..c90be47dbe 100644
                  SET_FOREACH(dt, t->dnssec_transactions) {
  
                          if (dns_transaction_key(dt)->class != rr->key->class)
-@@ -2833,7 +2824,7 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
+@@ -2746,7 +2757,7 @@ static int dns_transaction_requires_rrsi
                          if (dns_transaction_key(dt)->type != DNS_TYPE_DS)
                                  continue;
  
@@ -217,7 +276,7 @@ index 5af550bc59..c90be47dbe 100644
                          if (r < 0)
                                  return r;
                          if (r == 0)
-@@ -2862,16 +2853,16 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
+@@ -2775,16 +2786,16 @@ static int dns_transaction_requires_rrsi
                  DnsTransaction *dt;
  
                  /*
@@ -237,7 +296,7 @@ index 5af550bc59..c90be47dbe 100644
                                  continue;
  
                          if (!parent) {
-@@ -2889,7 +2880,7 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
+@@ -2802,7 +2813,7 @@ static int dns_transaction_requires_rrsi
                                  }
                          }
  
@@ -246,7 +305,7 @@ index 5af550bc59..c90be47dbe 100644
                          if (r < 0)
                                  return r;
                          if (r == 0)
-@@ -2904,25 +2895,26 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
+@@ -2817,25 +2828,26 @@ static int dns_transaction_requires_rrsi
          default: {
                  DnsTransaction *dt;
  
@@ -281,7 +340,7 @@ index 5af550bc59..c90be47dbe 100644
                  }
  
                  return true;
-@@ -2992,7 +2984,6 @@ static int dns_transaction_requires_nsec(DnsTransaction *t) {
+@@ -2905,7 +2917,6 @@ static int dns_transaction_requires_nsec
          char key_str[DNS_RESOURCE_KEY_STRING_MAX];
          DnsTransaction *dt;
          const char *name;
@@ -289,7 +348,7 @@ index 5af550bc59..c90be47dbe 100644
          int r;
  
          assert(t);
-@@ -3027,43 +3018,37 @@ static int dns_transaction_requires_nsec(DnsTransaction *t) {
+@@ -2940,43 +2951,37 @@ static int dns_transaction_requires_nsec
  
          name = dns_resource_key_name(dns_transaction_key(t));
  
@@ -346,77 +405,3 @@ index 5af550bc59..c90be47dbe 100644
          }
  
          /* If in doubt, require NSEC/NSEC3 */
-
-From ce5b9d5b3c2466dd35691be0a662c4e3353a2bbf Mon Sep 17 00:00:00 2001
-From: Ronan Pigott <ronan@rjp.ie>
-Date: Mon, 18 Mar 2024 13:05:07 -0700
-Subject: [PATCH] resolved: request DS with DNSKEY
-
-When validating, when we lookup a DNSKEY for validation we will almost
-certainly need the corresponding DS to complete the chain of trust.
-Let's go ahead and request it right away so that we don't have to wait
-in this common case.
-
-diff --git a/src/resolve/resolved-dns-transaction.c b/src/resolve/resolved-dns-transaction.c
-index c90be47dbe..9e4e90160b 100644
---- a/src/resolve/resolved-dns-transaction.c
-+++ b/src/resolve/resolved-dns-transaction.c
-@@ -2301,7 +2301,7 @@ static int dns_transaction_add_dnssec_transaction(DnsTransaction *t, DnsResource
-         return 1;
- }
- 
--static int dns_transaction_request_dnssec_rr(DnsTransaction *t, DnsResourceKey *key) {
-+static int dns_transaction_request_dnssec_rr_full(DnsTransaction *t, DnsResourceKey *key, DnsTransaction **ret) {
-         _cleanup_(dns_answer_unrefp) DnsAnswer *a = NULL;
-         DnsTransaction *aux;
-         int r;
-@@ -2332,11 +2332,19 @@ static int dns_transaction_request_dnssec_rr(DnsTransaction *t, DnsResourceKey *
-                 r = dns_transaction_go(aux);
-                 if (r < 0)
-                         return r;
-+                if (ret)
-+                        *ret = aux;
-         }
- 
-         return 1;
- }
- 
-+static int dns_transaction_request_dnssec_rr(DnsTransaction *t, DnsResourceKey *key) {
-+        assert(t);
-+        assert(key);
-+        return dns_transaction_request_dnssec_rr_full(t, key, NULL);
-+}
-+
- static int dns_transaction_negative_trust_anchor_lookup(DnsTransaction *t, const char *name) {
-         int r;
- 
-@@ -2482,6 +2490,7 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
-                 case DNS_TYPE_RRSIG: {
-                         /* For each RRSIG we request the matching DNSKEY */
-                         _cleanup_(dns_resource_key_unrefp) DnsResourceKey *dnskey = NULL;
-+                        DnsTransaction *aux = NULL;
- 
-                         /* If this RRSIG is about a DNSKEY RR and the
-                          * signer is the same as the owner, then we
-@@ -2518,9 +2527,20 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
- 
-                         log_debug("Requesting DNSKEY to validate transaction %" PRIu16" (%s, RRSIG with key tag: %" PRIu16 ").",
-                                   t->id, dns_resource_key_name(rr->key), rr->rrsig.key_tag);
--                        r = dns_transaction_request_dnssec_rr(t, dnskey);
-+                        r = dns_transaction_request_dnssec_rr_full(t, dnskey, &aux);
-                         if (r < 0)
-                                 return r;
-+
-+                        /* If we are requesting a DNSKEY, we can anticiapte that we will want the matching DS
-+                         * in the near future. Let's request it in advance so we don't have to wait in the
-+                         * common case. */
-+                        if (aux) {
-+                                _cleanup_(dns_resource_key_unrefp) DnsResourceKey *ds =
-+                                        dns_resource_key_new(rr->key->class, DNS_TYPE_DS, dns_resource_key_name(dnskey));
-+                                r = dns_transaction_request_dnssec_rr(t, ds);
-+                                if (r < 0)
-+                                        return r;
-+                        }
-                         break;
-                 }
-

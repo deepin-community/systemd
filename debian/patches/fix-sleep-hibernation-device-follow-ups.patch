@@ -12,10 +12,10 @@ Subject: [PATCH] sleep: don't log duplicate error
 
 write_resume_config() logs error on its own.
 
-diff --git a/src/sleep/sleep.c b/src/sleep/sleep.c
-index deb165ead8..31dca446f2 100644
---- a/src/sleep/sleep.c
-+++ b/src/sleep/sleep.c
+Index: deepin-systemd/src/sleep/sleep.c
+===================================================================
+--- deepin-systemd.orig/src/sleep/sleep.c
++++ deepin-systemd/src/sleep/sleep.c
 @@ -253,10 +253,8 @@ static int execute(
                                  return r;
  
@@ -28,21 +28,11 @@ index deb165ead8..31dca446f2 100644
                  }
  
                  r = write_mode(sleep_config->modes[operation]);
-
-From 66b9956082f4e458b5fb2d3571088fb73872f6b2 Mon Sep 17 00:00:00 2001
-From: Mike Yuan <me@yhndnzj.com>
-Date: Wed, 27 Dec 2023 22:19:07 +0800
-Subject: [PATCH] hibernate-util: make sure we use blockdev path for
- HibernationDevice.path
-
-Before this commit, this field could spuriously contain the path of the
-swapfile.
-
-diff --git a/src/shared/hibernate-util.c b/src/shared/hibernate-util.c
-index 48ed414197..99b37483bd 100644
---- a/src/shared/hibernate-util.c
-+++ b/src/shared/hibernate-util.c
-@@ -388,12 +388,24 @@ int find_suitable_hibernation_device_full(HibernationDevice *ret_device, uint64_
+Index: deepin-systemd/src/shared/hibernate-util.c
+===================================================================
+--- deepin-systemd.orig/src/shared/hibernate-util.c
++++ deepin-systemd/src/shared/hibernate-util.c
+@@ -388,12 +388,24 @@ int find_suitable_hibernation_device_ful
                  return log_debug_errno(SYNTHETIC_ERRNO(ENOSPC), "Cannot find swap entry corresponding to /sys/power/resume.");
          }
  
@@ -69,19 +59,7 @@ index 48ed414197..99b37483bd 100644
  
          if (ret_size) {
                  *ret_size = entry->size;
-
-From 6e819bd2bd86f1e7f6034461eed600e0dd0977fb Mon Sep 17 00:00:00 2001
-From: Mike Yuan <me@yhndnzj.com>
-Date: Wed, 27 Dec 2023 22:22:21 +0800
-Subject: [PATCH] hibernate-util: remove unused code
-
-All callers of write_resume_config() pass non-NULL device.
-
-diff --git a/src/shared/hibernate-util.c b/src/shared/hibernate-util.c
-index 99b37483bd..795b3a2d56 100644
---- a/src/shared/hibernate-util.c
-+++ b/src/shared/hibernate-util.c
-@@ -475,30 +475,23 @@ int hibernation_is_safe(void) {
+@@ -463,30 +475,23 @@ int hibernation_is_safe(void) {
  
  int write_resume_config(dev_t devno, uint64_t offset, const char *device) {
          char offset_str[DECIMAL_STR_MAX(uint64_t)];
@@ -117,4 +95,3 @@ index 99b37483bd..795b3a2d56 100644
  
                  log_warning_errno(r, "/sys/power/resume_offset is unavailable, skipping writing swap file offset.");
          } else if (r < 0)
-
