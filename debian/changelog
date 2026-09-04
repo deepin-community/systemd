@@ -1,3 +1,10 @@
+systemd (255.2-4deepin69) unstable; urgency=medium
+
+  * sd-journal: fix sd_journal_close() to use journal_clear_newest_by_boot_id()
+  * sd-journal: 修复 sd_journal_close() 未适配 newest_by_boot_id 数组化
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 04 Sep 2026 13:29:24 +0800
+
 systemd (255.2-4deepin68) unstable; urgency=medium
 
   * resolve: disable LLMNR/MulticastDNS/DNSSEC by default
