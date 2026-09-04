@@ -1,3 +1,11 @@
+systemd (255.2-4deepin74) unstable; urgency=medium
+
+  * patches: normalize patch format (fix blank-line prefixes, merge
+    repeated per-file diffs) to silence dpkg-source warnings
+  * patches: 规范化补丁格式，消除 dpkg-source 警告
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 04 Sep 2026 17:00:00 +0800
+
 systemd (255.2-4deepin73) unstable; urgency=medium
 
   * man: drop sd_event_source_get_inotify_path alias from fix-doc patch
