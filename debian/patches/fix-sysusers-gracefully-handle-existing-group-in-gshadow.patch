@@ -65,12 +65,6 @@ index 0000000000..41eeafbefc
 +++ b/test/test-sysusers/test-17.expected-group
 @@ -0,0 +1 @@
 +testgroup:x:333:
-diff --git a/test/test-sysusers/test-17.expected-passwd b/test/test-sysusers/test-17.expected-passwd
-new file mode 100644
-index 0000000000..e69de29bb2
-diff --git a/test/test-sysusers/test-17.initial-group b/test/test-sysusers/test-17.initial-group
-new file mode 100644
-index 0000000000..e69de29bb2
 diff --git a/test/test-sysusers/test-17.initial-gshadow b/test/test-sysusers/test-17.initial-gshadow
 new file mode 100644
 index 0000000000..5af2638d7a
@@ -78,9 +72,6 @@ index 0000000000..5af2638d7a
 +++ b/test/test-sysusers/test-17.initial-gshadow
 @@ -0,0 +1 @@
 +testgroup:!::
-diff --git a/test/test-sysusers/test-17.initial-passwd b/test/test-sysusers/test-17.initial-passwd
-new file mode 100644
-index 0000000000..e69de29bb2
 diff --git a/test/test-sysusers/test-17.input b/test/test-sysusers/test-17.input
 new file mode 100644
 index 0000000000..2d6e893dbc
