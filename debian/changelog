@@ -1,3 +1,11 @@
+systemd (255.2-4deepin73) unstable; urgency=medium
+
+  * man: drop sd_event_source_get_inotify_path alias from fix-doc patch
+    (symbol is v256+, does not exist in v255, breaks ninja install)
+  * man: fix-doc 补丁移除 sd_event_source_get_inotify_path 别名
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 04 Sep 2026 16:40:00 +0800
+
 systemd (255.2-4deepin72) unstable; urgency=medium
 
   * sysusers: track test-17 empty data files in source tree, drop their
