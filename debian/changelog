@@ -1,3 +1,12 @@
+systemd (255.2-4deepin70) unstable; urgency=medium
+
+  * shared: fix serialize_pidref() missing r declaration and
+    deserialize_pidref() missing sentinel in extract_many_words()
+  * shared: 修复 serialize_pidref() 缺少 r 声明及
+    deserialize_pidref() extract_many_words() 缺少哨兵参数
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 04 Sep 2026 13:58:42 +0800
+
 systemd (255.2-4deepin69) unstable; urgency=medium
 
   * sd-journal: fix sd_journal_close() to use journal_clear_newest_by_boot_id()

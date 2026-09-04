@@ -73,3 +73,4 @@ fix-sd-journal-reduce-fstat-and-immutable-flag.patch
 fix-sysusers-gracefully-handle-existing-group-in-gshadow.patch
 fix-dbus-skip-flush-when-bus-not-running.patch
 uniontech-fix-sd-journal-close-newest-by-boot-id.patch
+uniontech-fix-serialize-pidref.patch

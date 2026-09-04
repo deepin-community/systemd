@@ -1,0 +1,21 @@
+Index: deepin-systemd/src/shared/serialize.c
+===================================================================
+--- deepin-systemd.orig/src/shared/serialize.c
++++ deepin-systemd/src/shared/serialize.c
+@@ -180,6 +180,7 @@ int serialize_strv(FILE *f, const char *
+ }
+
+ int serialize_pidref(FILE *f, FDSet *fds, const char *key, PidRef *pidref) {
++        int r;
+         int copy;
+
+         assert(f);
+@@ -485,7 +486,7 @@ int deserialize_pidref(FDSet *fds, const
+                 _cleanup_free_ char *fdstr = NULL, *pidstr = NULL;
+                 _cleanup_close_ int fd = -EBADF;
+
+-                r = extract_many_words(&e, ":", /* flags = */ 0, &fdstr, &pidstr);
++                r = extract_many_words(&e, ":", /* flags = */ 0, &fdstr, &pidstr, NULL);
+                 if (r < 0)
+                         return log_debug_errno(r, "Failed to deserialize pidref '%s': %m", e);
+                 if (r == 0)
