@@ -1,0 +1,99 @@
+From 4a25049a9e79b78f24923a2b620d8f3c97d88866 Mon Sep 17 00:00:00 2001
+From: Armaan Sandhu <armaan.sandhu0504@gmail.com>
+Date: Thu, 3 Sep 2026 19:26:44 -0400
+Subject: [PATCH] resolved: don't disable the listening socket when a datagram
+ is dropped
+
+manager_recv() sizes its buffer with next_datagram_size_fd(), which peeks at
+the datagram with MSG_PEEK|MSG_TRUNC. That peek makes the kernel verify the UDP
+checksum - which is the whole point of using it over FIONREAD - and hence also
+drop the datagram when the checksum is bad. The datagram that woke the event
+source can thus be gone by the time we peek at it, and the peek returns EAGAIN.
+
+manager_recv() returned that error, while the recvmsg_safe() below, which can
+fail the same way, already treats it as "no packet". The callers on the mDNS,
+LLMNR and stub listening sockets pass a negative return on to the event loop,
+which disables the event source, so a single datagram with a bad checksum -
+something anyone on the link can send - stops resolved from receiving on that
+socket for good. on_dns_packet() completes the transaction with -EAGAIN instead
+of retrying it.
+
+So return 0 on a transient error here too, like the other users of the helper
+on an event source do. Disconnect errors are left as they are: they show up
+here from ICMP errors on the connected UDP socket, and on_dns_packet() handles
+them.
+
+diff --git a/src/resolve/meson.build b/src/resolve/meson.build
+index e7867e2..82f02d9 100644
+--- a/src/resolve/meson.build
++++ b/src/resolve/meson.build
+@@ -172,6 +172,12 @@ executables += [
+                         'resolved-etc-hosts.c',
+                 ),
+         },
++        resolve_test_template + {
++                'sources' : [
++                        files('test-resolved-manager.c'),
++                        systemd_resolved_sources,
++                ],
++        },
+         resolve_test_template + {
+                 'sources' : files('test-resolved-packet.c'),
+         },
+diff --git a/src/resolve/resolved-manager.c b/src/resolve/resolved-manager.c
+index b52619e..e4bb1c9 100644
+--- a/src/resolve/resolved-manager.c
++++ b/src/resolve/resolved-manager.c
+@@ -787,6 +787,13 @@ int manager_recv(Manager *m, int fd, DnsProtocol protocol, DnsPacket **ret) {
+         assert(ret);
+ 
+         ms = next_datagram_size_fd(fd);
++        /* The MSG_PEEK recv() in next_datagram_size_fd() validates the datagram's checksum, and drops it if
++         * it is bad. Hence we can end up here with nothing left to read even though the event source said
++         * otherwise, and must treat that like the recvmsg_safe() below does: as "no packet", not as a
++         * failure. Our callers propagate a failure to the event loop, which would then turn the listening
++         * socket's event source off for good. */
++        if (ERRNO_IS_NEG_TRANSIENT(ms))
++                return 0;
+         if (ms < 0)
+                 return ms;
+ 
+diff --git a/src/resolve/test-resolved-manager.c b/src/resolve/test-resolved-manager.c
+new file mode 100644
+index 0000000..b01822d
+--- /dev/null
++++ b/src/resolve/test-resolved-manager.c
+@@ -0,0 +1,33 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <sys/socket.h>
++
++#include "dns-def.h"
++#include "fd-util.h"
++#include "resolved-dns-packet.h"
++#include "resolved-manager.h"
++#include "tests.h"
++
++/* ================================================================
++ * manager_recv()
++ * ================================================================ */
++
++TEST(manager_recv_nothing_to_read) {
++        Manager manager = {};
++        _cleanup_(dns_packet_unrefp) DnsPacket *p = NULL;
++        _cleanup_close_ int fd = -EBADF;
++
++        /* The event source may hand us a socket whose datagram is gone by the time we look at it: the
++         * MSG_PEEK recv() in next_datagram_size_fd() verifies the UDP checksum and drops the datagram if it
++         * is bad. That must be reported as "no packet", not as an error, as our callers pass an error on to
++         * the event loop, which then turns the listening socket's event source off. An empty non-blocking
++         * socket puts us in exactly that situation. */
++
++        fd = socket(AF_INET, SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC, 0);
++        assert_se(fd >= 0);
++
++        assert_se(manager_recv(&manager, fd, DNS_PROTOCOL_DNS, &p) == 0);
++        assert_se(!p);
++}
++
++DEFINE_TEST_MAIN(LOG_DEBUG);
