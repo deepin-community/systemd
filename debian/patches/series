@@ -105,3 +105,4 @@ fix-network-always-join-main-interface-ifla-master.patch
 fix-core-escape-spaces-in-paths-during-serialization.patch
 fix-network-implied-default-priority.patch
 fix-network-remove-address-on-cancelling-request.patch
+fix-iovec-util-rework-iovec-make-string-compound-input.patch
