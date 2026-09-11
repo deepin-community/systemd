@@ -1,0 +1,90 @@
+From 9cceb0be2115210d2733408523afb90a29f31a88 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Tue, 19 Dec 2023 12:15:25 +0900
+Subject: [PATCH] udev: refuse too short timeout value
+
+Setting zero or too short timeout for each uevent is meaningless, and
+causes the system fails to boot. Let's refuse such values.
+
+Also, delaying execution of RUN= commands too long also makes many
+uevents enter the failed state. So, let's refuse such misconfiguration.
+
+diff --git a/src/udev/udev-manager.c b/src/udev/udev-manager.c
+index 859fc02436..d56ddfe538 100644
+--- a/src/udev/udev-manager.c
++++ b/src/udev/udev-manager.c
+@@ -1189,13 +1189,33 @@ Manager* manager_new(void) {
+                 .worker_watch = EBADF_PAIR,
+                 .log_level = LOG_INFO,
+                 .resolve_name_timing = RESOLVE_NAME_EARLY,
+-                .timeout_usec = 180 * USEC_PER_SEC,
++                .timeout_usec = DEFAULT_WORKER_TIMEOUT_USEC,
+                 .timeout_signal = SIGKILL,
+         };
+ 
+         return manager;
+ }
+ 
++void manager_adjust_arguments(Manager *manager) {
++        assert(manager);
++
++        if (manager->timeout_usec < MIN_WORKER_TIMEOUT_USEC) {
++                log_debug("Timeout (%s) for processing event is too small, using the default: %s",
++                          FORMAT_TIMESPAN(manager->timeout_usec, 1),
++                          FORMAT_TIMESPAN(DEFAULT_WORKER_TIMEOUT_USEC, 1));
++
++                manager->timeout_usec = DEFAULT_WORKER_TIMEOUT_USEC;
++        }
++
++        if (manager->exec_delay_usec >= manager->timeout_usec) {
++                log_debug("Delay (%s) for executing RUN= commands is too large compared with the timeout (%s) for event execution, ignoring the delay.",
++                          FORMAT_TIMESPAN(manager->exec_delay_usec, 1),
++                          FORMAT_TIMESPAN(manager->timeout_usec, 1));
++
++                manager->exec_delay_usec = 0;
++        }
++}
++
+ int manager_init(Manager *manager, int fd_ctrl, int fd_uevent) {
+         _cleanup_free_ char *cgroup = NULL;
+         int r;
+diff --git a/src/udev/udev-manager.h b/src/udev/udev-manager.h
+index afbc67f696..864fc0290e 100644
+--- a/src/udev/udev-manager.h
++++ b/src/udev/udev-manager.h
+@@ -56,6 +56,7 @@ Manager* manager_new(void);
+ Manager* manager_free(Manager *manager);
+ DEFINE_TRIVIAL_CLEANUP_FUNC(Manager*, manager_free);
+ 
++void manager_adjust_arguments(Manager *manager);
+ int manager_init(Manager *manager, int fd_ctrl, int fd_uevent);
+ int manager_main(Manager *manager);
+ 
+diff --git a/src/udev/udev-worker.h b/src/udev/udev-worker.h
+index 05c319e309..e9aefc5b04 100644
+--- a/src/udev/udev-worker.h
++++ b/src/udev/udev-worker.h
+@@ -11,6 +11,9 @@
+ #include "hashmap.h"
+ #include "time-util.h"
+ 
++#define DEFAULT_WORKER_TIMEOUT_USEC (3 * USEC_PER_MINUTE)
++#define MIN_WORKER_TIMEOUT_USEC     (1 * USEC_PER_MSEC)
++
+ typedef struct UdevRules UdevRules;
+ 
+ typedef struct UdevWorker {
+diff --git a/src/udev/udevd.c b/src/udev/udevd.c
+index 2ed4282253..6f8546385e 100644
+--- a/src/udev/udevd.c
++++ b/src/udev/udevd.c
+@@ -355,6 +355,8 @@ int run_udevd(int argc, char *argv[]) {
+                 log_set_max_level(LOG_DEBUG);
+         }
+ 
++        manager_adjust_arguments(manager);
++
+         r = must_be_root();
+         if (r < 0)
+                 return r;
+
