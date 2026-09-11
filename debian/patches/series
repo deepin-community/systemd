@@ -113,3 +113,4 @@ fix-logind-tolerate-leader-hashmap-removal-failure.patch
 fix-tpm2-assign-noda-attribute-not-dependant-on-pin.patch
 feat-homed-missing-bus-call-access-policy.patch
 fix-basic-sigbus-overflow-detection.patch
+fix-logind-idle-session-watch-lock-screen-greeter.patch
