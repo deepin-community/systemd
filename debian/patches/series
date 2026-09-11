@@ -76,3 +76,4 @@ uniontech-fix-sd-journal-close-newest-by-boot-id.patch
 uniontech-fix-serialize-pidref.patch
 uniontech-resolved-off-multidns.patch
 fix-fstab-generator-drop-unapplicable-options-for-usr.patch
+fix-fstab-generator-drop-assertions-for-mount-opts.patch
