@@ -1,0 +1,69 @@
+From 0c3af33e19b5f74dbb893aca12946a4d4935a917 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 5 Jan 2024 20:36:33 +0900
+Subject: [PATCH] udev/net: do not set unapplied .link file name to
+ ID_NET_LINK_FILE
+
+Instead, import already assigned value from the udev database.
+Then, return the builtin earlier.
+
+diff --git a/src/udev/net/link-config.c b/src/udev/net/link-config.c
+index 910ec2709e..8689630f4b 100644
+--- a/src/udev/net/link-config.c
++++ b/src/udev/net/link-config.c
+@@ -928,14 +928,6 @@ int link_apply_config(LinkConfigContext *ctx, sd_netlink **rtnl, Link *link) {
+         assert(rtnl);
+         assert(link);
+ 
+-        if (!IN_SET(link->action, SD_DEVICE_ADD, SD_DEVICE_BIND, SD_DEVICE_MOVE)) {
+-                log_link_debug(link, "Skipping to apply .link settings on '%s' uevent.",
+-                               device_action_to_string(link->action));
+-
+-                link->new_name = link->ifname;
+-                return 0;
+-        }
+-
+         r = link_apply_ethtool_settings(link, &ctx->ethtool_fd);
+         if (r < 0)
+                 return r;
+diff --git a/src/udev/udev-builtin-net_setup_link.c b/src/udev/udev-builtin-net_setup_link.c
+index a308a211fb..ad73b8e1c4 100644
+--- a/src/udev/udev-builtin-net_setup_link.c
++++ b/src/udev/udev-builtin-net_setup_link.c
+@@ -1,6 +1,7 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
+ #include "alloc-util.h"
++#include "device-private.h"
+ #include "device-util.h"
+ #include "escape.h"
+ #include "errno-util.h"
+@@ -21,6 +22,27 @@ static int builtin_net_setup_link(UdevEvent *event, int argc, char **argv, bool
+         if (argc > 1)
+                 return log_device_error_errno(dev, SYNTHETIC_ERRNO(EINVAL), "This program takes no arguments.");
+ 
++        sd_device_action_t action;
++        r = sd_device_get_action(dev, &action);
++        if (r < 0)
++                return log_device_error_errno(dev, r, "Failed to get action: %m");
++
++        if (!IN_SET(action, SD_DEVICE_ADD, SD_DEVICE_BIND, SD_DEVICE_MOVE)) {
++                log_device_debug(dev, "Skipping to apply .link settings on '%s' uevent.",
++                                 device_action_to_string(action));
++
++                /* Import previously assigned .link file name. */
++                (void) udev_builtin_import_property(dev, event->dev_db_clone, test, "ID_NET_LINK_FILE");
++                (void) udev_builtin_import_property(dev, event->dev_db_clone, test, "ID_NET_LINK_FILE_DROPINS");
++
++                /* Set ID_NET_NAME= with the current interface name. */
++                const char *value;
++                if (sd_device_get_sysname(dev, &value) >= 0)
++                        (void) udev_builtin_add_property(dev, test, "ID_NET_NAME", value);
++
++                return 0;
++        }
++
+         r = link_new(ctx, &event->rtnl, dev, &link);
+         if (r == -ENODEV) {
+                 log_device_debug_errno(dev, r, "Link vanished while getting information, ignoring.");
+
