@@ -108,3 +108,4 @@ fix-network-remove-address-on-cancelling-request.patch
 fix-iovec-util-rework-iovec-make-string-compound-input.patch
 fix-pcrlock-use-d-path-for-kernel-pcrlock.patch
 fix-tpm2-assign-noda-attribute-to-objects-not-dependant-on-pin.patch
+fix-execute-type-exec-pamname-work-together.patch
