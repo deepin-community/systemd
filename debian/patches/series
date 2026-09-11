@@ -89,3 +89,4 @@ fix-pcrlock-measure-empty-pk-kek-efi-vars.patch
 fix-man-dont-suggest-pam-unix-use-authtok.patch
 fix-varlink-collect-error-parameters.patch
 fix-sd-netlink-rtnl-resolve-link-alternative-name.patch
+fix-dbus-unit-dont-eat-up-error-codes.patch
