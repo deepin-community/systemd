@@ -78,3 +78,4 @@ uniontech-resolved-off-multidns.patch
 fix-fstab-generator-drop-unapplicable-options-for-usr.patch
 fix-fstab-generator-drop-assertions-for-mount-opts.patch
 fix-machine-id-setup-stable-machine-ids-xen-vms.patch
+fix-logind-dbus-session-reply-user-start-jobs.patch

@@ -1,0 +1,50 @@
+From 562dc41bc4344a77006364b06a48ccb9c2762180 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Thu, 25 Jan 2024 18:27:40 +0800
+Subject: [PATCH] logind-dbus: send session reply only for user start jobs
+
+
+diff --git a/src/login/logind-dbus.c b/src/login/logind-dbus.c
+index cf7fdbf228..097b63246b 100644
+--- a/src/login/logind-dbus.c
++++ b/src/login/logind-dbus.c
+@@ -4077,11 +4077,9 @@ static int session_jobs_reply(Session *s, uint32_t jid, const char *unit, const
+ }
+ 
+ int match_job_removed(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+-        const char *path, *result, *unit;
+         Manager *m = ASSERT_PTR(userdata);
+-        Session *session;
++        const char *path, *result, *unit;
+         uint32_t id;
+-        User *user;
+         int r;
+ 
+         assert(message);
+@@ -4104,6 +4102,9 @@ int match_job_removed(sd_bus_message *message, void *userdata, sd_bus_error *err
+                 return 0;
+         }
+ 
++        Session *session;
++        User *user;
++
+         session = hashmap_get(m->session_units, unit);
+         if (session) {
+                 if (streq_ptr(path, session->scope_job)) {
+@@ -4119,11 +4120,13 @@ int match_job_removed(sd_bus_message *message, void *userdata, sd_bus_error *err
+ 
+         user = hashmap_get(m->user_units, unit);
+         if (user) {
+-                if (streq_ptr(path, user->service_job)) {
++                /* If the user is stopping, we're tracking stop jobs here. So don't send reply. */
++                if (!user->stopping && streq_ptr(path, user->service_job)) {
+                         user->service_job = mfree(user->service_job);
+ 
+                         LIST_FOREACH(sessions_by_user, s, user->sessions)
+-                                (void) session_jobs_reply(s, id, unit, NULL /* don't propagate user service failures to the client */);
++                                /* Don't propagate user service failures to the client */
++                                (void) session_jobs_reply(s, id, unit, /* error = */ NULL);
+ 
+                         user_save(user);
+                 }
+
