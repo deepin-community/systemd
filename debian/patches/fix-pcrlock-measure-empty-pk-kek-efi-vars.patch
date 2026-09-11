@@ -1,0 +1,44 @@
+From 4054e8128e4957f9fde783889485051ec5560d60 Mon Sep 17 00:00:00 2001
+From: Alberto Planas <aplanas@suse.com>
+Date: Thu, 18 Jan 2024 15:38:30 +0100
+Subject: [PATCH] Measure empty PK and KEK EFI vars
+
+The OVMF UEFI firmware is measuring PK and KEK when secure boot is
+disabled, and those variables are absent.  This can be checked via the
+event log to see that there are extensions for PCR 7 associated with PK
+and KEK events of type EV_EFI_VARIABLE_DRIVER_CONFIG.
+
+When running the "lock-secureboot-policy" verb, pcrlock complains that
+those variables are not found and refuse to generate the
+240-secureboot-policy.pcrlock.d/generated.pcrlock file.
+
+The "TCG PC Client Platform Firmware Profile Specification Version 1.05
+Revision 23"[1] from May 7, 2021, in section "3.3.4.8 PCR[7] - Secure
+Boot Policy Measurements", point 10.b:
+
+If reading a UEFI variable returns UEFI_NOT_FOUND, platform firmware
+SHALL measure the absence of the variable. The
+UEFI_VARIABLE_DATA.VariableDataLength field MUST be set to zero and
+UEFI_VARIABLE_DATA.VariableData field will have a size of zero.
+
+This patch mark those variables to be marked as "synthesize empty",
+generating the correct hash for those variables.
+
+Signed-off-by: Alberto Planas <aplanas@suse.com>
+
+diff --git a/src/pcrlock/pcrlock.c b/src/pcrlock/pcrlock.c
+index 9eeef91a4c..e8c902c927 100644
+--- a/src/pcrlock/pcrlock.c
++++ b/src/pcrlock/pcrlock.c
+@@ -2768,8 +2768,8 @@ static int verb_lock_secureboot_policy(int argc, char *argv[], void *userdata) {
+                 int synthesize_empty; /* 0 → fail, > 0 → synthesize empty db, < 0 → skip */
+         } variables[] = {
+                 { EFI_VENDOR_GLOBAL,   "SecureBoot", 0 },
+-                { EFI_VENDOR_GLOBAL,   "PK",         0 },
+-                { EFI_VENDOR_GLOBAL,   "KEK",        0 },
++                { EFI_VENDOR_GLOBAL,   "PK",         1 },
++                { EFI_VENDOR_GLOBAL,   "KEK",        1 },
+                 { EFI_VENDOR_DATABASE, "db",         1 },
+                 { EFI_VENDOR_DATABASE, "dbx",        1 },
+                 { EFI_VENDOR_DATABASE, "dbt",       -1 },
+
