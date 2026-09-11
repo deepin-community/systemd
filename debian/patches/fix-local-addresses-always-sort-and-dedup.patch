@@ -1,0 +1,61 @@
+From a64f60416cda01e09308955e5be1c013dbd29314 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 19 Jan 2024 19:47:29 +0900
+Subject: [PATCH] local-addresses: always sort and dedup even if addresses are
+ not requested
+
+Otherwise, the return value may different when ret is NULL or not.
+
+diff --git a/src/shared/local-addresses.c b/src/shared/local-addresses.c
+index 43f0a2d89a..c8feb58407 100644
+--- a/src/shared/local-addresses.c
++++ b/src/shared/local-addresses.c
+@@ -168,11 +168,11 @@ int local_addresses(
+                 n_list++;
+         };
+ 
+-        if (ret) {
+-                typesafe_qsort(list, n_list, address_compare);
+-                suppress_duplicates(list, &n_list);
++        typesafe_qsort(list, n_list, address_compare);
++        suppress_duplicates(list, &n_list);
++
++        if (ret)
+                 *ret = TAKE_PTR(list);
+-        }
+ 
+         return (int) n_list;
+ }
+@@ -370,11 +370,11 @@ int local_gateways(
+                 }
+         }
+ 
+-        if (ret) {
+-                typesafe_qsort(list, n_list, address_compare);
+-                suppress_duplicates(list, &n_list);
++        typesafe_qsort(list, n_list, address_compare);
++        suppress_duplicates(list, &n_list);
++
++        if (ret)
+                 *ret = TAKE_PTR(list);
+-        }
+ 
+         return (int) n_list;
+ }
+@@ -515,11 +515,11 @@ int local_outbounds(
+                 }
+         }
+ 
+-        if (ret) {
+-                typesafe_qsort(list, n_list, address_compare);
+-                suppress_duplicates(list, &n_list);
++        typesafe_qsort(list, n_list, address_compare);
++        suppress_duplicates(list, &n_list);
++
++        if (ret)
+                 *ret = TAKE_PTR(list);
+-        }
+ 
+         return (int) n_list;
+ }
+
