@@ -1,0 +1,61 @@
+From 75f8b0fe70002176b505010d633d95628eb8c40a Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 17 Jan 2024 23:41:14 +0100
+Subject: [PATCH] man: don't suggest using pam_unix.so's use_authtok switch
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Our dumbed down example PAM stacks do not contain cracklib/pwq modules,
+hence using use_authtok on the pam_unix.so password change stack won't
+work, because it has the effect that pam_unix.so never asks for a
+password on its own, expecting the cracklib/pwq modules to have
+queried/validated them beforehand.
+
+I noticed this issue because of #30969: Debian's PAM setup suffers by
+the same issue – even though they don't actually use our suggested PAM
+fragments at all.
+
+See: #30969
+
+diff --git a/factory/etc/pam.d/system-auth b/factory/etc/pam.d/system-auth
+index c2d6240930..cb4e570361 100644
+--- a/factory/etc/pam.d/system-auth
++++ b/factory/etc/pam.d/system-auth
+@@ -13,7 +13,7 @@ account   sufficient pam_unix.so
+ account   required   pam_permit.so
+ 
+ -password sufficient pam_systemd_home.so
+-password  sufficient pam_unix.so sha512 shadow try_first_pass use_authtok
++password  sufficient pam_unix.so sha512 shadow try_first_pass
+ password  required   pam_deny.so
+ 
+ -session  optional   pam_keyinit.so revoke
+diff --git a/man/pam_systemd.xml b/man/pam_systemd.xml
+index 2c3bbec5d8..1a841df13b 100644
+--- a/man/pam_systemd.xml
++++ b/man/pam_systemd.xml
+@@ -411,8 +411,7 @@ account   sufficient pam_unix.so
+ account   required   pam_permit.so
+ 
+ -password sufficient pam_systemd_home.so
+-password  sufficient pam_unix.so sha512 shadow try_first_pass use_authtok
+-
++password  sufficient pam_unix.so sha512 shadow try_first_pass
+ password  required   pam_deny.so
+ 
+ -session  optional   pam_keyinit.so revoke
+diff --git a/man/pam_systemd_home.xml b/man/pam_systemd_home.xml
+index 10ac7d9838..5bd48de4a6 100644
+--- a/man/pam_systemd_home.xml
++++ b/man/pam_systemd_home.xml
+@@ -158,7 +158,7 @@ account   sufficient pam_unix.so
+ account   required   pam_permit.so
+ 
+ <command>-password sufficient pam_systemd_home.so</command>
+-password  sufficient pam_unix.so sha512 shadow try_first_pass use_authtok
++password  sufficient pam_unix.so sha512 shadow try_first_pass
+ password  required   pam_deny.so
+ 
+ -session  optional   pam_keyinit.so revoke
+

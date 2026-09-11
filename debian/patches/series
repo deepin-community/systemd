@@ -86,3 +86,4 @@ fix-path-re-enter-waiting-if-target-deactivating.patch
 fix-pam-systemd-always-check-session-busy.patch
 fix-pam-systemd-close-pidfd-after-use.patch
 fix-pcrlock-measure-empty-pk-kek-efi-vars.patch
+fix-man-dont-suggest-pam-unix-use-authtok.patch
