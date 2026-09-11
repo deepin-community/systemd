@@ -1,0 +1,43 @@
+From 2743854540c2325ce025bdbdbab8c1a582c0ba0a Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 5 Jan 2024 01:10:56 +0900
+Subject: [PATCH] network: do not make the implied default have the first
+ priority
+
+Follow-up for b732606950f8726c0280080c7d055a714c2888f5 and
+6706ce2fd2a13df0ae5e469b72d688eaf643dac4.
+
+If Network.ignore_carrier_loss_set flag is set, then the timeout value
+is always used, hence the logic implemented by
+b732606950f8726c0280080c7d055a714c2888f5 never worked.
+
+diff --git a/src/network/networkd-link.c b/src/network/networkd-link.c
+index 26fa8a115d..01817737d0 100644
+--- a/src/network/networkd-link.c
++++ b/src/network/networkd-link.c
+@@ -1665,7 +1665,7 @@ static int link_carrier_lost(Link *link) {
+                 usec = 5 * USEC_PER_SEC;
+ 
+         else
+-                /* Otherwise, use the currently set value. */
++                /* Otherwise, use the implied default value. */
+                 usec = link->network->ignore_carrier_loss_usec;
+ 
+         if (usec == USEC_INFINITY)
+diff --git a/src/network/networkd-network.c b/src/network/networkd-network.c
+index a2b3580ced..7606a2a95c 100644
+--- a/src/network/networkd-network.c
++++ b/src/network/networkd-network.c
+@@ -274,10 +274,8 @@ int network_verify(Network *network) {
+                 network->ignore_carrier_loss_usec = USEC_INFINITY;
+         }
+ 
+-        if (!network->ignore_carrier_loss_set) {
+-                network->ignore_carrier_loss_set = true;
++        if (!network->ignore_carrier_loss_set) /* Set implied default. */
+                 network->ignore_carrier_loss_usec = network->configure_without_carrier ? USEC_INFINITY : 0;
+-        }
+ 
+         if (IN_SET(network->activation_policy, ACTIVATION_POLICY_DOWN, ACTIVATION_POLICY_ALWAYS_DOWN, ACTIVATION_POLICY_MANUAL)) {
+                 if (network->required_for_online < 0 ||
+
