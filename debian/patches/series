@@ -102,3 +102,4 @@ fix-virt-detection-of-avx2-and-friends.patch
 fix-resolve-dns-query-nscount-validation.patch
 fix-resolve-nscount-of-dns-query-may-not-be-zero.patch
 fix-network-always-join-main-interface-ifla-master.patch
+fix-core-escape-spaces-in-paths-during-serialization.patch
