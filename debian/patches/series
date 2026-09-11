@@ -99,3 +99,4 @@ fix-discover-image-nspawn-dir-access-mode.patch
 fix-logind-refuse-multiple-jobs-in-shutdown-or-sleep.patch
 fix-process-util-stdio-disable-nonblock.patch
 fix-virt-detection-of-avx2-and-friends.patch
+fix-resolve-dns-query-nscount-validation.patch
