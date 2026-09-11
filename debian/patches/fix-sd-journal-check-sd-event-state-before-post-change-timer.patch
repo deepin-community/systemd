@@ -1,0 +1,49 @@
+From 5b201ffb1e72100dc7a112c95bbac0ccbc98ab0d Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 29 Dec 2023 04:31:21 +0900
+Subject: [PATCH] sd-journal: check sd-event state before setting up post
+ change timer
+
+The similar check already exists in schedule_post_change().
+
+The function is currently called at two places.
+- journal_file_open() in sd-journal:
+  In this case, if the timer is not set up, then journal_file_post_change()
+  will be called at the end of journal_file_append_entry(). So, the necessary
+  task will be done sequentially when an journal entry is stored to the opened
+  journal file. That is desired when the function is called at outside of the
+  event loop.
+- server_open_journal() in journald:
+  This is not called after we exit the event loop.
+
+So, we can safely do nothing in the function if the event loop is being
+finished or already finished.
+
+Fixes #30644.
+
+diff --git a/src/libsystemd/sd-journal/journal-file.c b/src/libsystemd/sd-journal/journal-file.c
+index cef59c8944..5e6ff66e3c 100644
+--- a/src/libsystemd/sd-journal/journal-file.c
++++ b/src/libsystemd/sd-journal/journal-file.c
+@@ -2460,6 +2460,11 @@ int journal_file_enable_post_change_timer(JournalFile *f, sd_event *e, usec_t t)
+         assert(e);
+         assert(t);
+ 
++        /* If we are already going down, we cannot install the timer.
++         * In such case, the caller needs to call journal_file_post_change() explicitly. */
++        if (IN_SET(sd_event_get_state(e), SD_EVENT_EXITING, SD_EVENT_FINISHED))
++                return 0;
++
+         r = sd_event_add_time(e, &timer, CLOCK_MONOTONIC, 0, 0, post_change_thunk, f);
+         if (r < 0)
+                 return r;
+@@ -2471,7 +2476,7 @@ int journal_file_enable_post_change_timer(JournalFile *f, sd_event *e, usec_t t)
+         f->post_change_timer = TAKE_PTR(timer);
+         f->post_change_timer_period = t;
+ 
+-        return r;
++        return 1;
+ }
+ 
+ static int entry_item_cmp(const EntryItem *a, const EntryItem *b) {
+
