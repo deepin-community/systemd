@@ -1,0 +1,22 @@
+From 72bbd740a0df2705fd3c245c42aab702323e200e Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 27 Nov 2023 17:10:35 +0100
+Subject: [PATCH] homed: add missing bus call to homed access policy
+
+
+diff --git a/src/home/org.freedesktop.home1.conf b/src/home/org.freedesktop.home1.conf
+index de1fb93cc0..5af1a68607 100644
+--- a/src/home/org.freedesktop.home1.conf
++++ b/src/home/org.freedesktop.home1.conf
+@@ -125,6 +125,10 @@
+                        send_interface="org.freedesktop.home1.Manager"
+                        send_member="LockAllHomes"/>
+ 
++                <allow send_destination="org.freedesktop.home1"
++                       send_interface="org.freedesktop.home1.Manager"
++                       send_member="DeactivateAllHomes"/>
++
+                 <allow send_destination="org.freedesktop.home1"
+                        send_interface="org.freedesktop.home1.Manager"
+                        send_member="Rebalance"/>
+
