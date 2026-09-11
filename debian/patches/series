@@ -91,3 +91,4 @@ fix-varlink-collect-error-parameters.patch
 fix-sd-netlink-rtnl-resolve-link-alternative-name.patch
 fix-dbus-unit-dont-eat-up-error-codes.patch
 fix-bus-polkit-treat-well-known-pk-errors-as-denied.patch
+fix-systemctl-display-offline-with-image.patch
