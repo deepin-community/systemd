@@ -1,0 +1,52 @@
+From 5863f1da4283f77a231ad3658306cad3716e4b44 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 29 Nov 2023 12:49:37 +0100
+Subject: [PATCH] execute: make sure Type=exec and PAMName= work together
+
+If PAMName= is used we'll spawn a PAM session for the service, and leave
+a process around that closes the PAM session eventually. That process
+must close the "exec_fd" that we use to implement Type=exec. After all
+the logic relies on the fact that execve() will implicitly close the
+exec_fd, and the EOF seen on it is hence indication for the service
+manager that execve() has worked. But if we keep an fd open in the PAM
+service process, then this is not going to work.
+
+Hence close the fd explicitly so that it definitely doesn't stay pinned
+in the child.
+
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+index 3b3250f32e..f39b532800 100644
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -1107,7 +1107,8 @@ static int setup_pam(
+                 gid_t gid,
+                 const char *tty,
+                 char ***env, /* updated on success */
+-                const int fds[], size_t n_fds) {
++                const int fds[], size_t n_fds,
++                int exec_fd) {
+ 
+ #if HAVE_PAM
+ 
+@@ -1210,6 +1211,11 @@ static int setup_pam(
+                  * those fds are open here that have been opened by PAM. */
+                 (void) close_many(fds, n_fds);
+ 
++                /* Also close the 'exec_fd' in the child, since the service manager waits for the EOF induced
++                 * by the execve() to wait for completion, and if we'd keep the fd open here in the child
++                 * we'd never signal completion. */
++                exec_fd = safe_close(exec_fd);
++
+                 /* Drop privileges - we don't need any to pam_close_session and this will make
+                  * PR_SET_PDEATHSIG work in most cases.  If this fails, ignore the error - but expect sd-pam
+                  * threads to fail to exit normally */
+@@ -4631,7 +4637,7 @@ int exec_invoke(
+                  * wins here. (See above.) */
+ 
+                 /* All fds passed in the fds array will be closed in the pam child process. */
+-                r = setup_pam(context->pam_name, username, uid, gid, context->tty_path, &accum_env, params->fds, n_fds);
++                r = setup_pam(context->pam_name, username, uid, gid, context->tty_path, &accum_env, params->fds, n_fds, params->exec_fd);
+                 if (r < 0) {
+                         *exit_status = EXIT_PAM;
+                         return log_exec_error_errno(context, params, r, "Failed to set up PAM session: %m");
+

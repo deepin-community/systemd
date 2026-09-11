@@ -1,0 +1,115 @@
+From 720c618397397f958caeb050a1528eb0d6f7a4a6 Mon Sep 17 00:00:00 2001
+From: Adrian Vovk <adrianvovk@gmail.com>
+Date: Sat, 30 Dec 2023 14:06:39 -0500
+Subject: [PATCH] core: path: Re-enter waiting if target is deactivating
+
+Previously, path units would remain in the running state while their
+target unit is deactivating. This left a window of time where the target
+unit is no longer operational (i.e. it is busy deactivating/cleaning
+up/etc) but the path unit would continue to ignore inotify events. In
+short: any inotify event that occurs while the target unit deactivates
+would be completely lost.
+
+With this commit, the path will go back into a waiting state when the
+target unit starts deactivating. This means that any inotify event that
+occurs while the target unit deactivates will queue a start job.
+
+diff --git a/src/core/path.c b/src/core/path.c
+index 8bfdd56116..00da301fd2 100644
+--- a/src/core/path.c
++++ b/src/core/path.c
+@@ -582,7 +582,7 @@ static void path_enter_waiting(Path *p, bool initial, bool from_trigger_notify)
+ 
+         /* If the triggered unit is already running, so are we */
+         trigger = UNIT_TRIGGER(UNIT(p));
+-        if (trigger && !UNIT_IS_INACTIVE_OR_FAILED(unit_active_state(trigger))) {
++        if (trigger && !UNIT_IS_INACTIVE_OR_DEACTIVATING(unit_active_state(trigger))) {
+                 path_set_state(p, PATH_RUNNING);
+                 path_unwatch(p);
+                 return;
+@@ -853,11 +853,11 @@ static void path_trigger_notify_impl(Unit *u, Unit *other, bool on_defer) {
+                 return;
+ 
+         if (p->state == PATH_RUNNING &&
+-            UNIT_IS_INACTIVE_OR_FAILED(unit_active_state(other))) {
++            UNIT_IS_INACTIVE_OR_DEACTIVATING(unit_active_state(other))) {
+                 if (!on_defer)
+                         log_unit_debug(u, "Got notified about unit deactivation.");
+         } else if (p->state == PATH_WAITING &&
+-                   !UNIT_IS_INACTIVE_OR_FAILED(unit_active_state(other))) {
++                   !UNIT_IS_INACTIVE_OR_DEACTIVATING(unit_active_state(other))) {
+                 if (!on_defer)
+                         log_unit_debug(u, "Got notified about unit activation.");
+         } else
+diff --git a/test/testsuite-63.units/test63-pr-30768.path b/test/testsuite-63.units/test63-pr-30768.path
+new file mode 100644
+index 0000000000..b541358541
+--- /dev/null
++++ b/test/testsuite-63.units/test63-pr-30768.path
+@@ -0,0 +1,3 @@
++# SPDX-License-Identifier: LGPL-2.1-or-later
++[Path]
++PathChanged=/tmp/copyme
+diff --git a/test/testsuite-63.units/test63-pr-30768.service b/test/testsuite-63.units/test63-pr-30768.service
+new file mode 100644
+index 0000000000..5739084a3f
+--- /dev/null
++++ b/test/testsuite-63.units/test63-pr-30768.service
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: LGPL-2.1-or-later
++[Service]
++ExecStart=cp -v /tmp/copyme /tmp/copied
++# once cp exits, service goes into deactivating state and then runs ExecStop
++ExecStop=flock -e /tmp/noexit true
+diff --git a/test/units/testsuite-63.sh b/test/units/testsuite-63.sh
+index 9bbd700104..ea8cd945ed 100755
+--- a/test/units/testsuite-63.sh
++++ b/test/units/testsuite-63.sh
+@@ -80,6 +80,46 @@ output=$(systemctl list-jobs --no-legend)
+ assert_not_in "test63-issue-24577.service" "$output"
+ assert_in "test63-issue-24577-dep.service" "$output"
+ 
++# Test for race condition fixed by https://github.com/systemd/systemd/pull/30768
++# Here's the schedule of events that we to happen during this test:
++#       (This test)                     (The service)
++#                                       .path unit monitors /tmp/copyme for changes
++#       Take lock on /tmp/noexeit       ↓
++#       Write to /tmp/copyme            ↓
++#       Wait for deactivating           Started
++#       ↓                               Copies /tmp/copyme to /tmp/copied
++#       ↓                               Tells manager it's shutting down
++#       Ensure service did the copy     Tries to lock /tmp/noexit and blocks
++#       Write to /tmp/copyme            ↓
++#
++# Now at this point the test can diverge. If we regress, this second write is
++# missed and we'll see:
++#       ... (second write)              ... (blocked)
++#       Drop lock on /tmp/noexit        ↓
++#       Wait for service to do copy     Unblocks and exits
++#       ↓                               (dead)
++#       ↓
++#       (timeout)
++#       Test fails
++#
++# Otherwise, we'll see:
++#       ... (second write)              ... (blocked)
++#       Drop lock on /tmp/noexit        ↓ and .path unit queues a new start job
++#       Wait for service to do copy     Unblocks and exits
++#       ↓                               Starts again b/c of queued job
++#       ↓                               Copies again
++#       Test Passes
++systemctl start test63-pr-30768.path
++exec {lock}<>/tmp/noexit
++flock -e $lock
++echo test1 > /tmp/copyme
++# shellcheck disable=SC2016
++timeout 30 bash -c 'until test "$(systemctl show test63-pr-30768.service -P ActiveState)" = deactivating; do sleep .2; done'
++diff /tmp/copyme /tmp/copied
++echo test2 > /tmp/copyme
++exec {lock}<&-
++timeout 30 bash -c 'until diff /tmp/copyme /tmp/copied; do sleep .2; done'
++
+ systemctl log-level info
+ 
+ touch /testok
+

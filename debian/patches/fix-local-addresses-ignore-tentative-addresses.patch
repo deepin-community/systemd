@@ -1,0 +1,43 @@
+From e90863f231b23834a8af7ae0b2e814252badd4c8 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 19 Jan 2024 19:44:49 +0900
+Subject: [PATCH] local-addresses: ignore tentative addresses
+
+As tentative addresses may be dropped soon if DAD failed.
+
+diff --git a/src/shared/local-addresses.c b/src/shared/local-addresses.c
+index 48777e4c47..43f0a2d89a 100644
+--- a/src/shared/local-addresses.c
++++ b/src/shared/local-addresses.c
+@@ -123,7 +123,7 @@ int local_addresses(
+                 r = sd_rtnl_message_addr_get_flags(m, &flags);
+                 if (r < 0)
+                         return r;
+-                if (flags & IFA_F_DEPRECATED)
++                if ((flags & (IFA_F_DEPRECATED|IFA_F_TENTATIVE)) != 0)
+                         continue;
+ 
+                 if (!GREEDY_REALLOC0(list, n_list+1))
+diff --git a/test/units/testsuite-13.nss-mymachines.sh b/test/units/testsuite-13.nss-mymachines.sh
+index b566c7343d..931b93f953 100755
+--- a/test/units/testsuite-13.nss-mymachines.sh
++++ b/test/units/testsuite-13.nss-mymachines.sh
+@@ -56,7 +56,7 @@ ip addr add 10.2.0.2/24 dev ve-manyips
+ for i in {100..120}; do
+     ip addr add 10.2.0.$i/24 dev ve-manyips
+ done
+-ip addr add fd00:dead:beef:cafe::2/64 dev ve-manyips
++ip addr add fd00:dead:beef:cafe::2/64 dev ve-manyips nodad
+ ip addr show dev ve-manyips
+ touch /initialized
+ sleep infinity
+@@ -90,7 +90,7 @@ done
+ # getaddrinfo() return EAI_NONAME without ever asking nss-mymachines.
+ ip addr add 10.1.0.1/24 dev ve-singleip
+ ip addr add 10.2.0.1/24 dev ve-manyips
+-ip addr add fd00:dead:beef:cafe::1/64 dev ve-manyips
++ip addr add fd00:dead:beef:cafe::1/64 dev ve-manyips nodad
+ 
+ getent hosts -s mymachines
+ getent ahosts -s mymachines
+

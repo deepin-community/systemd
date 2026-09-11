@@ -1,0 +1,16 @@
+From 9bf91584c837ff7d2399b51c11692de81a7ddc27 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Gabr=C3=ADel=20Arth=C3=BAr=20P=C3=A9tursson?=
+ <gabriel.petursson@marel.com>
+Date: Wed, 3 Jan 2024 15:59:14 +0000
+Subject: [PATCH] Assign noDA attribute to TPM2 objects not dependant on a PIN
+
+All the keys are high-entropy keys that cannot be practically
+bruteforced and thus don't require protection from dictionary attacks.
+With the exception of PINs, of course, which are low-entropy and user
+provided.
+
+Note that a new enrollment is required for unlocking while in DA
+lockdown to function. Existing enrollments are subject to DA lockout.
+
+Fixes: #30330
+

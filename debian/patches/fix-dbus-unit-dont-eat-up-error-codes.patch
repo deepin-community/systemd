@@ -1,0 +1,22 @@
+From 4212636763af87102aee6dc2d57aa6cb613991a4 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Tue, 16 Jan 2024 23:16:40 +0100
+Subject: [PATCH] dbus-unit: don't eat up error codes needlessly
+
+
+diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
+index 3aeb85e452..7aa44b2393 100644
+--- a/src/core/dbus-unit.c
++++ b/src/core/dbus-unit.c
+@@ -2271,7 +2271,9 @@ static int bus_unit_set_transient_property(
+                                 u->documentation = strv_free(u->documentation);
+                                 unit_write_settingf(u, flags, name, "%s=", name);
+                         } else {
+-                                strv_extend_strv(&u->documentation, l, false);
++                                r = strv_extend_strv(&u->documentation, l, /* filter_duplicates= */ false);
++                                if (r < 0)
++                                        return r;
+ 
+                                 STRV_FOREACH(p, l)
+                                         unit_write_settingf(u, flags, name, "%s=%s", name, *p);
+

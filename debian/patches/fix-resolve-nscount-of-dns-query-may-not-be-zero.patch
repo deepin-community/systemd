@@ -1,0 +1,11 @@
+From ba1749f6a5a2793e558485a8c6a871daba7bf533 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Mon, 8 Jan 2024 02:02:33 +0900
+Subject: [PATCH] resolve: NSCOUNT of DNS query may not be zero
+
+This also separates check for DNS and LLMNR, as the existing comments
+are for LLMNR, not DNS. And this moves the comment for mDNS.
+
+Fixes the issue reported at
+https://github.com/systemd/systemd/pull/30809#issuecomment-1880102804.
+

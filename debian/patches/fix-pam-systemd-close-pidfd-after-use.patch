@@ -1,0 +1,6 @@
+From 79f36b64159708cf2b261207f007fe980e6dfaa5 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Fri, 19 Jan 2024 19:57:31 +0800
+Subject: [PATCH] pam_systemd: close pidfd after use
+
+

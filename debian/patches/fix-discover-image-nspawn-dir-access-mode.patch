@@ -1,0 +1,55 @@
+From 8759bc9541800a1f7faff04e2f5710d9c731a446 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Fri, 5 Jan 2024 22:20:32 +0100
+Subject: [PATCH] discover-image: don't accidentally set /run/systemd/nspawn/
+ access mode too strict
+
+mkdir_p() uses the specified access mode for all dirs that are missing,
+hence if we call it on /run/systemd/nspawn/locking and
+/run/systemd/nspawn/ doesn't exist yet, we#d create it 0700 here. But
+that was never the intention, and all other code creating that dir sets
+the mode to 0755. Fix this here to match the rest.
+
+diff --git a/src/shared/discover-image.c b/src/shared/discover-image.c
+index ed89580d82..6d4f7612ca 100644
+--- a/src/shared/discover-image.c
++++ b/src/shared/discover-image.c
+@@ -1281,6 +1281,11 @@ int image_read_only(Image *i, bool b) {
+         return 0;
+ }
+ 
++static void make_lock_dir(void) {
++        (void) mkdir_p("/run/systemd/nspawn", 0755);
++        (void) mkdir("/run/systemd/nspawn/locks", 0700);
++}
++
+ int image_path_lock(const char *path, int operation, LockFile *global, LockFile *local) {
+         _cleanup_free_ char *p = NULL;
+         LockFile t = LOCK_FILE_INIT;
+@@ -1356,7 +1361,7 @@ int image_path_lock(const char *path, int operation, LockFile *global, LockFile
+         }
+ 
+         if (p) {
+-                (void) mkdir_p("/run/systemd/nspawn/locks", 0700);
++                make_lock_dir();
+ 
+                 r = make_lock_file(p, operation, global);
+                 if (r < 0) {
+@@ -1531,7 +1536,7 @@ int image_name_lock(const char *name, int operation, LockFile *ret) {
+                 return 0;
+         }
+ 
+-        (void) mkdir_p("/run/systemd/nspawn/locks", 0700);
++        make_lock_dir();
+ 
+         p = strjoina("/run/systemd/nspawn/locks/name-", name);
+         return make_lock_file(p, operation, ret);
+@@ -1569,7 +1574,6 @@ bool image_in_search_path(
+                 /* Accept trailing slashes */
+                 if (p[strspn(p, "/")] == 0)
+                         return true;
+-
+         }
+ 
+         return false;
+
