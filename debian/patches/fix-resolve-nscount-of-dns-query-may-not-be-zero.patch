@@ -1,0 +1,52 @@
+From ba1749f6a5a2793e558485a8c6a871daba7bf533 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Mon, 8 Jan 2024 02:02:33 +0900
+Subject: [PATCH] resolve: NSCOUNT of DNS query may not be zero
+
+This also separates check for DNS and LLMNR, as the existing comments
+are for LLMNR, not DNS. And this moves the comment for mDNS.
+
+Fixes the issue reported at
+https://github.com/systemd/systemd/pull/30809#issuecomment-1880102804.
+
+diff --git a/src/resolve/resolved-dns-packet.c b/src/resolve/resolved-dns-packet.c
+index b0b5bab6bd..a031ffecca 100644
+--- a/src/resolve/resolved-dns-packet.c
++++ b/src/resolve/resolved-dns-packet.c
+@@ -310,9 +310,23 @@ int dns_packet_validate_query(DnsPacket *p) {
+ 
+         switch (p->protocol) {
+ 
+-        case DNS_PROTOCOL_LLMNR:
+         case DNS_PROTOCOL_DNS:
+-                if (DNS_PACKET_TC(p)) /* mDNS query may have truncation flag. */
++                if (DNS_PACKET_TC(p))
++                        return -EBADMSG;
++
++                if (DNS_PACKET_QDCOUNT(p) != 1)
++                        return -EBADMSG;
++
++                if (DNS_PACKET_ANCOUNT(p) > 0)
++                        return -EBADMSG;
++
++                /* Note, in most cases, DNS query packet does not have authority section. But some query
++                 * types, e.g. IXFR, have Authority sections. Hence, unlike the check for LLMNR, we do not
++                 * check DNS_PACKET_NSCOUNT(p) here. */
++                break;
++
++        case DNS_PROTOCOL_LLMNR:
++                if (DNS_PACKET_TC(p))
+                         return -EBADMSG;
+ 
+                 /* RFC 4795, Section 2.1.1. says to discard all queries with QDCOUNT != 1 */
+@@ -330,6 +344,9 @@ int dns_packet_validate_query(DnsPacket *p) {
+                 break;
+ 
+         case DNS_PROTOCOL_MDNS:
++                /* Note, mDNS query may have truncation flag. So, unlike the check for DNS and LLMNR,
++                 * we do not check DNS_PACKET_TC(p) here. */
++
+                 /* RFC 6762, Section 18 specifies that messages with non-zero RCODE
+                  * must be silently ignored, and that we must ignore the values of
+                  * AA, RD, RA, AD, and CD bits. */
+
