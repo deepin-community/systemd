@@ -95,3 +95,4 @@ fix-systemctl-display-offline-with-image.patch
 fix-watchdog-configured-timeout-usec-infinity.patch
 fix-kernel-install-context-copy.patch
 fix-udev-unapplied-link-file-name.patch
+fix-discover-image-nspawn-dir-access-mode.patch
