@@ -1,0 +1,22 @@
+From 6e6b59ed00332e4d8061b2f0f6bc0945d4fced64 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 3 Jan 2024 04:07:11 +0900
+Subject: [PATCH] unit: order systemd-resolved after systemd-sysctl
+
+Otherwise, IPv6 enable/disable setting may be changed after resolved is
+started.
+
+diff --git a/units/systemd-resolved.service.in b/units/systemd-resolved.service.in
+index 736f36848c..820aecfef6 100644
+--- a/units/systemd-resolved.service.in
++++ b/units/systemd-resolved.service.in
+@@ -15,7 +15,7 @@ Documentation=https://www.freedesktop.org/wiki/Software/systemd/writing-network-
+ Documentation=https://www.freedesktop.org/wiki/Software/systemd/writing-resolver-clients
+ 
+ DefaultDependencies=no
+-After=systemd-sysusers.service
++After=systemd-sysctl.service systemd-sysusers.service
+ Before=sysinit.target network.target nss-lookup.target shutdown.target initrd-switch-root.target
+ Conflicts=shutdown.target initrd-switch-root.target
+ Wants=nss-lookup.target
+
