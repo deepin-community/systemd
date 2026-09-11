@@ -103,7 +103,6 @@ fix-resolve-nscount-of-dns-query-may-not-be-zero.patch
 fix-network-always-join-main-interface-ifla-master.patch
 fix-core-escape-spaces-in-paths-during-serialization.patch
 fix-network-implied-default-priority.patch
-fix-network-remove-address-on-cancelling-request.patch
 fix-iovec-util-rework-iovec-make-string-compound-input.patch
 fix-pcrlock-use-d-path-for-kernel-pcrlock.patch
 fix-tpm2-assign-noda-attribute-to-objects-not-dependant-on-pin.patch
