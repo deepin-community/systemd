@@ -1,0 +1,36 @@
+From c171b67a1000fd48afee9163e0af519d1cc99ec9 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 17 Jan 2024 10:56:25 +0100
+Subject: [PATCH] varlink: in varlink_observe() correctly collect error
+ parameters
+
+In varlink errors can have parameters (and they regularly do, for
+example the io.systemd.System error we generate carries the errno in its
+parameter), hence it's essential that varlink_oberserve collects that
+properly and returns it too.
+
+diff --git a/src/shared/varlink.c b/src/shared/varlink.c
+index f9c7f2e659..ce9cf73646 100644
+--- a/src/shared/varlink.c
++++ b/src/shared/varlink.c
+@@ -2285,6 +2285,10 @@ static int collect_callback(
+         /* If we hit an error, we will drop all collected replies and just return the error_id and flags in varlink_collect() */
+         if (error_id) {
+                 context->error_id = error_id;
++
++                json_variant_unref(context->parameters);
++                context->parameters = json_variant_ref(parameters);
++
+                 return 0;
+         }
+ 
+@@ -2337,6 +2341,8 @@ int varlink_collect(
+ 
+                 /* If we get an error from any of the replies, return immediately with just the error_id and flags*/
+                 if (context.error_id) {
++                        if (ret_parameters)
++                                *ret_parameters = TAKE_PTR(context.parameters);
+                         if (ret_error_id)
+                                 *ret_error_id = TAKE_PTR(context.error_id);
+                         if (ret_flags)
+
