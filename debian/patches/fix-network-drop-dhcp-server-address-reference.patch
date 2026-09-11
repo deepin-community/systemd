@@ -1,0 +1,23 @@
+From 8ae3a4f5e282a1fb024e7bb5d6cf1b83037a2395 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 23 Dec 2023 01:21:22 +0900
+Subject: [PATCH] network/address: also drop reference for DHCP server address
+
+The Address object should never freed after it is referenced.
+So, this should not change any behavior. Just for safety.
+
+diff --git a/src/network/networkd-address.c b/src/network/networkd-address.c
+index bcd3ae6621..629c4d697f 100644
+--- a/src/network/networkd-address.c
++++ b/src/network/networkd-address.c
+@@ -201,6 +201,9 @@ Address *address_free(Address *address) {
+         if (address->network) {
+                 assert(address->section);
+                 ordered_hashmap_remove(address->network->addresses_by_section, address->section);
++
++                if (address->network->dhcp_server_address == address)
++                        address->network->dhcp_server_address = NULL;
+         }
+ 
+         if (address->link) {
+

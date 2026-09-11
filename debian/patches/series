@@ -121,3 +121,4 @@ fix-resolved-do-not-listen-ipv6-when-disabled-by-sysctl.patch
 fix-efi-loader-uki-measured-boot-implies-tpm2-check.patch
 fix-sd-journal-check-sd-event-state-before-post-change-timer.patch
 fix-udevadm-propagate-verb-return-code.patch
+fix-network-drop-dhcp-server-address-reference.patch
