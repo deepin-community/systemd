@@ -1,0 +1,33 @@
+From e701439998a5697317f7692aa5f169bd7315b733 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Mon, 8 Jan 2024 19:59:32 +0900
+Subject: [PATCH] virt: fix detection of avx2 and friends
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+To get the CPUID with EAX=7, we need explicitly set 0 to ECX.
+
+From Intel® Architecture Instruction Set Extensions Programming
+Reference and Related Specifications,
+===
+Leaf 07H output depends on the initial value in ECX.
+If ECX contains an invalid sub leaf index, EAX/EBX/ECX/EDX return 0
+===
+
+Fixes #30822.
+
+diff --git a/src/basic/virt.c b/src/basic/virt.c
+index 09aebabcd5..2800f63f52 100644
+--- a/src/basic/virt.c
++++ b/src/basic/virt.c
+@@ -997,7 +997,7 @@ static bool real_has_cpu_with_flag(const char *flag) {
+                         return true;
+         }
+ 
+-        if (__get_cpuid(7, &eax, &ebx, &ecx, &edx)) {
++        if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                 if (given_flag_in_set(flag, leaf7_ebx, ELEMENTSOF(leaf7_ebx), ebx))
+                         return true;
+         }
+
