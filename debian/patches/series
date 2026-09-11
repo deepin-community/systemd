@@ -82,3 +82,4 @@ fix-logind-dbus-session-reply-user-start-jobs.patch
 fix-repart-dont-probe-sector-size-from-empty-image.patch
 fix-local-addresses-ignore-tentative-addresses.patch
 fix-local-addresses-always-sort-and-dedup.patch
+fix-path-re-enter-waiting-if-target-deactivating.patch
