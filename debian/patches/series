@@ -96,3 +96,4 @@ fix-watchdog-configured-timeout-usec-infinity.patch
 fix-kernel-install-context-copy.patch
 fix-udev-unapplied-link-file-name.patch
 fix-discover-image-nspawn-dir-access-mode.patch
+fix-logind-refuse-multiple-jobs-in-shutdown-or-sleep.patch
