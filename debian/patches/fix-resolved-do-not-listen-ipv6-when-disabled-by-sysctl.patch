@@ -1,0 +1,47 @@
+From ff49e703ff92cb018e9184ad829e554b06c4ad75 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 3 Jan 2024 08:41:14 +0900
+Subject: [PATCH] Merge pull request #30691 from yuwata/resolve-ipv6
+
+resolve: do not listen to IPv6 when disabled by sysctl
+
+diff --git a/src/resolve/resolved-llmnr.c b/src/resolve/resolved-llmnr.c
+index 8fac351ee6..9469bdac86 100644
+--- a/src/resolve/resolved-llmnr.c
++++ b/src/resolve/resolved-llmnr.c
+@@ -45,7 +45,7 @@ int manager_llmnr_start(Manager *m) {
+         if (r < 0)
+                 return r;
+ 
+-        if (socket_ipv6_is_supported()) {
++        if (socket_ipv6_is_enabled()) {
+                 r = manager_llmnr_ipv6_udp_fd(m);
+                 if (r == -EADDRINUSE)
+                         goto eaddrinuse;
+diff --git a/src/resolve/resolved-mdns.c b/src/resolve/resolved-mdns.c
+index b63073af7f..3e6e83fe62 100644
+--- a/src/resolve/resolved-mdns.c
++++ b/src/resolve/resolved-mdns.c
+@@ -36,7 +36,7 @@ int manager_mdns_start(Manager *m) {
+         if (r < 0)
+                 return r;
+ 
+-        if (socket_ipv6_is_supported()) {
++        if (socket_ipv6_is_enabled()) {
+                 r = manager_mdns_ipv6_fd(m);
+                 if (r == -EADDRINUSE)
+                         goto eaddrinuse;
+diff --git a/units/systemd-resolved.service.in b/units/systemd-resolved.service.in
+index 736f36848c..820aecfef6 100644
+--- a/units/systemd-resolved.service.in
++++ b/units/systemd-resolved.service.in
+@@ -15,7 +15,7 @@ Documentation=https://www.freedesktop.org/wiki/Software/systemd/writing-network-
+ Documentation=https://www.freedesktop.org/wiki/Software/systemd/writing-resolver-clients
+ 
+ DefaultDependencies=no
+-After=systemd-sysusers.service
++After=systemd-sysctl.service systemd-sysusers.service
+ Before=sysinit.target network.target nss-lookup.target shutdown.target initrd-switch-root.target
+ Conflicts=shutdown.target initrd-switch-root.target
+ Wants=nss-lookup.target
+

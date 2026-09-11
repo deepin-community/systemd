@@ -117,3 +117,4 @@ fix-logind-idle-session-watch-lock-screen-greeter.patch
 fix-tuntap-keep-carrier-device-option.patch
 fix-resolved-mdns-do-not-append-goodby-entries-to-known-answers.patch
 fix-unit-order-systemd-resolved-after-systemd-sysctl.patch
+fix-resolved-do-not-listen-ipv6-when-disabled-by-sysctl.patch
