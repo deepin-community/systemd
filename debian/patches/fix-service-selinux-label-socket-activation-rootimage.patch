@@ -1,0 +1,167 @@
+From 8017ed7e0e0ffaafcf9856f963928ca2a21340b6 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Thu, 21 Dec 2023 14:12:09 +0100
+Subject: [PATCH] service: don't try to determine selinux label for socket
+ activation if RootImage= is used
+
+We cannot determine the SELinux label ahead of time if RootImage= is
+used, since we'd have to mount the image then, hence don't, and handle
+this cleanly, and gracefully.
+
+While we are at it, stop "reaching over" so much from the socket code to
+the service code, and instead provide function that most of the hard
+work in service.c that socket.c just calls.
+
+While we are at it, add debug logging and stuff.
+
+I noticed the issue when also noticing #30560, but that one is harder to
+fix, hence I avoided it for now.
+
+diff --git a/src/core/service.c b/src/core/service.c
+index b9eb40c555..7bd4e99b11 100644
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -34,6 +34,7 @@
+ #include "path-util.h"
+ #include "process-util.h"
+ #include "random-util.h"
++#include "selinux-util.h"
+ #include "serialize.h"
+ #include "service.h"
+ #include "signal-util.h"
+@@ -4975,6 +4976,57 @@ static void service_release_resources(Unit *u) {
+                 service_set_state(s, SERVICE_DEAD);
+ }
+ 
++int service_determine_exec_selinux_label(Service *s, char **ret) {
++        int r;
++
++        assert(s);
++        assert(ret);
++
++        if (!mac_selinux_use())
++                return -ENODATA;
++
++        /* Returns the SELinux label used for execution of the main service binary */
++
++        if (s->exec_context.selinux_context) { /* Prefer the explicitly configured label if there is one */
++                char *con = strdup(s->exec_context.selinux_context);
++                if (!con)
++                        return -ENOMEM;
++
++                *ret = con;
++                return 0;
++        }
++
++        if (s->exec_context.root_image ||
++            s->exec_context.n_extension_images > 0 ||
++            !strv_isempty(s->exec_context.extension_directories)) /* We cannot chase paths through images */
++                return log_unit_debug_errno(UNIT(s), SYNTHETIC_ERRNO(ENODATA), "Service with RootImage=, ExtensionImages= or ExtensionDirectories= set, cannot determine socket SELinux label before activation, ignoring.");
++
++        ExecCommand *c = s->exec_command[SERVICE_EXEC_START];
++        if (!c)
++                return -ENODATA;
++
++        _cleanup_free_ char *path = NULL;
++        r = chase(c->path, s->exec_context.root_directory, CHASE_PREFIX_ROOT, &path, NULL);
++        if (r < 0) {
++                log_unit_debug_errno(UNIT(s), r, "Failed to resolve service binary '%s', ignoring.", c->path);
++                return -ENODATA;
++        }
++
++        r = mac_selinux_get_create_label_from_exe(path, ret);
++        if (ERRNO_IS_NEG_NOT_SUPPORTED(r)) {
++                log_unit_debug_errno(UNIT(s), r, "Reading SELinux label off binary '%s' is not supported, ignoring.", path);
++                return -ENODATA;
++        }
++        if (ERRNO_IS_NEG_PRIVILEGE(r)) {
++                log_unit_debug_errno(UNIT(s), r, "Can't read SELinux label off binary '%s', due to privileges, ignoring.", path);
++                return -ENODATA;
++        }
++        if (r < 0)
++                return log_unit_debug_errno(UNIT(s), r, "Failed to read SELinux label off binary '%s': %m", path);
++
++        return 0;
++}
++
+ static const char* const service_restart_table[_SERVICE_RESTART_MAX] = {
+         [SERVICE_RESTART_NO]          = "no",
+         [SERVICE_RESTART_ON_SUCCESS]  = "on-success",
+diff --git a/src/core/service.h b/src/core/service.h
+index e85302e616..364cd6885b 100644
+--- a/src/core/service.h
++++ b/src/core/service.h
+@@ -255,6 +255,8 @@ void service_release_socket_fd(Service *s);
+ 
+ usec_t service_restart_usec_next(Service *s);
+ 
++int service_determine_exec_selinux_label(Service *s, char **ret);
++
+ const char* service_restart_to_string(ServiceRestart i) _const_;
+ ServiceRestart service_restart_from_string(const char *s) _pure_;
+ 
+diff --git a/src/core/socket.c b/src/core/socket.c
+index c42a94d046..93faccf6ff 100644
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -1385,50 +1385,26 @@ int socket_load_service_unit(Socket *s, int cfd, Unit **ret) {
+ }
+ 
+ static int socket_determine_selinux_label(Socket *s, char **ret) {
++        Unit *service;
+         int r;
+ 
+         assert(s);
+         assert(ret);
+ 
+-        Unit *service;
+-        ExecCommand *c;
+-        const char *exec_context;
+-        _cleanup_free_ char *path = NULL;
+-
+-        r = socket_load_service_unit(s, -1, &service);
+-        if (r == -ENODATA)
+-                goto no_label;
++        r = socket_load_service_unit(s, /* cfd= */ -EBADF, &service);
++        if (r == -ENODATA) {
++                *ret = NULL;
++                return 0;
++        }
+         if (r < 0)
+                 return r;
+ 
+-        exec_context = SERVICE(service)->exec_context.selinux_context;
+-        if (exec_context) {
+-                char *con;
+-
+-                con = strdup(exec_context);
+-                if (!con)
+-                        return -ENOMEM;
+-
+-                *ret = TAKE_PTR(con);
++        r = service_determine_exec_selinux_label(SERVICE(service), ret);
++        if (r == -ENODATA) {
++                *ret = NULL;
+                 return 0;
+         }
+-
+-        c = SERVICE(service)->exec_command[SERVICE_EXEC_START];
+-        if (!c)
+-                goto no_label;
+-
+-        r = chase(c->path, SERVICE(service)->exec_context.root_directory, CHASE_PREFIX_ROOT, &path, NULL);
+-        if (r < 0)
+-                goto no_label;
+-
+-        r = mac_selinux_get_create_label_from_exe(path, ret);
+-        if (IN_SET(r, -EPERM, -EOPNOTSUPP))
+-                goto no_label;
+         return r;
+-
+-no_label:
+-        *ret = NULL;
+-        return 0;
+ }
+ 
+ static int socket_address_listen_do(
+

@@ -124,3 +124,4 @@ fix-udevadm-propagate-verb-return-code.patch
 fix-network-drop-dhcp-server-address-reference.patch
 fix-resolve-dont-add-sockets-to-graveyard-on-shutdown.patch
 fix-udev-refuse-too-short-timeout-value.patch
+fix-service-selinux-label-socket-activation-rootimage.patch
