@@ -4,19 +4,18 @@ Date: Mon, 27 Nov 2023 17:10:35 +0100
 Subject: [PATCH] homed: add missing bus call to homed access policy
 
 
-diff --git a/src/home/org.freedesktop.home1.conf b/src/home/org.freedesktop.home1.conf
-index de1fb93cc0..5af1a68607 100644
---- a/src/home/org.freedesktop.home1.conf
-+++ b/src/home/org.freedesktop.home1.conf
-@@ -125,6 +125,10 @@
-                        send_interface="org.freedesktop.home1.Manager"
-                        send_member="LockAllHomes"/>
+Index: systemd/src/home/org.freedesktop.home1.conf
+===================================================================
+--- systemd.orig/src/home/org.freedesktop.home1.conf
++++ systemd/src/home/org.freedesktop.home1.conf
+@@ -127,6 +127,10 @@
  
-+                <allow send_destination="org.freedesktop.home1"
-+                       send_interface="org.freedesktop.home1.Manager"
-+                       send_member="DeactivateAllHomes"/>
-+
                  <allow send_destination="org.freedesktop.home1"
                         send_interface="org.freedesktop.home1.Manager"
++                       send_member="DeactivateAllHomes"/>
++
++                <allow send_destination="org.freedesktop.home1"
++                       send_interface="org.freedesktop.home1.Manager"
                         send_member="Rebalance"/>
-
+ 
+                 <!-- Home object -->

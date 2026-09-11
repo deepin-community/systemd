@@ -17,10 +17,10 @@ While we are at it, add debug logging and stuff.
 I noticed the issue when also noticing #30560, but that one is harder to
 fix, hence I avoided it for now.
 
-diff --git a/src/core/service.c b/src/core/service.c
-index b9eb40c555..7bd4e99b11 100644
---- a/src/core/service.c
-+++ b/src/core/service.c
+Index: systemd/src/core/service.c
+===================================================================
+--- systemd.orig/src/core/service.c
++++ systemd/src/core/service.c
 @@ -34,6 +34,7 @@
  #include "path-util.h"
  #include "process-util.h"
@@ -29,7 +29,7 @@ index b9eb40c555..7bd4e99b11 100644
  #include "serialize.h"
  #include "service.h"
  #include "signal-util.h"
-@@ -4975,6 +4976,57 @@ static void service_release_resources(Unit *u) {
+@@ -4975,6 +4976,57 @@ static void service_release_resources(Un
                  service_set_state(s, SERVICE_DEAD);
  }
  
@@ -87,11 +87,11 @@ index b9eb40c555..7bd4e99b11 100644
  static const char* const service_restart_table[_SERVICE_RESTART_MAX] = {
          [SERVICE_RESTART_NO]          = "no",
          [SERVICE_RESTART_ON_SUCCESS]  = "on-success",
-diff --git a/src/core/service.h b/src/core/service.h
-index e85302e616..364cd6885b 100644
---- a/src/core/service.h
-+++ b/src/core/service.h
-@@ -255,6 +255,8 @@ void service_release_socket_fd(Service *s);
+Index: systemd/src/core/service.h
+===================================================================
+--- systemd.orig/src/core/service.h
++++ systemd/src/core/service.h
+@@ -255,6 +255,8 @@ void service_release_socket_fd(Service *
  
  usec_t service_restart_usec_next(Service *s);
  
@@ -100,11 +100,11 @@ index e85302e616..364cd6885b 100644
  const char* service_restart_to_string(ServiceRestart i) _const_;
  ServiceRestart service_restart_from_string(const char *s) _pure_;
  
-diff --git a/src/core/socket.c b/src/core/socket.c
-index c42a94d046..93faccf6ff 100644
---- a/src/core/socket.c
-+++ b/src/core/socket.c
-@@ -1385,50 +1385,26 @@ int socket_load_service_unit(Socket *s, int cfd, Unit **ret) {
+Index: systemd/src/core/socket.c
+===================================================================
+--- systemd.orig/src/core/socket.c
++++ systemd/src/core/socket.c
+@@ -1385,50 +1385,26 @@ int socket_load_service_unit(Socket *s,
  }
  
  static int socket_determine_selinux_label(Socket *s, char **ret) {
@@ -164,4 +164,3 @@ index c42a94d046..93faccf6ff 100644
  }
  
  static int socket_address_listen_do(
-

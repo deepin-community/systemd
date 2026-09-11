@@ -30,11 +30,11 @@ Thread 1 (Thread 0x7f17d25e2940 (LWP 298)):
 
 Resolves: #30618
 
-diff --git a/src/resolve/resolved-dns-transaction.c b/src/resolve/resolved-dns-transaction.c
-index fe88e502e7..afc9a2ed45 100644
---- a/src/resolve/resolved-dns-transaction.c
-+++ b/src/resolve/resolved-dns-transaction.c
-@@ -74,6 +74,10 @@ static void dns_transaction_close_connection(
+Index: systemd/src/resolve/resolved-dns-transaction.c
+===================================================================
+--- systemd.orig/src/resolve/resolved-dns-transaction.c
++++ systemd/src/resolve/resolved-dns-transaction.c
+@@ -74,6 +74,10 @@ static void dns_transaction_close_connec
           * and the reply we might still get from the server will be eaten up instead of resulting in an ICMP
           * port unreachable error message. */
  
@@ -45,4 +45,3 @@ index fe88e502e7..afc9a2ed45 100644
          if (use_graveyard && t->dns_udp_fd >= 0 && t->sent && !t->received) {
                  r = manager_add_socket_to_graveyard(t->scope->manager, t->dns_udp_fd);
                  if (r < 0)
-

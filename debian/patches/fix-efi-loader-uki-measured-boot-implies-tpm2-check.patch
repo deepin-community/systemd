@@ -16,10 +16,10 @@ since it covers all invocations of efi_measured_uki().
 Fixes: #30650
 Replaces: #30652
 
-diff --git a/src/shared/efi-loader.c b/src/shared/efi-loader.c
-index 0822364535..758aaa13c1 100644
---- a/src/shared/efi-loader.c
-+++ b/src/shared/efi-loader.c
+Index: systemd/src/shared/efi-loader.c
+===================================================================
+--- systemd.orig/src/shared/efi-loader.c
++++ systemd/src/shared/efi-loader.c
 @@ -1,6 +1,7 @@
  /* SPDX-License-Identifier: LGPL-2.1-or-later */
  
@@ -48,4 +48,3 @@ index 0822364535..758aaa13c1 100644
                  return (cached = 0);
  
          r = efi_get_variable_string(EFI_LOADER_VARIABLE(StubPcrKernelImage), &pcr_string);
-

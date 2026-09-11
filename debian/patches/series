@@ -74,7 +74,6 @@ fix-sysusers-gracefully-handle-existing-group-in-gshadow.patch
 fix-dbus-skip-flush-when-bus-not-running.patch
 uniontech-fix-sd-journal-close-newest-by-boot-id.patch
 uniontech-fix-serialize-pidref.patch
-uniontech-resolved-off-multidns.patch
 fix-fstab-generator-drop-unapplicable-options-for-usr.patch
 fix-fstab-generator-drop-assertions-for-mount-opts.patch
 fix-machine-id-setup-stable-machine-ids-xen-vms.patch
@@ -125,3 +124,5 @@ fix-udev-refuse-too-short-timeout-value.patch
 fix-service-selinux-label-socket-activation-rootimage.patch
 fix-coccinelle-rework-transformations-run.patch
 fix-resolved-dont-disable-listening-socket-when-datagram-dropped.patch
+fix-network-remove-address-on-cancelling-request.patch
+fix-udev-unapplied-link-file-name.patch

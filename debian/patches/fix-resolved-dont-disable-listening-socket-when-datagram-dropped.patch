@@ -23,28 +23,28 @@ on an event source do. Disconnect errors are left as they are: they show up
 here from ICMP errors on the connected UDP socket, and on_dns_packet() handles
 them.
 
-diff --git a/src/resolve/meson.build b/src/resolve/meson.build
-index e7867e2..82f02d9 100644
---- a/src/resolve/meson.build
-+++ b/src/resolve/meson.build
-@@ -172,6 +172,12 @@ executables += [
-                         'resolved-etc-hosts.c',
+Index: systemd/src/resolve/meson.build
+===================================================================
+--- systemd.orig/src/resolve/meson.build
++++ systemd/src/resolve/meson.build
+@@ -173,6 +173,12 @@ executables += [
                  ),
          },
-+        resolve_test_template + {
+         resolve_test_template + {
 +                'sources' : [
 +                        files('test-resolved-manager.c'),
 +                        systemd_resolved_sources,
 +                ],
 +        },
-         resolve_test_template + {
++        resolve_test_template + {
                  'sources' : files('test-resolved-packet.c'),
          },
-diff --git a/src/resolve/resolved-manager.c b/src/resolve/resolved-manager.c
-index b52619e..e4bb1c9 100644
---- a/src/resolve/resolved-manager.c
-+++ b/src/resolve/resolved-manager.c
-@@ -787,6 +787,13 @@ int manager_recv(Manager *m, int fd, DnsProtocol protocol, DnsPacket **ret) {
+         resolve_test_template + {
+Index: systemd/src/resolve/resolved-manager.c
+===================================================================
+--- systemd.orig/src/resolve/resolved-manager.c
++++ systemd/src/resolve/resolved-manager.c
+@@ -787,6 +787,13 @@ int manager_recv(Manager *m, int fd, Dns
          assert(ret);
  
          ms = next_datagram_size_fd(fd);
@@ -58,11 +58,10 @@ index b52619e..e4bb1c9 100644
          if (ms < 0)
                  return ms;
  
-diff --git a/src/resolve/test-resolved-manager.c b/src/resolve/test-resolved-manager.c
-new file mode 100644
-index 0000000..b01822d
+Index: systemd/src/resolve/test-resolved-manager.c
+===================================================================
 --- /dev/null
-+++ b/src/resolve/test-resolved-manager.c
++++ systemd/src/resolve/test-resolved-manager.c
 @@ -0,0 +1,33 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +

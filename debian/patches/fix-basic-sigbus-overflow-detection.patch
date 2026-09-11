@@ -9,10 +9,10 @@ when it should be just greater than as
 n_sigbus_queue being SIGBUS_QUEUE_MAX indicates
 that the queue is full, but not overflowed.
 
-diff --git a/src/basic/sigbus.c b/src/basic/sigbus.c
-index 7e5a493f6b..47ab0b81d8 100644
---- a/src/basic/sigbus.c
-+++ b/src/basic/sigbus.c
+Index: systemd/src/basic/sigbus.c
+===================================================================
+--- systemd.orig/src/basic/sigbus.c
++++ systemd/src/basic/sigbus.c
 @@ -40,14 +40,14 @@ static void sigbus_push(void *addr) {
          }
  
@@ -39,4 +39,3 @@ index 7e5a493f6b..47ab0b81d8 100644
                          return -EOVERFLOW;
  
                  for (u = 0; u < SIGBUS_QUEUE_MAX; u++) {
-

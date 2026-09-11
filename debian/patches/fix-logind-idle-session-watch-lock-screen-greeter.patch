@@ -7,11 +7,11 @@ Subject: [PATCH] logind: don't setup idle session watch for lock-screen and
 Reason to skip the idle session logic for these session classes is that
 they are idle by default.
 
-diff --git a/man/logind.conf.xml b/man/logind.conf.xml
-index ff19ba91fa..d74c9b410f 100644
---- a/man/logind.conf.xml
-+++ b/man/logind.conf.xml
-@@ -379,10 +379,11 @@
+Index: systemd/man/logind.conf.xml
+===================================================================
+--- systemd.orig/man/logind.conf.xml
++++ systemd/man/logind.conf.xml
+@@ -372,10 +372,11 @@
          <term><varname>StopIdleSessionSec=</varname></term>
  
          <listitem><para>Specifies a timeout in seconds, or a time span value after which
@@ -27,11 +27,11 @@ index ff19ba91fa..d74c9b410f 100644
          <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry>.
          </para>
  
-diff --git a/src/login/logind-session.c b/src/login/logind-session.c
-index 03e5d68bdf..b4277c33f1 100644
---- a/src/login/logind-session.c
-+++ b/src/login/logind-session.c
-@@ -738,7 +738,7 @@ static int session_setup_stop_on_idle_timer(Session *s) {
+Index: systemd/src/login/logind-session.c
+===================================================================
+--- systemd.orig/src/login/logind-session.c
++++ systemd/src/login/logind-session.c
+@@ -744,7 +744,7 @@ static int session_setup_stop_on_idle_ti
  
          assert(s);
  
@@ -40,4 +40,3 @@ index 03e5d68bdf..b4277c33f1 100644
                  return 0;
  
          r = sd_event_add_time_relative(
-

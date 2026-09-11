@@ -72,10 +72,10 @@ However, even with the aggressive AST caching you're still looking at
 guess that's the price of doing things _properly_ (but I'll definitely
 look into ways of further optimizing this).
 
-diff --git a/coccinelle/run-coccinelle.sh b/coccinelle/run-coccinelle.sh
-index cd951790b9..bb72a493f0 100755
---- a/coccinelle/run-coccinelle.sh
-+++ b/coccinelle/run-coccinelle.sh
+Index: systemd/coccinelle/run-coccinelle.sh
+===================================================================
+--- systemd.orig/coccinelle/run-coccinelle.sh
++++ systemd/coccinelle/run-coccinelle.sh
 @@ -2,6 +2,14 @@
  # SPDX-License-Identifier: LGPL-2.1-or-later
  set -e
@@ -157,4 +157,3 @@ index cd951790b9..bb72a493f0 100755
 +    rm -f "$TMPFILE"
      echo -e "--x-- Processed $script --x--\n"
  done
-

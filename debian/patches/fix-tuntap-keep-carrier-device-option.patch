@@ -89,11 +89,11 @@ Run:
 
 Before the patch the app shows no pings, but after it works properly.
 
-diff --git a/src/network/netdev/tuntap.c b/src/network/netdev/tuntap.c
-index 1a37ba3465..9e909d1abc 100644
---- a/src/network/netdev/tuntap.c
-+++ b/src/network/netdev/tuntap.c
-@@ -137,6 +137,19 @@ static int netdev_create_tuntap(NetDev *netdev) {
+Index: systemd/src/network/netdev/tuntap.c
+===================================================================
+--- systemd.orig/src/network/netdev/tuntap.c
++++ systemd/src/network/netdev/tuntap.c
+@@ -137,6 +137,19 @@ static int netdev_create_tuntap(NetDev *
          if (ioctl(fd, TUNSETIFF, &ifr) < 0)
                  return log_netdev_error_errno(netdev, errno, "TUNSETIFF failed: %m");
  
@@ -113,4 +113,3 @@ index 1a37ba3465..9e909d1abc 100644
          if (t->user_name) {
                  const char *user = t->user_name;
                  uid_t uid;
-
