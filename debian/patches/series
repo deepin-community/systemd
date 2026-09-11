@@ -126,3 +126,4 @@ fix-resolve-dont-add-sockets-to-graveyard-on-shutdown.patch
 fix-udev-refuse-too-short-timeout-value.patch
 fix-service-selinux-label-socket-activation-rootimage.patch
 fix-coccinelle-rework-transformations-run.patch
+fix-resolved-dont-disable-listening-socket-when-datagram-dropped.patch
