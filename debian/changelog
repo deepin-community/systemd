@@ -1,3 +1,9 @@
+systemd (255.2-4deepin75) unstable; urgency=medium
+
+  * core/automount: do not abort when there is no autofs to talk to
+
+ -- deepin-ci-robot <packages@deepin.org>  Sat, 12 Sep 2026 10:13:19 +0800
+
 systemd (255.2-4deepin74) unstable; urgency=medium
 
   * patches: normalize patch format (fix blank-line prefixes, merge
