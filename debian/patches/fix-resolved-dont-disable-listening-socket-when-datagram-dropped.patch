@@ -27,7 +27,7 @@ Index: systemd/src/resolve/meson.build
 ===================================================================
 --- systemd.orig/src/resolve/meson.build
 +++ systemd/src/resolve/meson.build
-@@ -173,6 +173,12 @@ executables += [
+@@ -173,6 +173,13 @@ executables += [
                  ),
          },
          resolve_test_template + {
@@ -35,6 +35,7 @@ Index: systemd/src/resolve/meson.build
 +                        files('test-resolved-manager.c'),
 +                        systemd_resolved_sources,
 +                ],
++                'include_directories' : resolve_includes,
 +        },
 +        resolve_test_template + {
                  'sources' : files('test-resolved-packet.c'),
