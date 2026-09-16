@@ -1,0 +1,21 @@
+From 21fdecdc1311139bde8176d351a7a341ba279fcd Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Tue, 5 Mar 2024 16:22:09 +0900
+Subject: [PATCH] sd-netlink: allow to call rtnl_get_link_info() without iftype
+ and flags
+
+
+diff --git a/src/libsystemd/sd-netlink/netlink-util.c b/src/libsystemd/sd-netlink/netlink-util.c
+index e634fd3378..90616094bc 100644
+--- a/src/libsystemd/sd-netlink/netlink-util.c
++++ b/src/libsystemd/sd-netlink/netlink-util.c
+@@ -509,7 +509,7 @@ int rtnl_get_link_info(
+         assert(rtnl);
+         assert(ifindex > 0);
+ 
+-        if (!ret_iftype && !ret_flags)
++        if (!ret_iftype && !ret_flags && !ret_kind && !ret_hw_addr && !ret_permanent_hw_addr)
+                 return 0;
+ 
+         if (!*rtnl) {
+

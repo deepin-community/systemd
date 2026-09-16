@@ -1,0 +1,27 @@
+From 676fb42aaec60281651368f083abb3cbaf3c7dc2 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 7 May 2025 21:44:22 +0900
+Subject: [PATCH] units: enable IgnoreOnIsolate=yes on
+ systemd-udevd-kernel.socket
+
+Otherwise, initrd-cleanup.service requests isolation thus the socket
+is stopped before switching root, and several early events after
+switching root may be lost.
+
+diff --git a/units/systemd-udevd-kernel.socket b/units/systemd-udevd-kernel.socket
+index 0d46043e2f..d337b06ea0 100644
+--- a/units/systemd-udevd-kernel.socket
++++ b/units/systemd-udevd-kernel.socket
+@@ -14,6 +14,11 @@ DefaultDependencies=no
+ Before=sockets.target
+ ConditionPathIsReadWrite=/sys
+ 
++# To prevent loss of kernel events from isolate requests. This is important on
++# switching root, as otherwise the unit is stopped by initrd-cleanup.service,
++# and several early events after switching root may be lost.
++IgnoreOnIsolate=yes
++
+ [Socket]
+ Service=systemd-udevd.service
+ ReceiveBuffer=128M
+

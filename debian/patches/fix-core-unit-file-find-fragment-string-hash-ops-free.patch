@@ -1,0 +1,67 @@
+From 5793a39dd8de9f3ed689aacb75db2528d5acd8e1 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 11 Apr 2025 10:28:54 +0900
+Subject: [PATCH] core,systemctl: unit_file_find_fragment() provides names with
+ string_hash_ops_free
+
+names are assigned with set_put_strdup(), hence string_hash_ops_free is
+used and we can use set_free() rather than set_free_free().
+
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+index 5c1bc8dd96..e09415e1d3 100644
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -6178,8 +6178,6 @@ static int merge_by_names(Unit *u, Set *names, const char *id) {
+ }
+ 
+ int unit_load_fragment(Unit *u) {
+-        const char *fragment;
+-        _cleanup_set_free_free_ Set *names = NULL;
+         int r;
+ 
+         assert(u);
+@@ -6201,6 +6199,8 @@ int unit_load_fragment(Unit *u) {
+         if (r < 0)
+                 return log_error_errno(r, "Failed to rebuild name map: %m");
+ 
++        const char *fragment;
++        _cleanup_set_free_ Set *names = NULL;
+         r = unit_file_find_fragment(u->manager->unit_id_map,
+                                     u->manager->unit_name_map,
+                                     u->id,
+diff --git a/src/systemctl/systemctl-util.c b/src/systemctl/systemctl-util.c
+index ecff2453e6..a6771601a1 100644
+--- a/src/systemctl/systemctl-util.c
++++ b/src/systemctl/systemctl-util.c
+@@ -569,15 +569,14 @@ int unit_find_paths(
+                                 return log_error_errno(r, "Failed to get DropInPaths: %s", bus_error_message(&error, r));
+                 }
+         } else {
+-                const char *_path;
+-                _cleanup_set_free_free_ Set *names = NULL;
+-
+                 if (!*cached_name_map) {
+                         r = unit_file_build_name_map(lp, NULL, cached_id_map, cached_name_map, NULL);
+                         if (r < 0)
+                                 return r;
+                 }
+ 
++                const char *_path;
++                _cleanup_set_free_ Set *names = NULL;
+                 r = unit_file_find_fragment(*cached_id_map, *cached_name_map, unit_name, &_path, &names);
+                 if (r < 0)
+                         return log_error_errno(r, "Failed to find fragment for '%s': %m", unit_name);
+diff --git a/src/test/test-unit-file.c b/src/test/test-unit-file.c
+index c7779237b5..06aee82bdf 100644
+--- a/src/test/test-unit-file.c
++++ b/src/test/test-unit-file.c
+@@ -63,7 +63,7 @@ TEST(unit_file_build_name_map) {
+ 
+         STRV_FOREACH(id, ids) {
+                  const char *fragment, *name;
+-                 _cleanup_set_free_free_ Set *names = NULL;
++                 _cleanup_set_free_ Set *names = NULL;
+                  log_info("*** %s ***", *id);
+                  r = unit_file_find_fragment(unit_ids,
+                                              unit_names,
+

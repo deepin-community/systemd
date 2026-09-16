@@ -1,0 +1,28 @@
+From 0119370cbba902cdb162cc4a1eb2ac8a38058bdd Mon Sep 17 00:00:00 2001
+From: Felix Riemann <felix.riemann@sma.de>
+Date: Fri, 2 Feb 2024 18:08:52 +0100
+Subject: [PATCH] cryptenroll: Fix reading keyfile from socket
+
+systemd-cryptenroll uses the READ_FULL_FILE_CONNECT_SOCKET flag when
+reading the keyfile to also allow reading it from a socket. But it also
+sets the offset to 0, causing an unnecessary seek to the beginning of
+the newly opened keyfile and disables socket support again, as these do
+not support seeking.
+
+Disable seeking entirely to remove the unneeded seek and restore support
+for reading the keyfile from a socket again as with systemd-cryptsetup.
+
+diff --git a/src/cryptenroll/cryptenroll.c b/src/cryptenroll/cryptenroll.c
+index e1fdc3f5f0..79d06e7414 100644
+--- a/src/cryptenroll/cryptenroll.c
++++ b/src/cryptenroll/cryptenroll.c
+@@ -601,7 +601,7 @@ static int load_volume_key_keyfile(
+         r = read_full_file_full(
+                         AT_FDCWD,
+                         arg_unlock_keyfile,
+-                        0,
++                        UINT64_MAX,
+                         SIZE_MAX,
+                         READ_FULL_FILE_SECURE|READ_FULL_FILE_WARN_WORLD_READABLE|READ_FULL_FILE_CONNECT_SOCKET,
+                         NULL,
+

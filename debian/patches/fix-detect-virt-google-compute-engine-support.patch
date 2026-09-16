@@ -1,0 +1,49 @@
+From baa90b4b81da6fd28b2fe7f4f37c8c546881f3a0 Mon Sep 17 00:00:00 2001
+From: mille-feuille <gtpgx305@gmail.com>
+Date: Thu, 8 Feb 2024 23:47:24 +0900
+Subject: [PATCH] detect-virt: fix Google Compute Engine support
+
+Follow-up for 9b0688f491674b53ef7a52bdf561a430c53673d6
+
+Index: systemd/src/basic/virt.h
+===================================================================
+--- systemd.orig/src/basic/virt.h
++++ systemd/src/basic/virt.h
+@@ -23,3 +23,4 @@
+         VIRTUALIZATION_PARALLELS,
++        VIRTUALIZATION_GOOGLE,
+         VIRTUALIZATION_BHYVE,
+         VIRTUALIZATION_QNX,
+Index: systemd/src/basic/virt.c
+===================================================================
+--- systemd.orig/src/basic/virt.c
++++ systemd/src/basic/virt.c
+@@ -182,3 +182,4 @@
+                 { "Parallels",            VIRTUALIZATION_PARALLELS },
++                { "Google",               VIRTUALIZATION_GOOGLE    },
+                 /* https://wiki.freebsd.org/bhyve */
+                 { "BHYVE",                VIRTUALIZATION_BHYVE     },
+@@ -455,7 +456,7 @@ Virtualization detect_vm(void) {
+ 
+         /* We have to use the correct order here:
+          *
+-         * → First, try to detect Oracle Virtualbox, Amazon EC2 Nitro, and Parallels, even if they use KVM,
++         * → First, try to detect Oracle Virtualbox, Amazon EC2 Nitro, Parallels, and Google Compute Engine, even if they use KVM,
+          *   as well as Xen even if it cloaks as Microsoft Hyper-V. Attempt to detect uml at this stage also
+          *   since it runs as a user-process nested inside other VMs. Also check for Xen now, because Xen PV
+          *   mode does not override CPUID when nested inside another hypervisor.
+@@ -470,7 +471,8 @@ Virtualization detect_vm(void) {
+                    VIRTUALIZATION_ORACLE,
+                    VIRTUALIZATION_XEN,
+                    VIRTUALIZATION_AMAZON,
+-                   VIRTUALIZATION_PARALLELS)) {
++                   VIRTUALIZATION_PARALLELS,
++                   VIRTUALIZATION_GOOGLE)) {
+                 v = dmi;
+                 goto finish;
+         }
+@@ -1045,3 +1047,4 @@
+         [VIRTUALIZATION_PARALLELS]       = "parallels",
++        [VIRTUALIZATION_GOOGLE]          = "google",
+         [VIRTUALIZATION_BHYVE]           = "bhyve",
+         [VIRTUALIZATION_QNX]             = "qnx",

@@ -1,0 +1,24 @@
+From 7e91a68b2f2162aba0253e5c27cf4711d104d119 Mon Sep 17 00:00:00 2001
+From: hanjinpeng <hanjinpeng@kylinos.cn>
+Date: Wed, 15 Jan 2025 01:10:06 +0800
+Subject: [PATCH] log: check isempty for object_field and extra_field
+
+
+diff --git a/src/basic/log.c b/src/basic/log.c
+index 9f09b0cea5..cbc6edc95d 100644
+--- a/src/basic/log.c
++++ b/src/basic/log.c
+@@ -681,10 +681,10 @@ static int log_do_header(
+                      error ? "ERRNO=" : "",
+                      error ? 1 : 0, error,
+                      error ? "\n" : "",
+-                     isempty(object) ? "" : object_field,
++                     isempty(object) ? "" : ASSERT_PTR(object_field),
+                      isempty(object) ? "" : object,
+                      isempty(object) ? "" : "\n",
+-                     isempty(extra) ? "" : extra_field,
++                     isempty(extra) ? "" : ASSERT_PTR(extra_field),
+                      isempty(extra) ? "" : extra,
+                      isempty(extra) ? "" : "\n",
+                      program_invocation_short_name);
+

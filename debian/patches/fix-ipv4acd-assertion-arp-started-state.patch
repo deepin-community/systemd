@@ -1,0 +1,24 @@
+From 146b44d0a0001712ced2f22ca76d242eedac26ad Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 20 Sep 2024 09:58:12 +0900
+Subject: [PATCH] sd-ipv4acd: fix assertion triggered when an ARP received in
+ STARTED state
+
+When a network is busy, an ARP may be received before the timer event
+source triggered first time.
+
+Fixes #34489.
+
+diff --git a/src/libsystemd-network/sd-ipv4acd.c b/src/libsystemd-network/sd-ipv4acd.c
+index 51d2b2219d..423e043253 100644
+--- a/src/libsystemd-network/sd-ipv4acd.c
++++ b/src/libsystemd-network/sd-ipv4acd.c
+@@ -396,6 +396,7 @@ static int ipv4acd_on_packet(
+                 }
+                 break;
+ 
++        case IPV4ACD_STATE_STARTED:
+         case IPV4ACD_STATE_WAITING_PROBE:
+         case IPV4ACD_STATE_PROBING:
+         case IPV4ACD_STATE_WAITING_ANNOUNCE:
+

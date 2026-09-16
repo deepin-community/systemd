@@ -1,0 +1,27 @@
+From 6d3012bab4ce4c1ed260598d05b4e9f2ea471658 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Tue, 8 Oct 2024 13:50:02 +0900
+Subject: [PATCH] time-util: copy input string before fork()
+
+Fixes #34670.
+
+diff --git a/src/basic/time-util.c b/src/basic/time-util.c
+index 06c465e0e4..1e042b8b60 100644
+--- a/src/basic/time-util.c
++++ b/src/basic/time-util.c
+@@ -1043,6 +1043,14 @@ int parse_timestamp(const char *t, usec_t *ret) {
+         if (shared == MAP_FAILED)
+                 return negative_errno();
+ 
++        /* The input string may be in argv. Let's copy it. */
++        _cleanup_free_ char *t_copy = strdup(t);
++        if (!t_copy)
++                return -ENOMEM;
++
++        t = t_copy;
++        assert_se(tz = endswith(t_copy, tz));
++
+         r = safe_fork("(sd-timestamp)", FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG_SIGKILL|FORK_WAIT, NULL);
+         if (r < 0) {
+                 (void) munmap(shared, sizeof *shared);
+

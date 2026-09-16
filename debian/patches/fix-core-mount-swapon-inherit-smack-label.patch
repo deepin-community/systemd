@@ -1,0 +1,42 @@
+From 8144537a81c7a815af3d4c63cd8545ee17b2715d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C5=81ukasz=20Stelmach?= <l.stelmach@samsung.com>
+Date: Tue, 29 Oct 2024 15:53:45 +0100
+Subject: [PATCH] core: make mount(8) and swapon(8) inherit SMACK label from
+ systemd
+
+By default mount(8), umount(8), swapon(8) and swapoff(8) should run with
+with the SMACK label inherited from systemd rather than the default one
+meant for services.
+
+Fixes: aa5ae9711ef3cd0c69b7fcfbd65bca05fb704a8a
+Follow-up-for: 20bbf5ee4c6c80599a91e7a4b7474e931a27db4a
+
+diff --git a/src/core/mount.c b/src/core/mount.c
+index 19dd09c58f..92e0d7737a 100644
+--- a/src/core/mount.c
++++ b/src/core/mount.c
+@@ -876,6 +876,9 @@ static int mount_spawn(Mount *m, ExecCommand *c, PidRef *ret_pid) {
+         if (r < 0)
+                 return r;
+ 
++        /* Assume the label inherited from systemd as the fallback */
++        exec_params.fallback_smack_process_label = NULL;
++
+         r = exec_spawn(UNIT(m),
+                        c,
+                        &m->exec_context,
+diff --git a/src/core/swap.c b/src/core/swap.c
+index ff6c4255ab..312db05db5 100644
+--- a/src/core/swap.c
++++ b/src/core/swap.c
+@@ -642,6 +642,9 @@ static int swap_spawn(Swap *s, ExecCommand *c, PidRef *ret_pid) {
+         if (r < 0)
+                 return r;
+ 
++        /* Assume the label inherited from systemd as the fallback */
++        exec_params.fallback_smack_process_label = NULL;
++
+         r = exec_spawn(UNIT(s),
+                        c,
+                        &s->exec_context,
+

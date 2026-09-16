@@ -1,0 +1,20 @@
+From 4c8c499e2c9f906f632b4955dd8db45a5ea96fd7 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 10 Jul 2024 16:32:35 +0200
+Subject: [PATCH] terminal-util: return correct error in chvt()
+
+
+diff --git a/src/basic/terminal-util.c b/src/basic/terminal-util.c
+index 345fc15b94..9d3e0ae07b 100644
+--- a/src/basic/terminal-util.c
++++ b/src/basic/terminal-util.c
+@@ -76,7 +76,7 @@ int chvt(int vt) {
+ 
+         fd = open_terminal("/dev/tty0", O_RDWR|O_NOCTTY|O_CLOEXEC|O_NONBLOCK);
+         if (fd < 0)
+-                return -errno;
++                return fd;
+ 
+         if (vt <= 0) {
+                 int tiocl[2] = {
+

@@ -1,0 +1,115 @@
+From dfad86b83807fa8696ca94982a5ba591b6d86a80 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Sun, 31 Mar 2024 20:52:39 +0800
+Subject: [PATCH] units: introduce systemd-hibernate-clear.service that clears
+ stale HibernateLocation EFI variable
+
+Currently, if the HibernateLocation EFI variable exists,
+but we failed to resume from it, the boot carries on
+without clearing the stale variable. Therefore, the subsequent
+boots would still be waiting for the device timeout,
+unless the variable is purged manually.
+
+There's no point to keep trying to resume after a successful
+switch-root, because the hibernation image state
+would have been invalidated by then. OTOH, we don't
+want to clear the variable prematurely either,
+i.e. in initrd, since if the resume device is the same
+as root one, the boot won't succeed and the user might
+be able to try resuming again. So, let's introduce a
+unit that only runs after switch-root and clears the var.
+
+Fixes #32021
+
+diff --git a/man/rules/meson.build b/man/rules/meson.build
+index e483196c5c..b67daa85fd 100644
+--- a/man/rules/meson.build
++++ b/man/rules/meson.build
+@@ -944,7 +944,7 @@ manpages = [
+  ['systemd-hibernate-resume-generator', '8', [], 'ENABLE_HIBERNATE'],
+  ['systemd-hibernate-resume.service',
+   '8',
+-  ['systemd-hibernate-resume'],
++  ['systemd-hibernate-resume', 'systemd-hibernate-clear.service'],
+   'ENABLE_HIBERNATE'],
+  ['systemd-homed.service', '8', ['systemd-homed'], 'ENABLE_HOMED'],
+  ['systemd-hostnamed.service', '8', ['systemd-hostnamed'], 'ENABLE_HOSTNAMED'],
+diff --git a/man/systemd-hibernate-resume.service.xml b/man/systemd-hibernate-resume.service.xml
+index f6cdefdd3a..c0c545cc9c 100644
+--- a/man/systemd-hibernate-resume.service.xml
++++ b/man/systemd-hibernate-resume.service.xml
+@@ -17,12 +17,14 @@
+ 
+   <refnamediv>
+     <refname>systemd-hibernate-resume.service</refname>
++    <refname>systemd-hibernate-clear.service</refname>
+     <refname>systemd-hibernate-resume</refname>
+     <refpurpose>Resume from hibernation</refpurpose>
+   </refnamediv>
+ 
+   <refsynopsisdiv>
+     <para><filename>systemd-hibernate-resume.service</filename></para>
++    <para><filename>systemd-hibernate-clear.service</filename></para>
+     <para><filename>/usr/lib/systemd/systemd-hibernate-resume</filename></para>
+   </refsynopsisdiv>
+ 
+@@ -37,6 +39,12 @@
+     <filename>/sys/power/resume</filename>, along with the offset in memory pages
+     (<filename>/sys/power/resume_offset</filename>) if supported.</para>
+ 
++    <para>The resume device node is either passed directly through arguments, or automatically acquired
++    from kernel command line options and/or <varname>HibernateLocation</varname> EFI variable. The latter
++    will normally be cleared by <filename>systemd-hibernate-resume.service</filename> on resumption.
++    If a stale variable is detected, it would be cleared by
++    <filename>systemd-hibernate-clear.service</filename>.</para>
++
+     <para>Failing to initiate a resume is not an error condition. It may mean that there was
+     no resume image (e. g. if the system has been simply powered off and not hibernated).
+     In such cases, the boot is ordinarily continued.</para>
+diff --git a/units/meson.build b/units/meson.build
+index 6fecbea0a1..16a5564086 100644
+--- a/units/meson.build
++++ b/units/meson.build
+@@ -312,6 +312,11 @@ units = [
+         { 'file' : 'systemd-growfs-root.service.in' },
+         { 'file' : 'systemd-growfs@.service.in' },
+         { 'file' : 'systemd-halt.service' },
++        {
++          'file' : 'systemd-hibernate-clear.service.in',
++          'conditions' : ['ENABLE_HIBERNATE', 'ENABLE_EFI'],
++          'symlinks' : ['sysinit.target.wants/'],
++        },
+         {
+           'file' : 'systemd-hibernate-resume.service.in',
+           'conditions' : ['ENABLE_HIBERNATE'],
+diff --git a/units/systemd-hibernate-clear.service.in b/units/systemd-hibernate-clear.service.in
+new file mode 100644
+index 0000000000..2e8587e692
+--- /dev/null
++++ b/units/systemd-hibernate-clear.service.in
+@@ -0,0 +1,24 @@
++#  SPDX-License-Identifier: LGPL-2.1-or-later
++#
++#  This file is part of systemd.
++#
++#  systemd is free software; you can redistribute it and/or modify it
++#  under the terms of the GNU Lesser General Public License as published by
++#  the Free Software Foundation; either version 2.1 of the License, or
++#  (at your option) any later version.
++
++[Unit]
++Description=Clear Stale Hibernate Storage Info
++Documentation=man:systemd-hibernate-clear.service(8)
++
++ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
++ConditionPathExists=!/etc/initrd-release
++
++DefaultDependencies=no
++Before=sysinit.target shutdown.target
++Conflicts=shutdown.target
++
++[Service]
++Type=oneshot
++RemainAfterExit=yes
++ExecStart={{LIBEXECDIR}}/systemd-hibernate-resume --clear
+

@@ -1,0 +1,24 @@
+From 7a64c5f23efbb51fe4f1229c1a8aed6dd858a0a9 Mon Sep 17 00:00:00 2001
+From: David Tardon <dtardon@redhat.com>
+Date: Thu, 25 Jul 2024 10:06:34 +0200
+Subject: [PATCH] sd-event: do not assert on invalid signal
+
+The signalfd_siginfo struct is received from outside via a FD, hence
+assert() is not appropriate way to check it. Just do a normal runtime
+check.
+
+diff --git a/src/libsystemd/sd-event/sd-event.c b/src/libsystemd/sd-event/sd-event.c
+index f1aed5de60..a593d0e50d 100644
+--- a/src/libsystemd/sd-event/sd-event.c
++++ b/src/libsystemd/sd-event/sd-event.c
+@@ -3871,7 +3871,8 @@ static int process_signal(sd_event *e, struct signal_data *d, uint32_t events, i
+                 if (_unlikely_(n != sizeof(si)))
+                         return -EIO;
+ 
+-                assert(SIGNAL_VALID(si.ssi_signo));
++                if (_unlikely_(!SIGNAL_VALID(si.ssi_signo)))
++                        return -EINVAL;
+ 
+                 if (e->signal_sources)
+                         s = e->signal_sources[si.ssi_signo];
+

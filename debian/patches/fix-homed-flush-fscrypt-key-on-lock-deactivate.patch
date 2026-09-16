@@ -1,0 +1,238 @@
+From c4b5de7eff3d3b51ae88e74fecba09e4fbea4464 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Tue, 4 Jun 2024 03:17:42 +0100
+Subject: [PATCH] homed: flush fscrypt key on lock/deactivate
+
+The fscrypt key is added to the user keyring, and needs to be flushed out too.
+
+Fixes https://github.com/systemd/systemd/issues/33138
+
+diff --git a/src/home/homework-fscrypt.c b/src/home/homework-fscrypt.c
+index 46a7756873..125714ba1e 100644
+--- a/src/home/homework-fscrypt.c
++++ b/src/home/homework-fscrypt.c
+@@ -12,6 +12,7 @@
+ #include "homework-fscrypt.h"
+ #include "homework-mount.h"
+ #include "homework-quota.h"
++#include "keyring-util.h"
+ #include "memory-util.h"
+ #include "missing_keyctl.h"
+ #include "missing_syscall.h"
+@@ -29,6 +30,98 @@
+ #include "user-util.h"
+ #include "xattr-util.h"
+ 
++static int fscrypt_unlink_key(UserRecord *h) {
++        _cleanup_free_ void *keyring = NULL;
++        size_t keyring_size = 0, n_keys = 0;
++        int r;
++
++        assert(h);
++        assert(user_record_storage(h) == USER_FSCRYPT);
++
++        r = fully_set_uid_gid(
++                        h->uid,
++                        user_record_gid(h),
++                        /* supplementary_gids= */ NULL,
++                        /* n_supplementary_gids= */ 0);
++        if (r < 0)
++                return log_error_errno(r, "Failed to change UID/GID to " UID_FMT "/" GID_FMT ": %m",
++                                       h->uid, user_record_gid(h));
++
++        r = keyring_read(KEY_SPEC_USER_KEYRING, &keyring, &keyring_size);
++        if (r < 0)
++                return log_error_errno(r, "Failed to read the keyring of user " UID_FMT ": %m", h->uid);
++
++        n_keys = keyring_size / sizeof(key_serial_t);
++        assert(keyring_size % sizeof(key_serial_t) == 0);
++
++        /* Find any key with a description starting with 'fscrypt:' and unlink it. We need to iterate as we
++         * store the key with a description that uses the hash of the secret key, that we do not have when
++         * we are deactivating. */
++        FOREACH_ARRAY(key, ((key_serial_t *) keyring), n_keys) {
++                _cleanup_free_ char *description = NULL;
++                char *d;
++
++                r = keyring_describe(*key, &description);
++                if (r < 0) {
++                        if (r == -ENOKEY) /* Something else deleted it already, that's ok. */
++                                continue;
++
++                        return log_error_errno(r, "Failed to describe key id %d: %m", *key);
++                }
++
++                /* The decription is the final element as per manpage. */
++                d = strrchr(description, ';');
++                if (!d)
++                        return log_error_errno(
++                                        SYNTHETIC_ERRNO(EINVAL),
++                                        "Failed to parse description of key id %d: %s",
++                                        *key,
++                                        description);
++
++                if (!startswith(d + 1, "fscrypt:"))
++                        continue;
++
++                r = keyctl(KEYCTL_UNLINK, *key, KEY_SPEC_USER_KEYRING, 0, 0);
++                if (r < 0) {
++                        if (errno == ENOKEY) /* Something else deleted it already, that's ok. */
++                                continue;
++
++                        return log_error_errno(
++                                        errno,
++                                        "Failed to delete encryption key with id '%d' from the keyring of user " UID_FMT ": %m",
++                                        *key,
++                                        h->uid);
++                }
++
++                log_debug("Deleted encryption key with id '%d' from the keyring of user " UID_FMT ".", *key, h->uid);
++        }
++
++        return 0;
++}
++
++int home_flush_keyring_fscrypt(UserRecord *h) {
++        int r;
++
++        assert(h);
++        assert(user_record_storage(h) == USER_FSCRYPT);
++
++        if (!uid_is_valid(h->uid))
++                return 0;
++
++        r = safe_fork("(sd-delkey)",
++                      FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG_SIGTERM|FORK_LOG|FORK_WAIT|FORK_REOPEN_LOG,
++                      NULL);
++        if (r < 0)
++                return r;
++        if (r == 0) {
++                if (fscrypt_unlink_key(h) < 0)
++                        _exit(EXIT_FAILURE);
++                _exit(EXIT_SUCCESS);
++        }
++
++        return 0;
++}
++
+ static int fscrypt_upload_volume_key(
+                 const uint8_t key_descriptor[static FS_KEY_DESCRIPTOR_SIZE],
+                 const void *volume_key,
+diff --git a/src/home/homework-fscrypt.h b/src/home/homework-fscrypt.h
+index 7c2d7aace4..289e9d86fb 100644
+--- a/src/home/homework-fscrypt.h
++++ b/src/home/homework-fscrypt.h
+@@ -9,3 +9,5 @@ int home_setup_fscrypt(UserRecord *h, HomeSetup *setup, const PasswordCache *cac
+ int home_create_fscrypt(UserRecord *h, HomeSetup *setup, char **effective_passwords, UserRecord **ret_home);
+ 
+ int home_passwd_fscrypt(UserRecord *h, HomeSetup *setup, const PasswordCache *cache, char **effective_passwords);
++
++int home_flush_keyring_fscrypt(UserRecord *h);
+diff --git a/src/home/homework.c b/src/home/homework.c
+index b556904651..482db23dbc 100644
+--- a/src/home/homework.c
++++ b/src/home/homework.c
+@@ -379,6 +379,9 @@ static int keyring_flush(UserRecord *h) {
+ 
+         assert(h);
+ 
++        if (user_record_storage(h) == USER_FSCRYPT)
++                (void) home_flush_keyring_fscrypt(h);
++
+         name = strjoin("homework-user-", h->user_name);
+         if (!name)
+                 return log_oom();
+
+diff --git a/src/basic/user-util.c b/src/basic/user-util.c
+index 9ae8577..b6a0a5e 100644
+--- a/src/basic/user-util.c
++++ b/src/basic/user-util.c
+@@ -661,6 +661,28 @@ int get_shell(char **ret) {
+         return path_simplify_alloc(e, ret);
+ }
+ 
++int fully_set_uid_gid(uid_t uid, gid_t gid, const gid_t supplementary_gids[], size_t n_supplementary_gids) {
++        int r;
++
++        assert(supplementary_gids || n_supplementary_gids == 0);
++
++        /* Sets all UIDs and all GIDs to the specified ones. Drops all auxiliary GIDs */
++
++        r = maybe_setgroups(n_supplementary_gids, supplementary_gids);
++        if (r < 0)
++                return r;
++
++        if (gid_is_valid(gid))
++                if (setresgid(gid, gid, gid) < 0)
++                        return -errno;
++
++        if (uid_is_valid(uid))
++                if (setresuid(uid, uid, uid) < 0)
++                        return -errno;
++
++        return 0;
++}
++
+ int reset_uid_gid(void) {
+         int r;
+ 
+diff --git a/src/basic/user-util.h b/src/basic/user-util.h
+index f394f62..1006fb2 100644
+--- a/src/basic/user-util.h
++++ b/src/basic/user-util.h
+@@ -57,6 +57,7 @@ int getgroups_alloc(gid_t** gids);
+ int get_home_dir(char **ret);
+ int get_shell(char **ret);
+ 
++int fully_set_uid_gid(uid_t uid, gid_t gid, const gid_t supplementary_gids[], size_t n_supplementary_gids);
+ int reset_uid_gid(void);
+ 
+ int take_etc_passwd_lock(const char *root);
+diff --git a/src/shared/keyring-util.c b/src/shared/keyring-util.c
+index 655cf52..f379b56 100644
+--- a/src/shared/keyring-util.c
++++ b/src/shared/keyring-util.c
+@@ -36,3 +36,34 @@ int keyring_read(key_serial_t serial, void **ret, size_t *ret_size) {
+                 m *= 2;
+         }
+ }
++
++int keyring_describe(key_serial_t serial, char **ret) {
++        _cleanup_free_ char *tuple = NULL;
++        size_t sz = 64;
++        int c = -1; /* Workaround for maybe-uninitialized false positive due to missing_syscall indirection */
++
++        assert(ret);
++
++        for (;;) {
++                tuple = new(char, sz);
++                if (!tuple)
++                        return log_oom_debug();
++
++                c = keyctl(KEYCTL_DESCRIBE, serial, (unsigned long) tuple, c, 0);
++                if (c < 0)
++                        return log_debug_errno(errno, "Failed to describe key id %d: %m", serial);
++
++                if ((size_t) c <= sz)
++                        break;
++
++                sz = c;
++                free(tuple);
++        }
++
++        /* The kernel returns a final NUL in the string, verify that. */
++        assert(tuple[c-1] == 0);
++
++        *ret = TAKE_PTR(tuple);
++
++        return 0;
++}
+diff --git a/src/shared/keyring-util.h b/src/shared/keyring-util.h
+index c8c53f1..6e6e685 100644
+--- a/src/shared/keyring-util.h
++++ b/src/shared/keyring-util.h
+@@ -9,3 +9,4 @@
+ #define TAKE_KEY_SERIAL(key_serial) TAKE_GENERIC(key_serial, key_serial_t, -1)
+ 
+ int keyring_read(key_serial_t serial, void **ret, size_t *ret_size);
++int keyring_describe(key_serial_t serial, char **ret);

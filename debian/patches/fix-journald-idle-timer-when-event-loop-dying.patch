@@ -1,0 +1,22 @@
+From 808a751fac34fba3f171befee78335b6218c84b2 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Tue, 25 Mar 2025 16:45:16 -0400
+Subject: [PATCH] journald: do not schedule idle timer if our event loop is
+ dying
+
+
+diff --git a/src/journal/journald-server.c b/src/journal/journald-server.c
+index 13a95ef015..85728b343d 100644
+--- a/src/journal/journald-server.c
++++ b/src/journal/journald-server.c
+@@ -2467,7 +2467,8 @@ int server_start_or_stop_idle_timer(Server *s) {
+ 
+         assert(s);
+ 
+-        if (!server_is_idle(s)) {
++        if (sd_event_get_state(s->event) == SD_EVENT_FINISHED ||
++            !server_is_idle(s)) {
+                 s->idle_event_source = sd_event_source_disable_unref(s->idle_event_source);
+                 return 0;
+         }
+

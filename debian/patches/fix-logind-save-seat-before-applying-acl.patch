@@ -1,0 +1,38 @@
+From df1ff1c0a06adf4d428881ba6c87219cce067936 Mon Sep 17 00:00:00 2001
+From: xinpeng wang <wangxinpeng@uniontech.com>
+Date: Mon, 17 Feb 2025 15:01:22 +0800
+Subject: [PATCH] logind: save seat before applying acl
+
+udev will trigger the uaccess program in 73-seat-late.rules, which
+may modify the device's acl permissions. In some cases, udev triggers
+the uaccess program when logind is started and active is being set.
+At this time, 1) logind sets the user's acl permissions, 2) uaccess
+obtains active and sets acl permissions; 3) logind updates seat's
+stat_file and writes active. This situation will cause the device to
+not have the correct acl permissions, resulting in abnormal situations
+such as a black screen. Therefore, it is necessary to write active to
+seat's stat file before setting acl.
+
+diff --git a/src/login/logind-seat.c b/src/login/logind-seat.c
+index bed1f7db03..50c2b21b47 100644
+--- a/src/login/logind-seat.c
++++ b/src/login/logind-seat.c
+@@ -242,6 +242,8 @@ int seat_set_active(Seat *s, Session *session) {
+         old_active = s->active;
+         s->active = session;
+ 
++        seat_save(s);
++
+         if (old_active) {
+                 session_device_pause_all(old_active);
+                 session_send_changed(old_active, "Active", NULL);
+@@ -257,8 +259,6 @@ int seat_set_active(Seat *s, Session *session) {
+         if (!session || session->started)
+                 seat_send_changed(s, "ActiveSession", NULL);
+ 
+-        seat_save(s);
+-
+         if (session) {
+                 session_save(session);
+                 user_save(session->user);
+

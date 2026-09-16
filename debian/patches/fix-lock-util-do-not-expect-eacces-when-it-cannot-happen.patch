@@ -1,0 +1,57 @@
+From 06384eb3c5044f632f50304a0210a402460f1189 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Wed, 22 May 2024 00:17:10 +0100
+Subject: [PATCH] lock-util: do not expect EACCES when it cannot happen
+
+As per the documentation, EACCES is only returned when F_SETLK is
+used, and only on some platforms, which doesn't seem to include
+Linux:
+
+https://github.com/torvalds/linux/blob/master/fs/locks.c
+
+F_OFD_SETLK is documented to only return EAGAIN, and F_SETLKW/F_OFD_SETLKW
+are blocking operations so this logic doesn't apply to them in the
+first place.
+
+Hence, only automatically convert EACCES into EAGAIN for F_SETLK
+operations, and propagate the original error in the other cases.
+
+This is important because in some cases we catch permission errors
+and gracefully fallback, which is not possible if the original error
+is lost.
+
+This is an issue in practice because, due to a kernel bug present
+before v6.2, AppArmor denies locking on file descriptors to LXC
+containers. We support all currently maintained LTS kernels,
+including v6.1, where despite a lot of effort and attempts over almost
+a year, the bugfix still hasn't been backported, as it is complex and
+requires large changes to AppArmor.
+On affected kernels, all services running with PrivateNetwork=yes
+fail and do not recover, instead of the normal behaviour of gracefully
+downgrading to PrivateNetwork=no.
+
+The integration tests in the Debian CI fail due to this issue:
+
+https://ci.debian.net/packages/s/systemd/testing/arm64/46828037/
+
+diff --git a/src/basic/lock-util.c b/src/basic/lock-util.c
+index 7bffe85461..aef395d78e 100644
+--- a/src/basic/lock-util.c
++++ b/src/basic/lock-util.c
+@@ -139,7 +139,14 @@ static int fcntl_lock(int fd, int operation, bool ofd) {
+                 .l_len = 0,
+         }));
+ 
+-        if (r == -EACCES) /* Treat EACCESS/EAGAIN the same as per man page. */
++        /* If we are doing non-blocking operations, treat EACCES/EAGAIN the same as per man page. But if
++         * not, propagate EACCES back, as it will likely be due to an LSM denying the operation (for example
++         * LXC with AppArmor when running on kernel < 6.2), and in some cases we want to gracefully
++         * fallback (e.g.: PrivateNetwork=yes). As per documentation, it's only the non-blocking operation
++         * F_SETLK that might return EACCES on some platforms (although the Linux implementation doesn't
++         * seem to), as F_SETLKW and F_OFD_SETLKW block so this is not an issue, and F_OFD_SETLK is documented
++         * to only return EAGAIN if the lock is already held. */
++        if ((operation & LOCK_NB) && r == -EACCES)
+                 r = -EAGAIN;
+ 
+         return r;
+

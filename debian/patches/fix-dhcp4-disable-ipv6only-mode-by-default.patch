@@ -1,0 +1,57 @@
+From 7dc431839eeeffe6ed65acbe9bfe2a6e89422086 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sun, 4 Feb 2024 16:37:33 +0900
+Subject: [PATCH] network/dhcp4: disable IPv6OnlyMode= by default
+
+As explained in #30891, IPv6OnlyMode= should be enabled with 464XLAT
+support, but we do not support it yet. Let's disable by default.
+
+Fixes #30891.
+
+diff --git a/man/systemd.network.xml b/man/systemd.network.xml
+index dfae8119e7..cf4456ef0c 100644
+--- a/man/systemd.network.xml
++++ b/man/systemd.network.xml
+@@ -2683,8 +2683,7 @@ NFTSet=prefix:netdev:filter:eth_ipv4_prefix</programlisting>
+           <para>When true, the DHCPv4 configuration will be delayed by the timespan provided by the DHCP
+           server and skip to configure dynamic IPv4 network connectivity if IPv6 connectivity is provided
+           within the timespan. See <ulink url="https://tools.ietf.org/html/rfc8925">RFC 8925</ulink>.
+-          Defaults to true when <varname>IPv6AcceptRA=</varname> is enabled or DHCPv6 client is enabled
+-          (i.e., <varname>DHCP=yes</varname>), and false otherwise.</para>
++          Defaults to false.</para>
+ 
+           <xi:include href="version-info.xml" xpointer="v255"/>
+         </listitem>
+diff --git a/src/network/networkd-dhcp4.c b/src/network/networkd-dhcp4.c
+index f9baf0d535..b34120f997 100644
+--- a/src/network/networkd-dhcp4.c
++++ b/src/network/networkd-dhcp4.c
+@@ -1455,10 +1455,12 @@ static bool link_dhcp4_ipv6_only_mode(Link *link) {
+         assert(link);
+         assert(link->network);
+ 
++        /* If it is explicitly specified, then honor the setting. */
+         if (link->network->dhcp_ipv6_only_mode >= 0)
+                 return link->network->dhcp_ipv6_only_mode;
+ 
+-        return link_dhcp6_enabled(link) || link_ipv6_accept_ra_enabled(link);
++        /* Defaults to false, until we support 464XLAT. See issue #30891. */
++        return false;
+ }
+ 
+ static int dhcp4_configure(Link *link) {
+diff --git a/test/test-network/conf/25-dhcp-client-ipv6-only.network b/test/test-network/conf/25-dhcp-client-ipv6-only.network
+index 4aba206cb4..1ec63b1fa6 100644
+--- a/test/test-network/conf/25-dhcp-client-ipv6-only.network
++++ b/test/test-network/conf/25-dhcp-client-ipv6-only.network
+@@ -7,6 +7,9 @@ Name=veth99
+ DHCP=yes
+ IPv6Token=::1a:2b:3c:4d
+ 
++[DHCPv4]
++IPv6OnlyMode=yes
++
+ [Route]
+ Gateway=_ipv6ra
+ Destination=2001:1234:5:9fff:ff:ff:ff:ff/128
+

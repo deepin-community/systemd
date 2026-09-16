@@ -1,0 +1,108 @@
+From f2cb9d17da9c47d11ebeac00c75dd3d788ec1fc3 Mon Sep 17 00:00:00 2001
+From: networkException <git@nwex.de>
+Date: Sun, 10 Mar 2024 18:55:06 +0100
+Subject: [PATCH] bpf-socket-bind: fix unexpected behavior with either 0 allow
+ or deny rules
+
+This patch fixes an issue where, when not specifiying either at least one
+`SocketBindAllow` or `SocketBindDeny` rule, behavior for the bind syscall
+filtering would be unexpected.
+
+For example, when trying to bind to a port with only "SocketBindDeny=any"
+given, the syscall would succeed:
+
+> systemd-run -t -p "SocketBindDeny=any" nc -l 8080
+
+Expected with this set of rules (also in accordance with the documentation)
+would be an Operation not permitted error.
+
+This behavior occurs because a default initialized socket_bind_rule struct
+matches what "any" represents. When creating the bpf list all elements get
+default initialized, as such represeting "any". Seemingly it is necressarry
+to set the size of the map to at least one, as such if no allow rule is
+given default initialization and minimal map size cause one any allow rule
+to be in the map, causing the behavior observed above.
+
+This patch solves this by introducing a new "match nothing" magic stored in
+the rule's address family and setting such a rule as the first one if no
+rule is given, making sure that default initialized rule structs are never
+used.
+
+Resolves #30556
+
+diff --git a/src/core/bpf-socket-bind.c b/src/core/bpf-socket-bind.c
+index 465216a7d0..3008d8249c 100644
+--- a/src/core/bpf-socket-bind.c
++++ b/src/core/bpf-socket-bind.c
+@@ -32,6 +32,15 @@ static int update_rules_map(
+ 
+         assert(map_fd >= 0);
+ 
++        if (!head) {
++                static const struct socket_bind_rule val = {
++                        .address_family = SOCKET_BIND_RULE_AF_MATCH_NOTHING,
++                };
++
++                if (sym_bpf_map_update_elem(map_fd, &i, &val, BPF_ANY) != 0)
++                        return -errno;
++        }
++
+         LIST_FOREACH(socket_bind_items, item, head) {
+                 struct socket_bind_rule val = {
+                         .address_family = (uint32_t) item->address_family,
+diff --git a/src/core/bpf/socket_bind/socket-bind-api.bpf.h b/src/core/bpf/socket_bind/socket-bind-api.bpf.h
+index 277b9bbde2..4fe08f1f44 100644
+--- a/src/core/bpf/socket_bind/socket-bind-api.bpf.h
++++ b/src/core/bpf/socket_bind/socket-bind-api.bpf.h
+@@ -7,13 +7,17 @@
+  */
+ 
+ #include <linux/types.h>
++#include <stdint.h>
+ 
+ /*
+  * Bind rule is matched with socket fields accessible to cgroup/bind{4,6} hook
+  * through bpf_sock_addr struct.
+- * 'address_family' is expected to be one of AF_UNSPEC, AF_INET or AF_INET6.
++ * 'address_family' is expected to be one of AF_UNSPEC, AF_INET, AF_INET6 or the
++ * magic SOCKET_BIND_RULE_AF_MATCH_NOTHING.
+  * Matching by family is bypassed for rules with AF_UNSPEC set, which makes the
+  * rest of a rule applicable for both IPv4 and IPv6 addresses.
++ * If SOCKET_BIND_RULE_AF_MATCH_NOTHING is set the rule fails unconditionally
++ * and other checks are skipped.
+  * If matching by family is either successful or bypassed, a rule and a socket
+  * are matched by ip protocol.
+  * If 'protocol' is 0, matching is bypassed.
+@@ -49,3 +53,4 @@ struct socket_bind_rule {
+ };
+ 
+ #define SOCKET_BIND_MAX_RULES 128
++#define SOCKET_BIND_RULE_AF_MATCH_NOTHING UINT32_MAX
+diff --git a/src/core/bpf/socket_bind/socket-bind.bpf.c b/src/core/bpf/socket_bind/socket-bind.bpf.c
+index b7972a887a..da9f9d13de 100644
+--- a/src/core/bpf/socket_bind/socket-bind.bpf.c
++++ b/src/core/bpf/socket_bind/socket-bind.bpf.c
+@@ -55,6 +55,9 @@ static __always_inline bool match(
+                 __u32 protocol,
+                 __u16 port,
+                 const struct socket_bind_rule *r) {
++        if (r->address_family == SOCKET_BIND_RULE_AF_MATCH_NOTHING)
++                return false;
++
+         return match_af(address_family, r) &&
+                 match_protocol(protocol, r) &&
+                 match_user_port(port, r);
+diff --git a/test/units/testsuite-07.exec-context.sh b/test/units/testsuite-07.exec-context.sh
+index e1e4367cc6..10388d8526 100755
+--- a/test/units/testsuite-07.exec-context.sh
++++ b/test/units/testsuite-07.exec-context.sh
+@@ -195,6 +195,8 @@ if ! systemd-detect-virt -cq; then
+             bash -xec 'timeout 1s nc -6 -u -l ::1 9999; exit 42'
+         systemd-run --wait -p SuccessExitStatus="1 2" --pipe "${ARGUMENTS[@]}" \
+             bash -xec 'timeout 1s nc -4 -l 127.0.0.1 6666; exit 42'
++        systemd-run --wait -p SuccessExitStatus="1 2" --pipe -p SocketBindDeny=any \
++            bash -xec 'timeout 1s nc -l 127.0.0.1 9999; exit 42'
+         # Consequently, we should succeed when binding to a socket on the allow list
+         # and keep listening on it until we're killed by `timeout` (EC 124)
+         systemd-run --wait --pipe -p SuccessExitStatus=124 "${ARGUMENTS[@]}" \
+

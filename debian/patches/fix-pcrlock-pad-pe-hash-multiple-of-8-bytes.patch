@@ -1,0 +1,24 @@
+From e37701a8cd2db1e67d28bcf337467d8efc6de41e Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Sun, 3 Nov 2024 21:45:29 +0100
+Subject: [PATCH] pcrlock: Pad pe hash to a multiple of 8 bytes
+
+All other tools (sbsigntools, osslsigncode, sbctl, goblin) do this
+as well so let's follow suite.
+
+diff --git a/src/pcrlock/pehash.c b/src/pcrlock/pehash.c
+index 7e9dade1f7..39ed61cc2e 100644
+--- a/src/pcrlock/pehash.c
++++ b/src/pcrlock/pehash.c
+@@ -135,6 +135,10 @@ int pe_hash(int fd,
+                 r = hash_file(fd, mdctx, p, st.st_size - p - certificate_table->Size);
+                 if (r < 0)
+                         return r;
++
++                /* If the file size is not a multiple of 8 bytes, pad the hash with zero bytes. */
++                if (st.st_size % 8 != 0 && EVP_DigestUpdate(mdctx, (const uint8_t[8]) {}, 8 - (st.st_size % 8)) != 1)
++                        return log_debug_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE), "Unable to hash data.");
+         }
+ 
+         int hsz = EVP_MD_CTX_size(mdctx);
+

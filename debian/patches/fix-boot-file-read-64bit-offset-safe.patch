@@ -1,0 +1,52 @@
+From 9573ab8f5a1e2dfdb3542aa647868ff73ced7dd2 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 26 Jun 2024 15:43:28 +0200
+Subject: [PATCH] util: make file_read() 64bit offset safe
+
+File offsets in UEFI are 64bit on all archs, hence let's use that typo
+too, and not create artificial confusion around types.
+
+diff --git a/src/boot/efi/util.c b/src/boot/efi/util.c
+index b5c8c6306e..eb29eb2d5b 100644
+--- a/src/boot/efi/util.c
++++ b/src/boot/efi/util.c
+@@ -330,7 +330,14 @@ EFI_STATUS chunked_read(EFI_FILE *file, size_t *size, void *buf) {
+         return EFI_SUCCESS;
+ }
+ 
+-EFI_STATUS file_read(EFI_FILE *dir, const char16_t *name, size_t off, size_t size, char **ret, size_t *ret_size) {
++EFI_STATUS file_read(
++                EFI_FILE *dir,
++                const char16_t *name,
++                uint64_t off,
++                size_t size,
++                char **ret,
++                size_t *ret_size) {
++
+         _cleanup_(file_closep) EFI_FILE *handle = NULL;
+         _cleanup_free_ char *buf = NULL;
+         EFI_STATUS err;
+@@ -350,6 +357,9 @@ EFI_STATUS file_read(EFI_FILE *dir, const char16_t *name, size_t off, size_t siz
+                 if (err != EFI_SUCCESS)
+                         return err;
+ 
++                if (info->FileSize > SIZE_MAX)
++                        return EFI_BAD_BUFFER_SIZE;
++
+                 size = info->FileSize;
+         }
+ 
+diff --git a/src/boot/efi/util.h b/src/boot/efi/util.h
+index ceac07ca39..dc624f45ae 100644
+--- a/src/boot/efi/util.h
++++ b/src/boot/efi/util.h
+@@ -102,7 +102,7 @@ char16_t *xstr8_to_path(const char *stra);
+ char16_t *mangle_stub_cmdline(char16_t *cmdline);
+ 
+ EFI_STATUS chunked_read(EFI_FILE *file, size_t *size, void *buf);
+-EFI_STATUS file_read(EFI_FILE *dir, const char16_t *name, size_t off, size_t size, char **content, size_t *content_size);
++EFI_STATUS file_read(EFI_FILE *dir, const char16_t *name, uint64_t off, size_t size, char **content, size_t *content_size);
+ 
+ static inline void file_closep(EFI_FILE **handle) {
+         if (!*handle)
+

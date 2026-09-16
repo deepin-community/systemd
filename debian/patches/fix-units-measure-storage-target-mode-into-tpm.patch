@@ -1,0 +1,73 @@
+From b493502475fe433d7da4460a5e126f38158d432a Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Thu, 27 Feb 2025 12:33:36 +0100
+Subject: [PATCH] units: measure the fact we enter storage target mode into TPM
+
+storagetm mode means we we are network accessible. let's lock down
+access to TPM secrets in this case: let's measure a pcr "phase" string
+into PCR 11.
+
+This is good as it means that if we are exploited in this state FDE
+secrets protected by TPM are likely to remain protected, since the PCR
+values wouldn't allow access.
+
+diff --git a/units/meson.build b/units/meson.build
+index 330dca3086..7c4650511c 100644
+--- a/units/meson.build
++++ b/units/meson.build
+@@ -542,6 +542,11 @@ units = [
+           'conditions' : ['ENABLE_BOOTLOADER', 'HAVE_OPENSSL', 'HAVE_TPM2'],
+           'symlinks' : ['sysinit.target.wants/'],
+         },
++        {
++          'file' : 'systemd-pcrphase-storage-target-mode.service.in',
++          'conditions' : ['ENABLE_BOOTLOADER', 'HAVE_OPENSSL', 'HAVE_TPM2'],
++          'symlinks' : ['storage-target-mode.target.wants/'],
++        },
+         {
+           'file' : 'systemd-pcrphase.service.in',
+           'conditions' : ['ENABLE_BOOTLOADER', 'HAVE_OPENSSL', 'HAVE_TPM2'],
+diff --git a/units/systemd-pcrphase-storage-target-mode.service.in b/units/systemd-pcrphase-storage-target-mode.service.in
+new file mode 100644
+index 0000000000..2502ac8902
+--- /dev/null
++++ b/units/systemd-pcrphase-storage-target-mode.service.in
+@@ -0,0 +1,24 @@
++#  SPDX-License-Identifier: LGPL-2.1-or-later
++#
++#  This file is part of systemd.
++#
++#  systemd is free software; you can redistribute it and/or modify it
++#  under the terms of the GNU Lesser General Public License as published by
++#  the Free Software Foundation; either version 2.1 of the License, or
++#  (at your option) any later version.
++
++[Unit]
++Description=TPM PCR Barrier (Storage Target Mode)
++Documentation=man:systemd-pcrphase-storage-target-mode.service(8)
++DefaultDependencies=no
++Conflicts=shutdown.target
++After=tpm2.target
++Before=shutdown.target
++ConditionPathExists=/etc/initrd-release
++ConditionSecurity=measured-uki
++
++[Service]
++Type=oneshot
++RemainAfterExit=yes
++ExecStart={{LIBEXECDIR}}/systemd-pcrextend --graceful storage-target-mode-start
++ExecStop={{LIBEXECDIR}}/systemd-pcrextend --graceful storage-target-mode-stop
+diff --git a/units/systemd-storagetm.service.in b/units/systemd-storagetm.service.in
+index 3c26f22e7f..22770bf291 100644
+--- a/units/systemd-storagetm.service.in
++++ b/units/systemd-storagetm.service.in
+@@ -13,7 +13,7 @@ Documentation=man:systemd-storagetm.service(8)
+ ConditionVirtualization=!container
+ DefaultDependencies=no
+ Wants=modprobe@nvmet_tcp.service modprobe@thunderbolt_net.service sys-kernel-config.mount
+-After=modprobe@nvmet_tcp.service modprobe@thunderbolt_net.service sys-kernel-config.mount plymouth-start.service
++After=modprobe@nvmet_tcp.service modprobe@thunderbolt_net.service sys-kernel-config.mount plymouth-start.service systemd-pcrphase-storage-target-mode.service
+ Conflicts=shutdown.target
+ Before=shutdown.target
+ FailureAction=reboot
+

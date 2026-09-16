@@ -1,0 +1,57 @@
+From 13e15dae9f0b4566d3ea2ed058a5dd44751216da Mon Sep 17 00:00:00 2001
+From: Ronan Pigott <ronan@rjp.ie>
+Date: Mon, 26 Aug 2024 01:39:20 -0700
+Subject: [PATCH] resolved: clear the AD bit for bypass packets
+
+When the bypass logic is invoked, such as for queries to the stub with
+the DO bit set, be certain to clear the AD bit in the reply before
+forwarding it if the answer is not known to be authentic.
+
+diff --git a/src/resolve/resolved-dns-packet.h b/src/resolve/resolved-dns-packet.h
+index a2e25231df..13d65a02c3 100644
+--- a/src/resolve/resolved-dns-packet.h
++++ b/src/resolve/resolved-dns-packet.h
+@@ -111,6 +111,7 @@ static inline uint8_t* DNS_PACKET_DATA(const DnsPacket *p) {
+ #define DNS_PACKET_AD(p) ((be16toh(DNS_PACKET_HEADER(p)->flags) >> 5) & 1)
+ #define DNS_PACKET_CD(p) ((be16toh(DNS_PACKET_HEADER(p)->flags) >> 4) & 1)
+ 
++#define DNS_PACKET_FLAG_AD (UINT16_C(1) << 5)
+ #define DNS_PACKET_FLAG_TC (UINT16_C(1) << 9)
+ 
+ static inline uint16_t DNS_PACKET_RCODE(DnsPacket *p) {
+diff --git a/src/resolve/resolved-dns-stub.c b/src/resolve/resolved-dns-stub.c
+index 23d4db9cd5..c604a51c4b 100644
+--- a/src/resolve/resolved-dns-stub.c
++++ b/src/resolve/resolved-dns-stub.c
+@@ -685,7 +685,8 @@ static int dns_stub_send_failure(
+ static int dns_stub_patch_bypass_reply_packet(
+                 DnsPacket **ret,       /* Where to place the patched packet */
+                 DnsPacket *original,   /* The packet to patch */
+-                DnsPacket *request) {  /* The packet the patched packet shall look like a reply to */
++                DnsPacket *request,    /* The packet the patched packet shall look like a reply to */
++                bool authenticated) {
+         _cleanup_(dns_packet_unrefp) DnsPacket *c = NULL;
+         int r;
+ 
+@@ -725,6 +726,10 @@ static int dns_stub_patch_bypass_reply_packet(
+                 DNS_PACKET_HEADER(c)->flags = htobe16(be16toh(DNS_PACKET_HEADER(c)->flags) | DNS_PACKET_FLAG_TC);
+         }
+ 
++        /* Ensure we don't pass along an untrusted ad flag for bypass packets */
++        if (!authenticated)
++                DNS_PACKET_HEADER(c)->flags = htobe16(be16toh(DNS_PACKET_HEADER(c)->flags) & ~DNS_PACKET_FLAG_AD);
++
+         *ret = TAKE_PTR(c);
+         return 0;
+ }
+@@ -745,7 +750,8 @@ static void dns_stub_query_complete(DnsQuery *query) {
+                     q->answer_full_packet->protocol == DNS_PROTOCOL_DNS) {
+                         _cleanup_(dns_packet_unrefp) DnsPacket *reply = NULL;
+ 
+-                        r = dns_stub_patch_bypass_reply_packet(&reply, q->answer_full_packet, q->request_packet);
++                        r = dns_stub_patch_bypass_reply_packet(&reply, q->answer_full_packet, q->request_packet,
++                                        FLAGS_SET(q->answer_query_flags, SD_RESOLVED_AUTHENTICATED));
+                         if (r < 0)
+                                 log_debug_errno(r, "Failed to patch bypass reply packet: %m");
+                         else
+

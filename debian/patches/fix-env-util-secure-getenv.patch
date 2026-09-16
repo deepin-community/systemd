@@ -1,0 +1,50 @@
+From a51804a5ff0953a27d1e5910c42c78d139ab074f Mon Sep 17 00:00:00 2001
+From: Busayo Dada <toyinoluwabusayo@gmail.com>
+Date: Wed, 9 Apr 2025 17:23:23 +0100
+Subject: [PATCH] Use secure_getenv() instead of getenv() where appropriate
+
+
+Index: repo/src/basic/env-util.c
+===================================================================
+--- repo.orig/src/basic/env-util.c
++++ repo/src/basic/env-util.c
+@@ -521,7 +521,7 @@ char *strv_env_get_n(char **l, const cha
+                         return NULL;
+ 
+                 t = strndupa_safe(name, k);
+-                return getenv(t);
++                return secure_getenv(t);
+         };
+ 
+         return NULL;
+@@ -1051,7 +1051,7 @@ int getenv_steal_erase(const char *name,
+          * it from there. Usecase: reading passwords from the env block (which is a bad idea, but useful for
+          * testing, and given that people are likely going to misuse this, be thorough) */
+ 
+-        e = getenv(name);
++        e = secure_getenv(name);
+         if (!e) {
+                 if (ret)
+                         *ret = NULL;
+Index: repo/src/libsystemd/sd-journal/journal-file.c
+===================================================================
+--- repo.orig/src/libsystemd/sd-journal/journal-file.c
++++ repo/src/libsystemd/sd-journal/journal-file.c
+@@ -320,7 +320,7 @@ static bool keyed_hash_requested(void) {
+         int r;
+ 
+         if (cached < 0) {
+-                r = getenv_bool("SYSTEMD_JOURNAL_KEYED_HASH");
++                r = getenv_bool_secure("SYSTEMD_JOURNAL_KEYED_HASH");
+                 if (r < 0) {
+                         if (r != -ENXIO)
+                                 log_debug_errno(r, "Failed to parse $SYSTEMD_JOURNAL_KEYED_HASH environment variable, ignoring: %m");
+@@ -337,7 +337,7 @@ static bool compact_mode_requested(void)
+         int r;
+ 
+         if (cached < 0) {
+-                r = getenv_bool("SYSTEMD_JOURNAL_COMPACT");
++                r = getenv_bool_secure("SYSTEMD_JOURNAL_COMPACT");
+                 if (r < 0) {
+                         if (r != -ENXIO)
+                                 log_debug_errno(r, "Failed to parse $SYSTEMD_JOURNAL_COMPACT environment variable, ignoring: %m");

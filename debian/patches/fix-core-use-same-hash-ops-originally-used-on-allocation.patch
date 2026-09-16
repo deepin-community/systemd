@@ -1,0 +1,22 @@
+From 16c7555e1ab9ce5df71f512d8e3973a114abfb7b Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 8 May 2025 04:59:37 +0900
+Subject: [PATCH] core/unit: use the same hash_ops originally used on
+ allocation
+
+See unit_file_build_name_map().
+
+diff --git a/src/core/unit.c b/src/core/unit.c
+index d057b8ddc9..c706caae08 100644
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -4629,7 +4629,7 @@ int unit_write_setting(Unit *u, UnitWriteFlags flags, const char *name, const ch
+         /* Make sure the drop-in dir is registered in our path cache. This way we don't need to stupidly
+          * recreate the cache after every drop-in we write. */
+         if (u->manager->unit_path_cache) {
+-                r = set_put_strdup(&u->manager->unit_path_cache, p);
++                r = set_put_strdup_full(&u->manager->unit_path_cache, &path_hash_ops_free, p);
+                 if (r < 0)
+                         return r;
+         }
+

@@ -1,0 +1,28 @@
+From 9ca13d60dbf5d76f52b21c12dd5c91cd082e291e Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Mon, 5 Feb 2024 14:22:52 +0000
+Subject: [PATCH] executor: really set POSIX_SPAWN_SETSIGDEF for posix_spawn
+
+posix_spawnattr_setflags() doesn't OR the input to the current set of flags,
+it overwrites them, so we are currently losing POSIX_SPAWN_SETSIGDEF.
+
+Follow-up for: 6ecdfe7d1008964eed3f67b489cef8c65a218bf1
+
+diff --git a/src/basic/process-util.c b/src/basic/process-util.c
+index 1238ef8150..701eea673c 100644
+--- a/src/basic/process-util.c
++++ b/src/basic/process-util.c
+@@ -2054,10 +2054,8 @@ int posix_spawn_wrapper(const char *path, char *const *argv, char *const *envp,
+         r = posix_spawnattr_init(&attr);
+         if (r != 0)
+                 return -r; /* These functions return a positive errno on failure */
+-        r = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
+-        if (r != 0)
+-                goto fail;
+-        r = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGDEF); /* Set all signals to SIG_DFL */
++        /* Set all signals to SIG_DFL */
++        r = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK|POSIX_SPAWN_SETSIGDEF);
+         if (r != 0)
+                 goto fail;
+         r = posix_spawnattr_setsigmask(&attr, &mask);
+

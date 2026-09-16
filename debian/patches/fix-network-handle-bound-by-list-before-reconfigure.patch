@@ -1,0 +1,42 @@
+From 36b8ad085c6902631ad7054bffbda33d6d168823 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 31 Jul 2024 03:50:55 +0900
+Subject: [PATCH] network: call link_handle_bound_by_list() before trying to
+ reconfigure interface
+
+Otherwise, when an interface gained its carrier, the interface may not
+have matching .network file yet, then link_reconfigure_impl() returns
+zero, and link_handle_bound_by_list() is skipped.
+
+Fixes #33837.
+
+diff --git a/src/network/networkd-link.c b/src/network/networkd-link.c
+index e1947f0bc9..9ce75361fd 100644
+--- a/src/network/networkd-link.c
++++ b/src/network/networkd-link.c
+@@ -1714,6 +1714,13 @@ static int link_carrier_gained(Link *link) {
+         if (r < 0)
+                 log_link_warning_errno(link, r, "Failed to disable carrier lost timer, ignoring: %m");
+ 
++        /* Process BindCarrier= setting specified by other interfaces. This is independent of the .network
++         * file assigned to this interface, but depends on .network files assigned to other interfaces.
++         * Hence, this can and should be called earlier. */
++        r = link_handle_bound_by_list(link);
++        if (r < 0)
++                return r;
++
+         /* If a wireless interface was connected to an access point, and the SSID is changed (that is,
+          * both previous_ssid and ssid are non-NULL), then the connected wireless network could be
+          * changed. So, always reconfigure the link. Which means e.g. the DHCP client will be
+@@ -1747,10 +1754,6 @@ static int link_carrier_gained(Link *link) {
+         if (r != 0)
+                 return r;
+ 
+-        r = link_handle_bound_by_list(link);
+-        if (r < 0)
+-                return r;
+-
+         if (link->iftype == ARPHRD_CAN)
+                 /* let's shortcut things for CAN which doesn't need most of what's done below. */
+                 return 0;
+

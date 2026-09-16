@@ -1,0 +1,28 @@
+From 9d1c28b2d8422df700e7d94339ac6052a6755c6c Mon Sep 17 00:00:00 2001
+From: Jacob McNamee <jacob@jacobmcnamee.com>
+Date: Tue, 7 Jan 2025 03:29:31 -0800
+Subject: [PATCH] stdio-bridge: fix polled fds
+
+Poll fds associated with the bus instead of hardcoding stdin/stdout.
+
+This is consequential under socket activation, when the provided fd
+should be used instead of stdin/stdout.
+
+diff --git a/src/stdio-bridge/stdio-bridge.c b/src/stdio-bridge/stdio-bridge.c
+index 22570511cb..f48b7e574e 100644
+--- a/src/stdio-bridge/stdio-bridge.c
++++ b/src/stdio-bridge/stdio-bridge.c
+@@ -236,9 +236,9 @@ static int run(int argc, char *argv[]) {
+                 t = usec_sub_unsigned(MIN(timeout_a, timeout_b), now(CLOCK_MONOTONIC));
+ 
+                 struct pollfd p[3] = {
+-                        { .fd = fd,            .events = events_a           },
+-                        { .fd = STDIN_FILENO,  .events = events_b & POLLIN  },
+-                        { .fd = STDOUT_FILENO, .events = events_b & POLLOUT },
++                        { .fd = fd,     .events = events_a           },
++                        { .fd = in_fd,  .events = events_b & POLLIN  },
++                        { .fd = out_fd, .events = events_b & POLLOUT },
+                 };
+ 
+                 r = ppoll_usec(p, ELEMENTSOF(p), t);
+

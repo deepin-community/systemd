@@ -3,3 +3,10 @@ usr/bin/systemd-sysusers.standalone
 usr/bin/systemd-tmpfiles.standalone
 usr/lib/systemd/system/tmp.mount
 usr/lib/systemd/system/local-fs.target.wants/tmp.mount
+# new unit files from backport patches
+usr/lib/systemd/system/systemd-hibernate-clear.service
+usr/lib/systemd/system/sysinit.target.wants/systemd-hibernate-clear.service
+usr/lib/systemd/system/systemd-journald-sync@.service
+usr/lib/systemd/system/systemd-pcrphase-storage-target-mode.service
+usr/lib/systemd/system/storage-target-mode.target.wants/systemd-pcrphase-storage-target-mode.service
+usr/share/man/man8/systemd-hibernate-clear.service.8

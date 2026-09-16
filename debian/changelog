@@ -1,3 +1,17 @@
+systemd (255.2-4deepin76) unstable; urgency=medium
+
+  * Integrate backport PRs #210–#383 (165 PRs included, 6 excluded)
+    from upstream systemd bug-fix and security-fix tracking. All
+    changes confined to debian/patches/ (165 new quilt patches +
+    series), upstream source tree untouched.
+  * Excluded (build failure): #229 (image_policy_ignore_designators()
+    does not exist in v255, patch removed from series).
+  * Excluded (covered): #297 (covered by #296), #316 (covered by
+    #315), #319 (covered by #318), #354 (covered by #353), #364
+    (covered by earlier patch).
+
+ -- lensup-merger <lensup-merger@multica>  Tue, 16 Sep 2026 15:00:00 +0800
+
 systemd (255.2-4deepin75) unstable; urgency=medium
 
   * Integrate backport PRs #384–#436 (53 PRs) from upstream systemd

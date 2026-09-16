@@ -142,7 +142,7 @@ Index: repo/src/test/test-udev-util.c
 +        assert_se(result = new(char, len + 1));
 +        r = udev_replace_whitespace(buf, result, len);
 +        assert_se((size_t) r == strlen(expected));
-+        ASSERT_STREQ(result, expected);
++        assert_se(streq(result, expected));
 +}
 +
 +TEST(udev_replace_whitespace_not_nul_terminated) {
@@ -158,7 +158,7 @@ Index: repo/src/test/test-udev-util.c
 +
 +                assert_se(result = new(char, len + 1));
 +                assert_se(udev_replace_whitespace(str, result, len) == 0);
-+                ASSERT_STREQ(result, "");
++                assert_se(streq(result, ""));
 +        }
 +
 +        /* Leading whitespace followed by content, also not NUL terminated within 'len': exercises

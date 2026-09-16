@@ -1,0 +1,28 @@
+From 9990552f9a26cfb07ef3edaad846543bdd013b10 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 4 Apr 2024 05:45:11 +0900
+Subject: [PATCH] backlight: fix detection of multiple graphic cards
+
+Follow-up for e0504dd011189d97a1ea813aabfe1e696742bcf5.
+
+Hopefully, devices in PCI subsystem have some properties, thus have
+their udev database file. But, that may not be true. Here, we only read
+sysattrs of enumerated devices, hence it is not necessary to check if
+the device is initialized or not.
+
+diff --git a/src/backlight/backlight.c b/src/backlight/backlight.c
+index 6126405994..2de6c2008a 100644
+--- a/src/backlight/backlight.c
++++ b/src/backlight/backlight.c
+@@ -55,6 +55,10 @@ static int has_multiple_graphics_cards(void) {
+         if (r < 0)
+                 return r;
+ 
++        r = sd_device_enumerator_allow_uninitialized(e);
++        if (r < 0)
++                return r;
++
+         r = sd_device_enumerator_add_match_subsystem(e, "pci", /* match = */ true);
+         if (r < 0)
+                 return r;
+

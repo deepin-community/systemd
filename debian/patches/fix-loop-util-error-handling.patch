@@ -1,0 +1,21 @@
+From 6383abd62c2810c43fae046ce0d97f8e27444fff Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Fri, 16 Feb 2024 00:16:00 +0900
+Subject: [PATCH] loop-util: fix error handling
+
+Follow-up for 972c8db589f1f031d1fbbe01d821ddb1795fe285.
+
+diff --git a/src/shared/loop-util.c b/src/shared/loop-util.c
+index c6dfff4319..15812717b1 100644
+--- a/src/shared/loop-util.c
++++ b/src/shared/loop-util.c
+@@ -679,7 +679,7 @@ int loop_device_make_by_path_at(
+         else
+                 direct = direct_flags != 0;
+         if (fd < 0) {
+-                r = -errno;
++                r = fd;
+ 
+                 /* Retry read-only? */
+                 if (open_flags >= 0 || !(ERRNO_IS_PRIVILEGE(r) || r == -EROFS))
+

@@ -1,0 +1,212 @@
+From 8a1326581d9b066377f8d9f2d58e1bdfd8b645d0 Mon Sep 17 00:00:00 2001
+From: Franck Bui <fbui@suse.com>
+Date: Wed, 7 Feb 2024 13:41:48 +0100
+Subject: [PATCH] gpt-auto-generator: be more defensive when checking the
+ presence of ESP in fstab
+
+Looking for the ESP node is useful to shortcut things but if we're told that
+the node is not referenced in fstab that doesn't necessarily mean that ESP is
+not mounted via fstab. Indeed the check is not reliable in all cases. Firstly
+because it assumes that udev already set the symlinks up. This is not the case
+for initrd-less boots. Secondly the devname of the ESP partition can be wrongly
+constructed by the dissect code. For example, the approach which consists in
+appending "p<partnum>" suffix to construct the partition devname from the disk
+devname doesn't work for DM devices.
+
+Hence this patch makes the logic more defensive and do not mount neither ESP
+nor XBOOTLDR automatically if any path in paths that starts with /efi or /boot
+exists.
+
+diff --git a/man/systemd-gpt-auto-generator.xml b/man/systemd-gpt-auto-generator.xml
+index 3b86ef6d2d..c8cf12a005 100644
+--- a/man/systemd-gpt-auto-generator.xml
++++ b/man/systemd-gpt-auto-generator.xml
+@@ -32,18 +32,22 @@
+ 
+     <para><filename>systemd-gpt-auto-generator</filename> is a unit generator that automatically discovers
+     the root partition, <filename>/home/</filename>, <filename>/srv/</filename>, <filename>/var/</filename>,
+-    <filename>/var/tmp/</filename>, the EFI System Partition, the Extended Boot Loader Partition, and swap
+-    partitions and creates mount and swap units for them, based on the partition type GUIDs of GUID partition
+-    tables (GPT). See <ulink url="https://uefi.org/specifications">UEFI Specification</ulink>, chapter 5 for
+-    more details. It implements the <ulink
++    <filename>/var/tmp/</filename>, the EFI System Partition (ESP), the Extended Boot Loader Partition
++    (XBOOTLDR), and swap partitions and creates mount and swap units for them, based on the partition type
++    GUIDs of GUID partition tables (GPT). See <ulink url="https://uefi.org/specifications">UEFI
++    Specification</ulink>, chapter 5 for more details. It implements the <ulink
+     url="https://uapi-group.org/specifications/specs/discoverable_partitions_specification">Discoverable
+     Partitions Specification</ulink>.</para>
+ 
+     <para>Note that this generator has no effect on non-GPT systems. It will also not create mount point
+     configuration for directories which already contain files or if the mount point is explicitly configured
+     in <citerefentry
+-    project='man-pages'><refentrytitle>fstab</refentrytitle><manvolnum>5</manvolnum></citerefentry>. If
+-    the units this generator creates are overridden, for example by units in directories with higher
++    project='man-pages'><refentrytitle>fstab</refentrytitle><manvolnum>5</manvolnum></citerefentry>. Additionally
++    no unit will be created for the ESP or the XBOOTLDR partition if mount entries are found in the
++    <filename>/boot/</filename> or <filename>/efi/</filename> hierarchies in <citerefentry
++    project='man-pages'><refentrytitle>fstab</refentrytitle><manvolnum>5</manvolnum></citerefentry>.</para>
++
++    <para>If the units this generator creates are overridden, for example by units in directories with higher
+     precedence, drop-ins and additional dependencies created by this generator might still be used.</para>
+ 
+     <para>This generator will only look for the root partition on the same physical disk where the EFI System
+diff --git a/src/gpt-auto-generator/gpt-auto-generator.c b/src/gpt-auto-generator/gpt-auto-generator.c
+index 80ca647e51..d23ef23b02 100644
+--- a/src/gpt-auto-generator/gpt-auto-generator.c
++++ b/src/gpt-auto-generator/gpt-auto-generator.c
+@@ -463,18 +463,6 @@ static int add_automount(
+         return generator_add_symlink(arg_dest, SPECIAL_LOCAL_FS_TARGET, "wants", unit);
+ }
+ 
+-static int slash_boot_in_fstab(void) {
+-        static int cache = -1;
+-
+-        if (cache >= 0)
+-                return cache;
+-
+-        cache = fstab_is_mount_point("/boot");
+-        if (cache < 0)
+-                return log_error_errno(cache, "Failed to parse fstab: %m");
+-        return cache;
+-}
+-
+ static int add_partition_xbootldr(DissectedPartition *p) {
+         _cleanup_free_ char *options = NULL;
+         int r;
+@@ -486,14 +474,6 @@ static int add_partition_xbootldr(DissectedPartition *p) {
+                 return 0;
+         }
+ 
+-        r = slash_boot_in_fstab();
+-        if (r < 0)
+-                return r;
+-        if (r > 0) {
+-                log_debug("/boot/ specified in fstab, ignoring XBOOTLDR partition.");
+-                return 0;
+-        }
+-
+         r = path_is_busy("/boot");
+         if (r < 0)
+                 return r;
+@@ -523,18 +503,6 @@ static int add_partition_xbootldr(DissectedPartition *p) {
+ }
+ 
+ #if ENABLE_EFI
+-static int slash_efi_in_fstab(void) {
+-        static int cache = -1;
+-
+-        if (cache >= 0)
+-                return cache;
+-
+-        cache = fstab_is_mount_point("/efi");
+-        if (cache < 0)
+-                return log_error_errno(cache, "Failed to parse fstab: %m");
+-        return cache;
+-}
+-
+ static bool slash_boot_exists(void) {
+         static int cache = -1;
+ 
+@@ -574,27 +542,16 @@ static int add_partition_esp(DissectedPartition *p, bool has_xbootldr) {
+          * Otherwise, if /efi/ is unused and empty (or missing), we'll take that.
+          * Otherwise, we do nothing. */
+         if (!has_xbootldr && slash_boot_exists()) {
+-                r = slash_boot_in_fstab();
++                r = path_is_busy("/boot");
+                 if (r < 0)
+                         return r;
+                 if (r == 0) {
+-                        r = path_is_busy("/boot");
+-                        if (r < 0)
+-                                return r;
+-                        if (r == 0) {
+-                                esp_path = "/boot";
+-                                id = "boot";
+-                        }
++                        esp_path = "/boot";
++                        id = "boot";
+                 }
+         }
+ 
+         if (!esp_path) {
+-                r = slash_efi_in_fstab();
+-                if (r < 0)
+-                        return r;
+-                if (r > 0)
+-                        return 0;
+-
+                 r = path_is_busy("/efi");
+                 if (r < 0)
+                         return r;
+@@ -781,6 +738,18 @@ static int process_loader_partitions(DissectedPartition *esp, DissectedPartition
+         assert(esp);
+         assert(xbootldr);
+ 
++        /* If any paths in fstab look similar to our favorite paths for ESP or XBOOTLDR, we just exit
++         * early. We also don't bother with cases where one is configured explicitly and the other shall be
++         * mounted automatically. */
++
++        r = fstab_has_mount_point_prefix_strv(STRV_MAKE("/boot", "/efi"));
++        if (r > 0) {
++                log_debug("Found mount entries in the /boot/ or /efi/ hierarchies in fstab, not generating ESP or XBOOTLDR mounts.");
++                return 0;
++        }
++        if (r < 0)
++                log_debug_errno(r, "Failed to check fstab existing paths, ignoring: %m");
++
+         if (!is_efi_boot()) {
+                 log_debug("Not an EFI boot, skipping loader partition UUID check.");
+                 goto mount;
+diff --git a/src/shared/fstab-util.c b/src/shared/fstab-util.c
+index efefd9a525..0a3b2ce5d3 100644
+--- a/src/shared/fstab-util.c
++++ b/src/shared/fstab-util.c
+@@ -105,6 +105,34 @@ static int fstab_is_same_node(const char *what_fstab, const char *path) {
+         return false;
+ }
+ 
++int fstab_has_mount_point_prefix_strv(char **prefixes) {
++        _cleanup_endmntent_ FILE *f = NULL;
++
++        assert(prefixes);
++
++        /* This function returns true if at least one entry in fstab has a mount point that starts with one
++         * of the passed prefixes. */
++
++        if (!fstab_enabled())
++                return false;
++
++        f = setmntent(fstab_path(), "re");
++        if (!f)
++                return errno == ENOENT ? false : -errno;
++
++        for (;;) {
++                struct mntent *me;
++
++                errno = 0;
++                me = getmntent(f);
++                if (!me)
++                        return errno != 0 ? -errno : false;
++
++                if (path_startswith_strv(me->mnt_dir, prefixes))
++                        return true;
++        }
++}
++
+ int fstab_is_mount_point_full(const char *where, const char *path) {
+         _cleanup_endmntent_ FILE *f = NULL;
+         int r;
+diff --git a/src/shared/fstab-util.h b/src/shared/fstab-util.h
+index c01b0b93d1..040f07670f 100644
+--- a/src/shared/fstab-util.h
++++ b/src/shared/fstab-util.h
+@@ -25,6 +25,8 @@ static inline int fstab_has_node(const char *path) {
+         return fstab_is_mount_point_full(NULL, path);
+ }
+ 
++int fstab_has_mount_point_prefix_strv(char **prefixes);
++
+ int fstab_filter_options(
+                 const char *opts,
+                 const char *names,
+

@@ -1,0 +1,239 @@
+From 7c1dd9e288047a69d4a6a6dd6585725410cfdadd Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Fri, 4 Oct 2024 21:05:21 +0200
+Subject: [PATCH] various: correct laccess() error check
+
+laccess is our own macro that uses RET_NERRNO.
+
+diff --git a/src/basic/os-util.c b/src/basic/os-util.c
+index 4eec2f6014..3f6a14f5d6 100644
+--- a/src/basic/os-util.c
++++ b/src/basic/os-util.c
+@@ -97,8 +97,9 @@ int path_is_extension_tree(ImageClass image_class, const char *path, const char
+         /* Does the path exist at all? If not, generate an error immediately. This is useful so that a missing root dir
+          * always results in -ENOENT, and we can properly distinguish the case where the whole root doesn't exist from
+          * the case where just the os-release file is missing. */
+-        if (laccess(path, F_OK) < 0)
+-                return -errno;
++        r = laccess(path, F_OK);
++        if (r < 0)
++                return r;
+ 
+         /* We use /usr/lib/extension-release.d/extension-release[.NAME] as flag for something being a system extension,
+          * /etc/extension-release.d/extension-release[.NAME] as flag for something being a system configuration, and finally,
+diff --git a/src/basic/path-lookup.c b/src/basic/path-lookup.c
+index 540256b73b..0166fdcb9d 100644
+--- a/src/basic/path-lookup.c
++++ b/src/basic/path-lookup.c
+@@ -904,6 +904,7 @@ char **env_generator_binary_paths(RuntimeScope runtime_scope) {
+ 
+ int find_portable_profile(const char *name, const char *unit, char **ret_path) {
+         const char *dot;
++        int r;
+ 
+         assert(name);
+         assert(ret_path);
+@@ -917,13 +918,13 @@ int find_portable_profile(const char *name, const char *unit, char **ret_path) {
+                 if (!joined)
+                         return -ENOMEM;
+ 
+-                if (laccess(joined, F_OK) >= 0) {
++                r = laccess(joined, F_OK);
++                if (r >= 0) {
+                         *ret_path = TAKE_PTR(joined);
+                         return 0;
+                 }
+-
+-                if (errno != ENOENT)
+-                        return -errno;
++                if (r != -ENOENT)
++                        return r;
+         }
+ 
+         return -ENOENT;
+diff --git a/src/coredump/coredump.c b/src/coredump/coredump.c
+index 4a01fea5f9..0da4a531f7 100644
+--- a/src/coredump/coredump.c
++++ b/src/coredump/coredump.c
+@@ -1525,8 +1525,9 @@ static int forward_coredump_to_container(Context *context) {
+ 
+                 pair[0] = safe_close(pair[0]);
+ 
+-                if (laccess("/run/systemd/coredump", W_OK) < 0) {
+-                        log_debug_errno(errno, "Cannot find coredump socket, exiting: %m");
++                r = laccess("/run/systemd/coredump", W_OK);
++                if (r < 0) {
++                        log_debug_errno(r, "Cannot find coredump socket, exiting: %m");
+                         _exit(EXIT_FAILURE);
+                 }
+ 
+diff --git a/src/home/homework-luks.c b/src/home/homework-luks.c
+index b859658f00..8ab8dd8cbd 100644
+--- a/src/home/homework-luks.c
++++ b/src/home/homework-luks.c
+@@ -1997,11 +1997,11 @@ static int wait_for_devlink(const char *path) {
+                 _cleanup_free_ char *dn = NULL;
+                 usec_t w;
+ 
+-                if (laccess(path, F_OK) < 0) {
+-                        if (errno != ENOENT)
+-                                return log_error_errno(errno, "Failed to determine whether %s exists: %m", path);
+-                } else
++                r = laccess(path, F_OK);
++                if (r >= 0)
+                         return 0; /* Found it */
++                if (r != -ENOENT)
++                        return log_error_errno(r, "Failed to determine whether %s exists: %m", path);
+ 
+                 if (inotify_fd < 0) {
+                         /* We need to wait for the device symlink to show up, let's create an inotify watch for it */
+diff --git a/src/kernel-install/kernel-install.c b/src/kernel-install/kernel-install.c
+index a937d03166..bb646515d0 100644
+--- a/src/kernel-install/kernel-install.c
++++ b/src/kernel-install/kernel-install.c
+@@ -1111,12 +1111,10 @@ static int kernel_from_version(const char *version, char **ret_kernel) {
+                 return log_oom();
+ 
+         r = laccess(vmlinuz, F_OK);
+-        if (r < 0) {
+-                if (r == -ENOENT)
+-                        return log_error_errno(r, "Kernel image not installed to '%s', requiring manual kernel image path specification.", vmlinuz);
+-
++        if (r == -ENOENT)
++                return log_error_errno(r, "Kernel image not installed to '%s', requiring manual kernel image path specification.", vmlinuz);
++        if (r < 0)
+                 return log_error_errno(r, "Failed to determine if kernel image is installed to '%s': %m", vmlinuz);
+-        }
+ 
+         *ret_kernel = TAKE_PTR(vmlinuz);
+         return 0;
+diff --git a/src/libsystemd/sd-daemon/sd-daemon.c b/src/libsystemd/sd-daemon/sd-daemon.c
+index 4945d82150..82e677b215 100644
+--- a/src/libsystemd/sd-daemon/sd-daemon.c
++++ b/src/libsystemd/sd-daemon/sd-daemon.c
+@@ -738,17 +738,18 @@ _public_ int sd_pid_notifyf_with_fds(
+ }
+ 
+ _public_ int sd_booted(void) {
+-        /* We test whether the runtime unit file directory has been
+-         * created. This takes place in mount-setup.c, so is
+-         * guaranteed to happen very early during boot. */
++        int r;
+ 
+-        if (laccess("/run/systemd/system/", F_OK) >= 0)
+-                return true;
++        /* We test whether the runtime unit file directory has been created. This takes place in mount-setup.c,
++         * so is guaranteed to happen very early during boot. */
+ 
+-        if (errno == ENOENT)
++        r = laccess("/run/systemd/system/", F_OK);
++        if (r >= 0)
++                return true;
++        if (r == -ENOENT)
+                 return false;
+ 
+-        return -errno;
++        return r;
+ }
+ 
+ _public_ int sd_watchdog_enabled(int unset_environment, uint64_t *usec) {
+diff --git a/src/shared/condition.c b/src/shared/condition.c
+index da5c6f6309..401a1feb3c 100644
+--- a/src/shared/condition.c
++++ b/src/shared/condition.c
+@@ -169,10 +169,11 @@ static int condition_test_credential(Condition *c, char **env) {
+                 if (!j)
+                         return -ENOMEM;
+ 
+-                if (laccess(j, F_OK) >= 0)
++                r = laccess(j, F_OK);
++                if (r >= 0)
+                         return true; /* yay! */
+-                if (errno != ENOENT)
+-                        return -errno;
++                if (r != -ENOENT)
++                        return r;
+ 
+                 /* not found in this dir */
+         }
+diff --git a/src/shared/mount-util.c b/src/shared/mount-util.c
+index d98df3809d..cf45791c12 100644
+--- a/src/shared/mount-util.c
++++ b/src/shared/mount-util.c
+@@ -427,8 +427,9 @@ int bind_remount_one_with_mountinfo(
+ 
+         fs = mnt_table_find_target(table, path, MNT_ITER_FORWARD);
+         if (!fs) {
+-                if (laccess(path, F_OK) < 0) /* Hmm, it's not in the mount table, but does it exist at all? */
+-                        return -errno;
++                r = laccess(path, F_OK); /* Hmm, it's not in the mount table, but does it exist at all? */
++                if (r < 0)
++                        return r;
+ 
+                 return -EINVAL; /* Not a mount point we recognize */
+         }
+diff --git a/src/sysext/sysext.c b/src/sysext/sysext.c
+index b40f5b7b47..de52a14d0d 100644
+--- a/src/sysext/sysext.c
++++ b/src/sysext/sysext.c
+@@ -1760,13 +1760,11 @@ static int merge_subprocess(
+                 if (!p)
+                         return log_oom();
+ 
+-                if (laccess(p, F_OK) < 0) {
+-                        if (errno != ENOENT)
+-                                return log_error_errno(errno, "Failed to check if '%s' exists: %m", p);
+-
+-                        /* Hierarchy apparently was empty in all extensions, and wasn't mounted, ignoring. */
++                r = laccess(p, F_OK);
++                if (r == -ENOENT) /* Hierarchy apparently was empty in all extensions, and wasn't mounted, ignoring. */
+                         continue;
+-                }
++                if (r < 0)
++                        return log_error_errno(r, "Failed to check if '%s' exists: %m", p);
+ 
+                 r = chase(*h, arg_root, CHASE_PREFIX_ROOT|CHASE_NONEXISTENT, &resolved, NULL);
+                 if (r < 0)
+diff --git a/src/system-update-generator/system-update-generator.c b/src/system-update-generator/system-update-generator.c
+index a1782d5c05..d884530674 100644
+--- a/src/system-update-generator/system-update-generator.c
++++ b/src/system-update-generator/system-update-generator.c
+@@ -20,22 +20,26 @@
+ static const char *arg_dest = NULL;
+ 
+ static int generate_symlink(void) {
++        int r;
++
+         FOREACH_STRING(p, "/system-update", "/etc/system-update") {
+-                if (laccess(p, F_OK) >= 0) {
+-                        _cleanup_free_ char *j = NULL;
++                r = laccess(p, F_OK);
++                if (r < 0) {
++                        if (r != -ENOENT)
++                                log_warning_errno(r, "Failed to check if %s symlink exists, ignoring: %m", p);
++                        continue;
++                }
+ 
+-                        j = path_join(arg_dest, SPECIAL_DEFAULT_TARGET);
+-                        if (!j)
+-                                return log_oom();
++                _cleanup_free_ char *j = NULL;
+ 
+-                        if (symlink(SYSTEM_DATA_UNIT_DIR "/system-update.target", j) < 0)
+-                                return log_error_errno(errno, "Failed to create symlink %s: %m", j);
++                j = path_join(arg_dest, SPECIAL_DEFAULT_TARGET);
++                if (!j)
++                        return log_oom();
+ 
+-                        return 1;
+-                }
++                if (symlink(SYSTEM_DATA_UNIT_DIR "/system-update.target", j) < 0)
++                        return log_error_errno(errno, "Failed to create symlink %s: %m", j);
+ 
+-                if (errno != ENOENT)
+-                        log_warning_errno(errno, "Failed to check if %s symlink exists, ignoring: %m", p);
++                return 1;
+         }
+ 
+         return 0;
+

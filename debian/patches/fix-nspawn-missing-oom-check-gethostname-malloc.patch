@@ -1,0 +1,25 @@
+From 710dcce13f547e09c8108d97534a93a04a1c20e2 Mon Sep 17 00:00:00 2001
+From: Sam Leonard <sam.leonard@codethink.co.uk>
+Date: Tue, 30 Jan 2024 13:05:38 +0000
+Subject: [PATCH] nspawn: add missing OOM check on gethostname_malloc()
+
+
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+index 6cf2fd1ff5..ae5172853b 100644
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -3049,9 +3049,11 @@ static int determine_names(void) {
+         }
+ 
+         if (!arg_machine) {
+-                if (arg_directory && path_equal(arg_directory, "/"))
++                if (arg_directory && path_equal(arg_directory, "/")) {
+                         arg_machine = gethostname_malloc();
+-                else if (arg_image) {
++                        if (!arg_machine)
++                                return log_oom();
++                } else if (arg_image) {
+                         char *e;
+ 
+                         r = path_extract_filename(arg_image, &arg_machine);
+

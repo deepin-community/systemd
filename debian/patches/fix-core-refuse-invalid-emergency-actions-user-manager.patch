@@ -1,0 +1,80 @@
+From 2a2d9539f08fde4436048ba449d50ce75f1f0624 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 18 May 2024 02:07:34 +0900
+Subject: [PATCH] core: refuse invalid emergency actions for SuccessAction= and
+ friends in user service manager
+
+Especially, soft-reboot is not supported by user service manager.
+
+Fixes a bug in 13ffc60749df0ca7c76cfcac317b41a05679b364 and
+3cf848f6cd2151ccff89073bffb102f966d64ced.
+
+Index: repo/man/systemd.unit.xml
+===================================================================
+--- repo.orig/man/systemd.unit.xml
++++ repo/man/systemd.unit.xml
+@@ -1067,9 +1067,8 @@
+         <option>exit-force</option>, <option>soft-reboot</option>, <option>soft-reboot-force</option>,
+         <option>kexec</option>, <option>kexec-force</option>, <option>halt</option>,
+         <option>halt-force</option> and <option>halt-immediate</option>. In system mode, all options are
+-        allowed. In user mode, only <option>none</option>, <option>exit</option>,
+-        <option>exit-force</option>, <option>soft-reboot</option> and <option>soft-reboot-force</option> are
+-        allowed. Both options default to <option>none</option>.</para>
++        allowed. In user mode, only <option>none</option>, <option>exit</option>, and
++        <option>exit-force</option> are allowed. Both options default to <option>none</option>.</para>
+ 
+         <para>If <option>none</option> is set, no action will be triggered. <option>reboot</option> causes a
+         reboot following the normal shutdown procedure (i.e. equivalent to <command>systemctl
+Index: repo/src/core/emergency-action.c
+===================================================================
+--- repo.orig/src/core/emergency-action.c
++++ repo/src/core/emergency-action.c
+@@ -14,14 +14,14 @@
+ 
+ static const char* const emergency_action_table[_EMERGENCY_ACTION_MAX] = {
+         [EMERGENCY_ACTION_NONE] =               "none",
++        [EMERGENCY_ACTION_EXIT] =               "exit",
++        [EMERGENCY_ACTION_EXIT_FORCE] =         "exit-force",
+         [EMERGENCY_ACTION_REBOOT] =             "reboot",
+         [EMERGENCY_ACTION_REBOOT_FORCE] =       "reboot-force",
+         [EMERGENCY_ACTION_REBOOT_IMMEDIATE] =   "reboot-immediate",
+         [EMERGENCY_ACTION_POWEROFF] =           "poweroff",
+         [EMERGENCY_ACTION_POWEROFF_FORCE] =     "poweroff-force",
+         [EMERGENCY_ACTION_POWEROFF_IMMEDIATE] = "poweroff-immediate",
+-        [EMERGENCY_ACTION_EXIT] =               "exit",
+-        [EMERGENCY_ACTION_EXIT_FORCE] =         "exit-force",
+         [EMERGENCY_ACTION_SOFT_REBOOT] =        "soft-reboot",
+         [EMERGENCY_ACTION_SOFT_REBOOT_FORCE] =  "soft-reboot-force",
+         [EMERGENCY_ACTION_KEXEC] =              "kexec",
+@@ -216,7 +216,7 @@ int parse_emergency_action(
+         if (x < 0)
+                 return -EINVAL;
+ 
+-        if (runtime_scope != RUNTIME_SCOPE_SYSTEM && x != EMERGENCY_ACTION_NONE && x < _EMERGENCY_ACTION_FIRST_USER_ACTION)
++        if (runtime_scope != RUNTIME_SCOPE_SYSTEM && x > _EMERGENCY_ACTION_LAST_USER_ACTION)
+                 return -EOPNOTSUPP;
+ 
+         *ret = x;
+Index: repo/src/core/emergency-action.h
+===================================================================
+--- repo.orig/src/core/emergency-action.h
++++ repo/src/core/emergency-action.h
+@@ -7,15 +7,15 @@
+ 
+ typedef enum EmergencyAction {
+         EMERGENCY_ACTION_NONE,
++        EMERGENCY_ACTION_EXIT,
++        EMERGENCY_ACTION_EXIT_FORCE,
++        _EMERGENCY_ACTION_LAST_USER_ACTION = EMERGENCY_ACTION_EXIT_FORCE,
+         EMERGENCY_ACTION_REBOOT,
+         EMERGENCY_ACTION_REBOOT_FORCE,
+         EMERGENCY_ACTION_REBOOT_IMMEDIATE,
+         EMERGENCY_ACTION_POWEROFF,
+         EMERGENCY_ACTION_POWEROFF_FORCE,
+         EMERGENCY_ACTION_POWEROFF_IMMEDIATE,
+-        EMERGENCY_ACTION_EXIT,
+-        _EMERGENCY_ACTION_FIRST_USER_ACTION = EMERGENCY_ACTION_EXIT,
+-        EMERGENCY_ACTION_EXIT_FORCE,
+         EMERGENCY_ACTION_SOFT_REBOOT,
+         EMERGENCY_ACTION_SOFT_REBOOT_FORCE,
+         EMERGENCY_ACTION_KEXEC,

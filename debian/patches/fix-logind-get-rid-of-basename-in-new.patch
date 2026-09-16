@@ -1,0 +1,105 @@
+From c1f04b83c1c03ecc4f373fa05d5b1da7e65b89e9 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Sat, 2 Mar 2024 23:46:00 +0800
+Subject: [PATCH] logind-{session,seat}: get rid of basename() in _new()
+
+
+diff --git a/src/login/logind-seat.c b/src/login/logind-seat.c
+index 21f2c1ddd8..bed1f7db03 100644
+--- a/src/login/logind-seat.c
++++ b/src/login/logind-seat.c
+@@ -42,14 +42,12 @@ int seat_new(Manager *m, const char *id, Seat **ret) {
+ 
+         *s = (Seat) {
+                 .manager = m,
++                .id = strdup(id),
++                .state_file = path_join("/run/systemd/seats/", id),
+         };
+-
+-        s->state_file = path_join("/run/systemd/seats", id);
+-        if (!s->state_file)
++        if (!s->id || !s->state_file)
+                 return -ENOMEM;
+ 
+-        s->id = basename(s->state_file);
+-
+         r = hashmap_put(m->seats, s->id, s);
+         if (r < 0)
+                 return r;
+@@ -77,6 +75,7 @@ Seat* seat_free(Seat *s) {
+ 
+         free(s->positions);
+         free(s->state_file);
++        free(s->id);
+ 
+         return mfree(s);
+ }
+diff --git a/src/login/logind-session.c b/src/login/logind-session.c
+index a0dc6265b7..2713215e10 100644
+--- a/src/login/logind-session.c
++++ b/src/login/logind-session.c
+@@ -63,19 +63,17 @@ int session_new(Manager *m, const char *id, Session **ret) {
+ 
+         *s = (Session) {
+                 .manager = m,
++                .id = strdup(id),
++                .state_file = path_join("/run/systemd/sessions/", id),
+                 .fifo_fd = -EBADF,
+                 .vtfd = -EBADF,
+                 .audit_id = AUDIT_SESSION_INVALID,
+                 .tty_validity = _TTY_VALIDITY_INVALID,
+                 .leader = PIDREF_NULL,
+         };
+-
+-        s->state_file = path_join("/run/systemd/sessions", id);
+-        if (!s->state_file)
++        if (!s->id || !s->state_file)
+                 return -ENOMEM;
+ 
+-        s->id = basename(s->state_file);
+-
+         s->devices = hashmap_new(&devt_hash_ops);
+         if (!s->devices)
+                 return -ENOMEM;
+@@ -146,10 +144,12 @@ Session* session_free(Session *s) {
+         if (!s)
+                 return NULL;
+ 
++        sd_event_source_unref(s->stop_on_idle_event_source);
++
+         if (s->in_gc_queue)
+                 LIST_REMOVE(gc_queue, s->manager->session_gc_queue, s);
+ 
+-        s->timer_event_source = sd_event_source_unref(s->timer_event_source);
++        sd_event_source_unref(s->timer_event_source);
+ 
+         session_drop_controller(s);
+ 
+@@ -203,10 +203,9 @@ Session* session_free(Session *s) {
+ 
+         /* Note that we remove neither the state file nor the fifo path here, since we want both to survive
+          * daemon restarts */
+-        free(s->state_file);
+         free(s->fifo_path);
+-
+-        sd_event_source_unref(s->stop_on_idle_event_source);
++        free(s->state_file);
++        free(s->id);
+ 
+         return mfree(s);
+ }
+diff --git a/src/login/logind-session.h b/src/login/logind-session.h
+index 0b84e043fd..c187bcd779 100644
+--- a/src/login/logind-session.h
++++ b/src/login/logind-session.h
+@@ -95,7 +95,8 @@ typedef enum TTYValidity {
+ struct Session {
+         Manager *manager;
+ 
+-        const char *id;
++        char *id;
++
+         unsigned position;
+         SessionType type;
+         SessionType original_type;
+

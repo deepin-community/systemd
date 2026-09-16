@@ -1,0 +1,27 @@
+From 37143fdf5a354123a9dca46ca690e7792d30bee9 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 23 May 2024 00:03:42 +0900
+Subject: [PATCH] units: stop systemd-journald before
+ systemd-soft-reboot.service
+
+Typically, soft-reboot.target is never reached. So, without this change,
+systemd-journald may be killed by PID1 on soft-reboot, and may cause
+journal corruption.
+
+diff --git a/units/systemd-journald.service.in b/units/systemd-journald.service.in
+index 2b340f4ea7..96362f5730 100644
+--- a/units/systemd-journald.service.in
++++ b/units/systemd-journald.service.in
+@@ -17,7 +17,10 @@ Before=sysinit.target
+ 
+ # To avoid journald SIGKILLed during soft-reboot and corrupting journals.
+ # See https://github.com/systemd/systemd/issues/30195
+-Before=soft-reboot.target
++# Note, typically soft-reboot.target will be never reached,
++# and systemd-soft-reboot.service will trigger soft-reboot.
++# Hence, this must be stopped before systemd-soft-reboot.service.
++Before=soft-reboot.target systemd-soft-reboot.service
+ Conflicts=soft-reboot.target
+ 
+ # Mount and swap units need the journal socket units. If they were removed by
+

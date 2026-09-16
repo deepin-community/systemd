@@ -1,0 +1,21 @@
+From 087065424160a4071920a6558ab6e0dbfe6dacf3 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 27 May 2024 12:03:35 +0200
+Subject: [PATCH] machined: use pidref instead of just pid when determining
+ unit of pid when registering machine
+
+
+diff --git a/src/machine/machined-dbus.c b/src/machine/machined-dbus.c
+index 6fe1206d64..da64095d37 100644
+--- a/src/machine/machined-dbus.c
++++ b/src/machine/machined-dbus.c
+@@ -390,7 +390,7 @@ static int method_register_machine_internal(sd_bus_message *message, bool read_n
+         if (r < 0)
+                 return r;
+ 
+-        r = cg_pid_get_unit(m->leader.pid, &m->unit);
++        r = cg_pidref_get_unit(&m->leader, &m->unit);
+         if (r < 0) {
+                 r = sd_bus_error_set_errnof(error, r,
+                                             "Failed to determine unit of process "PID_FMT" : %m",
+

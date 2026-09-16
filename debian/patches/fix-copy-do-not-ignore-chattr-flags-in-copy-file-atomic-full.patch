@@ -1,0 +1,21 @@
+From 738ad08b0db11d7e66c14ff4b9852cf16abf3aa9 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 8 Feb 2024 15:59:48 +0900
+Subject: [PATCH] copy: do not ignore chattr_flags and friends passed to
+ copy_file_atomic_full()
+
+Fixes a bug introduced by 427d9c34e61a8f5bfe369f1d5a0426143fe5741e.
+
+Index: repo/src/shared/copy.h
+===================================================================
+--- repo.orig/src/shared/copy.h
++++ repo/src/shared/copy.h
+@@ -70,7 +70,7 @@ static inline int copy_file_atomic_at(in
+         return copy_file_atomic_at_full(dir_fdf, from, dir_fdt, to, mode, 0, 0, copy_flags, NULL, NULL);
+ }
+ static inline int copy_file_atomic_full(const char *from, const char *to, mode_t mode, unsigned chattr_flags, unsigned chattr_mask, CopyFlags copy_flags, copy_progress_bytes_t progress, void *userdata) {
+-        return copy_file_atomic_at_full(AT_FDCWD, from, AT_FDCWD, to, mode, 0, 0, copy_flags, NULL, NULL);
++        return copy_file_atomic_at_full(AT_FDCWD, from, AT_FDCWD, to, mode, chattr_flags, chattr_mask, copy_flags, progress, userdata);
+ }
+ static inline int copy_file_atomic(const char *from, const char *to, mode_t mode, CopyFlags copy_flags) {
+         return copy_file_atomic_full(from, to, mode, 0, 0, copy_flags, NULL, NULL);
