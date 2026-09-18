@@ -7,6 +7,44 @@ Skip over them when validating a message against the IDL.
 
 Add test case that tests this.
 
+[Backport note for deepin (systemd 255.2): upstream commit fbb69c0306d4 and
+its follow-ups introduce comment-embedding into IDL structures, storing
+comments as _VARLINK_FIELD_COMMENT fields, and this commit then teaches
+message validation to skip those fields. That feature is not present in
+v255, whose parser already skips comments at the interface and symbol level.
+The validator hunks are therefore not applicable; instead, teach
+varlink_idl_subparse_struct_or_enum() to accept and skip comments inside
+struct/enum field lists, which is the minimal prerequisite for the upstream
+test case added below.]
+
+diff --git a/src/shared/varlink-idl.c b/src/shared/varlink-idl.c
+index 655324c6..0519a863 100644
+--- a/src/shared/varlink-idl.c
++++ b/src/shared/varlink-idl.c
+@@ -730,3 +730,3 @@ static int varlink_idl_subparse_struct_or_enum(
+                         state = STATE_NAME;
+-                        allowed_delimiters = ")";
++                        allowed_delimiters = ")#";
+                         allowed_chars = VALID_CHARS_IDENTIFIER;
+@@ -739,3 +739,7 @@ static int varlink_idl_subparse_struct_or_enum(
+                                 return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG), "%u:%u: Premature EOF.", *line, *column);
+-                        if (streq(token, ")"))
++                        if (streq(token, "#")) {
++                                r = varlink_idl_subparse_comment(p, line, column);
++                                if (r < 0)
++                                        return r;
++                        } else if (streq(token, ")"))
+                                 state = STATE_DONE;
+@@ -803,3 +807,3 @@ static int varlink_idl_subparse_struct_or_enum(
+                                         state = STATE_NAME;
+-                                        allowed_delimiters = NULL;
++                                        allowed_delimiters = "#";
+                                         allowed_chars = VALID_CHARS_IDENTIFIER;
+@@ -821,3 +825,3 @@ static int varlink_idl_subparse_struct_or_enum(
+                                 state = STATE_NAME;
+-                                allowed_delimiters = NULL;
++                                allowed_delimiters = "#";
+                                 allowed_chars = VALID_CHARS_IDENTIFIER;
 diff --git a/src/test/test-varlink-idl.c b/src/test/test-varlink-idl.c
 index c2be1dfec0..92a714b5bd 100644
 --- a/src/test/test-varlink-idl.c
