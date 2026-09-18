@@ -6,6 +6,10 @@
 export LC_ALL = C.UTF-8
 export DEB_CFLAGS_MAINT_APPEND = -ffat-lto-objects
 
+# Cache empty dpkg values too: GNU make 4.4 expands exported variables for
+# $(shell ...) children, otherwise empty build flags are repeatedly queried.
+dpkg_lazy_eval = $$(if $$(filter undefined,$$(origin DPKG_CACHE_$(1))),$$(eval DPKG_CACHE_$(1) := $$(shell $(2))))$$(value DPKG_CACHE_$(1))
+
 include /usr/share/dpkg/default.mk
 include /usr/share/debhelper/dh_package_notes/package-notes.mk
 
