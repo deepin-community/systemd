@@ -1,0 +1,42 @@
+From fd6506eb9a39ab2f7cfc7aed6532d8f80a504c44 Mon Sep 17 00:00:00 2001
+From: Nandakumar Raghavan <naraghavan@microsoft.com>
+Date: Thu, 19 Feb 2026 13:42:19 +0000
+Subject: [PATCH] repart: return 1 from probe_sector_size_prefer_ioctl() on
+ block device success
+
+probe_sector_size() returns 1 when it successfully determines the sector size,
+0 when falling back to the default. blockdev_get_sector_size() returns 0 on
+success. probe_sector_size_prefer_ioctl() was passing blockdev_get_sector_size()
+return value through directly, so caller is checking r > 0 to detect a
+successfully probed sector size never saw it for block devices.
+
+In context_load_partition_table(), this caused fs_secsz to stay at 4096 bytes
+even on 512-byte sector block devices, making verity hash partition sizes wrong
+unless --sector-size=512 was passed explicitly.
+
+Fix by returning 1 on success from the block device path to match probe_sector_size()
+convention.
+
+diff --git a/src/shared/dissect-image.c b/src/shared/dissect-image.c
+index eb4b6bd609..9b9c3af252 100644
+--- a/src/shared/dissect-image.c
++++ b/src/shared/dissect-image.c
+@@ -200,8 +200,15 @@ int probe_sector_size_prefer_ioctl(int fd, uint32_t *ret) {
+         if (fstat(fd, &st) < 0)
+                 return -errno;
+ 
+-        if (S_ISBLK(st.st_mode))
+-                return blockdev_get_sector_size(fd, ret);
++        if (S_ISBLK(st.st_mode)) {
++                int r;
++
++                r = blockdev_get_sector_size(fd, ret);
++                if (r < 0)
++                        return r;
++
++                return 1; /* indicate we *did* find it, like probe_sector_size() does */
++        }
+ 
+         return probe_sector_size(fd, ret);
+ }
+

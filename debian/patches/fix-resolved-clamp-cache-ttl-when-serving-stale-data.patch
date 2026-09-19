@@ -1,0 +1,58 @@
+From 9bb06d5cd675820f4219d0be69a54f4e51398710 Mon Sep 17 00:00:00 2001
+From: Christian Glombek <c.glombek@cosa.systems>
+Date: Mon, 24 Aug 2026 14:15:40 +0200
+Subject: [PATCH] resolved: only clamp cache TTLs when actually serving stale
+ data
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+dns_cache_lookup() computes each answer item's expiry ('until', also the
+basis of the SD_RESOLVED_CLAMP_TTL TTL patch) as "30s from now" whenever
+the caller did not pass SD_RESOLVED_NO_STALE — keyed on the lookup mode,
+not on whether the entry being returned is actually stale. That misfires
+in both directions:
+
+ * A fresh entry hit by a serve-stale retry (second transaction attempt
+   with StaleRetentionSec= set) has its TTL reported as 30s instead of
+   its real remaining TTL.
+
+ * A lookup that passes neither SD_RESOLVED_NO_STALE nor
+   SD_RESOLVED_CLAMP_TTL — as the mDNS browse path does for clients
+   that set no flags — leaves 'current' at 0, so every answer item's
+   expiry becomes the constant absolute time 30s after boot,
+   permanently in the past. The RFC 6762 section 5.2 cache maintenance
+   schedule that resolved-dns-browse-services.c derives from
+   item->until then degenerates to its already-expired fallback.
+
+Key the rewrite on the entry's actual staleness instead: an entry whose
+TTL has lapsed keeps reporting "30s from now", so clients don't hold on
+to stale data for long, and a fresh entry reports its real expiry. For
+lookups with SD_RESOLVED_NO_STALE set nothing changes: a stale entry
+already makes the whole chain miss, so every item returned in that mode
+is fresh.
+
+diff --git a/src/resolve/resolved-dns-cache.c b/src/resolve/resolved-dns-cache.c
+index ced1af6864..bf36434083 100644
+--- a/src/resolve/resolved-dns-cache.c
++++ b/src/resolve/resolved-dns-cache.c
+@@ -1089,9 +1089,16 @@ int dns_cache_lookup(
+                         dnssec_result = _DNSSEC_RESULT_INVALID;
+                 }
+ 
+-                /* If the question is being resolved using stale data, the clamp TTL will be set to CACHE_STALE_TTL_MAX_USEC. */
+-                usec_t until = FLAGS_SET(query_flags, SD_RESOLVED_NO_STALE) ? j->until_valid
+-                                                                            : usec_add(current, CACHE_STALE_TTL_MAX_USEC);
++                /* An entry served past its TTL expiry (possible only when SD_RESOLVED_NO_STALE is
++                 * unset, see above) reports its expiry as CACHE_STALE_TTL_MAX_USEC from now instead,
++                 * so that clients don't hold on to the stale data for longer than that. The clamp is
++                 * gated on SD_RESOLVED_CLAMP_TTL, its only consumer (see answer_add_clamp_ttl()),
++                 * which also guarantees 'current' is set here. An entry whose TTL has not expired
++                 * always reports its real expiry time, whether or not stale data was acceptable to
++                 * the caller — flag-less lookups (the mDNS browse path) thus always see cache
++                 * truth. */
++                usec_t until = FLAGS_SET(query_flags, SD_RESOLVED_CLAMP_TTL) && j->until_valid < current ?
++                               usec_add(current, CACHE_STALE_TTL_MAX_USEC) : j->until_valid;
+ 
+                 /* Append the answer RRs to our answer. Ideally we have the answer object, which we
+                  * preferably use. But if the cached entry was generated as "side-effect" of a reply,

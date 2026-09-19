@@ -1,0 +1,38 @@
+From f301d07ac6d7cceda367dcf6c423bcdfece8bd59 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Thu, 25 Jun 2026 11:30:25 +0800
+Subject: [PATCH] homed: fix home_unlocking_finish reporting success as failure
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In home_unlocking_finish(), the success path calls operation_result_unref()
+with the local variable r and the uninitialized error object. If either
+user_record_good_authentication() or home_save_record() fails (both are
+logged as "ignoring"), r is left negative and the D-Bus caller receives
+an error reply despite the home having been unlocked successfully.
+
+This causes PAM to reject the session even though the home directory is
+mounted and accessible.
+
+Fix by passing 0 and NULL — consistent with every other success path in
+the file (home_locking_finish(), home_activation_finish(), etc.).
+
+Signed-off-by: dongshengyuan <dongshengyuan@uniontech.com>
+
+diff --git a/src/home/homed-home.c b/src/home/homed-home.c
+index 012d65afc2..861106dd0f 100644
+--- a/src/home/homed-home.c
++++ b/src/home/homed-home.c
+@@ -1088,9 +1088,8 @@ static void home_unlocking_finish(Home *h, int ret, UserRecord *hr) {
+ 
+         log_debug("Unlocking operation of %s completed.", h->user_name);
+ 
+-        h->current_operation = operation_result_unref(h->current_operation, r, &error);
++        h->current_operation = operation_result_unref(h->current_operation, 0, NULL);
+         home_set_state(h, _HOME_STATE_INVALID);
+-        return;
+ }
+ 
+ static void home_authenticating_finish(Home *h, int ret, UserRecord *hr) {
+

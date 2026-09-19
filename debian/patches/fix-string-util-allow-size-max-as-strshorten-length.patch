@@ -1,0 +1,46 @@
+From d49dc7bbe7538567b1fe04f5d1e08f0376193ef6 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 6 Mar 2024 09:43:09 +0100
+Subject: [PATCH] string-util: allow taking SIZE_MAX as size to shorten to
+
+This is useful for two reasons:
+
+1. it addresses a potential overflow in a graceful way
+
+2. Gives callers the ability to just pass SIZE_MAX for a NOP
+
+Prompted by: #31341
+
+diff --git a/src/basic/string-util.c b/src/basic/string-util.c
+index 2aac588118..c1e7e6e622 100644
+--- a/src/basic/string-util.c
++++ b/src/basic/string-util.c
+@@ -620,6 +620,9 @@ char *cellescape(char *buf, size_t len, const char *s) {
+ char* strshorten(char *s, size_t l) {
+         assert(s);
+ 
++        if (l >= SIZE_MAX-1) /* Would not change anything */
++                return s;
++
+         if (strnlen(s, l+1) > l)
+                 s[l] = 0;
+ 
+diff --git a/src/test/test-string-util.c b/src/test/test-string-util.c
+index e78e299ed2..92f1083a4c 100644
+--- a/src/test/test-string-util.c
++++ b/src/test/test-string-util.c
+@@ -299,8 +299,13 @@ TEST(ascii_strlower) {
+ TEST(strshorten) {
+         char s[] = "foobar";
+ 
++        assert_se(strlen(strshorten(s, SIZE_MAX)) == 6);
++        assert_se(strlen(strshorten(s, SIZE_MAX-1)) == 6);
++        assert_se(strlen(strshorten(s, SIZE_MAX-2)) == 6);
+         assert_se(strlen(strshorten(s, 6)) == 6);
++        assert_se(strlen(strshorten(s, 7)) == 6);
+         assert_se(strlen(strshorten(s, 12)) == 6);
++        assert_se(strlen(strshorten(s, 5)) == 5);
+         assert_se(strlen(strshorten(s, 2)) == 2);
+         assert_se(strlen(strshorten(s, 0)) == 0);
+ }
+

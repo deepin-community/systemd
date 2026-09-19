@@ -1,0 +1,23 @@
+From a8b0b8482237cd3836b1365f4ee238ac4bf57be3 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 8 Feb 2024 05:47:03 +0900
+Subject: [PATCH] network/ndisc: fix use-of-uninitialized-value on failure path
+
+Fixes a bug in f44eebd1bab9327c5dd3a281196bd07192134d3b.
+
+Also slightly adjust log message.
+
+diff --git a/src/network/networkd-ndisc.c b/src/network/networkd-ndisc.c
+index c3be14c20f..dfcd400a52 100644
+--- a/src/network/networkd-ndisc.c
++++ b/src/network/networkd-ndisc.c
+@@ -526,7 +526,7 @@ static int ndisc_router_process_onlink_prefix(Link *link, sd_ndisc_router *rt) {
+         /* Prefix Information option does not have preference, hence we use the 'main' preference here */
+         r = sd_ndisc_router_get_preference(rt, &preference);
+         if (r < 0)
+-                log_link_warning_errno(link, r, "Failed to get default router preference from RA: %m");
++                return log_link_warning_errno(link, r, "Failed to get router preference from RA: %m");
+ 
+         r = route_new(&route);
+         if (r < 0)
+

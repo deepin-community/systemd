@@ -1,0 +1,23 @@
+From 6fb1698e3b3acbf691be62ad06bf15ba41324601 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 11 Jun 2026 10:18:33 +0900
+Subject: [PATCH] sd-netlink: fix use-after-free
+
+When a slot is disconnected, previously we tried to remove the slot from
+the hashmap with a wrong key. Hence, the pointer to the freed slot object
+remained in the hashmap.
+
+diff --git a/src/libsystemd/sd-netlink/netlink-slot.c b/src/libsystemd/sd-netlink/netlink-slot.c
+index f1e270de6a..f48ea05def 100644
+--- a/src/libsystemd/sd-netlink/netlink-slot.c
++++ b/src/libsystemd/sd-netlink/netlink-slot.c
+@@ -61,7 +61,7 @@ void netlink_slot_disconnect(sd_netlink_slot *slot, bool unref) {
+         switch (slot->type) {
+ 
+         case NETLINK_REPLY_CALLBACK:
+-                (void) hashmap_remove(nl->reply_callbacks, &slot->reply_callback.serial);
++                (void) hashmap_remove(nl->reply_callbacks, UINT32_TO_PTR(slot->reply_callback.serial));
+ 
+                 if (slot->reply_callback.timeout != USEC_INFINITY)
+                         prioq_remove(nl->reply_callbacks_prioq, &slot->reply_callback, &slot->reply_callback.prioq_idx);
+

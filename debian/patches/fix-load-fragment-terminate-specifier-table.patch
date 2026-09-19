@@ -1,0 +1,22 @@
+From 32b8065e876c6f89f55b1bb30eeb442d3921fb3a Mon Sep 17 00:00:00 2001
+From: Ronan Pigott <ronan@rjp.ie>
+Date: Sat, 14 Sep 2024 20:21:39 -0700
+Subject: [PATCH] load-fragment: terminate the specifier table (#34421)
+
+Otherwise an invalid specifier iterates over uninitialized data.
+
+Fixes a bug introduced by 0b40688d1830abc6f59b1f1f67eccd757c23eb09 (v254).
+
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+index 7cb8648743..d8fead1ca5 100644
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -2728,6 +2728,7 @@ int config_parse_environ(
+                 COMMON_CREDS_SPECIFIERS(ltype),
+                 { 'h', specifier_user_home,  NULL },
+                 { 's', specifier_user_shell, NULL },
++                {}
+         };
+ 
+         for (const char *p = rvalue;; ) {
+

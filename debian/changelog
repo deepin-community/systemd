@@ -1,3 +1,25 @@
+systemd (255.2-4deepin78) unstable; urgency=medium
+
+  * Integrate backport PRs #133–#354 (68 PRs included, 2 excluded)
+    from upstream systemd bug-fix and security-fix tracking. All
+    changes confined to debian/patches/ (68 new quilt patches +
+    series), upstream source tree untouched.
+  * Replaced fix-byte-order-conversion.patch with
+    fix-journal-byte-order-conversion-journal-file-append-data.patch
+    (same fix, more descriptive patch name).
+  * Build fixes applied in patches: #154 (image_policy designator
+    function declaration), #174 (varlink sensitive data logging),
+    #169 (nspawn --chdir API VFS path check), #155 (timedated clock
+    change overflow), #229 (gpt-auto-generator image policy).
+  * Excluded (covered): #139 (covered by #138, duplicate
+    netlink-slot.c change), #179 (covered by existing patch
+    fix-dbus-skip-flush-when-bus-not-running.patch in prior batch).
+  * Tests: 1232/1255 passed, 3 dmidecode tests fail due to missing
+    dmidecode-dumps/ test data (not in repo, pre-existing
+    environmental failure), 22 skipped.
+
+ -- lensup-merger <noreply@github.com>  Thu, 18 Sep 2026 18:00:00 +0800
+
 systemd (255.2-4deepin77) unstable; urgency=medium
 
   * rules: cache empty dpkg values to avoid repeated build-flag queries

@@ -1,0 +1,62 @@
+From e61ac7cd2731336f8bfb8d68dc492cc3178f4c54 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Mon, 18 May 2026 08:40:44 +0900
+Subject: [PATCH] network/address: drop duplicated address earlier
+
+network_adjust_dhcp_server() searches network->addresses_by_section,
+hence without this change, an address entry picked by
+network_adjust_dhcp_server() may be detached and freed by the cleanup
+function.
+
+Backport note: the diff is adapted to the 255.x tree, which predates the
+upstream address_detach()/duplicated_addresses refactoring. Instead of
+freeing duplicated entries immediately inside the loop, they are now
+collected in a set and detached (address_free() drops the entry from
+addresses_by_section) and freed right after the loop, before
+network_adjust_dhcp_server() searches network->addresses_by_section,
+matching the upstream post-fix structure and closing the same dangling
+pointer path via network->dhcp_server_address.
+
+diff --git a/src/network/networkd-address.c b/src/network/networkd-address.c
+diff --git a/src/network/networkd-address.c b/src/network/networkd-address.c
+index 0e4d87b..63d4023 100644
+--- a/src/network/networkd-address.c
++++ b/src/network/networkd-address.c
+@@ -2483,7 +2483,7 @@ int address_section_verify(Address *address) {
+ }
+ 
+ int network_drop_invalid_addresses(Network *network) {
+-        _cleanup_set_free_ Set *addresses = NULL;
++        _cleanup_set_free_ Set *addresses = NULL, *duplicated_addresses = NULL;
+         Address *address;
+         int r;
+ 
+@@ -2508,8 +2508,14 @@ int network_drop_invalid_addresses(Network *network) {
+                                     IN_ADDR_PREFIX_TO_STRING(address->family, &address->in_addr, address->prefixlen),
+                                     address->section->line,
+                                     dup->section->line, dup->section->line);
+-                        /* address_free() will drop the address from addresses_by_section. */
+-                        address_free(dup);
++
++                        /* Do not call address_free() for 'dup' now, as we can remove only the current
++                         * entry in the loop. The duplicated addresses are detached and freed later,
++                         * before network_adjust_dhcp_server() searches network->addresses_by_section. */
++                        r = set_ensure_put(&duplicated_addresses, NULL, dup);
++                        if (r < 0)
++                                return log_oom();
++                        assert(r > 0);
+                 }
+ 
+                 /* Use address_hash_ops, instead of address_hash_ops_free. Otherwise, the Address objects
+@@ -2520,6 +2526,11 @@ int network_drop_invalid_addresses(Network *network) {
+                 assert(r > 0);
+         }
+ 
++        /* Detach duplicated entries now, before network_adjust_dhcp_server() searches
++         * network->addresses_by_section, so that it cannot pick an address entry that would
++         * be detached and freed by the cleanup function. */
++        duplicated_addresses = set_free_with_destructor(duplicated_addresses, address_free);
++
+         r = network_adjust_dhcp_server(network, &addresses);
+         if (r < 0)
+                 return r;

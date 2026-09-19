@@ -1,0 +1,36 @@
+From 3db1e6a8743cd77a4dbbec755ece010eb08e3d86 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sun, 14 Jan 2024 09:40:27 +0900
+Subject: [PATCH] resolve: on_transaction_stream_error() may free multiple
+ transactions
+
+Fixes #30928.
+
+diff --git a/src/resolve/resolved-dns-transaction.c b/src/resolve/resolved-dns-transaction.c
+index 307630f3c7..a99f8e8a58 100644
+--- a/src/resolve/resolved-dns-transaction.c
++++ b/src/resolve/resolved-dns-transaction.c
+@@ -638,9 +638,20 @@ static int on_stream_complete(DnsStream *s, int error) {
+                 }
+         }
+ 
+-        if (error != 0)
+-                LIST_FOREACH(transactions_by_stream, t, s->transactions)
++        if (error != 0) {
++                /* First, detach the stream from the server. Otherwise, transactions attached to this stream
++                 * may be restarted by on_transaction_stream_error() below with this stream. */
++                dns_stream_detach(s);
++
++                /* Do not use LIST_FOREACH() here, as
++                 *     on_transaction_stream_error()
++                 *         -> dns_transaction_complete_errno()
++                 *             -> dns_transaction_free()
++                 * may free multiple transactions in the list. */
++                DnsTransaction *t;
++                while ((t = s->transactions))
+                         on_transaction_stream_error(t, error);
++        }
+ 
+         return 0;
+ }
+

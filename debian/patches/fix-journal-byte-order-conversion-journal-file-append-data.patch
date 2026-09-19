@@ -1,0 +1,31 @@
+From 98852876ddb8be48b9d2fbae43448a1392f55be4 Mon Sep 17 00:00:00 2001
+From: dongshengyuan <545258830@qq.com>
+Date: Fri, 12 Jun 2026 13:41:33 +0800
+Subject: [PATCH] journal: fix byte-order conversion in
+ journal_file_append_data()
+
+head_data_offset is declared as le64_t in journal-def.h, so it must be
+assigned with htole64(p), not le64toh(p). All other le64_t field
+assignments in this file (hash, next_hash_offset) consistently use
+htole64().
+
+On little-endian systems this makes no difference, but on big-endian
+systems the field->data link would be stored with incorrect byte order,
+corrupting journal file traversal.
+
+Assisted-by: claude-opus-4-8 <noreply@anthropic.com>
+
+diff --git a/src/libsystemd/sd-journal/journal-file.c b/src/libsystemd/sd-journal/journal-file.c
+index a4b270ceb7..bd8a4348bd 100644
+--- a/src/libsystemd/sd-journal/journal-file.c
++++ b/src/libsystemd/sd-journal/journal-file.c
+@@ -1915,7 +1915,7 @@ static int journal_file_append_data(
+ 
+         /* ... and link it in. */
+         o->data.next_field_offset = fo->field.head_data_offset;
+-        fo->field.head_data_offset = le64toh(p);
++        fo->field.head_data_offset = htole64(p);
+ 
+         if (ret_object)
+                 *ret_object = o;
+

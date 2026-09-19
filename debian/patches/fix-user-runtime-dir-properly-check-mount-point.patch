@@ -1,0 +1,20 @@
+From 561d8793058bba886d71f96fa157ca77cd6b5c23 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Mon, 5 Feb 2024 04:53:14 +0800
+Subject: [PATCH] login/user-runtime-dir: properly check for mount point
+
+
+diff --git a/src/login/user-runtime-dir.c b/src/login/user-runtime-dir.c
+index ed8a80e6ed..ad04b04df9 100644
+--- a/src/login/user-runtime-dir.c
++++ b/src/login/user-runtime-dir.c
+@@ -67,7 +67,7 @@ static int user_mkdir_runtime_path(
+         if (r < 0)
+                 return log_error_errno(r, "Failed to create /run/user: %m");
+ 
+-        if (path_is_mount_point(runtime_path, NULL, 0) >= 0)
++        if (path_is_mount_point(runtime_path, NULL, 0) > 0)
+                 log_debug("%s is already a mount point", runtime_path);
+         else {
+                 char options[sizeof("mode=0700,uid=,gid=,size=,nr_inodes=,smackfsroot=*")
+
