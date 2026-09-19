@@ -1,0 +1,32 @@
+From 332ecf40f24b291178ad370a448b6a5227700ae2 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 23 Feb 2026 13:25:17 +0100
+Subject: [PATCH] sd-netlink: pin reply slot while we execute callback
+
+The callback might drop the last ref to the slot object, and we still
+want to access it. Hence do what we usually do in these cases: keep an
+extra reference while processing the callback.
+
+diff --git a/src/libsystemd/sd-netlink/sd-netlink.c b/src/libsystemd/sd-netlink/sd-netlink.c
+index 2deb49557d..65d731a20b 100644
+--- a/src/libsystemd/sd-netlink/sd-netlink.c
++++ b/src/libsystemd/sd-netlink/sd-netlink.c
+@@ -331,7 +331,6 @@ static int process_timeout(sd_netlink *nl) {
+ 
+ static int process_reply(sd_netlink *nl, sd_netlink_message *m) {
+         struct reply_callback *c;
+-        sd_netlink_slot *slot;
+         uint32_t serial;
+         uint16_t type;
+         int r;
+@@ -354,7 +353,8 @@ static int process_reply(sd_netlink *nl, sd_netlink_message *m) {
+         if (type == NLMSG_DONE)
+                 m = NULL;
+ 
+-        slot = container_of(c, sd_netlink_slot, reply_callback);
++        _cleanup_(sd_netlink_slot_unrefp) sd_netlink_slot *slot =
++                sd_netlink_slot_ref(container_of(c, sd_netlink_slot, reply_callback));
+ 
+         r = c->callback(nl, m, slot->userdata);
+         if (r < 0)
+

@@ -1,0 +1,69 @@
+From 6ba147485e09de649d5b13e0c341688a04403d40 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 3 Jan 2024 04:19:33 +0900
+Subject: [PATCH] network/queue: fix potential double-free on oom
+
+Currently, link_queue_request_safe(), which is a wrapper of
+request_new(), is called with a free function at
+- link_request_stacked_netdev() at netdev/netdev.c,
+- link_request_address() at networkd-address.c,
+- link_request_nexthop() at networkd-nexthop.c,
+- link_request_neighbor() at networkd-networkd.c.
+
+For the netdev case, the reference counter of the passed object is increased
+only when the function returns 1. So, on failure (with -ENOMEM)
+previously we unexpectedly dropped the reference of the NetDev object.
+Similarly, for Address and friends, the ownership of the object is moved to the
+Request object only when the function returns 1. And on failure, previously
+the object was freed twice.
+
+Also, netdev_queue_request(), which is another wrapper of request_new()
+potentially leaks memory when the same NetDev object is queued twice.
+Fortunately, that should not happen as the function is called only once
+per object.
+
+This fixes the above issue, and now the ownership or the reference
+counter of the object is changed only when it is succeeded with 1.
+
+diff --git a/src/network/networkd-queue.c b/src/network/networkd-queue.c
+index 14cd3d93b7..6fafe42c0f 100644
+--- a/src/network/networkd-queue.c
++++ b/src/network/networkd-queue.c
+@@ -137,11 +137,8 @@ static int request_new(
+         assert(process);
+ 
+         req = new(Request, 1);
+-        if (!req) {
+-                if (free_func)
+-                        free_func(userdata);
++        if (!req)
+                 return -ENOMEM;
+-        }
+ 
+         *req = (Request) {
+                 .n_ref = 1,
+@@ -183,12 +180,19 @@ int netdev_queue_request(
+                 request_process_func_t process,
+                 Request **ret) {
+ 
++        int r;
++
+         assert(netdev);
+ 
+-        return request_new(netdev->manager, NULL, REQUEST_TYPE_NETDEV_INDEPENDENT,
+-                           netdev_ref(netdev), (mfree_func_t) netdev_unref,
+-                           trivial_hash_func, trivial_compare_func,
+-                           process, NULL, NULL, ret);
++        r = request_new(netdev->manager, NULL, REQUEST_TYPE_NETDEV_INDEPENDENT,
++                        netdev, (mfree_func_t) netdev_unref,
++                        trivial_hash_func, trivial_compare_func,
++                        process, NULL, NULL, ret);
++        if (r <= 0)
++                return r;
++
++        netdev_ref(netdev);
++        return 1;
+ }
+ 
+ int link_queue_request_full(
+

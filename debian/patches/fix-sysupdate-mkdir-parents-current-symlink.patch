@@ -1,0 +1,26 @@
+From 17adc2f6fd471df8516d5d8fb695890a40b1041e Mon Sep 17 00:00:00 2001
+From: Aleksa Sarai <aleksa@amutable.com>
+Date: Thu, 14 May 2026 17:15:06 +0700
+Subject: [PATCH] sysupdate: mkdir_parents CurrentSymlink= path
+
+This was missing in the CurrentSymlink= creation path, and leads to
+partially-broken update installs.
+
+Signed-off-by: Aleksa Sarai <aleksa@amutable.com>
+
+diff --git a/src/sysupdate/sysupdate-transfer.c b/src/sysupdate/sysupdate-transfer.c
+index 8db1c81962..27756298fa 100644
+--- a/src/sysupdate/sysupdate-transfer.c
++++ b/src/sysupdate/sysupdate-transfer.c
+@@ -1750,6 +1750,10 @@ int transfer_install_instance(
+                         if (r < 0)
+                                 return log_error_errno(r, "Failed to make symlink path '%s' relative to '%s': %m", link_target, parent);
+ 
++                        r = mkdir_parents(link_path, 0755);
++                        if (r < 0)
++                                return log_error_errno(r, "Failed to create directory for current symlink '%s': %m", link_path);
++
+                         r = symlink_atomic(relative, link_path);
+                         if (r < 0)
+                                 return log_error_errno(r, "Failed to update current symlink '%s' %s '%s': %m",
+

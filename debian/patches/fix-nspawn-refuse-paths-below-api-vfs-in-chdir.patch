@@ -1,0 +1,63 @@
+From f94025a13681e001011dd52e0dcecc143b4501b9 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 5 Feb 2024 17:10:40 +0100
+Subject: [PATCH] nspawn: also refuse paths below API VFS in nspawn's --chdir=
+ field
+
+Include the prerequisite helper commit 0fb08bd5e3097ecd79def22872ef3c522d2a3114
+("mountpoint-util: add small helper that checks if a path is below the API VFS
+hierarchies") so that path_below_api_vfs() is available on this branch.
+
+Upstream-PR: https://github.com/systemd/systemd/pull/31210
+
+Backport note: fix the 'dirctory' typo in the "Working directory path is not
+normalized" error message; upstream corrected it later.
+
+Index: systemd/src/shutdown/umount.c
+===================================================================
+--- systemd.orig/src/shutdown/umount.c
++++ systemd/src/shutdown/umount.c
+@@ -95,7 +95,7 @@ int mount_points_list_get(const char *mo
+                  * we might lack the rights to unmount these things, hence don't bother. */
+                 if (mount_point_is_api(path) ||
+                     mount_point_ignore(path) ||
+-                    PATH_STARTSWITH_SET(path, "/dev", "/sys", "/proc"))
++                    path_below_api_vfs(path))
+                         continue;
+ 
+                 is_api_vfs = fstype_is_api_vfs(fstype);
+Index: systemd/src/nspawn/nspawn.c
+===================================================================
+--- systemd.orig/src/nspawn/nspawn.c
++++ systemd/src/nspawn/nspawn.c
+@@ -1362,17 +1362,27 @@ static int parse_argv(int argc, char *ar
+ 
+                         break;
+ 
+-                case ARG_CHDIR:
++                case ARG_CHDIR: {
++                        _cleanup_free_ char *wd = NULL;
++
+                         if (!path_is_absolute(optarg))
+                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                        "Working directory %s is not an absolute path.", optarg);
+ 
+-                        r = free_and_strdup(&arg_chdir, optarg);
++                        r = path_simplify_alloc(optarg, &wd);
+                         if (r < 0)
+-                                return log_oom();
++                                return log_error_errno(r, "Failed to simplify path %s: %m", optarg);
++
++                        if (!path_is_normalized(wd))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Working directory path is not normalized: %s", wd);
++
++                        if (path_below_api_vfs(wd))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Working directory is below API VFS, refusing: %s", wd);
+ 
++                        free_and_replace(arg_chdir, wd);
+                         arg_settings_mask |= SETTING_WORKING_DIRECTORY;
+                         break;
++                }
+ 
+                 case ARG_PIVOT_ROOT:
+                         r = pivot_root_parse(&arg_pivot_root_new, &arg_pivot_root_old, optarg);

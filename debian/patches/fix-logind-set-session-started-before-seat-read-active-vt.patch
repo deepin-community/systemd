@@ -1,0 +1,51 @@
+From ce043cdfdb274b46cb7b18ebfaaebd94d7f856a0 Mon Sep 17 00:00:00 2001
+From: countgitmick <263313427+countgitmick@users.noreply.github.com>
+Date: Thu, 9 Apr 2026 00:53:03 -0700
+Subject: [PATCH] logind: set session->started before seat_read_active_vt()
+ call
+
+session_start() calls seat_read_active_vt() before setting
+s->started = true. seat_read_active_vt() can reach
+seat_triggered_uevents_done() synchronously via:
+
+  seat_active_vt_changed -> seat_set_active -> seat_trigger_devices
+  -> seat_triggered_uevents_done
+
+When seat_trigger_devices() produces no pending uevents,
+seat_triggered_uevents_done() runs in the same call stack as
+session_start() and tests session->started before the assignment
+further down. The check fails, session_device_resume_all() is
+skipped, and the compositor never receives DRM master.
+
+Set started before seat_read_active_vt() so the gate sees the
+correct value, and document the ordering constraint at the call
+site to prevent regression.
+
+Reproducible with greetd plus a Wayland compositor on the same VT
+on kernel 6.19+.
+
+Fixes: #41562
+Signed-off-by: countgitmick <263313427+countgitmick@users.noreply.github.com>
+
+diff --git a/src/login/logind-session.c b/src/login/logind-session.c
+index e62a5768da..f5fb479207 100644
+--- a/src/login/logind-session.c
++++ b/src/login/logind-session.c
+@@ -923,11 +923,14 @@ int session_start(Session *s, sd_bus_message *properties, sd_bus_error *error) {
+         if (!dual_timestamp_is_set(&s->timestamp))
+                 dual_timestamp_now(&s->timestamp);
+ 
++        /* Must be set before seat_read_active_vt(); the activation it
++         * triggers reaches seat_triggered_uevents_done() synchronously
++         * and gates session_device_resume_all() on s->started. */
++        s->started = true;
++
+         if (s->seat)
+                 seat_read_active_vt(s->seat);
+ 
+-        s->started = true;
+-
+         user_elect_display(s->user);
+ 
+         /* Save data */
+

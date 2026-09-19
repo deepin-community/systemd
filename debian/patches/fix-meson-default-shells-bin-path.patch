@@ -1,0 +1,58 @@
+From 5656c593cee0a811b896b2887af7efacb99f6adf Mon Sep 17 00:00:00 2001
+From: Eli Schwartz <eschwartz93@gmail.com>
+Date: Tue, 20 Feb 2024 21:59:13 -0500
+Subject: [PATCH] fix the value of default shells to use /bin and not /usr/bin
+
+Partially reverts commit b0d3095fd6cc1791a38f57a1982116b4475244ba.
+
+While it is generally worthwhile for systemd to drop split-usr support,
+these options are NOT about split-usr support. The universal location of
+POSIX sh is always /bin/sh. Bash is pretty reasonably standardized there
+too.
+
+This happens irrespective of /bin being a symlink to /usr/bin.
+Ramifications of this change include things like:
+
+- portably running shell scripts that might run very nearly anywhere
+- /etc/shells support
+
+For standardization and compatibility reasons, these commands with these
+paths need to be consistently found on any system, and thus distros make
+sure this works, although even on split-usr systems /usr/bin/bash may be
+a symlink to /bin/bash.
+
+Embedding the *access path* of bash as /usr/bin/bash in systemd, for
+example in libnss_systemd.so, means that login shells must agree with
+systemd on how they invoke the shell. End result: users fail to login
+because of access violations.
+
+This cannot be fixed by "fixing PAM" because PAM does not follow
+symlinks by design: one example is that it needs to treat rbash as
+different from bash.
+
+Fixes: https://bugs.gentoo.org/919749
+Signed-off-by: Eli Schwartz <eschwartz93@gmail.com>
+
+diff --git a/meson_options.txt b/meson_options.txt
+index e9a5f18cd6..3a3ab6e7c1 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -69,7 +69,7 @@ option('loadkeys-path', type : 'string', description : 'path to loadkeys')
+ option('setfont-path', type : 'string', description : 'path to setfont')
+ option('nologin-path', type : 'string', description : 'path to nologin')
+ 
+-option('debug-shell', type : 'string', value : '/usr/bin/sh',
++option('debug-shell', type : 'string', value : '/bin/sh',
+        description : 'path to debug shell binary')
+ option('debug-tty', type : 'string', value : '/dev/tty9',
+        description : 'specify the tty device for debug shell')
+@@ -240,7 +240,7 @@ option('time-epoch', type : 'integer', value : 0,
+        description : 'time epoch for time clients')
+ option('clock-valid-range-usec-max', type : 'integer', value : 473364000000000, # 15 years
+        description : 'maximum value in microseconds for the difference between RTC and epoch, exceeding which is considered an RTC error ["0" disables]')
+-option('default-user-shell', type : 'string', value : '/usr/bin/bash',
++option('default-user-shell', type : 'string', value : '/bin/bash',
+        description : 'default interactive shell')
+ 
+ option('system-alloc-uid-min', type : 'integer', value : 0,
+

@@ -1,0 +1,51 @@
+From 7195c668ce3a926bfbc41aa1a31a375a0b79fd9f Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Fri, 29 May 2026 14:47:41 +0100
+Subject: [PATCH] sysupdate: fix bogus return code
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+2026-05-29T13:44:48.7158429Z In file included from ../src/basic/../fundamental/assert-util.h:8,
+2026-05-29T13:44:48.7159224Z                  from ../src/basic/assert-util.h:4,
+2026-05-29T13:44:48.7159990Z                  from ../src/basic/basic-forward.h:17,
+2026-05-29T13:44:48.7160337Z                  from ../src/basic/alloc-util.h:6,
+2026-05-29T13:44:48.7161366Z                  from ../src/sysupdate/sysupdate-transfer.c:9:
+2026-05-29T13:44:48.7169020Z ../src/sysupdate/sysupdate-transfer.c: In function ‘transfer_acquire_instance’:
+2026-05-29T13:44:48.7169957Z ../src/basic/../fundamental/macro.h:190:37: error: ‘r’ may be used uninitialized [-Werror=maybe-uninitialized]
+2026-05-29T13:44:48.7170483Z   190 |                 default:            __builtin_llabs((long long) (a)))
+2026-05-29T13:44:48.7171001Z       |                                     ^~~~~~~~~~~~~~~
+2026-05-29T13:44:48.7171435Z ../src/basic/log.h:32:46: note: in expansion of macro ‘ABS’
+2026-05-29T13:44:48.7171800Z    32 | #define ERRNO_VALUE(val)                    (ABS(val) & ~(1 << 30))
+2026-05-29T13:44:48.7172134Z       |                                              ^~~
+2026-05-29T13:44:48.7172528Z ../src/basic/log.h:188:28: note: in expansion of macro ‘ERRNO_VALUE’
+2026-05-29T13:44:48.7173003Z   188 |                         : -ERRNO_VALUE(_e);                             \
+2026-05-29T13:44:48.7173317Z       |                            ^~~~~~~~~~~
+2026-05-29T13:44:48.7173779Z ../src/basic/log.h:208:17: note: in expansion of macro ‘log_full_errno_zerook’
+2026-05-29T13:44:48.7174204Z   208 |                 log_full_errno_zerook(level, (int)_error, __VA_ARGS__); \
+2026-05-29T13:44:48.7174528Z       |                 ^~~~~~~~~~~~~~~~~~~~~
+2026-05-29T13:44:48.7174917Z ../src/basic/log.h:233:41: note: in expansion of macro ‘log_full_errno’
+2026-05-29T13:44:48.7175401Z   233 | #define log_error_errno(error, ...)     log_full_errno(LOG_ERR,     error, __VA_ARGS__)
+2026-05-29T13:44:48.7175799Z       |                                         ^~~~~~~~~~~~~~
+2026-05-29T13:44:48.7176318Z ../src/sysupdate/sysupdate-transfer.c:1346:32: note: in expansion of macro ‘log_error_errno’
+2026-05-29T13:44:48.7176931Z  1346 |                         return log_error_errno(r, "SHA256 checksum not known for download '%s', refusing.", i->path);
+2026-05-29T13:44:48.7177514Z       |                                ^~~~~~~~~~~~~~~
+2026-05-29T13:44:48.7178157Z ../src/sysupdate/sysupdate-transfer.c:1270:13: note: ‘r’ was declared here
+2026-05-29T13:44:48.7178501Z  1270 |         int r;
+
+Follow-up for 43cc7a3ef4f6a89946e7ffd6a3112a0c1740b1ef
+
+diff --git a/src/sysupdate/sysupdate-transfer.c b/src/sysupdate/sysupdate-transfer.c
+index 27756298fa..bb98491592 100644
+--- a/src/sysupdate/sysupdate-transfer.c
++++ b/src/sysupdate/sysupdate-transfer.c
+@@ -1343,7 +1343,7 @@ int transfer_acquire_instance(Transfer *t, Instance *i, InstanceMetadata *f, Tra
+                  * download. */
+ 
+                 if (!i->metadata.sha256sum_set)
+-                        return log_error_errno(r, "SHA256 checksum not known for download '%s', refusing.", i->path);
++                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "SHA256 checksum not known for download '%s', refusing.", i->path);
+ 
+                 digest = hexmem(i->metadata.sha256sum, sizeof(i->metadata.sha256sum));
+                 if (!digest)
+

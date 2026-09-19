@@ -1,0 +1,30 @@
+From b22635083aaf937ffad11eddb55a4f1a837b6b0c Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Wed, 22 May 2024 15:42:56 +0200
+Subject: [PATCH] string-util: make sure strrepa() doesn't doubly evaluate
+ expressions
+
+
+diff --git a/src/basic/string-util.h b/src/basic/string-util.h
+index ff5efbcf55..a032ee8d6a 100644
+--- a/src/basic/string-util.h
++++ b/src/basic/string-util.h
+@@ -202,11 +202,14 @@ char *strrep(const char *s, unsigned n);
+ 
+ #define strrepa(s, n)                                           \
+         ({                                                      \
++                const char *_sss_ = (s);                        \
++                size_t _nnn_ = (n), _len_ = strlen(_sss_);      \
++                assert(!size_multiply_overflow(_len_, _nnn_));  \
++                _len_ *= _nnn_;                                 \
+                 char *_d_, *_p_;                                \
+-                size_t _len_ = strlen(s) * n;                   \
+                 _p_ = _d_ = newa(char, _len_ + 1);              \
+-                for (unsigned _i_ = 0; _i_ < n; _i_++)          \
+-                        _p_ = stpcpy(_p_, s);                   \
++                for (size_t _i_ = 0; _i_ < _nnn_; _i_++)        \
++                        _p_ = stpcpy(_p_, _sss_);               \
+                 *_p_ = 0;                                       \
+                 _d_;                                            \
+         })
+

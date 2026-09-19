@@ -1,0 +1,40 @@
+From f7012a93a7f04fa29c7933a4963aa17fcf120e97 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 1 Aug 2024 12:03:54 +0900
+Subject: [PATCH] import: check overflow
+
+Fixes CID#1548022 and CID#1548075.
+
+diff --git a/src/import/import-raw.c b/src/import/import-raw.c
+index ee9b297bfe..78775b96d6 100644
+--- a/src/import/import-raw.c
++++ b/src/import/import-raw.c
+@@ -409,6 +409,11 @@ static int raw_import_process(RawImport *i) {
+                 goto finish;
+         }
+ 
++        if ((size_t) l > sizeof(i->buffer) - i->buffer_size) {
++                r = log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Read input file exceeded maximum size.");
++                goto finish;
++        }
++
+         i->buffer_size += l;
+ 
+         if (i->compress.type == IMPORT_COMPRESS_UNKNOWN) {
+diff --git a/src/import/import-tar.c b/src/import/import-tar.c
+index 39df11b5ff..976c918246 100644
+--- a/src/import/import-tar.c
++++ b/src/import/import-tar.c
+@@ -276,6 +276,11 @@ static int tar_import_process(TarImport *i) {
+                 goto finish;
+         }
+ 
++        if ((size_t) l > sizeof(i->buffer) - i->buffer_size) {
++                r = log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Read input file exceeded maximum size.");
++                goto finish;
++        }
++
+         i->buffer_size += l;
+ 
+         if (i->compress.type == IMPORT_COMPRESS_UNKNOWN) {
+

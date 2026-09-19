@@ -1,0 +1,28 @@
+From 6e76281b2f4ca93fcb00fd08ba1a7584c087fe5d Mon Sep 17 00:00:00 2001
+From: noxiouz <atiurin@proton.me>
+Date: Mon, 6 Apr 2026 11:22:58 +0100
+Subject: [PATCH] journald-native: fix field-count limit off-by-one
+
+Reject entries once the configured maximum field count is reached.
+
+The previous check used n > ENTRY_FIELD_COUNT_MAX before appending a new field,
+which let one extra field through in boundary cases. Switch the check to
+n >= ENTRY_FIELD_COUNT_MAX so an entry at the limit is rejected before adding
+another property.
+
+Co-developed-by: Codex (GPT-5) <noreply@openai.com>
+
+diff --git a/src/journal/journald-native.c b/src/journal/journald-native.c
+index 1e2a872c6e..fade424ebc 100644
+--- a/src/journal/journald-native.c
++++ b/src/journal/journald-native.c
+@@ -146,7 +146,7 @@ static int manager_process_entry(
+                 }
+ 
+                 /* A property follows */
+-                if (n > ENTRY_FIELD_COUNT_MAX) {
++                if (n >= ENTRY_FIELD_COUNT_MAX) {
+                         log_debug("Received an entry that has more than " STRINGIFY(ENTRY_FIELD_COUNT_MAX) " fields, ignoring entry.");
+                         goto finish;
+                 }
+

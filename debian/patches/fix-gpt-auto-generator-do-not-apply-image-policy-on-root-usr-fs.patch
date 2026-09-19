@@ -1,8 +1,5 @@
-From 6d6538fb3f46b01dded23cc7eef5ed5ffe8b38e9 Mon Sep 17 00:00:00 2001
 From: Lennart Poettering <lennart@poettering.net>
-Date: Thu, 6 Mar 2025 09:38:25 +0100
-Subject: [PATCH] gpt-auto-generator: do not apply image policy on the root fs
- and /usr/ fs
+Subject: gpt-auto-generator: do not apply image policy on the root fs and /usr/ fs
 
 At the moment the gpt-auto generator does its things we already
 transitioned into the host OS, i.e. the root fs and /usr/ are mounted.
@@ -14,11 +11,75 @@ gpt-auto and hence would refuse operation claiming policy conflicts
 event though we never actually operate on the root fs via the dissection
 logic.
 
-diff --git a/src/gpt-auto-generator/gpt-auto-generator.c b/src/gpt-auto-generator/gpt-auto-generator.c
-index 0f7d089d1c..8a49948780 100644
+--- a/src/shared/image-policy.h
++++ b/src/shared/image-policy.h
+@@ -94,6 +94,8 @@
+ bool image_policy_equal(const ImagePolicy *a, const ImagePolicy *b);       /* checks if defined the same way, i.e. has literally the same ruleset */
+ int image_policy_equivalent(const ImagePolicy *a, const ImagePolicy *b);   /* checks if the outcome is the same, i.e. for all partitions results in the same decisions. */
+ 
++int image_policy_ignore_designators(const ImagePolicy *policy, const PartitionDesignator *designators, size_t n_designators, ImagePolicy **ret);
++
+ static inline ImagePolicy* image_policy_free(ImagePolicy *p) {
+         return mfree(p);
+ }
+
+--- a/src/shared/image-policy.c
++++ b/src/shared/image-policy.c
+@@ -613,6 +613,50 @@
+         return true;
+ }
+ 
++int image_policy_ignore_designators(
++                const ImagePolicy *policy,
++                const PartitionDesignator *designators,
++                size_t n_designators,
++                ImagePolicy **ret) {
++
++        _cleanup_(image_policy_freep) ImagePolicy *np = NULL;
++        size_t n = 0;
++
++        assert(policy);
++        assert(designators || n_designators == 0);
++        assert(ret);
++
++        np = image_policy_new(_PARTITION_DESIGNATOR_MAX);
++        if (!np)
++                return -ENOMEM;
++
++        np->default_flags = policy->default_flags;
++
++        for (PartitionDesignator d = 0; d < _PARTITION_DESIGNATOR_MAX; d++) {
++                bool ignore = false;
++                for (size_t i = 0; i < n_designators; i++)
++                        if (designators[i] == d) {
++                                ignore = true;
++                                break;
++                        }
++
++                PartitionPolicyFlags flags = ignore ? PARTITION_POLICY_IGNORE : image_policy_get_exhaustively(policy, d);
++                if (flags < 0)
++                        return flags;
++                if (flags == np->default_flags)
++                        continue;
++
++                np->policies[n++] = (PartitionPolicy) {
++                        .designator = d,
++                        .flags = flags,
++                };
++        }
++
++        np->n_policies = n;
++        *ret = TAKE_PTR(np);
++        return 0;
++}
++
+ int config_parse_image_policy(
+                 const char *unit,
+                 const char *filename,
+
 --- a/src/gpt-auto-generator/gpt-auto-generator.c
 +++ b/src/gpt-auto-generator/gpt-auto-generator.c
-@@ -826,6 +826,15 @@ static int enumerate_partitions(dev_t devnum) {
+@@ -826,6 +826,15 @@
          _cleanup_free_ char *devname = NULL;
          int r;
  
@@ -34,7 +95,7 @@ index 0f7d089d1c..8a49948780 100644
          assert(!in_initrd());
  
          /* Run on the final root fs (not in the initrd), to mount auxiliary partitions, and hook in rw
-@@ -841,6 +850,14 @@ static int enumerate_partitions(dev_t devnum) {
+@@ -841,6 +850,14 @@
                  return log_debug_errno(r, "Failed to get device node of " DEVNUM_FORMAT_STR ": %m",
                                         DEVNUM_FORMAT_VAL(devnum));
  
@@ -49,7 +110,7 @@ index 0f7d089d1c..8a49948780 100644
          /* Let's take a LOCK_SH lock on the block device, in case udevd is already running. If we don't take
           * the lock, udevd might end up issuing BLKRRPART in the middle, and we don't want that, since that
           * might remove all partitions while we are operating on them. */
-@@ -852,7 +869,7 @@ static int enumerate_partitions(dev_t devnum) {
+@@ -852,7 +869,7 @@
                          loop,
                          /* verity= */ NULL,
                          /* mount_options= */ NULL,
@@ -58,4 +119,3 @@ index 0f7d089d1c..8a49948780 100644
                          DISSECT_IMAGE_GPT_ONLY|
                          DISSECT_IMAGE_USR_NO_ROOT|
                          DISSECT_IMAGE_DISKSEQ_DEVNODE|
-
