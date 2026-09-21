@@ -1,0 +1,38 @@
+Index: deepin-systemd/src/journal/journald-server.c
+===================================================================
+--- deepin-systemd.orig/src/journal/journald-server.c
++++ deepin-systemd/src/journal/journald-server.c
+@@ -144,7 +144,7 @@ static void cache_space_invalidate(Journ
+ static int cache_space_refresh(Server *s, JournalStorage *storage) {
+         JournalStorageSpace *space;
+         JournalMetrics *metrics;
+-        uint64_t vfs_used, vfs_avail, fs_size, avail;
++        uint64_t vfs_used, vfs_avail, fs_size, avail, new_limit;
+         usec_t ts;
+         int r;
+ 
+@@ -168,7 +168,23 @@ static int cache_space_refresh(Server *s
+ 
+         avail = LESS_BY(vfs_avail, journal_effective_keep_free(metrics, fs_size));
+ 
+-        space->limit = CLAMP(vfs_used + avail, metrics->min_use, metrics->max_use);
++        new_limit = CLAMP(vfs_used + avail, metrics->min_use, metrics->max_use);
++
++        /* When the free space (df view) is below keep_free, avail is 0 and the
++         * computed limit is the current usage, which may already contain the
++         * growth that has not been vacuumed yet: the journal file rotated in
++         * right before this call, and the writes that filled the previous one.
++         * Anchoring the vacuum limit at that value makes sum <= limit, so the
++         * following vacuum deletes nothing and freezes that growth into the
++         * water level: the journal usage (and the consumed space) keeps
++         * creeping up one file per rotation until the kept free space is
++         * broken. Keep the previously established limit in that case instead
++         * (it may still decrease, but never increase), so the vacuum can trim
++         * the growth back to it. */
++        if (avail == 0 && space->limit > 0 && new_limit > space->limit)
++                new_limit = MAX(space->limit, metrics->min_use);
++
++        space->limit = new_limit;
+         space->available = LESS_BY(space->limit, vfs_used);
+         space->timestamp = ts;
+         return 1;
