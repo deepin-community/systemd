@@ -1,0 +1,47 @@
+Index: deepin-systemd/src/journal/journald-server.c
+===================================================================
+--- deepin-systemd.orig/src/journal/journald-server.c
++++ deepin-systemd/src/journal/journald-server.c
+@@ -753,6 +753,7 @@ void server_sync(Server *s) {
+ 
+ static void server_do_vacuum(Server *s, JournalStorage *storage, bool verbose) {
+ 
++        static bool first_vacuum = true;
+         int r;
+ 
+         assert(s);
+@@ -760,6 +761,34 @@ static void server_do_vacuum(Server *s,
+ 
+         (void) cache_space_refresh(s, storage);
+ 
++        if (first_vacuum) {
++                first_vacuum = false;
++
++                /* `patch_min_use()` anchors `min_use` (and consequently the
++                 * `limit`) to the journal usage level present at the moment of
++                 * restart. If a restart occurs while the system remaining disk
++                 * space is less than `keep_free` and is undergoing high-speed
++                 * writes, this anchor point will be approximately one journal
++                 * file higher than the steady-state level prior to the restart.
++                 * Since the vacuuming process never reduces usage below
++                 * `min_use`, the water level rises by one file increment with
++                 * each restart; repeated restarts over the long term could
++                 * cause usage to exceed the `keep_free` threshold. This patch
++                 * performs a one-time adjustment: it lowers both the deletion
++                 * target and the `min_use` floor by one file increment (based
++                 * on `metrics.max_size`, a value derived from configuration),
++                 * thereby returning the water level to the pre-restart steady
++                 * state. */
++                if (storage->space.vfs_available <
++                            journal_effective_keep_free(&storage->metrics,
++                                                        storage->space.fs_size) &&
++                    storage->space.limit > storage->metrics.max_size) {
++                        storage->space.limit -= storage->metrics.max_size;
++                        storage->metrics.min_use = MIN(storage->metrics.min_use,
++                                                       storage->space.limit);
++                }
++        }
++
+         if (verbose)
+                 server_space_usage_message(s, storage);
+ 

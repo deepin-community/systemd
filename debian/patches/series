@@ -354,3 +354,6 @@ fix-repart-probe-sector-size-ioctl-return-value.patch
 fix-user-util-skip-setgroups-empty-gid-map.patch
 fix-journal-file-do-not-assert-on-removed-or-corrupted-file.patch
 fix-gpt-auto-generator-do-not-apply-image-policy-on-root-usr-fs.patch
+uniontech-support-keepfree-percentage.patch
+uniontech-journald-restart-vacuum-step.patch
+uniontech-journald-vacuum-limit-no-raise-on-low-space.patch

@@ -1,0 +1,358 @@
+Index: deepin-systemd/man/journald.conf.xml
+===================================================================
+--- deepin-systemd.orig/man/journald.conf.xml
++++ deepin-systemd/man/journald.conf.xml
+@@ -265,6 +265,20 @@
+         <command>systemd-journald</command> will respect both limits
+         and use the smaller of the two values.</para>
+ 
++        <para><varname>SystemKeepFree=</varname> and
++        <varname>RuntimeKeepFree=</varname> accept either a size in
++        bytes (optionally suffixed with the usual K, M, G, T, P, E
++        units) or a percentage of the size of the respective file
++        system, specified as a number suffixed with <literal>%</literal>
++        (e.g. <literal>10%</literal>, meaning "leave ten percent of
++        the file system free"). The percentage form tracks the file
++        system size automatically, and is useful where the amount of
++        space that should be kept free needs to scale with the size of
++        the file system (e.g. to stay above a fixed proportion that
++        the file system itself reserves). An explicitly configured
++        percentage is not subject to the 4G cap that applies to the
++        calculated defaults described below.</para>
++
+         <para>The first pair defaults to 10% and the second to 15% of
+         the size of the respective file system, but each value is
+         capped to 4G. If the file system is nearly full and either
+Index: deepin-systemd/src/journal/journald-gperf.gperf
+===================================================================
+--- deepin-systemd.orig/src/journal/journald-gperf.gperf
++++ deepin-systemd/src/journal/journald-gperf.gperf
+@@ -31,11 +31,11 @@ Journal.RateLimitIntervalSec,config_pars
+ Journal.RateLimitBurst,     config_parse_unsigned,   0, offsetof(Server, ratelimit_burst)
+ Journal.SystemMaxUse,       config_parse_iec_uint64, 0, offsetof(Server, system_storage.metrics.max_use)
+ Journal.SystemMaxFileSize,  config_parse_iec_uint64, 0, offsetof(Server, system_storage.metrics.max_size)
+-Journal.SystemKeepFree,     config_parse_iec_uint64, 0, offsetof(Server, system_storage.metrics.keep_free)
++Journal.SystemKeepFree,     config_parse_journal_keep_free, 0, offsetof(Server, system_storage.metrics)
+ Journal.SystemMaxFiles,     config_parse_uint64,     0, offsetof(Server, system_storage.metrics.n_max_files)
+ Journal.RuntimeMaxUse,      config_parse_iec_uint64, 0, offsetof(Server, runtime_storage.metrics.max_use)
+ Journal.RuntimeMaxFileSize, config_parse_iec_uint64, 0, offsetof(Server, runtime_storage.metrics.max_size)
+-Journal.RuntimeKeepFree,    config_parse_iec_uint64, 0, offsetof(Server, runtime_storage.metrics.keep_free)
++Journal.RuntimeKeepFree,    config_parse_journal_keep_free, 0, offsetof(Server, runtime_storage.metrics)
+ Journal.RuntimeMaxFiles,    config_parse_uint64,     0, offsetof(Server, runtime_storage.metrics.n_max_files)
+ Journal.MaxRetentionSec,    config_parse_sec,        0, offsetof(Server, max_retention_usec)
+ Journal.MaxFileSec,         config_parse_sec,        0, offsetof(Server, max_file_usec)
+Index: deepin-systemd/src/journal/journald-server.c
+===================================================================
+--- deepin-systemd.orig/src/journal/journald-server.c
++++ deepin-systemd/src/journal/journald-server.c
+@@ -45,6 +45,7 @@
+ #include "missing_audit.h"
+ #include "mkdir.h"
+ #include "parse-util.h"
++#include "percent-util.h"
+ #include "path-util.h"
+ #include "proc-cmdline.h"
+ #include "process-util.h"
+@@ -91,7 +92,8 @@ static int server_determine_path_usage(
+                 Server *s,
+                 const char *path,
+                 uint64_t *ret_used,
+-                uint64_t *ret_free) {
++                uint64_t *ret_free,
++                uint64_t *ret_fs_size) {
+ 
+         _cleanup_closedir_ DIR *d = NULL;
+         struct statvfs ss;
+@@ -100,6 +102,7 @@ static int server_determine_path_usage(
+         assert(path);
+         assert(ret_used);
+         assert(ret_free);
++        assert(ret_fs_size);
+ 
+         d = opendir(path);
+         if (!d)
+@@ -111,6 +114,7 @@ static int server_determine_path_usage(
+                                                 "Failed to fstatvfs(%s): %m", path);
+ 
+         *ret_free = ss.f_bsize * ss.f_bavail;
++        *ret_fs_size = u64_multiply_safe(ss.f_frsize, ss.f_blocks);
+         *ret_used = 0;
+         FOREACH_DIRENT_ALL(de, d, break) {
+                 struct stat st;
+@@ -140,7 +144,7 @@ static void cache_space_invalidate(Journ
+ static int cache_space_refresh(Server *s, JournalStorage *storage) {
+         JournalStorageSpace *space;
+         JournalMetrics *metrics;
+-        uint64_t vfs_used, vfs_avail, avail;
++        uint64_t vfs_used, vfs_avail, fs_size, avail;
+         usec_t ts;
+         int r;
+ 
+@@ -154,14 +158,15 @@ static int cache_space_refresh(Server *s
+         if (space->timestamp != 0 && usec_add(space->timestamp, RECHECK_SPACE_USEC) > ts)
+                 return 0;
+ 
+-        r = server_determine_path_usage(s, storage->path, &vfs_used, &vfs_avail);
++        r = server_determine_path_usage(s, storage->path, &vfs_used, &vfs_avail, &fs_size);
+         if (r < 0)
+                 return r;
+ 
+         space->vfs_used = vfs_used;
+         space->vfs_available = vfs_avail;
++        space->fs_size = fs_size;
+ 
+-        avail = LESS_BY(vfs_avail, metrics->keep_free);
++        avail = LESS_BY(vfs_avail, journal_effective_keep_free(metrics, fs_size));
+ 
+         space->limit = CLAMP(vfs_used + avail, metrics->min_use, metrics->max_use);
+         space->available = LESS_BY(space->limit, vfs_used);
+@@ -215,6 +220,7 @@ void server_space_usage_message(Server *
+                 return;
+ 
+         const JournalMetrics *metrics = &storage->metrics;
++        const uint64_t keep_free = journal_effective_keep_free(metrics, storage->space.fs_size);
+ 
+         server_driver_message(s, 0,
+                               "MESSAGE_ID=" SD_MESSAGE_JOURNAL_USAGE_STR,
+@@ -229,8 +235,8 @@ void server_space_usage_message(Server *
+                               "CURRENT_USE_PRETTY=%s", FORMAT_BYTES(storage->space.vfs_used),
+                               "MAX_USE=%"PRIu64, metrics->max_use,
+                               "MAX_USE_PRETTY=%s", FORMAT_BYTES(metrics->max_use),
+-                              "DISK_KEEP_FREE=%"PRIu64, metrics->keep_free,
+-                              "DISK_KEEP_FREE_PRETTY=%s", FORMAT_BYTES(metrics->keep_free),
++                              "DISK_KEEP_FREE=%"PRIu64, keep_free,
++                              "DISK_KEEP_FREE_PRETTY=%s", FORMAT_BYTES(keep_free),
+                               "DISK_AVAILABLE=%"PRIu64, storage->space.vfs_available,
+                               "DISK_AVAILABLE_PRETTY=%s", FORMAT_BYTES(storage->space.vfs_available),
+                               "LIMIT=%"PRIu64, storage->space.limit,
+@@ -1846,6 +1852,57 @@ static int parse_proc_cmdline_item(const
+         return 0;
+ }
+ 
++int config_parse_journal_keep_free(
++                const char *unit,
++                const char *filename,
++                unsigned line,
++                const char *section,
++                unsigned section_line,
++                const char *lvalue,
++                int ltype,
++                const char *rvalue,
++                void *data,
++                void *userdata) {
++
++        JournalMetrics *m = ASSERT_PTR(data);
++        int r;
++
++        /* keep_free and keep_free_permyriad are mutually exclusive; the
++         * effective value is computed on demand by
++         * journal_effective_keep_free(). */
++        if (isempty(rvalue)) {
++                /* Empty assignment means "pick automatically" */
++                m->keep_free = UINT64_MAX;
++                m->keep_free_permyriad = 0;
++                return 0;
++        }
++
++        r = parse_permyriad(rvalue);
++        if (r >= 0) {
++                if (r == 0)
++                        log_syntax(unit, LOG_WARNING, filename, line, 0,
++                                   "Specifying '0%%' for %s means journald may use the entire file system, ignoring KeepFree= entirely.", lvalue);
++
++                m->keep_free_permyriad = r;
++
++                /* 0% explicitly means "keep nothing free". */
++                m->keep_free = r == 0 ? 0 : UINT64_MAX;
++                return 0;
++        }
++
++        r = parse_size(rvalue, 1024, &m->keep_free);
++        if (r < 0) {
++                /* Log the bad line, but do not propagate the error: a
++                 * malformed value must not abort parsing of the rest of
++                 * the file. */
++                log_syntax(unit, LOG_WARNING, filename, line, r,
++                           "Failed to parse %s='%s', ignoring: %m", lvalue, rvalue);
++                return 0;
++        }
++
++        m->keep_free_permyriad = 0;
++        return 0;
++}
+ static int server_parse_config_file(Server *s) {
+         const char *conf_file = "journald.conf";
+ 
+Index: deepin-systemd/src/journal/journald-server.h
+===================================================================
+--- deepin-systemd.orig/src/journal/journald-server.h
++++ deepin-systemd/src/journal/journald-server.h
+@@ -51,6 +51,7 @@ typedef struct JournalStorageSpace {
+ 
+         uint64_t vfs_used; /* space used by journal files */
+         uint64_t vfs_available;
++        uint64_t fs_size; /* total file system size */
+ } JournalStorageSpace;
+ 
+ typedef struct JournalStorage {
+@@ -214,6 +215,7 @@ const struct ConfigPerfItem* journald_gp
+ CONFIG_PARSER_PROTOTYPE(config_parse_storage);
+ CONFIG_PARSER_PROTOTYPE(config_parse_line_max);
+ CONFIG_PARSER_PROTOTYPE(config_parse_compress);
++CONFIG_PARSER_PROTOTYPE(config_parse_journal_keep_free);
+ 
+ const char *storage_to_string(Storage s) _const_;
+ Storage storage_from_string(const char *s) _pure_;
+Index: deepin-systemd/src/journal/test-journald-config.c
+===================================================================
+--- deepin-systemd.orig/src/journal/test-journald-config.c
++++ deepin-systemd/src/journal/test-journald-config.c
+@@ -47,4 +47,57 @@ TEST(config_compress) {
+         COMPRESS_PARSE_CHECK("", true, UINT64_MAX);
+ }
+ 
++static void keep_free_parse_check(const char *str, uint64_t expected_keep_free, uint64_t expected_permyriad) {
++        JournalMetrics m = { .keep_free = UINT64_MAX };
++
++        assert_se(config_parse_journal_keep_free("", "", 0, "", 0, "SystemKeepFree", 0, str, &m, NULL) >= 0);
++        assert_se(m.keep_free == expected_keep_free);
++        assert_se(m.keep_free_permyriad == expected_permyriad);
++}
++
++TEST(config_keep_free) {
++        /* Absolute sizes */
++        keep_free_parse_check("1K", UINT64_C(1024), 0);
++        keep_free_parse_check("1M", UINT64_C(1024) * 1024, 0);
++        keep_free_parse_check("1G", UINT64_C(1024) * 1024 * 1024, 0);
++
++        /* Percentages are stored verbatim as permyriad; they invalidate
++         * any absolute byte value, except 0% which means keep_free == 0. */
++        keep_free_parse_check("0%", 0, UINT64_C(0));
++        keep_free_parse_check("1%", UINT64_MAX, UINT64_C(100));
++        keep_free_parse_check("21%", UINT64_MAX, UINT64_C(2100));
++        keep_free_parse_check("100%", UINT64_MAX, UINT64_C(10000));
++
++        /* Empty means "pick automatically" */
++        keep_free_parse_check("", UINT64_MAX, 0);
++        keep_free_parse_check(NULL, UINT64_MAX, 0);
++
++        /* Invalid input is ignored (returns 0, so the rest of the config
++         * file keeps being parsed) and leaves the metrics untouched. */
++        JournalMetrics m = { .keep_free = UINT64_C(42), .keep_free_permyriad = UINT64_C(7) };
++        assert_se(config_parse_journal_keep_free("", "", 0, "", 0, "SystemKeepFree", 0, "blah", &m, NULL) == 0);
++        assert_se(m.keep_free == UINT64_C(42));
++        assert_se(m.keep_free_permyriad == UINT64_C(7));
++
++        /* The two fields are mutually exclusive: a percentage invalidates
++         * a previously configured absolute byte value, and vice versa. */
++        m.keep_free = UINT64_C(42);
++        m.keep_free_permyriad = UINT64_C(7);
++        assert_se(config_parse_journal_keep_free("", "", 0, "", 0, "SystemKeepFree", 0, "5%", &m, NULL) == 0);
++        assert_se(m.keep_free == UINT64_MAX);
++        assert_se(m.keep_free_permyriad == UINT64_C(500));
++
++        m.keep_free = UINT64_C(42);
++        m.keep_free_permyriad = UINT64_C(7);
++        assert_se(config_parse_journal_keep_free("", "", 0, "", 0, "SystemKeepFree", 0, "1G", &m, NULL) == 0);
++        assert_se(m.keep_free == UINT64_C(1073741824));
++        assert_se(m.keep_free_permyriad == UINT64_C(0)); /* cleared */
++
++        /* Out-of-range and malformed percentages are ignored. */
++        keep_free_parse_check("101%", UINT64_MAX, 0);
++        keep_free_parse_check("-1%", UINT64_MAX, 0);
++        keep_free_parse_check("%", UINT64_MAX, 0);
++        keep_free_parse_check("1.5%", UINT64_MAX, 150);
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);
+Index: deepin-systemd/src/libsystemd/sd-journal/journal-file.c
+===================================================================
+--- deepin-systemd.orig/src/libsystemd/sd-journal/journal-file.c
++++ deepin-systemd/src/libsystemd/sd-journal/journal-file.c
+@@ -794,9 +794,11 @@ static int journal_file_allocate(Journal
+                 struct statvfs svfs;
+ 
+                 if (fstatvfs(f->fd, &svfs) >= 0) {
+-                        uint64_t available;
++                        uint64_t available, fs_size;
+ 
+-                        available = LESS_BY(u64_multiply_safe(svfs.f_bfree, svfs.f_bsize), f->metrics.keep_free);
++                        fs_size = u64_multiply_safe(svfs.f_frsize, svfs.f_blocks);
++                        available = LESS_BY(u64_multiply_safe(svfs.f_bfree, svfs.f_bsize),
++                                            journal_effective_keep_free(&f->metrics, fs_size));
+ 
+                         if (new_size - old_size > available)
+                                 return -E2BIG;
+@@ -4040,13 +4042,9 @@ static void journal_default_metrics(Jour
+                                     JOURNAL_FILE_SIZE_MIN,
+                                     m->max_size ?: UINT64_MAX);
+ 
+-        if (m->keep_free == UINT64_MAX) {
+-                if (fs_size > 0)
+-                        m->keep_free = MIN(PAGE_ALIGN_U64(fs_size / 20), /* 5% of file system size */
+-                                           KEEP_FREE_UPPER);
+-                else
+-                        m->keep_free = DEFAULT_KEEP_FREE;
+-        }
++        /* keep_free/keep_free_permyriad are left as configured; the
++         * effective value is computed on demand by
++         * journal_effective_keep_free(). */
+ 
+         if (m->n_max_files == UINT64_MAX)
+                 m->n_max_files = DEFAULT_N_MAX_FILES;
+@@ -4056,10 +4054,32 @@ static void journal_default_metrics(Jour
+                   FORMAT_BYTES(m->max_use),
+                   FORMAT_BYTES(m->max_size),
+                   FORMAT_BYTES(m->min_size),
+-                  FORMAT_BYTES(m->keep_free),
++                  FORMAT_BYTES(journal_effective_keep_free(m, fs_size)),
+                   m->n_max_files);
+ }
+ 
++uint64_t journal_effective_keep_free(const JournalMetrics *m, uint64_t fs_size) {
++        assert(m);
++
++        if (m->keep_free_permyriad > 0) {
++                /* An explicit percentage overrides keep_free, and is not
++                 * subject to the KEEP_FREE_UPPER cap. */
++                if (fs_size > 0)
++                        return MAX(PAGE_ALIGN_U64(fs_size / 10000 * m->keep_free_permyriad), (uint64_t) 1);
++
++                return DEFAULT_KEEP_FREE;
++        }
++
++        if (m->keep_free == UINT64_MAX) {
++                if (fs_size > 0)
++                        return MIN(PAGE_ALIGN_U64(fs_size / 20), /* 5% of file system size */
++                                   KEEP_FREE_UPPER);
++                return DEFAULT_KEEP_FREE;
++        }
++
++        return m->keep_free;
++}
++
+ int journal_file_open(
+                 int fd,
+                 const char *fname,
+Index: deepin-systemd/src/libsystemd/sd-journal/journal-file.h
+===================================================================
+--- deepin-systemd.orig/src/libsystemd/sd-journal/journal-file.h
++++ deepin-systemd/src/libsystemd/sd-journal/journal-file.h
+@@ -25,10 +25,16 @@ typedef struct JournalMetrics {
+         uint64_t min_size;     /* how large journal files grow at least */
+         uint64_t max_use;      /* how much disk space to use in total at max, keep_free permitting */
+         uint64_t min_use;      /* how much disk space to use in total at least, even if keep_free says not to */
+-        uint64_t keep_free;    /* how much to keep free on disk */
++        uint64_t keep_free;    /* how much to keep free on disk (bytes). Ignored if keep_free_permyriad is set */
++        uint64_t keep_free_permyriad; /* how much to keep free on disk, as a fraction of the file system
++                                       * size, in permyriad (10000 = 100%). 0 when unused. Mutually exclusive
++                                       * with keep_free above. Not converted to bytes eagerly: use
++                                       * journal_effective_keep_free() to compute the effective value. */
+         uint64_t n_max_files;  /* how many files to keep around at max */
+ } JournalMetrics;
+ 
++uint64_t journal_effective_keep_free(const JournalMetrics *m, uint64_t fs_size);
++
+ typedef enum direction {
+         DIRECTION_UP,
+         DIRECTION_DOWN,
