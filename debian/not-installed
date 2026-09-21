@@ -9,4 +9,6 @@ usr/lib/systemd/system/sysinit.target.wants/systemd-hibernate-clear.service
 usr/lib/systemd/system/systemd-journald-sync@.service
 usr/lib/systemd/system/systemd-pcrphase-storage-target-mode.service
 usr/lib/systemd/system/storage-target-mode.target.wants/systemd-pcrphase-storage-target-mode.service
+usr/lib/systemd/system/systemd-pcrphase-factory-reset.service
+usr/lib/systemd/system/factory-reset.target.wants/systemd-pcrphase-factory-reset.service
 usr/share/man/man8/systemd-hibernate-clear.service.8

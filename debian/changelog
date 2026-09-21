@@ -1,3 +1,15 @@
+systemd (255.2-4deepin79) unstable; urgency=medium
+
+  * not-installed: add systemd-pcrphase-factory-reset.service and its
+    factory-reset.target.wants symlink, introduced by the backported
+    "measure additional phases into PCR 11" units patch, to fix the
+    dh_missing --fail-missing build failure.
+  * not-installed: 将回移补丁引入的 systemd-pcrphase-factory-reset.service
+    及其 factory-reset.target.wants 符号链接加入排除列表，修复
+    dh_missing --fail-missing 构建失败。
+
+ -- jiabowen <jiabowen@uniontech.com>  Mon, 21 Sep 2026 10:35:00 +0800
+
 systemd (255.2-4deepin78) unstable; urgency=medium
 
   * Integrate backport PRs #133–#354 (68 PRs included, 2 excluded)
