@@ -1,3 +1,16 @@
+systemd (255.2-4deepin80) unstable; urgency=medium
+
+  * install: preset in the scope the caller asked for
+
+  unit_file_preset() and unit_file_preset_all() zero-initialized their
+  install contexts, so their scope was always RUNTIME_SCOPE_SYSTEM. In
+  the global scope, specifiers in [Install] were then resolved as if for
+  the system: %U became 0 and a unit got enabled into
+  target-0.target.wants/. Set the scope the caller asked for, so that
+  this fails with an error instead. (backported from upstream PR #43919)
+
+ -- deepin-ci-robot <packages@deepin.org>  Sat, 03 Oct 2026 10:21:16 +0800
+
 systemd (255.2-4deepin79) unstable; urgency=medium
 
   * not-installed: add systemd-pcrphase-factory-reset.service and its
