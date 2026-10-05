@@ -1,3 +1,9 @@
+systemd (255.2-4deepin80) unstable; urgency=medium
+
+  * logind: fix one-byte buffer overflow in inhibit_what_to_string() by adding the missing colon after handle-reboot-key
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 05 Oct 2026 10:13:11 +0800
+
 systemd (255.2-4deepin79) unstable; urgency=medium
 
   * not-installed: add systemd-pcrphase-factory-reset.service and its
