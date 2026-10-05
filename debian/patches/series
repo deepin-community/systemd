@@ -354,3 +354,4 @@ fix-repart-probe-sector-size-ioctl-return-value.patch
 fix-user-util-skip-setgroups-empty-gid-map.patch
 fix-journal-file-do-not-assert-on-removed-or-corrupted-file.patch
 fix-gpt-auto-generator-do-not-apply-image-policy-on-root-usr-fs.patch
+fix-logind-one-byte-buffer-overflow.patch
