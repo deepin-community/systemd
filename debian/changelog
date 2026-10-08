@@ -1,3 +1,14 @@
+systemd (255.2-4deepin81) unstable; urgency=medium
+
+  * basic: add GUEST_MEMFD_MAGIC and NULL_FS_MAGIC to the filesystem
+    gperf table and declare them in missing_magic.h. The deepin community
+    kernel (backports a63ca4236e6799, 576ee5dfd459ab) introduced the two
+    new filesystem magic numbers, which broke the meson
+    check-filesystems.sh check ("Unknown filesystems defined in kernel
+    headers").
+
+ -- wangxinpeng <wangxinpeng@uniontech.com>  Thu, 08 Oct 2026 13:00:08 +0800
+
 systemd (255.2-4deepin80) unstable; urgency=medium
 
   * journal: support percentage values for SystemKeepFree= and

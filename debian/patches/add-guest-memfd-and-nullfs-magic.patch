@@ -1,0 +1,37 @@
+Index: deepin-systemd/src/basic/filesystems-gperf.gperf
+===================================================================
+--- deepin-systemd.orig/src/basic/filesystems-gperf.gperf
++++ deepin-systemd/src/basic/filesystems-gperf.gperf
+@@ -69,6 +69,7 @@ fusectl,         {FUSE_CTL_SUPER_MAGIC}
+ # gfs is an old version of gfs2 and reuses the magic
+ gfs,             {GFS2_MAGIC}
+ gfs2,            {GFS2_MAGIC}
++gmem,            {GUEST_MEMFD_MAGIC}
+ hostfs,          {HOSTFS_SUPER_MAGIC}
+ hpfs,            {HPFS_SUPER_MAGIC}
+ hugetlbfs,       {HUGETLBFS_MAGIC}
+@@ -86,6 +87,7 @@ nfs,             {NFS_SUPER_MAGIC}
+ nfs4,            {NFS_SUPER_MAGIC}
+ nilfs2,          {NILFS_SUPER_MAGIC}
+ nsfs,            {NSFS_MAGIC}
++nullfs,          {NULL_FS_MAGIC}
+ ntfs,            {NTFS_SB_MAGIC}
+ ntfs3,           {NTFS3_SUPER_MAGIC}
+ ocfs2,           {OCFS2_SUPER_MAGIC}
+Index: deepin-systemd/src/basic/missing_magic.h
+===================================================================
+--- deepin-systemd.orig/src/basic/missing_magic.h
++++ deepin-systemd/src/basic/missing_magic.h
+@@ -209,3 +209,12 @@
+ #else
+ _Static_assert(BCACHEFS_SUPER_MAGIC == 0xca451a4e, "BCACHEFS_SUPER_MAGIC must be 0xca451a4e");
+ #endif
++
++/* deepin kernel backports a63ca4236e6799 (guest_memfd inode), 576ee5dfd459ab (nullfs) */
++#ifndef GUEST_MEMFD_MAGIC
++#define GUEST_MEMFD_MAGIC 0x474d454d
++#endif
++
++#ifndef NULL_FS_MAGIC
++#define NULL_FS_MAGIC 0x4E554C4C
++#endif
