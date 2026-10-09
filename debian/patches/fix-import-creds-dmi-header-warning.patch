@@ -1,0 +1,19 @@
+Index: deepin-systemd/src/core/import-creds.c
+===================================================================
+--- deepin-systemd.orig/src/core/import-creds.c
++++ deepin-systemd/src/core/import-creds.c
+@@ -602,12 +602,12 @@ static int import_credentials_smbios(Imp
+                 }
+ 
+                 if (size < offsetof(struct dmi_field_header, contents))
+-                        return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "DMI field header of '%s' too short.", p);
++                        return log_warning_errno(SYNTHETIC_ERRNO(EBADMSG), "DMI field header of '%s' too short.", p);
+ 
+                 dmi_field_header = data;
+                 if (dmi_field_header->type != 11 ||
+                     dmi_field_header->length != offsetof(struct dmi_field_header, contents))
+-                        return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Invalid DMI field header.");
++                        return log_warning_errno(SYNTHETIC_ERRNO(EBADMSG), "Invalid DMI field header.");
+ 
+                 r = parse_smbios_strings(c, dmi_field_header->contents, size - offsetof(struct dmi_field_header, contents));
+                 if (r < 0)

@@ -358,3 +358,4 @@ uniontech-support-keepfree-percentage.patch
 uniontech-journald-restart-vacuum-step.patch
 uniontech-journald-vacuum-limit-no-raise-on-low-space.patch
 add-guest-memfd-and-nullfs-magic.patch
+fix-import-creds-dmi-header-warning.patch
