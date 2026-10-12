@@ -1,0 +1,37 @@
+From 7bd9f0f805b40b51a73af666b5a3a46966b3bbfa Mon Sep 17 00:00:00 2001
+From: Anton Tiurin <atiurin@proton.me>
+Date: Sat, 15 Aug 2026 19:35:45 +0100
+Subject: [PATCH] dhcp-server: reject pool offsets beyond the subnet (#43389)
+
+`sd_dhcp_server_configure_pool()` calculated the maximum pool size
+before checking whether `PoolOffset=` was inside the subnet.
+
+Because the calculation used unsigned arithmetic, an offset beyond the
+broadcast address could wrap around to a large value and pass validation.
+For example, `PoolOffset=256` with a `/24` and `PoolSize=1` was accepted,
+allowing the DHCP server to offer an address outside its configured subnet.
+
+Reject offsets at or beyond the broadcast address before performing the
+subtraction, and calculate the remaining pool size directly as
+`broadcast_off - offset`.
+
+diff --git a/src/libsystemd-network/sd-dhcp-server.c b/src/libsystemd-network/sd-dhcp-server.c
+index 7bd363ad4b..e92be2781a 100644
+--- a/src/libsystemd-network/sd-dhcp-server.c
++++ b/src/libsystemd-network/sd-dhcp-server.c
+@@ -74,12 +74,10 @@ int sd_dhcp_server_configure_pool(
+         if (offset == 0)
+                 offset = 1;
+ 
+-        size_max = (broadcast_off + 1) /* the number of addresses in the subnet */
+-                   - offset /* exclude the addresses before the offset */
+-                   - 1; /* exclude the last (broadcast) address */
++        /* The pool must contain at least one address, and may not contain the broadcast address. */
++        assert_return(offset < broadcast_off, -ERANGE);
+ 
+-        /* The pool must contain at least one address */
+-        assert_return(size_max >= 1, -ERANGE);
++        size_max = broadcast_off - offset;
+ 
+         if (size != 0)
+                 assert_return(size <= size_max, -ERANGE);

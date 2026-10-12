@@ -1,0 +1,32 @@
+From e2e536224d0623646cc82c88640207784e2e1417 Mon Sep 17 00:00:00 2001
+From: Martin Pitt <martin@amutable.com>
+Date: Thu, 10 Sep 2026 18:15:27 +0000
+Subject: [PATCH] core/automount: do not abort when there is no autofs to talk
+ to
+
+Releasing the requests the kernel queued goes through `open_ioctl_fd()`, which
+asserts on the manager fd for /dev/autofs. That fd stays unset when
+`open_dev_autofs()` fails while coldplugging an automount, while the
+deserialized pipe and its tokens outlive it.
+
+Report the failure to the caller instead of asserting/crashing PID 1.
+
+Signed-off-by: Martin Pitt <martin@amutable.com>
+
+diff --git a/src/core/automount.c b/src/core/automount.c
+index a0529cda5f..29543590e4 100644
+--- a/src/core/automount.c
++++ b/src/core/automount.c
+@@ -458,6 +458,11 @@ static int automount_send_ready(Automount *a, Set *tokens, int status) {
+         if (set_isempty(tokens))
+                 return 0;
+ 
++        /* We have nothing to talk to the autofs with, e.g. because open_dev_autofs() failed at coldplug and
++         * left us with the deserialized pipe and tokens. Report that instead of asserting below. */
++        if (UNIT(a)->manager->dev_autofs_fd < 0 || !a->where)
++                return -EBADF;
++
+         ioctl_fd = open_ioctl_fd(UNIT(a)->manager->dev_autofs_fd, a->where, a->dev_id);
+         if (ioctl_fd < 0)
+                 return ioctl_fd;
+

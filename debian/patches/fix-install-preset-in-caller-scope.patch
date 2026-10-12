@@ -1,0 +1,98 @@
+From 0a4491ef3fce30d31a35c95031c8026a0235e0a2 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Fri, 7 Aug 2026 10:57:22 +0200
+Subject: [PATCH] install: preset in the scope the caller asked for
+
+unit_file_preset() and unit_file_preset_all() zero-initialized their
+install contexts, so their scope was always RUNTIME_SCOPE_SYSTEM. In
+the global scope, specifiers in [Install] were then resolved as if for
+the system: %U became 0 and a unit got enabled into
+target-0.target.wants/. Set the scope the caller asked for, so that
+this fails with -EUNATCH instead.
+
+Covered by a new test that presets a unit using %U in the global
+scope, with both functions.
+
+diff --git a/src/shared/install.c b/src/shared/install.c
+index 0f4dab4a..cb571cad 100644
+--- a/src/shared/install.c
++++ b/src/shared/install.c
+@@ -3536,7 +3536,7 @@ int unit_file_preset(
+                 InstallChange **changes,
+                 size_t *n_changes) {
+ 
+-        _cleanup_(install_context_done) InstallContext plus = {}, minus = {};
++        _cleanup_(install_context_done) InstallContext plus = { .scope = scope }, minus = { .scope = scope };
+         _cleanup_(lookup_paths_free) LookupPaths lp = {};
+         _cleanup_(unit_file_presets_done) UnitFilePresets presets = {};
+         const char *config_path;
+@@ -3575,7 +3575,7 @@ int unit_file_preset_all(
+                 InstallChange **changes,
+                 size_t *n_changes) {
+ 
+-        _cleanup_(install_context_done) InstallContext plus = {}, minus = {};
++        _cleanup_(install_context_done) InstallContext plus = { .scope = scope }, minus = { .scope = scope };
+         _cleanup_(lookup_paths_free) LookupPaths lp = {};
+         _cleanup_(unit_file_presets_done) UnitFilePresets presets = {};
+         const char *config_path = NULL;
+diff --git a/src/test/test-install-root.c b/src/test/test-install-root.c
+index efd75b2a..d4606e82 100644
+--- a/src/test/test-install-root.c
++++ b/src/test/test-install-root.c
+@@ -9,6 +9,7 @@
+ #include "mkdir.h"
+ #include "rm-rf.h"
+ #include "special.h"
++#include "stat-util.h"
+ #include "string-util.h"
+ #include "tests.h"
+ #include "tmpfile-util.h"
+@@ -1095,6 +1096,48 @@ TEST(preset_multiple_instances) {
+         install_changes_free(changes, n_changes);
+ }
+ 
++TEST(preset_scope) {
++        const char *unit, *preset, *link;
++        InstallChange *changes = NULL;
++        size_t n_changes = 0;
++
++        /* %U can't be resolved in the global scope, since there's no user to resolve it to. Make sure
++         * presetting in the global scope fails because of that, instead of resolving specifiers in the
++         * system scope (where %U is 0) and creating a target-0.target.wants/ symlink. Check both
++         * unit_file_preset() and unit_file_preset_all(), they set up their install contexts separately. */
++
++        unit = strjoina(root, "/usr/lib/systemd/user/scoped.service");
++        assert_se(mkdir_parents(unit, 0755) >= 0);
++        assert_se(write_string_file(unit,
++                                    "[Install]\n"
++                                    "WantedBy=target-%U.target\n", WRITE_STRING_FILE_CREATE) >= 0);
++
++        preset = strjoina(root, "/usr/lib/systemd/user-preset/50-scoped.preset");
++        assert_se(mkdir_parents(preset, 0755) >= 0);
++        assert_se(write_string_file(preset, "enable scoped.service\n", WRITE_STRING_FILE_CREATE) >= 0);
++
++        assert_se(unit_file_preset(RUNTIME_SCOPE_GLOBAL, 0, root, STRV_MAKE("scoped.service"),
++                                   UNIT_FILE_PRESET_FULL, &changes, &n_changes) == -EINVAL);
++        assert_se(n_changes == 1u);
++        assert_se(changes[0].type == -EINVAL);
++        assert_se(streq(changes[0].path, "target-%U.target"));
++        install_changes_free(changes, n_changes);
++        changes = NULL; n_changes = 0;
++
++        link = strjoina(root, USER_CONFIG_UNIT_DIR"/target-0.target.wants/scoped.service");
++        assert_se(is_symlink(link) == -ENOENT);
++
++        assert_se(unit_file_preset_all(RUNTIME_SCOPE_GLOBAL, 0, root, UNIT_FILE_PRESET_FULL,
++                                       &changes, &n_changes) == -EINVAL);
++        assert_se(n_changes == 1u);
++        assert_se(changes[0].type == -EINVAL);
++        assert_se(streq(changes[0].path, "target-%U.target"));
++        install_changes_free(changes, n_changes);
++        changes = NULL; n_changes = 0;
++
++        assert_se(is_symlink(link) == -ENOENT);
++}
++
+ static void verify_one(
+                 const InstallInfo *i,
+                 const char *alias,

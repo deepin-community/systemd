@@ -1,0 +1,85 @@
+From 9466fe014f6083825ed819fe17bf98f72baa3af9 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Fri, 8 Nov 2024 23:06:44 +0100
+Subject: [PATCH] namespace-util: pin pid via pidfd during namespace_open()
+
+
+diff --git a/src/basic/namespace-util.c b/src/basic/namespace-util.c
+index 2101f61..9073ad2 100644
+--- a/src/basic/namespace-util.c
++++ b/src/basic/namespace-util.c
+@@ -11,6 +11,7 @@
+ #include "missing_magic.h"
+ #include "missing_sched.h"
+ #include "namespace-util.h"
++#include "pidref.h"
+ #include "process-util.h"
+ #include "stat-util.h"
+ #include "stdio-util.h"
+@@ -35,14 +36,19 @@ const struct namespace_info namespace_info[] = {
+ 
+ int namespace_open(pid_t pid, int *pidns_fd, int *mntns_fd, int *netns_fd, int *userns_fd, int *root_fd) {
+         _cleanup_close_ int pidnsfd = -EBADF, mntnsfd = -EBADF, netnsfd = -EBADF, usernsfd = -EBADF;
+-        int rfd = -EBADF;
++        _cleanup_(pidref_done) PidRef pidref = PIDREF_NULL;
++        int rfd = -EBADF, r;
+ 
+         assert(pid >= 0);
+ 
++        r = pidref_set_pid(&pidref, pid);
++        if (r < 0)
++                return r;
++
+         if (mntns_fd) {
+                 const char *mntns;
+ 
+-                mntns = pid_namespace_path(pid, NAMESPACE_MOUNT);
++                mntns = pid_namespace_path(pidref.pid, NAMESPACE_MOUNT);
+                 mntnsfd = open(mntns, O_RDONLY|O_NOCTTY|O_CLOEXEC);
+                 if (mntnsfd < 0)
+                         return -errno;
+@@ -51,7 +57,7 @@ int namespace_open(pid_t pid, int *pidns_fd, int *mntns_fd, int *netns_fd, int *
+         if (pidns_fd) {
+                 const char *pidns;
+ 
+-                pidns = pid_namespace_path(pid, NAMESPACE_PID);
++                pidns = pid_namespace_path(pidref.pid, NAMESPACE_PID);
+                 pidnsfd = open(pidns, O_RDONLY|O_NOCTTY|O_CLOEXEC);
+                 if (pidnsfd < 0)
+                         return -errno;
+@@ -60,7 +66,7 @@ int namespace_open(pid_t pid, int *pidns_fd, int *mntns_fd, int *netns_fd, int *
+         if (netns_fd) {
+                 const char *netns;
+ 
+-                netns = pid_namespace_path(pid, NAMESPACE_NET);
++                netns = pid_namespace_path(pidref.pid, NAMESPACE_NET);
+                 netnsfd = open(netns, O_RDONLY|O_NOCTTY|O_CLOEXEC);
+                 if (netnsfd < 0)
+                         return -errno;
+@@ -69,7 +75,7 @@ int namespace_open(pid_t pid, int *pidns_fd, int *mntns_fd, int *netns_fd, int *
+         if (userns_fd) {
+                 const char *userns;
+ 
+-                userns = pid_namespace_path(pid, NAMESPACE_USER);
++                userns = pid_namespace_path(pidref.pid, NAMESPACE_USER);
+                 usernsfd = open(userns, O_RDONLY|O_NOCTTY|O_CLOEXEC);
+                 if (usernsfd < 0 && errno != ENOENT)
+                         return -errno;
+@@ -78,12 +84,16 @@ int namespace_open(pid_t pid, int *pidns_fd, int *mntns_fd, int *netns_fd, int *
+         if (root_fd) {
+                 const char *root;
+ 
+-                root = procfs_file_alloca(pid, "root");
++                root = procfs_file_alloca(pidref.pid, "root");
+                 rfd = open(root, O_RDONLY|O_NOCTTY|O_CLOEXEC|O_DIRECTORY);
+                 if (rfd < 0)
+                         return -errno;
+         }
+ 
++        r = pidref_verify(&pidref);
++        if (r < 0)
++                return r;
++
+         if (pidns_fd)
+                 *pidns_fd = TAKE_FD(pidnsfd);
+ 

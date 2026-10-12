@@ -1,0 +1,28 @@
+From f219e7e790ec7b1064b71173ad697f48a5d71830 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Wed, 7 Oct 2026 13:35:37 +0200
+Subject: [PATCH] pe-binary: only read the raw data of a section
+
+pe_read_section_data() reads VirtualSize bytes starting at
+PointerToRawData. When VirtualSize is larger than SizeOfRawData, because
+the section ends with zero-initialized data, it returns the start of the
+next section, or fails with EBADMSG at the end of the file. Read
+MIN(VirtualSize, SizeOfRawData) bytes, like systemd-stub and uki_hash()
+do.
+
+diff --git a/src/shared/pe-binary.c b/src/shared/pe-binary.c
+index 997e0e4..6cb3bdc 100644
+--- a/src/shared/pe-binary.c
++++ b/src/shared/pe-binary.c
+@@ -194,7 +194,10 @@ int pe_read_section_data(
+         if (!section)
+                 return -ENXIO;
+ 
+-        n = le32toh(section->VirtualSize);
++        /* SizeOfRawData includes padding up to the file alignment. VirtualSize is larger than
++         * SizeOfRawData when the section ends with zero-initialized data. The file does not contain
++         * that data. Reading VirtualSize bytes would return bytes of the next section instead. */
++        n = MIN(le32toh(section->VirtualSize), le32toh(section->SizeOfRawData));
+         if (n > MIN(max_size, (size_t) SSIZE_MAX))
+                 return -E2BIG;
+ 

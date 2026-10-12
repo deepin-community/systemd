@@ -1,0 +1,200 @@
+From d140d478e2ebee8741cd4363c91b0da3f091d8fe Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Tue, 29 Oct 2024 18:46:14 +0000
+Subject: [PATCH] sysusers: optionally create fully locked accounts (#34876)
+
+Let's ramp up security for system user accounts, at least where
+possible, by creating them fully locked (instead of just with an invalid
+password). This matters when taking non-password (i.e. SSH) logins into
+account.
+
+Fixes: #13522
+
+diff --git a/man/sysusers.d.xml b/man/sysusers.d.xml
+index f5f12381d6..4b54286e7f 100644
+--- a/man/sysusers.d.xml
++++ b/man/sysusers.d.xml
+@@ -93,9 +93,9 @@ r     -          lowest-highest</programlisting>
+     field description, home directory, and login shell:</para>
+ 
+     <programlisting>#Type Name     ID             GECOS                 Home directory Shell
+-u     httpd    404            "HTTP User"
+-u     _authd   /usr/bin/authd "Authorization user"
+-u     postgres -              "Postgresql Database" /var/lib/pgsql /usr/libexec/postgresdb
++u!    httpd    404            "HTTP User"
++u!    _authd   /usr/bin/authd "Authorization user"
++u!    postgres -              "Postgresql Database" /var/lib/pgsql /usr/libexec/postgresdb
+ g     input    -              -
+ m     _authd   input
+ u     root     0              "Superuser"           /root          /bin/zsh
+@@ -119,6 +119,12 @@ r     -        500-900
+           bearing the same name unless the ID field specifies it. The account will be
+           created disabled, so that logins are not allowed.</para>
+ 
++          <para>Type <varname>u</varname> may be suffixed with an exclamation mark (<literal>u!</literal>) to
++          create a fully locked account. This is recommended, since logins should typically not be allowed
++          for system users. With or without the exclamation mark an invalid password is set. For
++          <literal>u!</literal>, the account is also locked, which makes a difference for non-password forms
++          of authentication, such as SSH or similar.</para>
++
+           <xi:include href="version-info.xml" xpointer="v215"/></listitem>
+         </varlistentry>
+ 
+diff --git a/src/sysusers/sysusers.c b/src/sysusers/sysusers.c
+index 8ec1373479..44253483db 100644
+--- a/src/sysusers/sysusers.c
++++ b/src/sysusers/sysusers.c
+@@ -86,6 +86,8 @@ typedef struct Item {
+ 
+         bool uid_set;
+ 
++        bool locked;
++
+         bool todo_user;
+         bool todo_group;
+ } Item;
+@@ -654,7 +656,7 @@ static int write_temporary_shadow(
+                         .sp_max = -1,
+                         .sp_warn = -1,
+                         .sp_inact = -1,
+-                        .sp_expire = -1,
++                        .sp_expire = i->locked ? 1 : -1, /* Negative expiration means "unset". Expiration 0 or 1 means "locked" */
+                         .sp_flag = ULONG_MAX, /* this appears to be what everybody does ... */
+                 };
+ 
+@@ -1707,10 +1709,17 @@ static int parse_line(
+                 return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
+                                   "Trailing garbage.");
+ 
+-        /* Verify action */
+-        if (strlen(action) != 1)
+-                return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
+-                                  "Unknown modifier '%s'.", action);
++        if (isempty(action))
++                return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EBADMSG),
++                                  "Empty command specification.");
++
++        bool locked = false;
++        for (int pos = 1; action[pos]; pos++)
++                if (action[pos] == '!' && !locked)
++                        locked = true;
++                else
++                        return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EBADMSG),
++                                          "Unknown modifiers in command '%s'.", action);
+ 
+         if (!IN_SET(action[0], ADD_USER, ADD_GROUP, ADD_MEMBER, ADD_RANGE))
+                 return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EBADMSG),
+@@ -1793,6 +1802,10 @@ static int parse_line(
+         switch (action[0]) {
+ 
+         case ADD_RANGE:
++                if (locked)
++                        return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
++                                          "Flag '!' not permitted on lines of type 'r'.");
++
+                 if (resolved_name)
+                         return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
+                                           "Lines of type 'r' don't take a name field.");
+@@ -1820,6 +1833,10 @@ static int parse_line(
+                         return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
+                                           "Lines of type 'm' require a user name in the second field.");
+ 
++                if (locked)
++                        return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
++                                          "Flag '!' not permitted on lines of type 'm'.");
++
+                 if (!resolved_id)
+                         return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
+                                           "Lines of type 'm' require a group name in the third field.");
+@@ -1886,6 +1903,7 @@ static int parse_line(
+                 i->description = TAKE_PTR(resolved_description);
+                 i->home = TAKE_PTR(resolved_home);
+                 i->shell = TAKE_PTR(resolved_shell);
++                i->locked = locked;
+ 
+                 h = c->users;
+                 break;
+@@ -1895,6 +1913,10 @@ static int parse_line(
+                         return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
+                                           "Lines of type 'g' require a user name in the second field.");
+ 
++                if (locked)
++                        return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
++                                          "Flag '!' not permitted on lines of type 'g'.");
++
+                 if (description || home || shell)
+                         return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EINVAL),
+                                           "Lines of type '%c' don't take a %s field.",
+diff --git a/sysusers.d/basic.conf.in b/sysusers.d/basic.conf.in
+index 0aec080a4c..992af346ca 100644
+--- a/sysusers.d/basic.conf.in
++++ b/sysusers.d/basic.conf.in
+@@ -11,7 +11,7 @@ u root    0:0     "Super User" /root
+ 
+ # The nobody user/group for NFS file systems
+ g {{NOBODY_GROUP_NAME}} 65534       -            -
+-u {{NOBODY_USER_NAME }} 65534:65534 "Kernel Overflow User"     -
++u! {{NOBODY_USER_NAME }} 65534:65534 "Kernel Overflow User"     -
+ 
+ # Administrator group: can *see* more than normal users
+ g adm     {{ADM_GID    }}     -            -
+diff --git a/sysusers.d/systemd-coredump.conf b/sysusers.d/systemd-coredump.conf
+index c4ff003bd6..2ab8a41b9d 100644
+--- a/sysusers.d/systemd-coredump.conf
++++ b/sysusers.d/systemd-coredump.conf
+@@ -5,4 +5,4 @@
+ #  the Free Software Foundation; either version 2.1 of the License, or
+ #  (at your option) any later version.
+ 
+-u systemd-coredump - "systemd Core Dumper"
++u! systemd-coredump - "systemd Core Dumper"
+diff --git a/sysusers.d/systemd-network.conf.in b/sysusers.d/systemd-network.conf.in
+index 7c64a4681f..fc04827efd 100644
+--- a/sysusers.d/systemd-network.conf.in
++++ b/sysusers.d/systemd-network.conf.in
+@@ -5,4 +5,4 @@
+ #  the Free Software Foundation; either version 2.1 of the License, or
+ #  (at your option) any later version.
+ 
+-u systemd-network {{SYSTEMD_NETWORK_UID}} "systemd Network Management"
++u! systemd-network {{SYSTEMD_NETWORK_UID}} "systemd Network Management"
+diff --git a/sysusers.d/systemd-oom.conf b/sysusers.d/systemd-oom.conf
+index 27e571feb5..1ce3d23b6b 100644
+--- a/sysusers.d/systemd-oom.conf
++++ b/sysusers.d/systemd-oom.conf
+@@ -5,4 +5,4 @@
+ #  the Free Software Foundation; either version 2.1 of the License, or
+ #  (at your option) any later version.
+ 
+-u systemd-oom - "systemd Userspace OOM Killer"
++u! systemd-oom - "systemd Userspace OOM Killer"
+diff --git a/sysusers.d/systemd-remote.conf b/sysusers.d/systemd-remote.conf
+index ca20c24896..796850c9e6 100644
+--- a/sysusers.d/systemd-remote.conf
++++ b/sysusers.d/systemd-remote.conf
+@@ -5,4 +5,4 @@
+ #  the Free Software Foundation; either version 2.1 of the License, or
+ #  (at your option) any later version.
+ 
+-u systemd-journal-remote  - "systemd Journal Remote"
++u! systemd-journal-remote  - "systemd Journal Remote"
+diff --git a/sysusers.d/systemd-resolve.conf.in b/sysusers.d/systemd-resolve.conf.in
+index 9f02ef94e6..e385070c45 100644
+--- a/sysusers.d/systemd-resolve.conf.in
++++ b/sysusers.d/systemd-resolve.conf.in
+@@ -5,4 +5,4 @@
+ #  the Free Software Foundation; either version 2.1 of the License, or
+ #  (at your option) any later version.
+ 
+-u systemd-resolve {{SYSTEMD_RESOLVE_UID}} "systemd Resolver"
++u! systemd-resolve {{SYSTEMD_RESOLVE_UID}} "systemd Resolver"
+diff --git a/sysusers.d/systemd-timesync.conf.in b/sysusers.d/systemd-timesync.conf.in
+index e50f025416..7b9fb3d8d9 100644
+--- a/sysusers.d/systemd-timesync.conf.in
++++ b/sysusers.d/systemd-timesync.conf.in
+@@ -5,4 +5,4 @@
+ #  the Free Software Foundation; either version 2.1 of the License, or
+ #  (at your option) any later version.
+ 
+-u systemd-timesync {{SYSTEMD_TIMESYNC_UID}} "systemd Time Synchronization"
++u! systemd-timesync {{SYSTEMD_TIMESYNC_UID}} "systemd Time Synchronization"
