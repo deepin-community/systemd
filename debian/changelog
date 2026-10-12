@@ -1,3 +1,9 @@
+systemd (255.2-4deepin83) unstable; urgency=medium
+
+  * core: don't abort when canceling a job through the private bus
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 12 Oct 2026 10:25:25 +0800
+
 systemd (255.2-4deepin82) unstable; urgency=medium
 
   * core: downgrade the "Invalid DMI field header" / "DMI field header
