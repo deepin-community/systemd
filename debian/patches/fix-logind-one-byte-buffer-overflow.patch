@@ -1,0 +1,23 @@
+From 458c5ce35cf9c2057d4516b0298b83c84118b75d Mon Sep 17 00:00:00 2001
+From: Siteshwar Vashisht <svashisht@redhat.com>
+Date: Sat, 3 Oct 2026 14:59:16 +0200
+Subject: [PATCH] logind: fix one-byte buffer overflow
+
+... in `inhibit_what_to_string()`.
+
+Add missing colon with `handle-reboot-key`.
+
+diff --git a/src/login/logind-inhibit.c b/src/login/logind-inhibit.c
+index 99ec0a3c99..0420a2c3f2 100644
+--- a/src/login/logind-inhibit.c
++++ b/src/login/logind-inhibit.c
+@@ -460,7 +460,7 @@ const char* inhibit_what_to_string(InhibitWhat w) {
+             "handle-suspend-key:"
+             "handle-hibernate-key:"
+             "handle-lid-switch:"
+-            "handle-reboot-key")+1];
++            "handle-reboot-key:")+1];
+         char *p;
+ 
+         if (!inhibit_what_is_valid(w))
+

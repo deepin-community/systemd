@@ -1,0 +1,33 @@
+From bfeac4c30e1a818cda14c8d1b347d500a9dfe4e3 Mon Sep 17 00:00:00 2001
+From: Chris Down <chris@chrisdown.name>
+Date: Mon, 5 Oct 2026 15:00:38 +0200
+Subject: [PATCH] core: Don't abort when canceling a job through the private
+ bus
+
+Messages on the private bus have no sender. As it is now, when a job is
+canceled through it, as "systemctl cancel" does when run as root, we
+pass a NULL name to sd_bus_track_contains(), which fails an
+assert_return(). In developer builds, that makes PID 1 abort. Otherwise
+it's only logged at debug level, and we consult polkit, as we should.
+
+Let's only check whether the sender owns the job for messages on the API
+bus. That's the only bus bus_job_track_sender() tracks senders on, so
+jobs enqueued through the private bus aren't tracked anyway.
+
+Index: systemd/src/core/dbus-job.c
+===================================================================
+--- systemd.orig/src/core/dbus-job.c
++++ systemd/src/core/dbus-job.c
+@@ -50,8 +50,10 @@ int bus_job_method_cancel(sd_bus_message
+         if (r < 0)
+                 return r;
+ 
+-        /* Access is granted to the job owner */
+-        if (!sd_bus_track_contains(j->bus_track, sd_bus_message_get_sender(message))) {
++        /* Access is granted to the job owner. Only clients on the API bus are tracked, messages on the
++         * private bus have no sender. */
++        if (sd_bus_message_get_bus(message) != j->manager->api_bus ||
++            !sd_bus_track_contains(j->bus_track, sd_bus_message_get_sender(message))) {
+ 
+                 /* And for everybody else consult polkit */
+                 r = bus_verify_manage_units_async(j->unit->manager, message, error);

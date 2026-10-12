@@ -1,0 +1,177 @@
+From d50f58d641d32cddeb1fef550445724cafdae2f3 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <bluca@debian.org>
+Date: Tue, 6 Feb 2024 12:41:43 +0000
+Subject: [PATCH] Merge pull request #31210 from poettering/chdir-hardening
+
+WorkingDirectory= hardening
+
+Index: systemd/src/basic/mountpoint-util.c
+===================================================================
+--- systemd.orig/src/basic/mountpoint-util.c
++++ systemd/src/basic/mountpoint-util.c
+@@ -780,3 +780,4 @@ int mount_option_supported(const char *f
+ 
+         return true; /* works! */
+ }
++
+Index: systemd/src/basic/mountpoint-util.h
+===================================================================
+--- systemd.orig/src/basic/mountpoint-util.h
++++ systemd/src/basic/mountpoint-util.h
+@@ -69,3 +69,4 @@ bool mount_new_api_supported(void);
+ unsigned long ms_nosymfollow_supported(void);
+ 
+ int mount_option_supported(const char *fstype, const char *key, const char *value);
++
+Index: systemd/src/core/dbus-execute.c
+===================================================================
+--- systemd.orig/src/core/dbus-execute.c
++++ systemd/src/core/dbus-execute.c
+@@ -2749,6 +2749,9 @@ int bus_exec_context_set_transient_prope
+                         if (!path_is_normalized(simplified))
+                                 return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "WorkingDirectory= expects a normalized path or '~'");
+ 
++                        if (path_below_api_vfs(simplified))
++                                return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "WorkingDirectory= may not be below /proc/, /sys/ or /dev/.");
++
+                         is_home = false;
+                 }
+ 
+Index: systemd/src/core/exec-invoke.c
+===================================================================
+--- systemd.orig/src/core/exec-invoke.c
++++ systemd/src/core/exec-invoke.c
+@@ -3242,31 +3242,39 @@ static int apply_working_directory(
+                 const char *home,
+                 int *exit_status) {
+ 
+-        const char *d, *wd;
++        const char *wd;
++        int r;
+ 
+         assert(context);
+         assert(exit_status);
+ 
+         if (context->working_directory_home) {
+-
+                 if (!home) {
+                         *exit_status = EXIT_CHDIR;
+                         return -ENXIO;
+                 }
+ 
+                 wd = home;
+-
+         } else
+                 wd = empty_to_root(context->working_directory);
+ 
+         if (params->flags & EXEC_APPLY_CHROOT)
+-                d = wd;
+-        else
+-                d = prefix_roota((runtime ? runtime->ephemeral_copy : NULL) ?: context->root_directory, wd);
++                r = RET_NERRNO(chdir(wd));
++        else {
++                _cleanup_close_ int dfd = -EBADF;
++
++                r = chase(wd,
++                          (runtime ? runtime->ephemeral_copy : NULL) ?: context->root_directory,
++                          CHASE_PREFIX_ROOT|CHASE_AT_RESOLVE_IN_ROOT,
++                          /* ret_path= */ NULL,
++                          &dfd);
++                if (r >= 0)
++                        r = RET_NERRNO(fchdir(dfd));
++        }
+ 
+-        if (chdir(d) < 0 && !context->working_directory_missing_ok) {
++        if (r < 0 && !context->working_directory_missing_ok) {
+                 *exit_status = EXIT_CHDIR;
+-                return -errno;
++                return r;
+         }
+ 
+         return 0;
+@@ -4963,8 +4971,10 @@ int exec_invoke(
+                 }
+         }
+ 
+-        /* Apply working directory here, because the working directory might be on NFS and only the user running
+-         * this service might have the correct privilege to change to the working directory */
++        /* Apply working directory here, because the working directory might be on NFS and only the user
++         * running this service might have the correct privilege to change to the working directory. Also, it
++         * is absolutely 💣 crucial 💣 we applied all mount namespacing rearrangements before this, so that
++         * the cwd cannot be used to pin directories outside of the sandbox. */
+         r = apply_working_directory(context, params, runtime, home, exit_status);
+         if (r < 0)
+                 return log_exec_error_errno(context, params, r, "Changing to the requested working directory failed: %m");
+Index: systemd/src/core/load-fragment.c
+===================================================================
+--- systemd.orig/src/core/load-fragment.c
++++ systemd/src/core/load-fragment.c
+@@ -642,7 +642,7 @@ int config_parse_socket_listen(
+                         return 0;
+                 }
+ 
+-                r = path_simplify_and_warn(k, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++                r = path_simplify_and_warn(k, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+                 if (r < 0)
+                         return 0;
+ 
+@@ -5451,7 +5451,7 @@ int config_parse_mount_images(
+                         continue;
+                 }
+ 
+-                r = path_simplify_and_warn(sresolved, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++                r = path_simplify_and_warn(sresolved, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+                 if (r < 0)
+                         continue;
+ 
+@@ -5467,7 +5467,7 @@ int config_parse_mount_images(
+                         continue;
+                 }
+ 
+-                r = path_simplify_and_warn(dresolved, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++                r = path_simplify_and_warn(dresolved, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+                 if (r < 0)
+                         continue;
+ 
+@@ -5609,7 +5609,7 @@ int config_parse_extension_images(
+                         continue;
+                 }
+ 
+-                r = path_simplify_and_warn(sresolved, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++                r = path_simplify_and_warn(sresolved, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+                 if (r < 0)
+                         continue;
+ 
+@@ -5830,7 +5830,7 @@ int config_parse_pid_file(
+                 return log_oom();
+ 
+         /* Check that the result is a sensible path */
+-        r = path_simplify_and_warn(n, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
++        r = path_simplify_and_warn(n, PATH_CHECK_ABSOLUTE|PATH_CHECK_NON_API_VFS, unit, filename, line, lvalue);
+         if (r < 0)
+                 return r;
+ 
+Index: systemd/src/nspawn/nspawn.c
+===================================================================
+--- systemd.orig/src/nspawn/nspawn.c
++++ systemd/src/nspawn/nspawn.c
+@@ -3450,6 +3450,9 @@ static int inner_child(
+         if (!barrier_place_and_sync(barrier)) /* #5 */
+                 return log_error_errno(SYNTHETIC_ERRNO(ESRCH), "Parent died too early");
+ 
++        /* Note, this should be done this late (💣 and not moved earlier! 💣), so that all namespacing
++         * changes are already in effect by now, so that any resolved paths here definitely reference
++         * resources inside the container, and not outside of them. */
+         if (arg_chdir)
+                 if (chdir(arg_chdir) < 0)
+                         return log_error_errno(errno, "Failed to change to specified working directory %s: %m", arg_chdir);
+Index: systemd/src/test/test-parse-helpers.c
+===================================================================
+--- systemd.orig/src/test/test-parse-helpers.c
++++ systemd/src/test/test-parse-helpers.c
+@@ -126,5 +126,4 @@ TEST(path_simplify_and_warn) {
+         assert_se(test_path_simplify_and_warn_one("/aaaa", "/aaaa", PATH_CHECK_RELATIVE) == -EINVAL);
+ 
+ }
+-
+ DEFINE_TEST_MAIN(LOG_INFO);

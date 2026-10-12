@@ -1,3 +1,22 @@
+systemd (255.2-4deepin83) unstable; urgency=medium
+
+  * Aggregate 40 lensup backport PRs (#59–#454) into debian/patches/ via
+    quilt. Includes bug fixes for dnssec, nspawn, sd-journal, vmspawn,
+    core execute/serialize, machine OS image handling, reboot-util,
+    sysusers, udev, namespace-util, dhcp, fstab, homed, fido2, resolved,
+    sd-bus, calendarspec, storagetm, sd-netlink, cryptsetup, automount,
+    install, logind, nss-systemd, kernel-image, pe-binary, and core
+    working directory hardening. 10 PRs excluded: #111 (covered by #109),
+    #118 (already applied), #120 (missing prerequisites), #125 (test
+    regression — downstream extract_first_word incompatibility), #128
+    (test regression — test_rm_rf_dangling_symlink fails), #139 (already
+    in codebase), #297 (already applied), #316 (already in series),
+    #319 (already applied), #354 (already applied). Several patches
+    adapted for downstream API differences (ASSERT macros, bus_verify_
+    polkit_async signature, exec_input_is_terminal naming, etc.).
+
+ -- jiabowen <jiabowen@uniontech.com>  Mon, 12 Oct 2026 14:12:01 +0800
+
 systemd (255.2-4deepin82) unstable; urgency=medium
 
   * core: downgrade the "Invalid DMI field header" / "DMI field header

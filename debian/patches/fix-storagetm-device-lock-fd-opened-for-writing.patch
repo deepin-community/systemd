@@ -1,0 +1,32 @@
+From 28fb7e869c6be086fc7ab8ddbc8a4e00b53714b6 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Sun, 25 Jan 2026 16:50:34 +0100
+Subject: [PATCH] storagetm: ensure device lock fd is opened for writing
+
+Follow-up for e582484789a6d889d11b97d9c2afa74c3c985130
+
+_cleanup_close_ is dropped, as the fd would be immediately
+consumed by the nvme_subsystem_add() call below anyways.
+
+diff --git a/src/storagetm/storagetm.c b/src/storagetm/storagetm.c
+index 54d516ef12..8d1bf0732b 100644
+--- a/src/storagetm/storagetm.c
++++ b/src/storagetm/storagetm.c
+@@ -923,7 +923,6 @@ static bool device_is_allowed(sd_device *d) {
+ }
+ 
+ static int device_added(Context *c, sd_device *device) {
+-        _cleanup_close_ int fd = -EBADF;
+         int r;
+ 
+         assert(c);
+@@ -967,7 +966,7 @@ static int device_added(Context *c, sd_device *device) {
+                 return 0;
+         }
+ 
+-        fd = sd_device_open(device, O_RDONLY|O_CLOEXEC|O_NONBLOCK);
++        int fd = sd_device_open(device, O_RDWR|O_CLOEXEC|O_NONBLOCK);
+         if (fd < 0) {
+                 log_device_warning_errno(device, fd, "Failed to open newly acquired device '%s', ignoring device: %m", devname);
+                 return 0;
+

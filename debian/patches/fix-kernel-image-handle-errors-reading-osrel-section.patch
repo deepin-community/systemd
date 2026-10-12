@@ -1,0 +1,27 @@
+From 37717744394b433eb452674f060a4288a8f469bf Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Wed, 7 Oct 2026 13:35:37 +0200
+Subject: [PATCH] kernel-image: handle errors when reading the .osrel section
+
+uki_read_pretty_name() only handles a missing .osrel section. Any other
+error, for example an .osrel section larger than PE_SECTION_READ_MAX,
+passes a NULL buffer to parse_env_data(), and "bootctl kernel-inspect"
+aborts:
+
+    Assertion 'data' failed at src/basic/env-file.c:429
+
+Return the error instead.
+
+Index: repo/src/shared/kernel-image.c
+===================================================================
+--- repo.orig/src/shared/kernel-image.c
++++ repo/src/shared/kernel-image.c
+@@ -48,6 +48,8 @@ static int uki_read_pretty_name(
+                 *ret = NULL;
+                 return 0;
+         }
++        if (r < 0)
++                return log_debug_errno(r, "Failed to read .osrel section: %m");
+ 
+         f = fmemopen(osrel, osrel_size, "r");
+         if (!f)

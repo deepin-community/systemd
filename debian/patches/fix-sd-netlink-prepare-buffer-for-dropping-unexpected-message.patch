@@ -1,0 +1,27 @@
+From bf478dcffbc3c568fb3a3c8e8b93b3e7b66f4228 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Thu, 17 Apr 2025 04:47:49 +0900
+Subject: [PATCH] sd-netlink: prepare buffer for dropping unexpected message
+
+Follow-up for c7460cce79fd358f2745bd390bd2e7ded450ee62 (v219).
+
+Fixes #35654.
+
+diff --git a/src/libsystemd/sd-netlink/netlink-socket.c b/src/libsystemd/sd-netlink/netlink-socket.c
+index 9d2b3984c2..5959959f42 100644
+--- a/src/libsystemd/sd-netlink/netlink-socket.c
++++ b/src/libsystemd/sd-netlink/netlink-socket.c
+@@ -181,6 +181,12 @@ static int socket_recv_message(int fd, void *buf, size_t buf_size, uint32_t *ret
+                 log_debug("sd-netlink: ignoring message from PID %"PRIu32, sender.nl.nl_pid);
+ 
+                 if (peek) {
++                        _cleanup_free_ uint8_t *b = new(uint8_t, n);
++                        if (!b)
++                                return -ENOMEM;
++
++                        iov = IOVEC_MAKE(b, n);
++
+                         /* drop the message */
+                         n = recvmsg_safe(fd, &msg, 0);
+                         if (n < 0)
+

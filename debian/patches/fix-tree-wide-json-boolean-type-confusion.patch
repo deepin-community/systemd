@@ -1,0 +1,61 @@
+From 61ab5ddcdc6835f044dfc76830971a37b325effe Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Thu, 2 May 2024 15:25:34 +0200
+Subject: [PATCH] tree-wide: fix type confusion around parsing JSON booleans
+
+Sometimes we store them in a tristate, sometimes in C stdbool booleans.
+Sometimes we fucked up picking the right parsing function however. Fix
+that.
+
+Index: repo/src/nspawn/nspawn-oci.c
+===================================================================
+--- repo.orig/src/nspawn/nspawn-oci.c
++++ repo/src/nspawn/nspawn-oci.c
+@@ -417,7 +417,7 @@ static int oci_process(const char *name,
+                 { "rlimits",         JSON_VARIANT_ARRAY,   oci_rlimits,           0,                                     0               },
+                 { "apparmorProfile", JSON_VARIANT_STRING,  oci_unsupported,       0,                                     JSON_PERMISSIVE },
+                 { "capabilities",    JSON_VARIANT_OBJECT,  oci_capabilities,      0,                                     0               },
+-                { "noNewPrivileges", JSON_VARIANT_BOOLEAN, json_dispatch_boolean, offsetof(Settings, no_new_privileges), 0               },
++                { "noNewPrivileges", JSON_VARIANT_BOOLEAN, json_dispatch_tristate,offsetof(Settings, no_new_privileges), 0               },
+                 { "oomScoreAdj",     JSON_VARIANT_INTEGER, oci_oom_score_adj,     0,                                     0               },
+                 { "selinuxLabel",    JSON_VARIANT_STRING,  oci_unsupported,       0,                                     JSON_PERMISSIVE },
+                 { "user",            JSON_VARIANT_OBJECT,  oci_user,              0,                                     0               },
+@@ -433,7 +433,7 @@ static int oci_root(const char *name, Js
+ 
+         static const JsonDispatch table[] = {
+                 { "path",     JSON_VARIANT_STRING,  json_dispatch_string,  offsetof(Settings, root)      },
+-                { "readonly", JSON_VARIANT_BOOLEAN, json_dispatch_boolean, offsetof(Settings, read_only) },
++                { "readonly", JSON_VARIANT_BOOLEAN, json_dispatch_tristate,offsetof(Settings, read_only) },
+                 {}
+         };
+ 
+Index: repo/src/shared/user-record.c
+===================================================================
+--- repo.orig/src/shared/user-record.c
++++ repo/src/shared/user-record.c
+@@ -1308,7 +1308,7 @@ static int dispatch_status(const char *n
+                 { "lastBadAuthenticationUSec",  _JSON_VARIANT_TYPE_INVALID, json_dispatch_uint64,      offsetof(UserRecord, last_bad_authentication_usec),  0         },
+                 { "rateLimitBeginUSec",         _JSON_VARIANT_TYPE_INVALID, json_dispatch_uint64,      offsetof(UserRecord, ratelimit_begin_usec),          0         },
+                 { "rateLimitCount",             _JSON_VARIANT_TYPE_INVALID, json_dispatch_uint64,      offsetof(UserRecord, ratelimit_count),               0         },
+-                { "removable",                  JSON_VARIANT_BOOLEAN,       json_dispatch_boolean,     offsetof(UserRecord, removable),                     0         },
++                { "removable",                  JSON_VARIANT_BOOLEAN,       json_dispatch_tristate,     offsetof(UserRecord, removable),                     0         },
+                 { "accessMode",                 JSON_VARIANT_UNSIGNED,      json_dispatch_access_mode, offsetof(UserRecord, access_mode),                   0         },
+                 { "fileSystemType",             JSON_VARIANT_STRING,        json_dispatch_string,      offsetof(UserRecord, file_system_type),              JSON_SAFE },
+                 {},
+Index: repo/src/sysext/sysext.c
+===================================================================
+--- repo.orig/src/sysext/sysext.c
++++ repo/src/sysext/sysext.c
+@@ -1110,9 +1110,9 @@ static int parse_merge_parameters(Varlin
+ 
+         static const JsonDispatch dispatch_table[] = {
+                 { "class",    JSON_VARIANT_STRING,  json_dispatch_const_string, offsetof(MethodMergeParameters, class),     0 },
+-                { "force",    JSON_VARIANT_BOOLEAN, json_dispatch_boolean,      offsetof(MethodMergeParameters, force),     0 },
+-                { "noReload", JSON_VARIANT_BOOLEAN, json_dispatch_boolean,      offsetof(MethodMergeParameters, no_reload), 0 },
+-                { "noexec",   JSON_VARIANT_BOOLEAN, json_dispatch_boolean,      offsetof(MethodMergeParameters, noexec),    0 },
++                { "force",    JSON_VARIANT_BOOLEAN, json_dispatch_tristate,     offsetof(MethodMergeParameters, force),     0 },
++                { "noReload", JSON_VARIANT_BOOLEAN, json_dispatch_tristate,     offsetof(MethodMergeParameters, no_reload), 0 },
++                { "noexec",   JSON_VARIANT_BOOLEAN, json_dispatch_tristate,     offsetof(MethodMergeParameters, noexec),    0 },
+                 {}
+         };
+ 

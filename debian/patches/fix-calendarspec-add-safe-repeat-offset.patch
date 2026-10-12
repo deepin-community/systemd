@@ -1,0 +1,42 @@
+From de2a7614f1703cbba6d978333900a6cdbc401a84 Mon Sep 17 00:00:00 2001
+From: Luca Boccassi <luca.boccassi@gmail.com>
+Date: Sat, 28 Mar 2026 21:56:41 +0000
+Subject: [PATCH] calendarspec: use ADD_SAFE for repeat offset calculation
+
+Use overflow-safe ADD_SAFE() instead of raw addition when
+computing the next matching calendar component with repeat.
+On overflow, skip the component instead of using a bogus value.
+
+CID#1548052
+
+Follow-up for a2eb5ea79c53620cfcf616e83bfac0c431247f86
+
+Index: repo/src/shared/calendarspec.c
+===================================================================
+--- repo.orig/src/shared/calendarspec.c
++++ repo/src/shared/calendarspec.c
+@@ -1151,9 +1151,8 @@ static int find_matching_component(
+                 } else if (c->repeat > 0) {
+                         int k;
+ 
+-                        k = start + ROUND_UP(*val - start, c->repeat);
+-
+-                        if ((!d_set || k < d) && (stop < 0 || k <= stop)) {
++                        if (ADD_SAFE(&k, start, ROUND_UP(*val - start, c->repeat)) &&
++                            (!d_set || k < d) && (stop < 0 || k <= stop)) {
+                                 d = k;
+                                 d_set = true;
+                         }
+Index: repo/src/fundamental/macro-fundamental.h
+===================================================================
+--- repo.orig/src/fundamental/macro-fundamental.h
++++ repo/src/fundamental/macro-fundamental.h
+@@ -245,6 +245,8 @@
+                         CONST_ISPOWEROF2(_x);                          \
+                 }))
+ 
++#define ADD_SAFE(ret, a, b) (!__builtin_add_overflow(a, b, ret))
++
+ #define LESS_BY(a, b) __LESS_BY(UNIQ, (a), UNIQ, (b))
+ #define __LESS_BY(aq, a, bq, b)                         \
+         ({                                              \

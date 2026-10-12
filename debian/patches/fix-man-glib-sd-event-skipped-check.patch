@@ -1,0 +1,127 @@
+From 9af2d7e4c8b9d698b47148f6c0a6a4675bd4204b Mon Sep 17 00:00:00 2001
+From: Beniamino Galvani <b.galvani@gmail.com>
+Date: Tue, 21 Jul 2026 13:53:24 +0200
+Subject: [PATCH] man: update the sample glib/sd-event integration
+
+The normal order of operations when iterating the GLib main loop is:
+
+ - prepare()  -> sd_event_prepare()
+ - poll the file descriptors
+ - check()    -> sd_event_wait()
+ - dispatch() -> sd_event_dispatch()
+
+GLib does not guarantee that check() is always called between two
+consecutive prepare() invocations. When another thread attaches or
+removes a source with poll fds while the main thread is inside
+poll(), g_main_context_check_unlocked() returns immediately without
+calling any source's check() callback.
+
+Since the sd_event GSource adapter maps prepare/check/dispatch to
+sd_event_prepare/sd_event_wait/sd_event_dispatch, a skipped check()
+leaves sd_event in ARMED state. The next prepare() then hits
+assertion "e->state == SD_EVENT_INITIAL".
+
+The following program reproduces the faulty scenario by creating a
+thread that attaches a new fd during the poll phase:
+
+  #include <stdio.h>
+  #include <stdlib.h>
+  #include <sys/socket.h>
+  #include <glib.h>
+  #include <systemd/sd-event.h>
+  #include <unistd.h>
+
+  /* from glib-event-glue.c */
+  extern GSource *g_sd_event_create_source(sd_event *event);
+
+  static gpointer thread_func(gpointer user_data) {
+    GSource *source;
+    GPollFD pollfd;
+    int fd;
+
+    g_usleep(G_USEC_PER_SEC / 10);
+
+    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+      abort();
+
+    source = g_source_new(&(GSourceFuncs){0}, sizeof(GSource));
+    pollfd.fd = fd;
+    pollfd.events = G_IO_IN;
+    pollfd.revents = 0;
+    g_source_add_poll(source, &pollfd);
+    g_source_attach(source, NULL);
+    g_source_destroy(source);
+    g_source_unref(source);
+
+    close(fd);
+
+    return NULL;
+  }
+
+  int main(int argc, char *argv[]) {
+    sd_event *event = NULL;
+    GSource *source;
+    GThread *thread;
+    int i, r;
+
+    r = sd_event_default(&event);
+    if (r < 0)
+      return 1;
+
+    source = g_sd_event_create_source(event);
+    if (!source)
+      return 1;
+
+    g_source_attach(source, NULL);
+
+    for (i = 0; i < 50; i++) {
+      thread = g_thread_new("check-skip", thread_func, NULL);
+      g_main_context_iteration(NULL, TRUE);
+      g_thread_join(thread);
+      g_main_context_iteration(NULL, FALSE);
+    }
+
+    g_source_destroy(source);
+    g_source_unref(source);
+    sd_event_unref(event);
+
+    return 0;
+  }
+
+When the program uses the current glue code, it crashes with:
+
+  Assertion 'e->state == SD_EVENT_INITIAL' failed at src/libsystemd/sd-event/sd-event.c:4560, function sd_event_prepare(). Aborting.
+
+Fix the problem by skipping sd_event_prepare() if the event is
+already ARMED: it was already prepared in a previous iteration and
+it can be polled immediately.
+
+diff --git a/man/glib-event-glue.c b/man/glib-event-glue.c
+index 61e8bf6463..23b28b4744 100644
+--- a/man/glib-event-glue.c
++++ b/man/glib-event-glue.c
+@@ -11,7 +11,21 @@ typedef struct SDEventSource {
+ } SDEventSource;
+ 
+ static gboolean event_prepare(GSource *source, gint *timeout_) {
+-  return sd_event_prepare(((SDEventSource *)source)->event) > 0;
++  sd_event *event = ((SDEventSource *) source)->event;
++
++  /* GLib does not guarantee that check() is always called between two
++   * consecutive prepare() invocations. For example, if another thread
++   * attaches/removes a source with poll fds to this GMainContext while
++   * the main thread is inside poll(), g_main_context_check_unlocked()
++   * returns immediately without calling any source's check().
++   *
++   * If check() was skipped, the sd_event is still in SD_EVENT_ARMED
++   * state.  Return FALSE to let the normal poll() -> check() -> dispatch()
++   * path complete the cycle. */
++  if (sd_event_get_state(event) == SD_EVENT_ARMED)
++    return FALSE;
++
++  return sd_event_prepare(event) > 0;
+ }
+ 
+ static gboolean event_check(GSource *source) {
+
