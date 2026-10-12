@@ -359,3 +359,4 @@ uniontech-journald-restart-vacuum-step.patch
 uniontech-journald-vacuum-limit-no-raise-on-low-space.patch
 add-guest-memfd-and-nullfs-magic.patch
 fix-import-creds-dmi-header-warning.patch
+fix-nss-systemd-copy-password-see-shadow-group-record-buffer.patch
