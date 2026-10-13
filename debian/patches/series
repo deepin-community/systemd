@@ -398,3 +398,4 @@ fix-nss-systemd-copy-password-see-shadow-group-record-buffer.patch
 fix-kernel-image-handle-errors-reading-osrel-section.patch
 fix-pe-binary-only-read-raw-data-of-section.patch
 fix-core-dont-abort-canceling-job-private-bus.patch
+fix-fd-util-identify-root-by-actual-root-mount.patch
