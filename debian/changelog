@@ -1,3 +1,15 @@
+systemd (255.2-4deepin84) unstable; urgency=medium
+
+  * Backport upstream PR #38636 to identify the root directory against an
+    explicitly opened / instead of its parent. Prevent systemd-udevd from
+    aborting in chase() during an initramfs root-mount transition.
+  * Backport the upstream root-mount regression tests, retaining the v255
+    statx and mount-ID fallbacks for older kernels.
+
+  Bug-deepin: https://pms.uniontech.com/bug-view-379293.html
+
+ -- jiabowen <jiabowen@uniontech.com>  Tue, 13 Oct 2026 12:28:31 +0800
+
 systemd (255.2-4deepin83) unstable; urgency=medium
 
   * Aggregate 40 lensup backport PRs (#59–#454) into debian/patches/ via

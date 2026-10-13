@@ -1,0 +1,233 @@
+Description: Identify the root directory by comparing against the actual root mount
+ Compare the queried directory with an explicitly opened /, rather than its
+ parent. Mounting over / during initramfs root switching can make / and /../
+ refer to different mounts, which caused chase() to return a relative path
+ and abort on its path_is_absolute() assertion.
+ .
+ Backport upstream PR #38636 and its regression tests to v255. Retain the
+ existing statx_fallback() and mount-ID fallback for older kernels because
+ v255 does not provide the newer fds_are_same_mount() helper. Translate the
+ upstream test assertions to the v255 assert_se() API.
+Author: Lennart Poettering <lennart@poettering.net>
+Author: Yu Watanabe <watanabe.yu+github@gmail.com>
+Origin: upstream, https://github.com/systemd/systemd/commit/e1f3d790f35234a380ddfb909ae5fa95a2538c1a
+ https://github.com/systemd/systemd/commit/d486ae5adfc198915caa466b4fe2a34b53cb47f4
+Bug: https://github.com/systemd/systemd/pull/38636
+Forwarded: not-needed
+Last-Update: 2026-10-13
+--- a/src/basic/fd-util.c
++++ b/src/basic/fd-util.c
+@@ -914,8 +914,8 @@
+ 
+ int path_is_root_at(int dir_fd, const char *path) {
+         STRUCT_NEW_STATX_DEFINE(st);
+-        STRUCT_NEW_STATX_DEFINE(pst);
+-        _cleanup_close_ int fd = -EBADF;
++        STRUCT_NEW_STATX_DEFINE(root_st);
++        _cleanup_close_ int fd = -EBADF, root_fd = -EBADF;
+         int r;
+ 
+         assert(dir_fd >= 0 || dir_fd == AT_FDCWD);
+@@ -928,26 +928,30 @@
+                 dir_fd = fd;
+         }
+ 
+-        r = statx_fallback(dir_fd, ".", 0, STATX_TYPE|STATX_INO|STATX_MNT_ID, &st.sx);
+-        if (r == -ENOTDIR)
+-                return false;
++        root_fd = openat(AT_FDCWD, "/", O_PATH|O_DIRECTORY|O_CLOEXEC);
++        if (root_fd < 0)
++                return -errno;
++
++        r = statx_fallback(dir_fd, "", AT_EMPTY_PATH, STATX_TYPE|STATX_INO|STATX_MNT_ID, &st.sx);
+         if (r < 0)
+                 return r;
++        if (!S_ISDIR(st.sx.stx_mode))
++                return false;
+ 
+-        r = statx_fallback(dir_fd, "..", 0, STATX_TYPE|STATX_INO|STATX_MNT_ID, &pst.sx);
++        r = statx_fallback(root_fd, "", AT_EMPTY_PATH, STATX_TYPE|STATX_INO|STATX_MNT_ID, &root_st.sx);
+         if (r < 0)
+                 return r;
+ 
+         /* First, compare inode. If these are different, the fd does not point to the root directory "/". */
+-        if (!statx_inode_same(&st.sx, &pst.sx))
++        if (!statx_inode_same(&st.sx, &root_st.sx))
+                 return false;
+ 
+-        /* Even if the parent directory has the same inode, the fd may not point to the root directory "/",
++        /* Even if the root directory has the same inode, the fd may not point to the root directory "/",
+          * and we also need to check that the mount ids are the same. Otherwise, a construct like the
+          * following could be used to trick us:
+          *
+-         * $ mkdir /tmp/x /tmp/x/y
+-         * $ mount --bind /tmp/x /tmp/x/y
++         * $ mkdir /tmp/x
++         * $ mount --bind / /tmp/x
+          *
+          * Note, statx() does not provide the mount ID and path_get_mnt_id_at() does not work when an old
+          * kernel is used. In that case, let's assume that we do not have such spurious mount points in an
+@@ -967,21 +971,21 @@
+                 st.nsx.stx_mask |= STATX_MNT_ID;
+         }
+ 
+-        if (!FLAGS_SET(pst.nsx.stx_mask, STATX_MNT_ID)) {
++        if (!FLAGS_SET(root_st.nsx.stx_mask, STATX_MNT_ID)) {
+                 int mntid;
+ 
+-                r = path_get_mnt_id_at_fallback(dir_fd, "..", &mntid);
++                r = path_get_mnt_id_at_fallback(root_fd, "", &mntid);
+                 if (ERRNO_IS_NEG_NOT_SUPPORTED(r))
+                         return true; /* skip the mount ID check */
+                 if (r < 0)
+                         return r;
+                 assert(mntid >= 0);
+ 
+-                pst.nsx.stx_mnt_id = mntid;
+-                pst.nsx.stx_mask |= STATX_MNT_ID;
++                root_st.nsx.stx_mnt_id = mntid;
++                root_st.nsx.stx_mask |= STATX_MNT_ID;
+         }
+ 
+-        return statx_mount_same(&st.nsx, &pst.nsx);
++        return statx_mount_same(&st.nsx, &root_st.nsx);
+ }
+ 
+ const char *accmode_to_string(int flags) {
+--- a/src/test/test-fd-util.c
++++ b/src/test/test-fd-util.c
+@@ -646,6 +646,134 @@
+         assert_se(dir_fd_is_root_or_cwd(fd) == 0);
+ }
+ 
++static void test_path_is_root_at_one(bool expected) {
++        assert_se(path_is_root("/") > 0);
++        assert_se(path_is_root("/.") > 0);
++        assert_se(path_is_root("/./..") == expected);
++        assert_se(path_is_root("/..") == expected);
++        assert_se(path_is_root("/../") == expected);
++        assert_se(path_is_root("/../.") == expected);
++        assert_se(path_is_root("/../..") == expected);
++
++        assert_se(path_is_root("/usr") == 0);
++        assert_se(path_is_root("/./usr") == 0);
++        assert_se(path_is_root("/../usr") == 0);
++        assert_se(path_is_root("/.././usr") == 0);
++        assert_se(path_is_root("/../../usr") == 0);
++
++        _cleanup_close_ int fd = -EBADF;
++        assert_se((fd = open("/", O_CLOEXEC|O_PATH|O_DIRECTORY|O_NOFOLLOW)) >= 0);
++
++        assert_se(path_is_root_at(fd, NULL) > 0);
++        assert_se(path_is_root_at(fd, "") > 0);
++        assert_se(path_is_root_at(fd, ".") > 0);
++        assert_se(path_is_root_at(fd, "./../") == expected);
++        assert_se(path_is_root_at(fd, "../") == expected);
++        assert_se(path_is_root_at(fd, "/") > 0);
++        assert_se(path_is_root_at(fd, "/.") > 0);
++        assert_se(path_is_root_at(fd, "/./..") == expected);
++        assert_se(path_is_root_at(fd, "/..") == expected);
++        assert_se(path_is_root_at(fd, "/../") == expected);
++        assert_se(path_is_root_at(fd, "/../.") == expected);
++        assert_se(path_is_root_at(fd, "/../..") == expected);
++
++        assert_se(path_is_root_at(fd, "usr") == 0);
++        assert_se(path_is_root_at(fd, "./usr") == 0);
++        assert_se(path_is_root_at(fd, "../usr") == 0);
++        assert_se(path_is_root_at(fd, "/usr") == 0);
++        assert_se(path_is_root_at(fd, "/./usr") == 0);
++        assert_se(path_is_root_at(fd, "/../usr") == 0);
++        assert_se(path_is_root_at(fd, "/.././usr") == 0);
++        assert_se(path_is_root_at(fd, "/../../usr") == 0);
++
++        fd = safe_close(fd);
++        assert_se((fd = open("/../", O_CLOEXEC|O_PATH|O_DIRECTORY|O_NOFOLLOW)) >= 0);
++
++        assert_se(path_is_root_at(fd, NULL) == expected);
++        assert_se(path_is_root_at(fd, "") == expected);
++        assert_se(path_is_root_at(fd, ".") == expected);
++        assert_se(path_is_root_at(fd, "./..") == expected);
++        assert_se(path_is_root_at(fd, "../") == expected);
++        assert_se(path_is_root_at(fd, "/") > 0);
++        assert_se(path_is_root_at(fd, "/.") > 0);
++        assert_se(path_is_root_at(fd, "/./..") == expected);
++        assert_se(path_is_root_at(fd, "/..") == expected);
++        assert_se(path_is_root_at(fd, "/../") == expected);
++        assert_se(path_is_root_at(fd, "/../.") == expected);
++        assert_se(path_is_root_at(fd, "/../..") == expected);
++
++        assert_se(path_is_root_at(fd, "usr") == 0);
++        assert_se(path_is_root_at(fd, "./usr") == 0);
++        assert_se(path_is_root_at(fd, "../usr") == 0);
++        assert_se(path_is_root_at(fd, "/usr") == 0);
++        assert_se(path_is_root_at(fd, "/./usr") == 0);
++        assert_se(path_is_root_at(fd, "/../usr") == 0);
++        assert_se(path_is_root_at(fd, "/.././usr") == 0);
++        assert_se(path_is_root_at(fd, "/../../usr") == 0);
++}
++
++TEST(path_is_root_at) {
++        int r;
++
++        test_path_is_root_at_one(true);
++
++        r = detach_mount_namespace();
++        if (r < 0)
++                return (void) log_tests_skipped_errno(r, "Failed to detach mount namespace");
++
++        /* Interestingly, even after bind mount a path on "/", still "/" points to the previous root
++         * directory, but "/../" points to the new root directory. Hence, path_is_root("/") is true but
++         * path_is_root("/../") is false. Such spurious situation is resolved after chroot()ing to the new
++         * root directory. */
++        assert_se(mount_nofollow_verbose(LOG_DEBUG, "/", "/", NULL, MS_BIND|MS_REC, NULL) >= 0);
++        log_debug("/* %s: bind mount(\"/\", \"/\") */", __func__);
++        test_path_is_root_at_one(false);
++
++        /* chroot("/") does not change anything. */
++        assert_se(chroot("/") >= 0);
++        log_debug("/* %s: chroot(\"/\") */", __func__);
++        test_path_is_root_at_one(false);
++
++        /* chdir("/") neither change anything. */
++        assert_se(chdir("/") >= 0);
++        log_debug("/* %s: chdir(\"/\") */", __func__);
++        test_path_is_root_at_one(false);
++
++        /* chdir("/../") neither change anything. */
++        assert_se(chdir("/../") >= 0);
++        log_debug("/* %s: chdir(\"/../\") */", __func__);
++        test_path_is_root_at_one(false);
++
++        /* After chroot("/../"), both "/" and "/../" point to the new root directory. */
++        assert_se(chroot("/../") >= 0);
++        log_debug("/* %s: chroot(\"/../\") */", __func__);
++        test_path_is_root_at_one(true);
++
++        /* chdir("/../") does not change anything. */
++        assert_se(chdir("/../") >= 0);
++        log_debug("/* %s: chdir(\"/../\") again */", __func__);
++        test_path_is_root_at_one(true);
++
++        /* bind mounting to non-root directory has no problem, of course. */
++        _cleanup_(rm_rf_physical_and_freep) char *tmp = NULL;
++        assert_se(mkdtemp_malloc("/tmp/test-path_is_root-XXXXXX", &tmp) >= 0);
++        assert_se(mount_nofollow_verbose(LOG_DEBUG, "/", tmp, NULL, MS_BIND|MS_REC, NULL) >= 0);
++        log_debug("/* %s: bind mount(\"/\", \"%s\") */", __func__, tmp);
++        test_path_is_root_at_one(true);
++
++        assert_se(chdir(tmp) >= 0);
++        log_debug("/* %s: chdir(\"%s\") */", __func__, tmp);
++        test_path_is_root_at_one(true);
++
++        assert_se(chroot(tmp) >= 0);
++        log_debug("/* %s: chroot(\"%s\") */", __func__, tmp);
++        test_path_is_root_at_one(true);
++
++        assert_se(chdir(tmp) >= 0);
++        log_debug("/* %s: chdir(\"%s\") again */", __func__, tmp);
++        test_path_is_root_at_one(true);
++}
++
+ TEST(fd_get_path) {
+         _cleanup_(rm_rf_physical_and_freep) char *t = NULL;
+         _cleanup_close_ int tfd = -EBADF, fd = -EBADF;
