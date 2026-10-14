@@ -1,0 +1,230 @@
+From e00f009d9b541c040a7211aa67a1c3e1974ab696 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Tue, 13 Oct 2026 13:15:39 +0900
+Subject: [PATCH] sd-bus: several fixlets for
+ sd_bus_message_append_{string,array}_memfd() (#43780)
+--- a/man/sd_bus_message_append_string_memfd.xml
++++ b/man/sd_bus_message_append_string_memfd.xml
+@@ -32,6 +32,8 @@
+         <funcdef>int sd_bus_message_append_string_memfd</funcdef>
+         <paramdef>sd_bus_message *<parameter>m</parameter></paramdef>
+         <paramdef>int <parameter>memfd</parameter></paramdef>
++        <paramdef>uint64_t <parameter>offset</parameter></paramdef>
++        <paramdef>uint64_t <parameter>size</parameter></paramdef>
+       </funcprototype>
+ 
+       <funcprototype>
+@@ -45,7 +47,7 @@
+         <funcdef>int sd_bus_message_append_string_space</funcdef>
+         <paramdef>sd_bus_message *<parameter>m</parameter></paramdef>
+         <paramdef>size_t <parameter>size</parameter></paramdef>
+-        <paramdef>char **<parameter>s</parameter></paramdef>
++        <paramdef>char **<parameter>ret</parameter></paramdef>
+       </funcprototype>
+     </funcsynopsis>
+   </refsynopsisdiv>
+@@ -59,11 +61,17 @@
+     used to append a single string (item of type <literal>s</literal>)
+     to message <parameter>m</parameter>.</para>
+ 
+-    <para>In case of
+-    <function>sd_bus_message_append_string_memfd()</function>, the
+-    contents of <parameter>memfd</parameter> are the string. They must
+-    satisfy the same constraints as described for the
+-    <literal>s</literal> type in
++    <para>In case of <function>sd_bus_message_append_string_memfd()</function>, the contents of
++    <parameter>memfd</parameter> starting at the specified <parameter>offset</parameter> and of the specified
++    <parameter>size</parameter> are used as the string. <parameter>size</parameter> must include the
++    terminating <constant>NUL</constant> byte, i.e. the resulting string has length
++    <parameter>size</parameter> - 1. If <parameter>offset</parameter> is zero and <parameter>size</parameter>
++    is <constant>UINT64_MAX</constant>, the full contents of the memory file descriptor are used, and hence
++    must themselves end in a <constant>NUL</constant> byte. If <parameter>offset</parameter> plus
++    <parameter>size</parameter> exceeds the actual size of the memory file descriptor, this call fails with
++    <constant>-EMSGSIZE</constant>. The memory file descriptor is sealed by this call if it has not been
++    sealed yet, and cannot be modified after this call. The appended contents must satisfy the same
++    constraints as described for the <literal>s</literal> type in
+     <citerefentry><refentrytitle>sd_bus_message_append_basic</refentrytitle><manvolnum>3</manvolnum></citerefentry>.</para>
+ 
+     <para>In case of
+@@ -89,7 +97,7 @@
+     similar to <function>sd_bus_message_append_basic()</function> with
+     type <literal>s</literal>, but instead of copying a string into
+     the message, it returns a pointer to the destination area to
+-    the caller in pointer <parameter>p</parameter>. Space for the string
++    the caller in pointer <parameter>ret</parameter>. Space for the string
+     of length <parameter>size</parameter> plus the terminating
+     <constant>NUL</constant> is allocated.</para>
+   </refsect1>
+--- a/src/basic/memfd-util.c
++++ b/src/basic/memfd-util.c
+@@ -124,10 +124,27 @@ int memfd_get_sealed(int fd) {
+         if (r < 0)
+                 return r;
+ 
+-        /* We ignore F_SEAL_EXEC here to support older kernels. */
++        /* We ignore F_SEAL_EXEC here to support older kernels.
++         * It is supported since kernel v6.3 (6fd7353829cafc4067aad9eea0dc95da67e7df16). */
+         return FLAGS_SET(seals, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE);
+ }
+ 
++int memfd_set_sealed_gracefully(int fd) {
++        int r;
++
++        r = memfd_set_sealed(fd);
++        if (r != -EPERM)
++                return r;
++
++        /* Already sealed? Check if required seals are set. */
++        r = memfd_get_sealed(fd);
++        if (r < 0)
++                return r;
++        if (r == 0)
++                return -EPERM; /* Propagate the original error. */
++        return 0;
++}
++
+ int memfd_get_size(int fd, uint64_t *sz) {
+         struct stat stat;
+ 
+--- a/src/basic/memfd-util.h
++++ b/src/basic/memfd-util.h
+@@ -18,6 +18,7 @@ int memfd_map(int fd, uint64_t offset, s
+ 
+ int memfd_set_sealed(int fd);
+ int memfd_get_sealed(int fd);
++int memfd_set_sealed_gracefully(int fd);
+ 
+ int memfd_get_size(int fd, uint64_t *sz);
+ int memfd_set_size(int fd, uint64_t sz);
+--- a/src/fuzz/fuzz-bootspec.c
++++ b/src/fuzz/fuzz-bootspec.c
+@@ -108,7 +108,7 @@ int LLVMFuzzerTestOneInput(const uint8_t
+         if (getenv_bool("SYSTEMD_FUZZ_OUTPUT") <= 0) {
+                 orig_stdout_fd = fcntl(fileno(stdout), F_DUPFD_CLOEXEC, 3);
+                 if (orig_stdout_fd < 0)
+-                        log_warning_errno(orig_stdout_fd, "Failed to duplicate fd 1: %m");
++                        log_warning_errno(errno, "Failed to duplicate fd 1, ignoring: %m");
+                 else
+                         assert_se(freopen("/dev/null", "w", stdout));
+         }
+--- a/src/libsystemd/sd-bus/bus-message.c
++++ b/src/libsystemd/sd-bus/bus-message.c
+@@ -2200,13 +2200,13 @@ _public_ int sd_bus_message_append_array
+         assert_return(!m->sealed, -EPERM);
+         assert_return(!m->poisoned, -ESTALE);
+ 
+-        r = memfd_set_sealed(memfd);
++        r = memfd_set_sealed_gracefully(memfd);
+         if (r < 0)
+                 return r;
+ 
+         copy_fd = fcntl(memfd, F_DUPFD_CLOEXEC, 3);
+         if (copy_fd < 0)
+-                return copy_fd;
++                return -errno;
+ 
+         r = memfd_get_size(memfd, &real_size);
+         if (r < 0)
+@@ -2214,7 +2214,7 @@ _public_ int sd_bus_message_append_array
+ 
+         if (offset == 0 && size == UINT64_MAX)
+                 size = real_size;
+-        else if (offset + size > real_size)
++        else if (size > real_size || offset > real_size - size)
+                 return -EMSGSIZE;
+ 
+         align = bus_type_get_alignment(type);
+@@ -2229,6 +2229,9 @@ _public_ int sd_bus_message_append_array
+         if (size % sz != 0)
+                 return -EINVAL;
+ 
++        if (size == 0)
++                return -EINVAL;
++
+         if (size > (uint64_t) UINT32_MAX)
+                 return -EINVAL;
+ 
+@@ -2244,11 +2247,13 @@ _public_ int sd_bus_message_append_array
+         if (!part)
+                 return -ENOMEM;
+ 
+-        part->memfd = copy_fd;
++        if (m->body_size > UINT32_MAX - size)
++                return -EMSGSIZE;
++
++        part->memfd = TAKE_FD(copy_fd);
+         part->memfd_offset = offset;
+         part->sealed = true;
+         part->size = size;
+-        copy_fd = -EBADF;
+ 
+         m->body_size += size;
+         message_extend_containers(m, size);
+@@ -2275,13 +2280,13 @@ _public_ int sd_bus_message_append_strin
+         assert_return(!m->sealed, -EPERM);
+         assert_return(!m->poisoned, -ESTALE);
+ 
+-        r = memfd_set_sealed(memfd);
++        r = memfd_set_sealed_gracefully(memfd);
+         if (r < 0)
+                 return r;
+ 
+-        copy_fd = fcntl(memfd, FD_CLOEXEC, 3);
++        copy_fd = fcntl(memfd, F_DUPFD_CLOEXEC, 3);
+         if (copy_fd < 0)
+-                return copy_fd;
++                return -errno;
+ 
+         r = memfd_get_size(memfd, &real_size);
+         if (r < 0)
+@@ -2289,7 +2294,7 @@ _public_ int sd_bus_message_append_strin
+ 
+         if (offset == 0 && size == UINT64_MAX)
+                 size = real_size;
+-        else if (offset + size > real_size)
++        else if (size > real_size || offset > real_size - size)
+                 return -EMSGSIZE;
+ 
+         /* We require this to be NUL terminated */
+@@ -2329,11 +2334,13 @@ _public_ int sd_bus_message_append_strin
+         if (!part)
+                 return -ENOMEM;
+ 
+-        part->memfd = copy_fd;
++        if (m->body_size > UINT32_MAX - size)
++                return -EMSGSIZE;
++
++        part->memfd = TAKE_FD(copy_fd);
+         part->memfd_offset = offset;
+         part->sealed = true;
+         part->size = size;
+-        copy_fd = -EBADF;
+ 
+         m->body_size += size;
+         message_extend_containers(m, size);
+--- a/src/systemctl/fuzz-systemctl-parse-argv.c
++++ b/src/systemctl/fuzz-systemctl-parse-argv.c
+@@ -42,7 +42,7 @@ int LLVMFuzzerTestOneInput(const uint8_t
+         if (getenv_bool("SYSTEMD_FUZZ_OUTPUT") <= 0) {
+                 orig_stdout_fd = fcntl(fileno(stdout), F_DUPFD_CLOEXEC, 3);
+                 if (orig_stdout_fd < 0)
+-                        log_warning_errno(orig_stdout_fd, "Failed to duplicate fd 1: %m");
++                        log_warning_errno(errno, "Failed to duplicate fd 1, ignoring: %m");
+                 else
+                         assert_se(freopen("/dev/null", "w", stdout));
+ 
+--- a/src/test/test-memfd-util.c
++++ b/src/test/test-memfd-util.c
+@@ -23,8 +23,11 @@ TEST(memfd_get_sealed) {
+          * start at the beginning anyway */
+ 
+         assert_se(memfd_get_sealed(fd) == 0);
+-        assert_se(memfd_set_sealed(fd) >= 0);
++        assert_se(memfd_set_sealed_gracefully(fd) >= 0);
+         assert_se(memfd_get_sealed(fd) > 0);
++        assert_se(memfd_set_sealed_gracefully(fd) >= 0);
++        assert_se(memfd_get_sealed(fd) > 0);
++        assert_se(memfd_set_sealed(fd) == -EPERM);
+ }
+ 
+ DEFINE_TEST_MAIN(LOG_DEBUG);
