@@ -1,3 +1,19 @@
+systemd (255.2-4deepin85) unstable; urgency=medium
+
+  * rm-rf: fail closed when the root check fails. path_is_root_at() returns
+    a negative errno when it cannot determine whether a target is the root
+    file system; rm_rf_at() treated those errors as a negative answer and
+    continued with destructive operations. Propagate root-check errors
+    before modifying the target while preserving REMOVE_MISSING_OK for
+    absent paths, and treat an existing entry reported as -ENOENT (dangling
+    symlink) as removable.
+  * Adapt the upstream rm_rf_dangling_symlink test to the v255 API:
+    translate ASSERT_OK/ASSERT_OK_ERRNO/ASSERT_ERROR_ERRNO to assert_se(),
+    fixing the compile regression that excluded this backport from the
+    previous aggregation.
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 16 Oct 2026 15:42:12 +0800
+
 systemd (255.2-4deepin84) unstable; urgency=medium
 
   * Backport upstream PR #38636 to identify the root directory against an
