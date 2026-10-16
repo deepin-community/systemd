@@ -1,0 +1,167 @@
+From 868d07d1d450bfae4ad9c1d6ce2ff4cb9855802e Mon Sep 17 00:00:00 2001
+From: Frantisek Sumsal <frantisek@sumsal.cz>
+Date: Wed, 5 Aug 2026 16:46:13 +0200
+Subject: [PATCH] sd-journal: prefer exact cursor match after seek
+
+Since 262299dccbb09f36c8c830dabd6a104469d9852b compare_locations() falls
+through to a realtime-based comparison in compare_boot_ids() if the
+compared entries have different boot IDs (and seqnum IDs). This can,
+however, cause us to pick up the wrong entry/file on systems with
+unreliable/missing RTC, where early-boot entries of a boot might have
+earlier realtime timestamp compared to the previous boot.
+
+To fix this, let's track the journal file that holds the exact cursor
+match (matching seqnum_id and seqnum), and override the chosen candidate
+if needed once we process all open journals.
+
+Resolves: #31516
+
+[Backport note: the sd-journal.c portion of this fix is already integrated
+via fix-sd-journal-prefer-machine-id-from-tail-entry.patch (upstream
+0e410a6b, PR #43297 squash merge), so this patch carries only the
+reproducer test, adapted to the v255.2 test infrastructure.]
+
+From 8e762e6b9f508c82c05e1c05358235d2067d9fb9 Mon Sep 17 00:00:00 2001
+From: Frantisek Sumsal <frantisek@sumsal.cz>
+Date: Wed, 5 Aug 2026 18:33:17 +0200
+Subject: [PATCH] test: verify cursor-seeking in the opposite direction as well
+
+--- a/src/libsystemd/sd-journal/test-journal-interleaving.c
++++ b/src/libsystemd/sd-journal/test-journal-interleaving.c
+@@ -16,6 +16,7 @@
+ #include "parse-util.h"
+ #include "random-util.h"
+ #include "rm-rf.h"
++#include "strv.h"
+ #include "tests.h"
+ 
+ /* This program tests skipping around in a multi-file journal. */
+@@ -160,6 +161,37 @@
+ 
+ }
+ 
++static void test_cursor(sd_journal *j) {
++        _cleanup_strv_free_ char **cursors = NULL;
++        int r;
++
++        assert_ret(sd_journal_seek_head(j));
++
++        for (;;) {
++                assert_se((r = sd_journal_next(j)) >= 0);
++                if (r == 0)
++                        break;
++
++                _cleanup_free_ char *cursor = NULL;
++                assert_ret(sd_journal_get_cursor(j, &cursor));
++                assert_se(sd_journal_test_cursor(j, cursor) > 0);
++                assert_se(strv_consume(&cursors, TAKE_PTR(cursor)) >= 0);
++        }
++
++        /* Verify cursor-seeking in the opposite (backwards) direction as well. */
++        STRV_FOREACH(c, cursors) {
++                assert_ret(sd_journal_seek_cursor(j, *c));
++                assert_ret(sd_journal_previous(j));
++                assert_se(sd_journal_test_cursor(j, *c) > 0);
++        }
++
++        assert_ret(sd_journal_seek_tail(j));
++        STRV_FOREACH_BACKWARDS(c, cursors) {
++                assert_ret(sd_journal_previous(j));
++                assert_se(sd_journal_test_cursor(j, *c) > 0);
++        }
++}
++
+ static void setup_sequential(void) {
+         JournalFile *f1, *f2, *f3;
+         sd_id128_t id;
+@@ -724,6 +756,90 @@
+         test_generic_array_bisect_one(100, 40);
+ }
+ 
++static void append_number_at(
++                JournalFile *f,
++                unsigned n,
++                const sd_id128_t *boot_id,
++                uint64_t realtime,
++                uint64_t monotonic) {
++
++        _cleanup_free_ char *p = NULL, *q = NULL;
++        dual_timestamp ts = {
++                .realtime = realtime,
++                .monotonic = monotonic,
++        };
++        struct iovec iovec[2];
++        size_t n_iov = 0;
++
++        assert_se(asprintf(&p, "NUMBER=%u", n) >= 0);
++        iovec[n_iov++] = IOVEC_MAKE_STRING(p);
++
++        if (boot_id) {
++                assert_se(q = strjoin("_BOOT_ID=", SD_ID128_TO_STRING(*boot_id)));
++                iovec[n_iov++] = IOVEC_MAKE_STRING(q);
++        }
++
++        assert_ret(journal_file_append_entry(f, &ts, boot_id, iovec, n_iov, NULL, NULL, NULL, NULL));
++}
++
++TEST(cursor_broken_rtc) {
++        /* Reproducer for https://github.com/systemd/systemd/issues/31516.
++         *
++         * On systems without a reliable (or missing) RTC, the realtime clock can go backwards across
++         * reboots. This creates journal files where a later boot's first entries have lower realtime
++         * timestamps than the previous boot's last entries.
++         *
++         * compare_boot_ids() orders boots by their newest realtime timestamp, so it considers boot 1
++         * "earlier" than boot 2 (since boot 2 eventually catches up). But when seeking to a cursor pointing
++         * at boot 2's first entry (which has low realtime), the realtime-based positioning in boot 1's file
++         * finds a nearby entry, and compare_locations() (via compare_boot_ids()) incorrectly picks that
++         * entry because boot 1 is globally "earlier".
++         *
++         * A minimal setup for such scenario - 2 files with 3 entries:
++         *
++         *   one.journal (boot 1): entry at realtime=2s
++         *   two.journal (boot 2): entry at realtime=1s (earlier than boot 1), then entry at realtime=3s */
++        char t[] = "/var/tmp/journal-cursor-rtc-XXXXXX";
++        sd_journal *j;
++        JournalFile *f1, *f2;
++        sd_id128_t boot1, boot2;
++
++        mkdtemp_chdir_chattr(t);
++
++        f1 = test_open("one.journal");
++        f2 = test_open("two.journal");
++
++        assert_se(sd_id128_randomize(&boot1) >= 0);
++        assert_se(sd_id128_randomize(&boot2) >= 0);
++
++        log_info("boot1: %s, boot2: %s",
++                 SD_ID128_TO_STRING(boot1), SD_ID128_TO_STRING(boot2));
++
++        append_number_at(f1, 1, &boot1, 2 * USEC_PER_SEC, 100 * USEC_PER_MSEC);
++        append_number_at(f2, 2, &boot2, 1 * USEC_PER_SEC, 100 * USEC_PER_MSEC);
++        append_number_at(f2, 3, &boot2, 3 * USEC_PER_SEC, 200 * USEC_PER_MSEC);
++
++        test_close(f1);
++        test_close(f2);
++
++        assert_ret(sd_journal_open_directory(&j, t, SD_JOURNAL_ASSUME_IMMUTABLE));
++
++        /* Test cursor seeking */
++        test_cursor(j);
++
++        /* Also verify forward and backward iterations */
++        assert_ret(sd_journal_seek_head(j));
++        assert_se(sd_journal_next(j) == 1);
++        test_check_numbers_down(j, 3);
++
++        assert_ret(sd_journal_seek_tail(j));
++        assert_se(sd_journal_previous(j) == 1);
++        test_check_numbers_up(j, 3);
++
++        sd_journal_close(j);
++
++        test_done(t);
++}
+ 
+ static int intro(void) {
+         /* journal_file_open() requires a valid machine id */
