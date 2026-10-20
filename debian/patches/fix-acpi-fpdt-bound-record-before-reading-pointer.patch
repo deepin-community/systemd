@@ -1,0 +1,26 @@
+From 462e1cc635c457f6fca6d8b3592dab073f8f7eaf Mon Sep 17 00:00:00 2001
+From: Nayyar <nayyar@bugqore.com>
+Date: Wed, 14 Oct 2026 12:25:49 +0530
+Subject: [PATCH] acpi-fpdt: bound record against table before reading pointer
+
+Only type/length/revision are the generic performance record header; the
+pointer is specific to the Firmware Basic Boot Performance Table Pointer
+Record. Check that the record fits into the table where its length is
+validated against the expected size, so rec->ptr is never read past the
+end of the buffer.
+
+diff --git a/src/shared/acpi-fpdt.c b/src/shared/acpi-fpdt.c
+index c94c0ed4ab..1301143323 100644
+--- a/src/shared/acpi-fpdt.c
++++ b/src/shared/acpi-fpdt.c
+@@ -127,7 +127,8 @@ int acpi_get_boot_usec(usec_t *ret_loader_start, usec_t *ret_loader_exit) {
+                         break;
+                 if (rec->type != ACPI_FPDT_TYPE_BOOT)
+                         continue;
+-                if (rec->length != sizeof(struct acpi_fpdt_header))
++                if (rec->length != sizeof(struct acpi_fpdt_header) ||
++                    (char *)rec + rec->length > buf + l)
+                         continue;
+ 
+                 ptr = rec->ptr;
+
