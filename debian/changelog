@@ -1,3 +1,9 @@
+systemd (255.2-4deepin85) unstable; urgency=medium
+
+  * Backport upstream fix to bound the ACPI FPDT record against the table buffer before reading the Firmware Basic Boot Performance Table pointer, preventing an out-of-bounds read when parsing truncated or corrupt FPDT tables.
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 20 Oct 2026 10:17:48 +0800
+
 systemd (255.2-4deepin84) unstable; urgency=medium
 
   * Backport upstream PR #38636 to identify the root directory against an
