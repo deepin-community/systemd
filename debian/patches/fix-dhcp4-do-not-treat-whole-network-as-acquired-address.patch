@@ -1,0 +1,80 @@
+From 594067b9db18be50eb3b2e8902770cc3c78031c5 Mon Sep 17 00:00:00 2001
+From: Tarek Abu-Hariri <tabuhariri@nvidia.com>
+Date: Tue, 22 Sep 2026 14:44:06 +0300
+Subject: [PATCH] network: dhcp4: do not treat a whole network as the acquired
+ address
+
+The destination of a classless static route is masked with its prefix
+length, so comparing it with in4_addr_equal() alone also matches a
+larger network whose base address equals the acquired address. That only
+happens when the address has no host bits set, e.g. the lower address of
+a /31, which is a valid host address per RFC 3021.
+
+Hence a lease of 172.16.0.0/31 with a static route for 172.16.0.0/12 via
+172.16.0.1 was installed as "172.16.0.0/12 proto dhcp scope host", with
+the gateway dropped. Only a /32 destination can be equivalent to the
+acquired address, so check the prefix length too.
+
+Fixes #43841.
+
+Signed-off-by: Tarek Abu-Hariri <tabuhariri@nvidia.com>
+
+diff --git a/src/network/networkd-dhcp4.c b/src/network/networkd-dhcp4.c
+index efbae6d8..a9695f54 100644
+--- a/src/network/networkd-dhcp4.c
++++ b/src/network/networkd-dhcp4.c
+@@ -490,7 +490,9 @@ static int dhcp4_request_route_auto(
+                 route->gw = IN_ADDR_NULL;
+                 route->prefsrc = IN_ADDR_NULL;
+ 
+-        } else if (in4_addr_equal(&route->dst.in, &address)) {
++        } else if (route->dst_prefixlen == 32 && in4_addr_equal(&route->dst.in, &address)) {
++                /* The destination is masked, hence a larger network also compares equal when the acquired
++                 * address has no host bits set, e.g. the lower address of a /31. See RFC 3021. */
+                 if (in4_addr_is_set(gw))
+                         log_link_debug(link, "DHCP: requested route destination "IPV4_ADDRESS_FMT_STR"/%u is equivalent to the acquired address, "
+                                        "ignoring gateway address "IPV4_ADDRESS_FMT_STR,
+diff --git a/test/test-network/systemd-networkd-tests.py b/test/test-network/systemd-networkd-tests.py
+index ab1bbf5f..4bc9d695 100755
+--- a/test/test-network/systemd-networkd-tests.py
++++ b/test/test-network/systemd-networkd-tests.py
+@@ -5775,6 +5775,39 @@ class NetworkdDHCPClientTests(unittest.TestCase, Utilities):
+         output = check_output(*networkctl_cmd, '--json=short', 'status', env=env)
+         check_json(output)
+ 
++    def test_dhcp_client_ipv4_rfc3021(self):
++        copy_network_unit(
++            '25-veth.netdev',
++            '25-dhcp-server-veth-peer.network',
++            '25-dhcp-client-ipv4-use-routes-use-gateway.network',
++            copy_dropins=False,
++        )
++
++        start_networkd()
++        self.wait_online(['veth-peer:carrier'])
++        # The lower address of a /31 network is a valid host address, see RFC 3021. Announce a classless
++        # static route for a larger network whose base address is the same as the acquired address.
++        start_dnsmasq(
++            '--dhcp-host=12:34:56:78:9a:bc,192.168.5.0',
++            '--dhcp-option=option:classless-static-route,192.168.5.0/25,192.168.5.1',
++            ipv4_range='192.168.5.0,192.168.5.1,255.255.255.254',
++        )
++        self.wait_online(['veth99:routable', 'veth-peer:routable'])
++
++        output = check_output('ip -4 address show dev veth99')
++        print(output)
++        self.assertIn('inet 192.168.5.0/31', output)
++
++        output = check_output('ip -4 route show dev veth99')
++        print(output)
++        # The acquired address only shadows a host route to itself, hence the gateway must be honored.
++        self.assertIn('192.168.5.0/25 via 192.168.5.1 proto dhcp src 192.168.5.0 metric 1024', output)
++        self.assertIn('192.168.5.1 proto dhcp scope link src 192.168.5.0 metric 1024', output)
++        self.assertNotIn('192.168.5.0/25 proto dhcp scope host', output)
++
++        output = check_output(*networkctl_cmd, '--json=short', 'status', env=env)
++        check_json(output)
++
+     def test_dhcp_client_settings_anonymize(self):
+         copy_network_unit('25-veth.netdev', '25-dhcp-server-veth-peer.network', '25-dhcp-client-anonymize.network')
+         start_networkd()
