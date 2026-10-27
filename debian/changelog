@@ -1,3 +1,13 @@
+systemd (255.2-4deepin85) unstable; urgency=medium
+
+  * Backport upstream PR #44388 to authenticate extension images specified
+    by path: portabled now asks polkit before inspecting extension images
+    given by path, since inspecting loop-mounts them as root, and
+    portablectl opens its polkit agent for interactive authentication during
+    inspect. Adapt the upstream test to the v255 testsuite-29.sh layout.
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 27 Oct 2026 11:59:49 +0800
+
 systemd (255.2-4deepin84) unstable; urgency=medium
 
   * Backport upstream PR #38636 to identify the root directory against an
