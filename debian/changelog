@@ -1,3 +1,9 @@
+systemd (255.2-4deepin85) unstable; urgency=medium
+
+  * Backport upstream fix: restrict cache-based conflict check to LLMNR scopes. resolved no longer sends LLMNR-style conflict advisory queries on mDNS, where the C bit is the AA bit and multiple responders (e.g. SRP advertising proxies of Thread border routers) legitimately answer for the same name, causing query storms. Includes upstream test-dns-scope.c suite adapted for the 255 tree.
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 27 Oct 2026 12:07:33 +0800
+
 systemd (255.2-4deepin84) unstable; urgency=medium
 
   * Backport upstream PR #38636 to identify the root directory against an
