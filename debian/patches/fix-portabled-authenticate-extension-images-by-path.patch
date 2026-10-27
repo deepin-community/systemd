@@ -1,0 +1,47 @@
+From 5ddab5b8f47fcd9e5b125e3e575d4bbabd6742cf Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Fri, 16 Oct 2026 16:15:16 +0200
+Subject: [PATCH] portabled: authenticate extension images specified by path
+
+GetImageMetadata() and GetImageMetadataWithExtensions() ask polkit before
+inspecting an image that is specified by path, because inspecting
+loop-mounts the image as root. Extension images aren't authenticated at
+all, so any local user can make portabled set up loop devices for files
+they choose, probe them and mount them, by passing them as extensions of
+an installed image.
+
+Let's ask polkit for the inspect-images action if any extension image is
+specified by path, like we do for the image itself.
+
+Backport note: The NEWS hunk (v263 release notes) and the test hunk
+(test/units/TEST-29-PORTABLE.image.sh, introduced with the newer test
+harness) were dropped because they do not exist in this 255-based Debian
+series. The functional change in src/portable/portabled-image-bus.c
+applies as-is.
+
+diff --git a/src/portable/portabled-image-bus.c b/src/portable/portabled-image-bus.c
+index 935f0e619b..55e3a3fce0 100644
+--- a/src/portable/portabled-image-bus.c
++++ b/src/portable/portabled-image-bus.c
+@@ -145,11 +145,20 @@ int bus_image_common_get_metadata(
+                 flags |= input_flags;
+         }
+ 
++        /* Inspecting an image loop-mounts it as root, so we authenticate extension images that are
++         * specified by path like the image itself. */
++        bool extension_by_path = false;
++        STRV_FOREACH(i, extension_images)
++                if (!image_name_is_valid(*i)) {
++                        extension_by_path = true;
++                        break;
++                }
++
+         r = bus_image_acquire(m,
+                               message,
+                               name_or_path,
+                               image,
+-                              BUS_IMAGE_AUTHENTICATE_BY_PATH,
++                              extension_by_path ? BUS_IMAGE_AUTHENTICATE_ALL : BUS_IMAGE_AUTHENTICATE_BY_PATH,
+                               "org.freedesktop.portable1.inspect-images",
+                               &image,
+                               error);
