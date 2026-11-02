@@ -1,0 +1,114 @@
+From d5cd1a24bbabe38e92c6c171088b382a7051daf2 Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Sat, 31 Oct 2026 22:18:34 +0100
+Subject: [PATCH] loop-util: don't treat device-mapper devices as loop devices
+
+loop_device_open() treats every block device that answers
+LOOP_GET_STATUS64 as a loop device. Device-mapper forwards ioctls to the
+underlying device for targets such as dm-verity, so on a verity device
+that maps a loop device, the ioctl returns the status of that loop
+device. systemd-dissect --umount of a verity image then opens the verity
+device as a loop device that it may clean up. When it frees the object,
+LOOP_CLR_FD reaches the loop device under the verity device. The kernel
+puts the loop device into rundown, and we retry LOOP_CTL_REMOVE for five
+seconds. If another mount still uses a shared verity device, nobody can
+open its loop device anymore. verity_can_reuse() then fails to check the
+backing file of the device.
+
+Let's only query the loop status of devices whose whole disk has the
+loop major number. That includes the partitions of a loop device, which
+have the extended major number. Other devices are foreign, and we never
+clear them. The kernel still clears the loop device under a verity
+device through its autoclear flag, once the verity device is gone.
+
+diff --git a/src/shared/loop-util.c b/src/shared/loop-util.c
+index 44fe332d86..4a0bb2d1e8 100644
+--- a/src/shared/loop-util.c
++++ b/src/shared/loop-util.c
+@@ -6,6 +6,7 @@
+ 
+ #include <fcntl.h>
+ #include <linux/loop.h>
++#include <linux/major.h>
+ #include <sys/file.h>
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+@@ -1045,7 +1046,7 @@ int loop_device_open(
+ 
+         _cleanup_close_ int fd = -EBADF, lock_fd = -EBADF;
+         _cleanup_free_ char *node = NULL, *backing_file = NULL;
+-        dev_t devnum, backing_devno = 0;
++        dev_t devnum, whole_devnum, backing_devno = 0;
+         struct loop_info64 info;
+         ino_t backing_inode = 0;
+         uint64_t diskseq = 0;
+@@ -1071,7 +1072,21 @@ int loop_device_open(
+                         return lock_fd;
+         }
+ 
+-        if (ioctl(fd, LOOP_GET_STATUS64, &info) >= 0) {
++        r = sd_device_get_devnum(dev, &devnum);
++        if (r < 0)
++                return r;
++
++        /* Device-mapper forwards ioctls to the underlying device for targets such as dm-verity. On a verity
++         * device that maps a loop device, LOOP_GET_STATUS64 returns the status of that loop device. LOOP_CLR_FD
++         * on the verity device clears the loop device, although the verity device still uses it. So we only
++         * query the loop status of loop devices and their partitions. The partitions of a loop device don't
++         * have the loop major number, they have the extended major number 259. So we check the major number of
++         * the whole disk. */
++        r = block_get_whole_disk(devnum, &whole_devnum);
++        if (r < 0)
++                return r;
++
++        if (major(whole_devnum) == LOOP_MAJOR && ioctl(fd, LOOP_GET_STATUS64, &info) >= 0) {
+ #if HAVE_VALGRIND_MEMCHECK_H
+                 /* Valgrind currently doesn't know LOOP_GET_STATUS64. Remove this once it does */
+                 VALGRIND_MAKE_MEM_DEFINED(&info, sizeof(info));
+@@ -1102,10 +1117,6 @@ int loop_device_open(
+         if (r < 0)
+                 return r;
+ 
+-        r = sd_device_get_devnum(dev, &devnum);
+-        if (r < 0)
+-                return r;
+-
+         r = sd_device_get_devname(dev, &s);
+         if (r < 0)
+                 return r;
+diff --git a/test/TEST-50-DISSECT/test.sh b/test/TEST-50-DISSECT/test.sh
+index f1abce88..5db99472 100755
+--- a/test/TEST-50-DISSECT/test.sh
++++ b/test/TEST-50-DISSECT/test.sh
+@@ -21,6 +21,7 @@ test_append_files() {
+     generate_module_dependencies
+     inst_binary wc
+     inst_binary sha256sum
++    inst_binary blockdev
+     if command -v openssl >/dev/null 2>&1; then
+         inst_binary openssl
+     fi
+diff --git a/test/units/testsuite-50.sh b/test/units/testsuite-50.sh
+index 28218ab6..381ffd36 100755
+--- a/test/units/testsuite-50.sh
++++ b/test/units/testsuite-50.sh
+@@ -63,6 +63,19 @@ mv "${image}.fooverity" "${image}.verity"
+ mv "${image}.foohash" "${image}.roothash"
+ 
+ mkdir -p "${image_dir}/mount" "${image_dir}/mount2"
++# systemd-dissect --umount of one mount of a shared verity device leaves the loop devices under the verity device
++# alone, since another mount still uses the verity device.
++SYSTEMD_DISSECT_VERITY_SIGNATURE=0 systemd-dissect --mount "${image}.raw" "${image_dir}/mount"
++SYSTEMD_DISSECT_VERITY_SIGNATURE=0 systemd-dissect --mount "${image}.raw" "${image_dir}/mount2"
++test "$(findmnt -n -o MAJ:MIN "${image_dir}/mount2")" = "$(findmnt -n -o MAJ:MIN "${image_dir}/mount")"
++systemd-dissect --umount "${image_dir}/mount2"
++for loop in $(dmsetup deps -o blkdevname "${roothash}-verity" | grep -o 'loop[0-9]*'); do
++    blockdev --getsize64 "/dev/$loop" >/dev/null
++done
++systemd-dissect --umount "${image_dir}/mount"
++# The kernel removes the verity device some time after the last mount is gone. The tests below set up the verity
++# device again, some with a signature, so wait until it's gone to make sure it's set up freshly.
++timeout 60 bash -c 'while dmsetup info "$1" &>/dev/null; do sleep 0.1; done' bash "${roothash}-verity"
+ systemd-dissect --mount "${image}.raw" "${image_dir}/mount"
+ grep -q -F -f "$os_release" "${image_dir}/mount/usr/lib/os-release"
+ grep -q -F -f "$os_release" "${image_dir}/mount/etc/os-release"

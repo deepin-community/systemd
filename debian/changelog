@@ -1,3 +1,9 @@
+systemd (255.2-4deepin86) unstable; urgency=medium
+
+  * Backport upstream d5cd1a24bbab: loop-util: don't treat device-mapper devices as loop devices. Device-mapper forwards ioctls to the underlying device for targets such as dm-verity, so systemd-dissect --umount of a verity image could open the verity device as a loop device and clear the loop device under it via LOOP_CLR_FD, breaking other mounts that still share the verity device. Only query the loop status of devices whose whole disk has the loop major number. Also port the upstream TEST-50-DISSECT regression test to testsuite-50.sh.
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 02 Nov 2026 12:01:24 +0800
+
 systemd (255.2-4deepin85) unstable; urgency=medium
 
   * Backport upstream 6f8ef80bb3ba: core/dbus-execute: don't trigger
