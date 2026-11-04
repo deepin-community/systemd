@@ -1,3 +1,9 @@
+systemd (255.2-4deepin86) unstable; urgency=medium
+
+  * Backport upstream d38eca0d2d34: importd: fix polkit policy name used in method_cancel. Transfer.Cancel was authorized by the import1.pull policy instead of import1.cancel. Also add the missing org.freedesktop.import1.cancel polkit action and fix the same wrong policy name in method_cancel_transfer.
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 04 Nov 2026 10:17:38 +0800
+
 systemd (255.2-4deepin85) unstable; urgency=medium
 
   * Backport upstream 6f8ef80bb3ba: core/dbus-execute: don't trigger
