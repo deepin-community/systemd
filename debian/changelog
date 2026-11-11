@@ -1,3 +1,9 @@
+systemd (255.2-4deepin87) unstable; urgency=medium
+
+  * Fix operator precedence in format_timestamp_style() size check to prevent assertion failure or buffer overflow on short buffers
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 11 Nov 2026 10:16:17 +0800
+
 systemd (255.2-4deepin86) unstable; urgency=medium
 
   * Add mn_CN.
