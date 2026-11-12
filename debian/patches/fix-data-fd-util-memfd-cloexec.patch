@@ -1,0 +1,23 @@
+From b89a4232befe1154be9280d6e9bdfb1a7211609a Mon Sep 17 00:00:00 2001
+From: Christian Brauner <brauner@kernel.org>
+Date: Tue, 8 Sep 2026 16:52:09 +0200
+Subject: [PATCH] data-fd-util: always create memfd with MFD_CLOEXEC
+
+Always create memfd with MFD_CLOEXEC.
+
+Signed-off-by: Christian Brauner (Amutable) <brauner@kernel.org>
+
+diff --git a/src/shared/data-fd-util.c b/src/shared/data-fd-util.c
+index 16cee2f939..5766573c28 100644
+--- a/src/shared/data-fd-util.c
++++ b/src/shared/data-fd-util.c
+@@ -214,7 +214,7 @@ int memfd_clone_fd(int fd, const char *name, int mode) {
+         exec = st.st_mode & 0111;
+ 
+         mfd = memfd_create_wrapper(name,
+-                                   ((FLAGS_SET(mode, O_CLOEXEC) || ro) ? MFD_CLOEXEC : 0) |
++                                   MFD_CLOEXEC |
+                                    (ro ? MFD_ALLOW_SEALING : 0) |
+                                    (exec ? MFD_EXEC : MFD_NOEXEC_SEAL));
+         if (mfd < 0)
+
