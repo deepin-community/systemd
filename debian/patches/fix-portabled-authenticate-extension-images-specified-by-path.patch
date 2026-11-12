@@ -1,0 +1,99 @@
+From 78d288643320ce962481fec1ca14c3397b842a2b Mon Sep 17 00:00:00 2001
+From: Daan De Meyer <daan.j.demeyer@gmail.com>
+Date: Mon, 26 Oct 2026 20:05:52 +0100
+Subject: [PATCH] portabled: authenticate extension images specified by path
+ (#44388)
+
+Description: portabled asks polkit before inspecting extension images that
+ are specified by path, because inspecting loop-mounts them as root.
+ portablectl opens its polkit agent for "portablectl inspect" so interactive
+ authentication is possible.
+ .
+ Backport upstream PR #44388 to v255. The upstream portabled-image-bus.c
+ hunk applies unchanged. Adapt the test to the v255 layout: the upstream
+ test lives in TEST-29-PORTABLE.image.sh and relies on a pre-existing
+ /tmp/app0.raw, so the block is appended to testsuite-29.sh (after all
+ attach operations, to avoid stale image-cache entries), creates
+ /tmp/app0.raw itself, sources util.sh for the runas helper, and cleans up
+ the created images. The upstream NEWS entry is omitted because the v263
+ release notes do not apply to v255.
+Forwarded: not-needed
+Last-Update: 2026-10-27
+--- a/src/portable/portablectl.c
++++ b/src/portable/portablectl.c
+@@ -312,6 +312,11 @@ static int inspect_image(int argc, char
+         if (r < 0)
+                 return r;
+ 
++        /* Inspecting an image loop-mounts it as root, so polkit authentication may be required for
++         * extension images that are specified by path. Open the polkit agent to allow interactive
++         * authentication in that case. */
++        (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
++
+         r = get_image_metadata(bus, image, matches, &reply);
+         if (r < 0)
+                 return r;
+--- a/src/portable/portabled-image-bus.c
++++ b/src/portable/portabled-image-bus.c
+@@ -146,11 +146,20 @@ int bus_image_common_get_metadata(
+                 flags |= input_flags;
+         }
+ 
++        /* Inspecting an image loop-mounts it as root, so we authenticate extension images that are
++         * specified by path like the image itself. */
++        bool extension_by_path = false;
++        STRV_FOREACH(i, extension_images)
++                if (!image_name_is_valid(*i)) {
++                        extension_by_path = true;
++                        break;
++                }
++
+         r = bus_image_acquire(m,
+                               message,
+                               name_or_path,
+                               image,
+-                              BUS_IMAGE_AUTHENTICATE_BY_PATH,
++                              extension_by_path ? BUS_IMAGE_AUTHENTICATE_ALL : BUS_IMAGE_AUTHENTICATE_BY_PATH,
+                               "org.freedesktop.portable1.inspect-images",
+                               &image,
+                               error);
+--- a/test/units/testsuite-29.sh
++++ b/test/units/testsuite-29.sh
+@@ -5,6 +5,9 @@
+ set -eux
+ set -o pipefail
+ 
++# shellcheck source=test/units/util.sh
++. "$(dirname "$0")"/util.sh
++
+ # Set longer timeout for slower machines, e.g. non-KVM vm.
+ mkdir -p /run/systemd/system.conf.d
+ cat >/run/systemd/system.conf.d/10-timeout.conf <<EOF
+@@ -290,4 +293,27 @@ touch /tmp/emptyext/usr/lib/extension-re
+ res="$(! portablectl attach --extension /tmp/emptyext /tmp/emptyroot 2> >(grep "Remote peer disconnected"))"
+ test -z "${res}"
+ 
++# Unprivileged users can inspect images and extension images by name, but not extension images specified by
++# path, because inspecting loop-mounts the extension images as root. (Backport of upstream PR #44388; the
++# upstream test lives in TEST-29-PORTABLE.image.sh and relies on a pre-existing /tmp/app0.raw, so create it
++# here and run the block at the end of the script to avoid stale image-cache entries affecting earlier
++# attach/inspect operations.)
++mkdir -p /run/portables
++cp /usr/share/minimal_0.raw /run/portables/minimal_8.raw
++cp /usr/share/app0.raw /tmp/app0.raw
++cp /tmp/app0.raw /run/portables/app0.raw
++runas testuser busctl call org.freedesktop.portable1 /org/freedesktop/portable1 org.freedesktop.portable1.Manager \
++                           GetImageMetadata sas minimal_8 0 >/dev/null
++runas testuser busctl call org.freedesktop.portable1 /org/freedesktop/portable1 org.freedesktop.portable1.Manager \
++                           GetImageMetadataWithExtensions sasast minimal_8 1 app0 0 0 >/dev/null
++# portabled fails with "Permission denied" if polkit denies the call. It fails with a message that starts with
++# "Access denied" if polkit requires interactive authentication.
++(! runas testuser busctl call org.freedesktop.portable1 /org/freedesktop/portable1 org.freedesktop.portable1.Manager \
++                              GetImageMetadataWithExtensions sasast minimal_8 1 /tmp/app0.raw 0 0 2>&1 >/dev/null) |
++    grep -E "Permission denied|Access denied" >/dev/null
++(! runas testuser busctl call org.freedesktop.portable1 /org/freedesktop/portable1/image/minimal_5f8 org.freedesktop.portable1.Image \
++                              GetMetadataWithExtensions asast 1 /tmp/app0.raw 0 0 2>&1 >/dev/null) |
++    grep -E "Permission denied|Access denied" >/dev/null
++rm -f /run/portables/minimal_8.raw /run/portables/app0.raw /tmp/app0.raw
++
+ touch /testok

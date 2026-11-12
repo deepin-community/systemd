@@ -1,0 +1,55 @@
+From d38eca0d2d3467e3f2676c5546a07fc5e37bc805 Mon Sep 17 00:00:00 2001
+From: Xinyu Yu <rosaxinyu@gmail.com>
+Date: Tue, 3 Nov 2026 19:14:41 +0800
+Subject: [PATCH] importd: fix polkit policy name used in method_cancel
+ (#44591)
+
+
+Adapted for the deepin 255.2 codebase: bus_verify_polkit_async() has a
+different signature there, and the org.freedesktop.import1.cancel polkit
+action (introduced upstream by the prerequisite commit 7af5785d77ce) is
+missing from the policy file, so it is added here as well. The same wrong
+policy name in method_cancel_transfer() is fixed too, since the
+prerequisite commit is not part of this backport.
+
+diff --git a/src/import/importd.c b/src/import/importd.c
+index e1a1ddc2..a09e70fc 100644
+--- a/src/import/importd.c
++++ b/src/import/importd.c
+@@ -1037,7 +1037,7 @@ static int method_cancel(sd_bus_message *msg, void *userdata, sd_bus_error *erro
+         r = bus_verify_polkit_async(
+                         msg,
+                         CAP_SYS_ADMIN,
+-                        "org.freedesktop.import1.pull",
++                        "org.freedesktop.import1.cancel",
+                         NULL,
+                         false,
+                         UID_INVALID,
+@@ -1066,7 +1066,7 @@ static int method_cancel_transfer(sd_bus_message *msg, void *userdata, sd_bus_er
+         r = bus_verify_polkit_async(
+                         msg,
+                         CAP_SYS_ADMIN,
+-                        "org.freedesktop.import1.pull",
++                        "org.freedesktop.import1.cancel",
+                         NULL,
+                         false,
+                         UID_INVALID,
+diff --git a/src/import/org.freedesktop.import1.policy b/src/import/org.freedesktop.import1.policy
+index 88e436dc..fbb39691 100644
+--- a/src/import/org.freedesktop.import1.policy
++++ b/src/import/org.freedesktop.import1.policy
+@@ -48,4 +48,14 @@
+                 </defaults>
+         </action>
+ 
++        <action id="org.freedesktop.import1.cancel">
++                <description gettext-domain="systemd">Cancel transfer of a disk image</description>
++                <message gettext-domain="systemd">Authentication is required to cancel the ongoing transfer of a disk image.</message>
++                <defaults>
++                        <allow_any>auth_admin</allow_any>
++                        <allow_inactive>auth_admin</allow_inactive>
++                        <allow_active>auth_admin_keep</allow_active>
++                </defaults>
++        </action>
++
+ </policyconfig>
