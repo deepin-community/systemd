@@ -1,3 +1,13 @@
+systemd (255.2-4deepin87) unstable; urgency=medium
+
+  * Fix test-sysusers failing when built from the source package: the
+    three zero-byte test-17 data files were tracked in the source tree
+    only, so they were in neither the orig tarball nor the patch and
+    went missing after dpkg-source -x. Give them content and create them
+    in fix-sysusers-gracefully-handle-existing-group-in-gshadow.patch.
+
+ -- jiabowen <jiabowen@uniontech.com>  Fri, 13 Nov 2026 10:45:20 +0800
+
 systemd (255.2-4deepin86) unstable; urgency=medium
 
   * Add mn_CN.
