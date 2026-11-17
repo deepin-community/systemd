@@ -1,0 +1,24 @@
+From cf3051e9daf19606b77fb5926cf07f0e70883edf Mon Sep 17 00:00:00 2001
+From: Siteshwar Vashisht <svashisht@redhat.com>
+Date: Sat, 14 Nov 2026 18:28:54 +0100
+Subject: [PATCH] socket-util: use the correct length of `sun_path` field
+
+... in `socket_address_equal()` function.
+
+`a->size` is the size of entire structure which would read past the
+`sun_path` field.
+
+diff --git a/src/basic/socket-util.c b/src/basic/socket-util.c
+index 49646375ca..fa04c47d21 100644
+--- a/src/basic/socket-util.c
++++ b/src/basic/socket-util.c
+@@ -236,7 +236,8 @@ bool socket_address_equal(const SocketAddress *a, const SocketAddress *b) {
+                         if (a->size != b->size)
+                                 return false;
+ 
+-                        if (memcmp(a->sockaddr.un.sun_path, b->sockaddr.un.sun_path, a->size) != 0)
++                        if (memcmp(a->sockaddr.un.sun_path, b->sockaddr.un.sun_path,
++                                   a->size - offsetof(struct sockaddr_un, sun_path)) != 0)
+                                 return false;
+                 }
+
