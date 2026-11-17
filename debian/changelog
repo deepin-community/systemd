@@ -1,3 +1,9 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * Fix exec-fd-hot not being deserialized during daemon-reexec: the flag was serialized but never read back, so services lost their exec-fd-hot state after a reexec (upstream systemd PR #44800)
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 17 Nov 2026 10:25:02 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the
