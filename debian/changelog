@@ -1,3 +1,9 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * Backport upstream ef7936e42e3d: journal-remote: close a raw connection on ENOBUFS and E2BIG, like the HTTP path. Fixes a 100% CPU spin and importer stream desync on the raw protocol path.
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 17 Nov 2026 10:24:40 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the
