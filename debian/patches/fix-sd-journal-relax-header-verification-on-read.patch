@@ -1,0 +1,288 @@
+From 1dd91ea6b752a69fbb10e4c63f08f9caf60a6e97 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Mon, 26 Oct 2026 13:56:08 +0900
+Subject: [PATCH] sd-journal: relax header verification on read (#44423)
+
+Closes #40053.
+
+diff --git a/src/journal/journalctl.c b/src/journal/journalctl.c
+index 40ceeb48..5fb757bd 100644
+--- a/src/journal/journalctl.c
++++ b/src/journal/journalctl.c
+@@ -1796,10 +1796,14 @@ static int verify(sd_journal *j, bool verbose) {
+ 
+ #if HAVE_GCRYPT
+                 if (!arg_verify_key && JOURNAL_HEADER_SEALED(f->header))
+-                        log_notice("Journal file %s has sealing enabled but verification key has not been passed using --verify-key=.", f->path);
++                        log_notice("Journal file '%s' has sealing enabled but verification key has not been passed using --verify-key=.", f->path);
+ #endif
+ 
+                 k = journal_file_verify(f, arg_verify_key, &first, &validated, &last, verbose);
++                if (k == -EIDRM) {
++                        log_debug_errno(k, "Journal file '%s' has been removed while we are verifying it, ignoring the file.", f->path);
++                        continue;
++                }
+                 if (k == -EINVAL)
+                         /* If the key was invalid give up right-away. */
+                         return k;
+diff --git a/src/libsystemd/sd-journal/journal-file.c b/src/libsystemd/sd-journal/journal-file.c
+index 6efc136c..093369cc 100644
+--- a/src/libsystemd/sd-journal/journal-file.c
++++ b/src/libsystemd/sd-journal/journal-file.c
+@@ -542,13 +542,17 @@ static bool hash_table_is_valid(uint64_t offset, uint64_t size, uint64_t header_
+         return true;
+ }
+ 
+-static int journal_file_verify_header(JournalFile *f) {
+-        uint64_t arena_size, header_size;
++int journal_file_verify_header(JournalFile *f) {
++        int r;
+ 
+         assert(f);
+         assert(f->header);
+ 
+-        if (memcmp(f->header->signature, HEADER_SIGNATURE, 8))
++        /* EBADMSG: corrupted
++         * ENODATA: truncated
++         * EPROTONOSUPPORT: uses an unsupported feature */
++
++        if (memcmp(f->header->signature, HEADER_SIGNATURE, 8) != 0)
+                 return -EBADMSG;
+ 
+         /* In both read and write mode we refuse to open files with incompatible
+@@ -560,53 +564,121 @@ static int journal_file_verify_header(JournalFile *f) {
+         if (journal_file_writable(f) && warn_wrong_flags(f, true))
+                 return -EPROTONOSUPPORT;
+ 
+-        if (f->header->state >= _STATE_MAX)
++        uint8_t state = READ_NOW(f->header->state);
++        if (state >= _STATE_MAX)
+                 return -EBADMSG;
+ 
+-        header_size = le64toh(READ_NOW(f->header->header_size));
++        uint64_t header_size = le64toh(READ_NOW(f->header->header_size));
+ 
+         /* The first addition was n_data, so check that we are at least this large */
+         if (header_size < HEADER_SIZE_MIN)
+                 return -EBADMSG;
+ 
+-        /* When open for writing we refuse to open files with a mismatch of the header size, i.e. writing to
+-         * files implementing older or new header structures. */
+-        if (journal_file_writable(f) && header_size != sizeof(Header))
+-                return -EPROTONOSUPPORT;
++        if (journal_file_writable(f)) {
++                sd_id128_t machine_id;
+ 
+-        /* Don't write to journal files without the new boot ID update behavior guarantee. */
+-        if (journal_file_writable(f) && !JOURNAL_HEADER_TAIL_ENTRY_BOOT_ID(f->header))
+-                return -EPROTONOSUPPORT;
++                r = sd_id128_get_machine(&machine_id);
++                if (ERRNO_IS_NEG_MACHINE_ID_UNSET(r)) /* Gracefully handle the machine ID not being initialized yet */
++                        machine_id = SD_ID128_NULL;
++                else if (r < 0)
++                        return r;
++
++                if (!sd_id128_equal(machine_id, f->header->machine_id))
++                        return log_debug_errno(SYNTHETIC_ERRNO(EHOSTDOWN),
++                                               "Trying to open journal file from different host for writing, refusing.");
++
++                switch (state) {
++                case STATE_OFFLINE:
++                        break; /* expected */
++                case STATE_ONLINE:
++                        return log_debug_errno(SYNTHETIC_ERRNO(EBUSY),
++                                               "Journal file %s is already online. Assuming unclean closing.",
++                                               f->path);
++                case STATE_ARCHIVED:
++                        return -ESHUTDOWN; /* Already archived */
++                default:
++                        assert_not_reached();
++                }
++
++                if (f->header->field_hash_table_size == 0 || f->header->data_hash_table_size == 0)
++                        return -EBADMSG;
++
++                /* When open for writing we refuse to open files with a mismatch of the header size, i.e. writing to
++                 * files implementing older or new header structures. */
++                if (header_size != sizeof(Header))
++                        return -EPROTONOSUPPORT;
++
++                /* Don't write to journal files without the new boot ID update behavior guarantee. */
++                if (!JOURNAL_HEADER_TAIL_ENTRY_BOOT_ID(f->header))
++                        return -EPROTONOSUPPORT;
++        }
+ 
+         if (JOURNAL_HEADER_SEALED(f->header) && !JOURNAL_HEADER_CONTAINS(f->header, n_entry_arrays))
+                 return -EBADMSG;
+ 
+-        arena_size = le64toh(READ_NOW(f->header->arena_size));
++        /* On write, we should not append any new entries on broken file, so verify the header strictly.
++         * Also, do so when we are verifying the journal file by journal_file_verify(), but only when the
++         * file is already archived. Non-archived files may be updated while we are verifying, hence some
++         * header values may be inconsistent. */
++        bool strict = journal_file_writable(f) || (f->verifying && state == STATE_ARCHIVED);
+ 
+-        if (UINT64_MAX - header_size < arena_size || header_size + arena_size > (uint64_t) f->last_stat.st_size)
+-                return -ENODATA;
++        uint64_t file_size = (uint64_t) f->last_stat.st_size;
+ 
+-        uint64_t tail_object_offset = le64toh(f->header->tail_object_offset);
+-        if (!offset_is_valid(tail_object_offset, header_size, UINT64_MAX))
+-                return -ENODATA;
+-        if (header_size + arena_size < tail_object_offset)
+-                return -ENODATA;
+-        if (header_size + arena_size - tail_object_offset < sizeof(ObjectHeader))
+-                return -ENODATA;
++        /* Read these header values in the reverse order on write:
++         * 1. arena_size is updated first when allocating space for a new object,
++         * 2. tail_object_offset is updated after the object is written,
++         * 3. entry_array_offset is set when the object is an entry array object. */
++        uint64_t entry_array_offset = le64toh(READ_NOW(f->header->entry_array_offset));
++        uint64_t tail_object_offset = le64toh(READ_NOW(f->header->tail_object_offset));
++        uint64_t arena_size = le64toh(READ_NOW(f->header->arena_size));
++
++        if (UINT64_MAX - header_size < arena_size)
++                return -EBADMSG;
++
++        /* Probably an unclean shutdown where the header was written, but the arena data was not. On write we
++         * should ask the caller to rotate, but on read, we can still work it out with bounds checks. */
++        if (header_size + arena_size > file_size) {
++                if (strict)
++                        return -ENODATA;
++
++                /* This shouldn't happen given file_size is page aligned via fallocate(), but just in case
++                 * things are _really_ messed up... */
++                uint64_t available = ALIGN_DOWN_U64(file_size, sizeof(uint64_t));
++                if (header_size > available || available - header_size < offsetof(ObjectHeader, payload))
++                        return -EBADMSG;
++
++                log_debug("Journal file %s claims a %" PRIu64 " byte arena but is only %" PRIu64
++                          " bytes on disk, clamping for recovery.",
++                          f->path,
++                          arena_size,
++                          file_size);
++                arena_size = available - header_size;
++                tail_object_offset = MIN(tail_object_offset, available - offsetof(ObjectHeader, payload));
++        }
++
++        if (!offset_is_valid(tail_object_offset, header_size, header_size + arena_size - offsetof(ObjectHeader, payload)))
++                return -EBADMSG;
+ 
+         if (!hash_table_is_valid(le64toh(f->header->data_hash_table_offset),
+                                  le64toh(f->header->data_hash_table_size),
+                                  header_size, arena_size, tail_object_offset))
+-                return -ENODATA;
++                return -EBADMSG;
+ 
+         if (!hash_table_is_valid(le64toh(f->header->field_hash_table_offset),
+                                  le64toh(f->header->field_hash_table_size),
+                                  header_size, arena_size, tail_object_offset))
+-                return -ENODATA;
++                return -EBADMSG;
+ 
+-        uint64_t entry_array_offset = le64toh(f->header->entry_array_offset);
+         if (!offset_is_valid(entry_array_offset, header_size, tail_object_offset))
+-                return -ENODATA;
++                return -EBADMSG;
++
++        /* When the file is opened for reading, we skip the verifications below.
++         * a) Even if it is corrupted, still there may be some data readable with some methods. Let's try to
++         *    extract what we can instead of rejecting the entire file.
++         * b) The file may be concurrently written by e.g., journald, and any tail offsets and/or counters
++         *    may be temporarily inconsistent. */
++        if (!strict)
++                return 0;
+ 
+         if (JOURNAL_HEADER_CONTAINS(f->header, tail_entry_array_offset)) {
+                 uint32_t offset = le32toh(f->header->tail_entry_array_offset);
+@@ -657,7 +729,7 @@ static int journal_file_verify_header(JournalFile *f) {
+ 
+         /* Verify number of objects */
+         uint64_t n_objects = le64toh(f->header->n_objects);
+-        if (n_objects > arena_size / sizeof(ObjectHeader))
++        if (n_objects > arena_size / offsetof(ObjectHeader, payload))
+                 return -ENODATA;
+ 
+         uint64_t n_entries = le64toh(f->header->n_entries);
+@@ -684,38 +756,6 @@ static int journal_file_verify_header(JournalFile *f) {
+             le32toh(f->header->tail_entry_array_n_entries) > n_entries)
+                 return -ENODATA;
+ 
+-        if (journal_file_writable(f)) {
+-                sd_id128_t machine_id;
+-                uint8_t state;
+-                int r;
+-
+-                r = sd_id128_get_machine(&machine_id);
+-                if (ERRNO_IS_NEG_MACHINE_ID_UNSET(r)) /* Gracefully handle the machine ID not being initialized yet */
+-                        machine_id = SD_ID128_NULL;
+-                else if (r < 0)
+-                        return r;
+-
+-                if (!sd_id128_equal(machine_id, f->header->machine_id))
+-                        return log_debug_errno(SYNTHETIC_ERRNO(EHOSTDOWN),
+-                                               "Trying to open journal file from different host for writing, refusing.");
+-
+-                state = f->header->state;
+-
+-                if (state == STATE_ARCHIVED)
+-                        return -ESHUTDOWN; /* Already archived */
+-                if (state == STATE_ONLINE)
+-                        return log_debug_errno(SYNTHETIC_ERRNO(EBUSY),
+-                                               "Journal file %s is already online. Assuming unclean closing.",
+-                                               f->path);
+-                if (state != STATE_OFFLINE)
+-                        return log_debug_errno(SYNTHETIC_ERRNO(EBUSY),
+-                                               "Journal file %s has unknown state %i.",
+-                                               f->path, state);
+-
+-                if (f->header->field_hash_table_size == 0 || f->header->data_hash_table_size == 0)
+-                        return -EBADMSG;
+-        }
+-
+         return 0;
+ }
+ 
+diff --git a/src/libsystemd/sd-journal/journal-file.h b/src/libsystemd/sd-journal/journal-file.h
+index c89d51dc..714d2ef6 100644
+--- a/src/libsystemd/sd-journal/journal-file.h
++++ b/src/libsystemd/sd-journal/journal-file.h
+@@ -75,6 +75,7 @@ typedef struct JournalFile {
+         bool close_fd:1;
+         bool archive:1;
+         bool strict_order:1;
++        bool verifying:1;    /* The file is opened for verifying. See journal_file_verify(). */
+ 
+         direction_t last_direction;
+         LocationType location_type;
+@@ -151,6 +152,8 @@ typedef struct {
+         uint64_t hash;
+ } EntryItem;
+ 
++int journal_file_verify_header(JournalFile *f);
++
+ int journal_file_open(
+                 int fd,
+                 const char *fname,
+diff --git a/src/libsystemd/sd-journal/journal-verify.c b/src/libsystemd/sd-journal/journal-verify.c
+index bdaa01d6..64142c6c 100644
+--- a/src/libsystemd/sd-journal/journal-verify.c
++++ b/src/libsystemd/sd-journal/journal-verify.c
+@@ -837,6 +837,17 @@ int journal_file_verify(
+ #endif
+         assert(f);
+ 
++        /* Header verification done on open is typically relaxed; verify it strictly here.
++         * The header verification requires the latest stat, let's first update the stat. */
++        r = journal_file_fstat(f);
++        if (r < 0)
++                return log_error_errno(r, "Failed to stat journal file: %m");
++
++        f->verifying = true;
++        r = journal_file_verify_header(f);
++        if (r < 0)
++                return log_error_errno(r, "Journal file header is broken: %m");
++
+         if (key) {
+ #if HAVE_GCRYPT
+                 r = journal_file_parse_verification_key(f, key);
