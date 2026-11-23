@@ -1,3 +1,9 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * core: parse and validate the whole transient scope PIDs list before registering any process with the scope, so a malformed or unattachable entry (e.g. a kernel thread) can no longer leave the list partially applied (adapted from upstream varlink StartTransient fix to the D-Bus transient property path)
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 23 Nov 2026 14:24:11 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the

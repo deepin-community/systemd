@@ -1,0 +1,121 @@
+From ee6346deb3741ea41a3438b429a82d4343ab8633 Mon Sep 17 00:00:00 2001
+From: Ivan Kruglov <mail@ikruglov.com>
+Date: Thu, 29 Oct 2026 14:57:12 +0100
+Subject: core/varlink: parse scope PIDs during dispatch
+
+A malformed PID can make scope creation fail after earlier PIDs in the
+list have already been registered. Parse the whole list before creating
+the scope, so we catch malformed entries before registering any
+processes.
+
+Also check that all PIDs are attachable before registering any of them.
+Otherwise, a later entry such as a kernel thread can still leave the
+list partially applied.
+
+[v255 backport note: the varlink transient-unit API targeted upstream
+(src/core/varlink-scope.c, varlink-unit.c, varlink-common.c) does not
+exist in this series, so the equivalent D-Bus transient property path is
+restructured instead: bus_scope_set_transient_property() now parses and
+validates the whole PIDs list before registering any process with the
+scope. The accompanying varlink dispatch changes (bus error propagation
+and errno sign handling in bad-field errors) have no equivalent in this
+codebase and are intentionally not carried.]
+diff --git a/src/core/dbus-scope.c b/src/core/dbus-scope.c
+index 78196a1a..7e47c5fa 100644
+--- a/src/core/dbus-scope.c
++++ b/src/core/dbus-scope.c
+@@ -10,6 +10,7 @@
+ #include "dbus-unit.h"
+ #include "dbus-util.h"
+ #include "dbus.h"
++#include "process-util.h"
+ #include "scope.h"
+ #include "selinux-access.h"
+ #include "unit.h"
+@@ -85,14 +86,17 @@ static int bus_scope_set_transient_property(
+ 
+         if (streq(name, "PIDs")) {
+                 _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
+-                unsigned n = 0;
++                _cleanup_free_ pid_t *pids = NULL;
++                size_t n = 0;
+ 
+                 r = sd_bus_message_enter_container(message, 'a', "u");
+                 if (r < 0)
+                         return r;
+ 
++                /* Parse and validate the whole list first, so that a malformed entry
++                 * cannot leave earlier PIDs of the list already registered with the
++                 * scope. */
+                 for (;;) {
+-                        _cleanup_(pidref_done) PidRef pidref = PIDREF_NULL;
+                         uint32_t upid;
+                         pid_t pid;
+ 
+@@ -115,28 +119,54 @@ static int bus_scope_set_transient_property(
+                         } else
+                                 pid = (uid_t) upid;
+ 
+-                        r = pidref_set_pid(&pidref, pid);
++                        if (!pid_is_valid(pid))
++                                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
++                                                         "Invalid PID " PID_FMT, pid);
++
++                        if (!GREEDY_REALLOC(pids, n + 1))
++                                return -ENOMEM;
++
++                        pids[n++] = pid;
++                }
++
++                r = sd_bus_message_exit_container(message);
++                if (r < 0)
++                        return r;
++
++                if (n == 0)
++                        return -EINVAL;
++
++                /* Check that all PIDs are attachable before registering any of them,
++                 * otherwise a later entry such as a kernel thread can still leave the
++                 * list partially applied. */
++                FOREACH_ARRAY(pid, pids, n) {
++                        _cleanup_(pidref_done) PidRef pidref = PIDREF_NULL;
++
++                        r = pidref_set_pid(&pidref, *pid);
+                         if (r < 0)
+                                 return r;
+ 
+                         r = unit_pid_attachable(u, &pidref, error);
+                         if (r < 0)
+                                 return r;
++                }
+ 
+-                        if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
+-                                r = unit_watch_pidref(u, &pidref, /* exclusive= */ false);
+-                                if (r < 0 && r != -EEXIST)
+-                                        return r;
+-                        }
++                if (UNIT_WRITE_FLAGS_NOOP(flags))
++                        return 1;
+ 
+-                        n++;
+-                }
++                FOREACH_ARRAY(pid, pids, n) {
++                        _cleanup_(pidref_done) PidRef pidref = PIDREF_NULL;
+ 
+-                r = sd_bus_message_exit_container(message);
+-                if (r < 0)
+-                        return r;
++                        r = pidref_set_pid(&pidref, *pid);
++                        if (r < 0)
++                                return r;
+ 
+-                return n <= 0 ? -EINVAL : 1;
++                        r = unit_watch_pidref(u, &pidref, /* exclusive= */ false);
++                        if (r < 0 && r != -EEXIST)
++                                return r;
++                }
++
++                return 1;
+         }
+ 
+         if (streq(name, "PIDFDs")) {
