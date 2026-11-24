@@ -1,3 +1,11 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * Fix resolved disabling the built-in fallback DNS servers when
+    FallbackDNS= contains no usable address: keep the built-in fallback
+    list and only warn when it is actually used.
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 24 Nov 2026 21:28:56 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the

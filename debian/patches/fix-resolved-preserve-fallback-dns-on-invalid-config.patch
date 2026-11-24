@@ -1,0 +1,52 @@
+From ddf54b5d2833c9d56e9cfe302999bc9e0baab06f Mon Sep 17 00:00:00 2001
+From: dongshengyuan <dongshengyuan@uniontech.com>
+Date: Tue, 24 Nov 2026 13:23:39 +0800
+Subject: [PATCH] resolve: preserve fallback DNS on invalid config
+
+Keep built-in fallback servers when FallbackDNS= contains no valid addresses.
+Only warn about built-in servers when they will actually be enabled.
+
+Reset read_resolv_conf on reload so removing an explicit DNS setting restores reading /etc/resolv.conf.
+Extend the parser test for clearing the fallback list.
+
+[v255 backport note: adapted to the 255.2 tree.
+ - The src/resolve/test-resolved-manager.c hunk is dropped: that file does not
+   exist in v255 (the resolved configuration parser tests were added later),
+   so the new TEST(config_parse_fallback_dns) cannot be carried.
+ - The src/resolve/resolved-manager.c hunk is dropped: it moves the
+   read_resolv_conf/need_builtin_fallbacks initialization from manager_new()
+   into manager_set_defaults(), a helper that only exists once the runtime
+   configuration reload work ("resolved: support reloading configuration at
+   runtime") is in the tree. v255 has no reload/manager_set_defaults() path and
+   already initializes both fields in manager_new(), so no source change is
+   needed here.
+ - The parse failure path in v255 still uses log_syntax() + "return 0" instead
+   of log_syntax_parse_error(); the new warning is therefore emitted after a
+   successful parse which produced no usable server address.]
+
+diff --git a/src/resolve/resolved-conf.c b/src/resolve/resolved-conf.c
+index 2f08ed0f..2b69b388 100644
+--- a/src/resolve/resolved-conf.c
++++ b/src/resolve/resolved-conf.c
+@@ -158,13 +158,20 @@ int config_parse_dns_servers(
+                                    "Failed to parse DNS server string '%s', ignoring.", rvalue);
+                         return 0;
+                 }
++
++                if (ltype == DNS_SERVER_FALLBACK &&
++                    m->need_builtin_fallbacks &&
++                    !m->fallback_dns_servers &&
++                    !isempty(DNS_SERVERS))
++                        log_syntax(unit, LOG_WARNING, filename, line, 0,
++                                   "No valid fallback DNS servers specified, using built-in fallback servers.");
+         }
+ 
+         /* If we have a manual setting, then we stop reading
+          * /etc/resolv.conf */
+         if (ltype == DNS_SERVER_SYSTEM)
+                 m->read_resolv_conf = false;
+-        if (ltype == DNS_SERVER_FALLBACK)
++        if (ltype == DNS_SERVER_FALLBACK && (isempty(rvalue) || m->fallback_dns_servers))
+                 m->need_builtin_fallbacks = false;
+ 
+         return 0;
