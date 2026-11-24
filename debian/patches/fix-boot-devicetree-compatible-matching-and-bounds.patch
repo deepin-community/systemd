@@ -1,0 +1,226 @@
+From 7c704463e42515be10ce22621c64a11254c39032 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Mon, 23 Nov 2026 15:49:42 +0100
+Subject: boot: fix systemd-boot addon matching and edge cases
+
+Add support for matching the DT contained in a .dtb section of the UKI
+image against the FW provided FDT or arbitrary compatible, and validate
+devicetree and GPT metadata before it is used.
+
+[v255 backport note: this series still keeps the EFI sources in
+src/boot/efi/ and has neither the remote-UKI (uki-url) nor the extras
+addon registration infrastructure, so the boot.c hunks of the upstream
+commit (open the entry root before loading a remote UKI, register extra
+addons for LOADER_UKI entries only) have no target code and are not
+carried. The devicetree and GPT bounds checks are carried over.
+
+[v255 backport note: the FW-provided devicetree compatible matching
+helpers come from commit e6cb29fa0f49d86ef320a3abe141c7c70db6ef36
+("boot: add matching against FW-provided Devicetree blob"), which the
+devicetree_get_compatible() bounds checking of this commit builds on.
+ADD_SAFE() and PTR_TO_SIZE() do not exist in this series, so the
+overflow checks are open coded, and be32toh() is defined locally since
+src/boot/efi/util.h does not provide it yet.
+
+[v255 backport note: commit 393955fd21e789cc820bb611ef52dca8d354479c
+("sd-boot: Split up xbootldr_open()") is already contained in upstream
+v255 and src/boot/efi/xbootldr.c has been removed since, so it is a no-op
+here. Commit 1089d0f89e3c7c8a2b17ebeba32d567061fb3ba1 ("boot: add new
+'uki-url' bls type #1 menu items for booting remote UKIs") requires the
+remote boot infrastructure (src/boot/url-discovery.c,
+reconnect_all_drivers(), device_path_dup(), the shim_load_image()
+boot_policy argument) that does not exist in this series, hence it is
+not carried either.]
+diff --git a/src/boot/efi/devicetree.c b/src/boot/efi/devicetree.c
+index b1397805..1805542d 100644
+--- a/src/boot/efi/devicetree.c
++++ b/src/boot/efi/devicetree.c
+@@ -6,6 +6,12 @@
+ 
+ #define FDT_V1_SIZE (7*4)
+ 
++/* This series does not provide the endianness conversion helpers the DTB parsing code uses yet, hence
++ * define the one we need here. The EFI environment is little-endian (see efi.h). */
++#if !defined(be32toh)
++#  define be32toh(x) __builtin_bswap32(x)
++#endif
++
+ static EFI_STATUS devicetree_allocate(struct devicetree_state *state, size_t size) {
+         size_t pages = DIV_ROUND_UP(size, EFI_PAGE_SIZE);
+         EFI_STATUS err;
+@@ -105,6 +111,127 @@ EFI_STATUS devicetree_install(struct devicetree_state *state, EFI_FILE *root_dir
+                         MAKE_GUID_PTR(EFI_DTB_TABLE), PHYSICAL_ADDRESS_TO_POINTER(state->addr));
+ }
+ 
++static const char* devicetree_get_compatible(const void *dtb, size_t dtb_size) {
++        if ((uintptr_t) dtb % alignof(FdtHeader) != 0 ||
++            dtb_size < sizeof(FdtHeader))
++                return NULL;
++
++        const FdtHeader *dt_header = ASSERT_PTR(dtb);
++
++        if (be32toh(dt_header->magic) != 0xd00dfeedU)
++                return NULL;
++
++        uint32_t dt_size = be32toh(dt_header->total_size);
++        uint32_t struct_off = be32toh(dt_header->off_dt_struct);
++        uint32_t struct_size = be32toh(dt_header->size_dt_struct);
++        uint32_t strings_off = be32toh(dt_header->off_dt_strings);
++        uint32_t strings_size = be32toh(dt_header->size_dt_strings);
++
++        if (dt_size < sizeof(FdtHeader) || dt_size > dtb_size ||
++            (size_t) (uintptr_t) dtb > SIZE_MAX - dt_size)
++                return NULL;
++
++        if (strings_off > dt_size || strings_size > dt_size - strings_off)
++                return NULL;
++        const char *strings_block = (const char *) ((const uint8_t *) dt_header + strings_off);
++
++        if (struct_off % sizeof(uint32_t) != 0)
++                return NULL;
++        if (struct_size % sizeof(uint32_t) != 0 ||
++            struct_off > strings_off || struct_size > strings_off - struct_off)
++                return NULL;
++        const uint32_t *cursor = (const uint32_t *) ((const uint8_t *) dt_header + struct_off);
++
++        size_t size_words = struct_size / sizeof(uint32_t);
++        size_t len, name_off, len_words;
++
++        for (size_t i = 0; i < size_words; i++) {
++                switch (be32toh(cursor[i])) {
++                case FDT_BEGIN_NODE:
++                        if (i + 1 >= size_words || cursor[++i] != 0)
++                                return NULL;
++                        break;
++                case FDT_NOP:
++                        break;
++                case FDT_PROP:
++                        /* At least 3 words should be present: len, name_off, c (nul-terminated string always has non-zero length) */
++                        if (i + 3 >= size_words)
++                                return NULL;
++                        len = be32toh(cursor[++i]);
++                        name_off = be32toh(cursor[++i]);
++                        len_words = DIV_ROUND_UP(len, sizeof(uint32_t));
++
++                        if (name_off <= strings_size &&
++                            sizeof("compatible") <= strings_size - name_off &&
++                            memcmp(strings_block + name_off, "compatible", sizeof("compatible")) == 0) {
++                                const char *c = (const char *) &cursor[++i];
++                                if (len == 0 || i + len_words > size_words || c[len - 1] != '\0')
++                                        c = NULL;
++
++                                return c;
++                        }
++                        i += len_words;
++                        break;
++                default:
++                        return NULL;
++                }
++        }
++
++        return NULL;
++}
++
++/* This function checks if the firmware provided Devicetree
++ * and a UKI provided Devicetree contain the same first entry
++ * on their respective "compatible" fields (which usually defines
++ * the actual device model). More specifically, given the FW/UKI
++ * "compatible" property pair:
++ *
++ *      compatible = "string1", "string2";
++ *      compatible = "string1", "string3";
++ *
++ * the function reports a match, while for
++ *
++ *      compatible = "string1", "string3";
++ *      compatible = "string2", "string1";
++ *
++ * it reports a mismatch.
++ *
++ * Other entries might refer to SoC and therefore can't be used for matching
++ */
++EFI_STATUS devicetree_match(const void *uki_dtb, size_t uki_dtb_length) {
++        const void *fw_dtb = find_configuration_table(MAKE_GUID_PTR(EFI_DTB_TABLE));
++        if (!fw_dtb)
++                return EFI_UNSUPPORTED;
++
++        /* The firmware DTB table has no externally known length. */
++        const char *fw_compat = devicetree_get_compatible(fw_dtb, SIZE_MAX);
++        if (!fw_compat)
++                return EFI_UNSUPPORTED;
++
++        return devicetree_match_by_compatible(uki_dtb, uki_dtb_length, fw_compat);
++}
++
++EFI_STATUS devicetree_match_by_compatible(const void *uki_dtb, size_t uki_dtb_length, const char *compat) {
++        if ((uintptr_t) uki_dtb % alignof(FdtHeader) != 0)
++                return EFI_INVALID_PARAMETER;
++
++        const FdtHeader *dt_header = ASSERT_PTR(uki_dtb);
++
++        if (uki_dtb_length < sizeof(FdtHeader) ||
++            uki_dtb_length < be32toh(dt_header->total_size))
++                return EFI_INVALID_PARAMETER;
++
++        if (!compat)
++                return EFI_INVALID_PARAMETER;
++
++        const char *dt_compat = devicetree_get_compatible(uki_dtb, uki_dtb_length);
++        if (!dt_compat)
++                return EFI_INVALID_PARAMETER;
++
++        /* Only matches the first compatible string from each DT */
++        return streq8(dt_compat, compat) ? EFI_SUCCESS : EFI_NOT_FOUND;
++}
++
+ EFI_STATUS devicetree_install_from_memory(
+                 struct devicetree_state *state, const void *dtb_buffer, size_t dtb_length) {
+ 
+diff --git a/src/boot/efi/devicetree.h b/src/boot/efi/devicetree.h
+index 33eaa225..44c61fff 100644
+--- a/src/boot/efi/devicetree.h
++++ b/src/boot/efi/devicetree.h
+@@ -9,6 +9,29 @@ struct devicetree_state {
+         void *orig;
+ };
+ 
++enum {
++        FDT_BEGIN_NODE = 1,
++        FDT_END_NODE   = 2,
++        FDT_PROP       = 3,
++        FDT_NOP        = 4,
++        FDT_END        = 9,
++};
++
++typedef struct FdtHeader {
++        uint32_t magic;
++        uint32_t total_size;
++        uint32_t off_dt_struct;
++        uint32_t off_dt_strings;
++        uint32_t off_mem_rsv_map;
++        uint32_t version;
++        uint32_t last_comp_version;
++        uint32_t boot_cpuid_phys;
++        uint32_t size_dt_strings;
++        uint32_t size_dt_struct;
++} FdtHeader;
++
++EFI_STATUS devicetree_match(const void *uki_dtb, size_t uki_dtb_length);
++EFI_STATUS devicetree_match_by_compatible(const void *uki_dtb, size_t uki_dtb_length, const char *compat);
+ EFI_STATUS devicetree_install(struct devicetree_state *state, EFI_FILE *root_dir, char16_t *name);
+ EFI_STATUS devicetree_install_from_memory(
+                 struct devicetree_state *state, const void *dtb_buffer, size_t dtb_length);
+diff --git a/src/boot/efi/part-discovery.c b/src/boot/efi/part-discovery.c
+index f5b15730..c169136d 100644
+--- a/src/boot/efi/part-discovery.c
++++ b/src/boot/efi/part-discovery.c
+@@ -57,6 +57,9 @@ static bool verify_gpt(/*const*/ GptHeader *h, EFI_LBA lba_expected) {
+         if (h->MyLBA != lba_expected)
+                 return false;
+ 
++        if (h->FirstUsableLBA > h->LastUsableLBA)
++                return false;
++
+         if ((h->SizeOfPartitionEntry % sizeof(EFI_PARTITION_ENTRY)) != 0)
+                 return false;
+ 

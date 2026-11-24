@@ -1,3 +1,9 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * boot: match the firmware-provided devicetree against the UKI devicetree compatible string, and validate devicetree and GPT metadata (DTB header/strings/struct bounds, FirstUsableLBA <= LastUsableLBA) before use (v255 adaptation: FW DTB matching helpers, open-coded overflow checks, no remote-UKI/addon hunks)
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 24 Nov 2026 21:13:34 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the
