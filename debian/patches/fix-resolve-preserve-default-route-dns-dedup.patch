@@ -1,0 +1,155 @@
+From 6ef3b97baac8f6ab409cbc34a22f89ba7310bb88 Mon Sep 17 00:00:00 2001
+From: zouge666 <1615379639@qq.com>
+Date: Mon, 2 Nov 2026 15:44:18 +0100
+Subject: [PATCH] resolve: preserve default-route DNS when deduplicating
+
+When the same DNS address is configured on multiple links, deduplication
+may retain the instance from a link that is not a default route. The
+resolv.conf writer then filters that instance, losing the eligible server
+and making global DNS availability depend on link iteration order.
+
+Filter non-default-route scopes before adding servers to the compiled list.
+Track configured servers separately from the filtered list so fallback DNS
+is used only when no DNS servers were configured.
+
+Fixes #44552
+
+[Backport note: the upstream regression test added to
+src/resolve/test-resolved-manager.c does not exist in the 255.x tree, hence
+only the code change is backported here.]
+
+diff --git a/src/resolve/resolved-manager.c b/src/resolve/resolved-manager.c
+index b52619e2..33322ccb 100644
+--- a/src/resolve/resolved-manager.c
++++ b/src/resolve/resolved-manager.c
+@@ -1458,8 +1458,52 @@ int manager_is_own_hostname(Manager *m, const char *name) {
+         return 0;
+ }
+ 
++static int compile_dns_server(OrderedSet *servers, DnsServer *server, bool *have_servers) {
++        DnsScope *scope;
++        const char *server_string;
++        int r;
++
++        assert(servers);
++        assert(server);
++        assert(have_servers);
++
++        *have_servers = true;
++
++        server_string = dns_server_string(server);
++        if (!server_string) {
++                log_warning("Out of memory, or invalid DNS address. Ignoring server.");
++                return 0;
++        }
++
++        /* resolv.conf simply doesn't support any other ports than 53, hence there's nothing much we can
++         * do — we have to suppress these entries */
++        if (dns_server_port(server) != 53) {
++                log_debug("DNS server %s with non-standard UDP port number, suppressing from generated resolv.conf.",
++                          server_string);
++                return 0;
++        }
++
++        /* resolv.conf has no syntax for routing domains, so omit servers that should only receive queries
++         * for specific domains. */
++        scope = dns_server_scope(server);
++        if (scope && !dns_scope_is_default_route(scope)) {
++                log_debug("Scope of DNS server %s has only route-only domains, not using as global name server.",
++                          server_string);
++                return 0;
++        }
++
++        r = ordered_set_put(servers, server);
++        if (r == -EEXIST)
++                return 0;
++        if (r < 0)
++                return r;
++
++        return 0;
++}
++
+ int manager_compile_dns_servers(Manager *m, OrderedSet **dns) {
+         Link *l;
++        bool have_servers = false;
+         int r;
+ 
+         assert(m);
+@@ -1469,11 +1513,11 @@ int manager_compile_dns_servers(Manager *m, OrderedSet **dns) {
+         if (r < 0)
+                 return r;
+ 
+-        /* First add the system-wide servers and domains */
++        /* Filter out DNS servers that cannot be represented in resolv.conf before deduplicating them. Otherwise,
++         * a server on a link that is not a default route might hide the same server on a default-route link.
++         * First add the system-wide servers. */
+         LIST_FOREACH(servers, s, m->dns_servers) {
+-                r = ordered_set_put(*dns, s);
+-                if (r == -EEXIST)
+-                        continue;
++                r = compile_dns_server(*dns, s, &have_servers);
+                 if (r < 0)
+                         return r;
+         }
+@@ -1481,20 +1525,16 @@ int manager_compile_dns_servers(Manager *m, OrderedSet **dns) {
+         /* Then, add the per-link servers */
+         HASHMAP_FOREACH(l, m->links) {
+                 LIST_FOREACH(servers, s, l->dns_servers) {
+-                        r = ordered_set_put(*dns, s);
+-                        if (r == -EEXIST)
+-                                continue;
++                        r = compile_dns_server(*dns, s, &have_servers);
+                         if (r < 0)
+                                 return r;
+                 }
+         }
+ 
+         /* If we found nothing, add the fallback servers */
+-        if (ordered_set_isempty(*dns)) {
++        if (!have_servers) {
+                 LIST_FOREACH(servers, s, m->fallback_dns_servers) {
+-                        r = ordered_set_put(*dns, s);
+-                        if (r == -EEXIST)
+-                                continue;
++                        r = compile_dns_server(*dns, s, &have_servers);
+                         if (r < 0)
+                                 return r;
+                 }
+diff --git a/src/resolve/resolved-resolv-conf.c b/src/resolve/resolved-resolv-conf.c
+index 2071e081..3bf5056a 100644
+--- a/src/resolve/resolved-resolv-conf.c
++++ b/src/resolve/resolved-resolv-conf.c
+@@ -200,33 +200,10 @@ clear:
+ }
+ 
+ static void write_resolv_conf_server(DnsServer *s, FILE *f, unsigned *count) {
+-        DnsScope *scope;
+-
+         assert(s);
+         assert(f);
+         assert(count);
+ 
+-        if (!dns_server_string(s)) {
+-                log_warning("Out of memory, or invalid DNS address. Ignoring server.");
+-                return;
+-        }
+-
+-        /* resolv.conf simply doesn't support any other ports than 53, hence there's nothing much we can
+-         * do — we have to suppress these entries */
+-        if (dns_server_port(s) != 53) {
+-                log_debug("DNS server %s with non-standard UDP port number, suppressing from generated resolv.conf.", dns_server_string(s));
+-                return;
+-        }
+-
+-        /* Check if the scope this DNS server belongs to is suitable as 'default' route for lookups; resolv.conf does
+-         * not have a syntax to express that, so it must not appear as a global name server to avoid routing unrelated
+-         * domains to it (which is a privacy violation, will most probably fail anyway, and adds unnecessary load) */
+-        scope = dns_server_scope(s);
+-        if (scope && !dns_scope_is_default_route(scope)) {
+-                log_debug("Scope of DNS server %s has only route-only domains, not using as global name server", dns_server_string(s));
+-                return;
+-        }
+-
+         if (*count == MAXNS)
+                 fputs("# Too many DNS servers configured, the following entries may be ignored.\n", f);
+         (*count)++;
