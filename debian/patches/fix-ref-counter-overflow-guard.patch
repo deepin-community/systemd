@@ -1,0 +1,460 @@
+From 454a9cab0ab7f6f76823aab48d1bfae60643b797 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Tue, 24 Nov 2026 21:12:12 +0900
+Subject: [PATCH] tree-wide: catch .n_ref reference counter overflows
+ universally (#45005)
+
+We already did this right in DEFINE_TRIVIAL_REF_FUNC(), but let's do so
+for all other ref counters too.
+
+Fixes: #45002
+
+
+[v255 backport note: systemd 255.2 has a different source layout than the v257
+tree this commit was written for, so several hunks are re-targeted onto the
+equivalent v255 files instead of being dropped:
+  - src/basic/cleanup-util.h -> src/basic/macro.h: cleanup-util.h does not
+    exist in v255, hence ref_counter_inc()/ref_counter_dec() are added to
+    macro.h right next to _DEFINE_TRIVIAL_REF_FUNC() and
+    _DEFINE_TRIVIAL_UNREF_FUNC(), which are converted to use them.
+  - src/libsystemd/sd-json/sd-json.c -> src/shared/json.c: v255 still ships
+    JsonVariant in src/shared/json.c (renamed to sd-json later); the same
+    overflow guard is applied to json_variant_ref()/json_variant_unref().
+  - src/shared/dns-packet.c -> src/resolve/resolved-dns-packet.c and
+    src/shared/dns-rr.c -> src/resolve/resolved-dns-rr.c: in v255 these files
+    still live in src/resolve/. dns_packet_unref() keeps the v255 statement
+    ordering (drop p->more before freeing) and only replaces the manual
+    refcount handling with ref_counter_dec().]
+---
+diff --git a/src/basic/macro.h b/src/basic/macro.h
+index d3eb980a..f273937e 100644
+--- a/src/basic/macro.h
++++ b/src/basic/macro.h
+@@ -4,6 +4,7 @@
+ #include <assert.h>
+ #include <errno.h>
+ #include <inttypes.h>
++#include <limits.h>
+ #include <stdbool.h>
+ #include <sys/param.h>
+ #include <sys/sysmacros.h>
+@@ -281,17 +282,36 @@ static inline int __coverity_check_and_return__(int condition) {
+ #define FOREACH_ARRAY(i, array, num)                                    \
+         _FOREACH_ARRAY(i, array, num, UNIQ_T(m, UNIQ), UNIQ_T(end, UNIQ))
+ 
++static inline void ref_counter_inc(unsigned *n) {
++        assert(n);
++
++        /* Increases a reference counter, but refuses to let it overflow. Getting anywhere near UINT_MAX
++         * references to a single object almost certainly means references are leaked somewhere (keeping
++         * that many legitimate references around would require tens of GiB of memory just for the
++         * pointers), i.e. it's a programming error, hence abort instead of returning an error. Note that we
++         * use assert_se() here rather than assert(), so that this check is not compiled out with NDEBUG:
++         * allowing the counter to wrap around would result in the object being freed while it is still
++         * referenced, i.e. in a use-after-free. */
++        assert_se(*n < UINT_MAX);
++        (*n)++;
++}
++
++static inline unsigned ref_counter_dec(unsigned *n) {
++        assert(n);
++
++        /* Decreases a reference counter, and returns the new value. Dropping a reference that was never
++         * taken is a programming error, hence assert on that. */
++        assert(*n > 0);
++        return --(*n);
++}
++
+ #define _DEFINE_TRIVIAL_REF_FUNC(type, name, scope)             \
+         scope type *name##_ref(type *p) {                       \
+                 if (!p)                                         \
+                         return NULL;                            \
+                                                                 \
+-                /* For type check. */                           \
+-                unsigned *q = &p->n_ref;                        \
+-                assert(*q > 0);                                 \
+-                assert_se(*q < UINT_MAX);                       \
+-                                                                \
+-                (*q)++;                                         \
++                assert(p->n_ref > 0);                           \
++                ref_counter_inc(&p->n_ref);                     \
+                 return p;                                       \
+         }
+ 
+@@ -300,9 +320,7 @@ static inline int __coverity_check_and_return__(int condition) {
+                 if (!p)                                          \
+                         return NULL;                             \
+                                                                  \
+-                assert(p->n_ref > 0);                            \
+-                p->n_ref--;                                      \
+-                if (p->n_ref > 0)                                \
++                if (ref_counter_dec(&p->n_ref) > 0)               \
+                         return NULL;                             \
+                                                                  \
+                 return free_func(p);                             \
+diff --git a/src/core/dynamic-user.c b/src/core/dynamic-user.c
+index 12724c68..a8250dcd 100644
+--- a/src/core/dynamic-user.c
++++ b/src/core/dynamic-user.c
+@@ -116,7 +116,7 @@ static int dynamic_user_acquire(Manager *m, const char *name, DynamicUser** ret)
+         if (d) {
+                 if (ret) {
+                         /* We already have a structure for the dynamic user, let's increase the ref count and reuse it */
+-                        d->n_ref++;
++                        ref_counter_inc(&d->n_ref);
+                         *ret = d;
+                 }
+                 return 0;
+@@ -135,7 +135,7 @@ static int dynamic_user_acquire(Manager *m, const char *name, DynamicUser** ret)
+         storage_socket[0] = storage_socket[1] = -EBADF;
+ 
+         if (ret) {
+-                d->n_ref++;
++                ref_counter_inc(&d->n_ref);
+                 *ret = d;
+         }
+ 
+@@ -555,8 +555,7 @@ static DynamicUser* dynamic_user_unref(DynamicUser *d) {
+          * destroyed and its UID released, use dynamic_user_destroy() instead. NB: the dynamic user table may
+          * contain entries with no references, which is commonly the case right before a daemon reload. */
+ 
+-        assert(d->n_ref > 0);
+-        d->n_ref--;
++        ref_counter_dec(&d->n_ref);
+ 
+         return NULL;
+ }
+@@ -680,7 +679,7 @@ void dynamic_user_deserialize_one(Manager *m, const char *value, FDSet *fds, Dyn
+         TAKE_FD(fd1);
+ 
+         if (ret) /* If the caller uses it directly, increment the refcount */
+-                (*ret)->n_ref++;
++                ref_counter_inc(&(*ret)->n_ref);
+ }
+ 
+ void dynamic_user_vacuum(Manager *m, bool close_user) {
+diff --git a/src/core/execute.c b/src/core/execute.c
+index 27ad003f..b360ac5a 100644
+--- a/src/core/execute.c
++++ b/src/core/execute.c
+@@ -1990,10 +1990,7 @@ ExecSharedRuntime* exec_shared_runtime_destroy(ExecSharedRuntime *rt) {
+         if (!rt)
+                 return NULL;
+ 
+-        assert(rt->n_ref > 0);
+-        rt->n_ref--;
+-
+-        if (rt->n_ref > 0)
++        if (ref_counter_dec(&rt->n_ref) > 0)
+                 return NULL;
+ 
+         rt->tmp_dir = destroy_tree(rt->tmp_dir);
+@@ -2150,7 +2147,7 @@ int exec_shared_runtime_acquire(Manager *m, const ExecContext *c, const char *id
+ 
+ ref:
+         /* increment reference counter. */
+-        rt->n_ref++;
++        ref_counter_inc(&rt->n_ref);
+         *ret = rt;
+         return 1;
+ }
+diff --git a/src/journal/journald-context.c b/src/journal/journald-context.c
+index 19d27c4b..584674f0 100644
+--- a/src/journal/journald-context.c
++++ b/src/journal/journald-context.c
+@@ -689,7 +689,7 @@ static int client_context_get_internal(
+                                 c->in_lru = false;
+                         }
+ 
+-                        c->n_ref++;
++                        ref_counter_inc(&c->n_ref);
+                 }
+ 
+                 client_context_maybe_refresh(s, c, ucred, label, label_len, unit_id, USEC_INFINITY);
+@@ -705,7 +705,7 @@ static int client_context_get_internal(
+                 return r;
+ 
+         if (add_ref)
+-                c->n_ref++;
++                ref_counter_inc(&c->n_ref);
+         else {
+                 r = prioq_put(s->client_contexts_lru, c, &c->lru_index);
+                 if (r < 0) {
+@@ -753,8 +753,7 @@ ClientContext *client_context_release(Server *s, ClientContext *c) {
+         assert(c->n_ref > 0);
+         assert(!c->in_lru);
+ 
+-        c->n_ref--;
+-        if (c->n_ref > 0)
++        if (ref_counter_dec(&c->n_ref) > 0)
+                 return NULL;
+ 
+         /* The entry is not pinned anymore, let's add it to the LRU prioq if we can. If we can't we'll drop it
+diff --git a/src/libsystemd-network/lldp-neighbor.c b/src/libsystemd-network/lldp-neighbor.c
+index af61c9b0..48d0fa5d 100644
+--- a/src/libsystemd-network/lldp-neighbor.c
++++ b/src/libsystemd-network/lldp-neighbor.c
+@@ -50,7 +50,7 @@ sd_lldp_neighbor *sd_lldp_neighbor_ref(sd_lldp_neighbor *n) {
+                 return NULL;
+ 
+         assert(n->n_ref > 0 || n->lldp_rx);
+-        n->n_ref++;
++        ref_counter_inc(&n->n_ref);
+ 
+         return n;
+ }
+@@ -78,10 +78,7 @@ sd_lldp_neighbor *sd_lldp_neighbor_unref(sd_lldp_neighbor *n) {
+         if (!n)
+                 return NULL;
+ 
+-        assert(n->n_ref > 0);
+-        n->n_ref--;
+-
+-        if (n->n_ref <= 0 && !n->lldp_rx)
++        if (ref_counter_dec(&n->n_ref) == 0 && !n->lldp_rx)
+                 lldp_neighbor_free(n);
+ 
+         return NULL;
+diff --git a/src/libsystemd/sd-bus/bus-creds.c b/src/libsystemd/sd-bus/bus-creds.c
+index c6d8caaf..9b0fa8b2 100644
+--- a/src/libsystemd/sd-bus/bus-creds.c
++++ b/src/libsystemd/sd-bus/bus-creds.c
+@@ -62,7 +62,7 @@ _public_ sd_bus_creds *sd_bus_creds_ref(sd_bus_creds *c) {
+ 
+         if (c->allocated) {
+                 assert(c->n_ref > 0);
+-                c->n_ref++;
++                ref_counter_inc(&c->n_ref);
+         } else {
+                 sd_bus_message *m;
+ 
+@@ -81,10 +81,7 @@ _public_ sd_bus_creds *sd_bus_creds_unref(sd_bus_creds *c) {
+                 return NULL;
+ 
+         if (c->allocated) {
+-                assert(c->n_ref > 0);
+-                c->n_ref--;
+-
+-                if (c->n_ref == 0) {
++                if (ref_counter_dec(&c->n_ref) == 0) {
+                         free(c->comm);
+                         free(c->tid_comm);
+                         free(c->exe);
+diff --git a/src/libsystemd/sd-bus/bus-message.c b/src/libsystemd/sd-bus/bus-message.c
+index 860e2b0c..6e8451ca 100644
+--- a/src/libsystemd/sd-bus/bus-message.c
++++ b/src/libsystemd/sd-bus/bus-message.c
+@@ -807,7 +807,7 @@ _public_ sd_bus_message* sd_bus_message_ref(sd_bus_message *m) {
+          * least one bus connection object. */
+         assert(m->n_ref > 0 || m->n_queued > 0);
+ 
+-        m->n_ref++;
++        ref_counter_inc(&m->n_ref);
+ 
+         /* Each user reference to a bus message shall also be considered a ref on the bus */
+         sd_bus_ref(m->bus);
+@@ -825,9 +825,7 @@ _public_ sd_bus_message* sd_bus_message_unref(sd_bus_message *m) {
+                                * otherwise, if this message is currently queued sd_bus_unref() might call
+                                * bus_message_unref_queued() for this which might then destroy the message
+                                * while we are still processing it. */
+-        m->n_ref--;
+-
+-        if (m->n_ref > 0 || m->n_queued > 0)
++        if (ref_counter_dec(&m->n_ref) > 0 || m->n_queued > 0)
+                 return NULL;
+ 
+         /* Unset the bus field if neither the user has a reference nor this message is queued. We are careful
+diff --git a/src/libsystemd/sd-bus/sd-bus.c b/src/libsystemd/sd-bus/sd-bus.c
+index b32cd6c6..c8e8e96c 100644
+--- a/src/libsystemd/sd-bus/sd-bus.c
++++ b/src/libsystemd/sd-bus/sd-bus.c
+@@ -1821,7 +1821,7 @@ _public_ sd_bus *sd_bus_ref(sd_bus *bus) {
+         if (bus_origin_changed(bus))
+                 return NULL;
+ 
+-        bus->n_ref++;
++        ref_counter_inc(&bus->n_ref);
+ 
+         return bus;
+ }
+@@ -1833,7 +1833,7 @@ _public_ sd_bus* sd_bus_unref(sd_bus *bus) {
+                 return NULL;
+ 
+         assert(bus->n_ref > 0);
+-        if (--bus->n_ref > 0)
++        if (ref_counter_dec(&bus->n_ref) > 0)
+                 return NULL;
+ 
+         return bus_free(bus);
+diff --git a/src/libsystemd/sd-event/sd-event.c b/src/libsystemd/sd-event/sd-event.c
+index ec897229..60bd9b57 100644
+--- a/src/libsystemd/sd-event/sd-event.c
++++ b/src/libsystemd/sd-event/sd-event.c
+@@ -449,7 +449,7 @@ _public_ sd_event *sd_event_ref(sd_event *e) {
+         if (event_origin_changed(e))
+                 return NULL;
+ 
+-        e->n_ref++;
++        ref_counter_inc(&e->n_ref);
+ 
+         return e;
+ }
+@@ -461,7 +461,7 @@ _public_ sd_event* sd_event_unref(sd_event *e) {
+                 return NULL;
+ 
+         assert(e->n_ref > 0);
+-        if (--e->n_ref > 0)
++        if (ref_counter_dec(&e->n_ref) > 0)
+                 return NULL;
+ 
+         return event_free(e);
+diff --git a/src/libsystemd/sd-netlink/netlink-message.c b/src/libsystemd/sd-netlink/netlink-message.c
+index 000a50ee..59bf3f52 100644
+--- a/src/libsystemd/sd-netlink/netlink-message.c
++++ b/src/libsystemd/sd-netlink/netlink-message.c
+@@ -130,7 +130,7 @@ int sd_netlink_message_set_request_dump(sd_netlink_message *m, int dump) {
+ DEFINE_TRIVIAL_REF_FUNC(sd_netlink_message, sd_netlink_message);
+ 
+ sd_netlink_message* sd_netlink_message_unref(sd_netlink_message *m) {
+-        while (m && --m->n_ref == 0) {
++        while (m && ref_counter_dec(&m->n_ref) == 0) {
+                 unsigned i;
+ 
+                 free(m->hdr);
+diff --git a/src/libsystemd/sd-netlink/netlink-socket.c b/src/libsystemd/sd-netlink/netlink-socket.c
+index 2307f3ad..e41f29a3 100644
+--- a/src/libsystemd/sd-netlink/netlink-socket.c
++++ b/src/libsystemd/sd-netlink/netlink-socket.c
+@@ -114,7 +114,7 @@ int socket_broadcast_group_ref(sd_netlink *nl, unsigned group) {
+ 
+         n_ref = broadcast_group_get_ref(nl, group);
+ 
+-        n_ref++;
++        ref_counter_inc(&n_ref);
+ 
+         r = broadcast_group_set_ref(nl, group, n_ref);
+         if (r < 0)
+@@ -149,7 +149,7 @@ int socket_broadcast_group_unref(sd_netlink *nl, unsigned group) {
+         if (n_ref == 0)
+                 return 0;
+ 
+-        n_ref--;
++        ref_counter_dec(&n_ref);
+ 
+         r = broadcast_group_set_ref(nl, group, n_ref);
+         if (r < 0)
+diff --git a/src/libudev/libudev.c b/src/libudev/libudev.c
+index 73574874..939106e2 100644
+--- a/src/libudev/libudev.c
++++ b/src/libudev/libudev.c
+@@ -103,9 +103,7 @@ _public_ struct udev *udev_unref(struct udev *udev) {
+         if (!udev)
+                 return NULL;
+ 
+-        assert(udev->n_ref > 0);
+-        udev->n_ref--;
+-        if (udev->n_ref > 0)
++        if (ref_counter_dec(&udev->n_ref) > 0)
+                 /* This is different from our convention, but let's keep backward
+                  * compatibility. So, do not use DEFINE_PUBLIC_TRIVIAL_UNREF_FUNC()
+                  * macro to define this function. */
+diff --git a/src/resolve/resolved-dns-packet.c b/src/resolve/resolved-dns-packet.c
+index cd84bcf1..f8930bd4 100644
+--- a/src/resolve/resolved-dns-packet.c
++++ b/src/resolve/resolved-dns-packet.c
+@@ -203,7 +203,7 @@ DnsPacket *dns_packet_ref(DnsPacket *p) {
+         assert(!p->on_stack);
+ 
+         assert(p->n_ref > 0);
+-        p->n_ref++;
++        ref_counter_inc(&p->n_ref);
+         return p;
+ }
+ 
+@@ -230,15 +230,11 @@ DnsPacket *dns_packet_unref(DnsPacket *p) {
+         if (!p)
+                 return NULL;
+ 
+-        assert(p->n_ref > 0);
++        if (ref_counter_dec(&p->n_ref) > 0)
++                return NULL;
+ 
+         dns_packet_unref(p->more);
+-
+-        if (p->n_ref == 1)
+-                dns_packet_free(p);
+-        else
+-                p->n_ref--;
+-
++        dns_packet_free(p);
+         return NULL;
+ }
+ 
+diff --git a/src/resolve/resolved-dns-rr.c b/src/resolve/resolved-dns-rr.c
+index 00f7beac..a00fe00f 100644
+--- a/src/resolve/resolved-dns-rr.c
++++ b/src/resolve/resolved-dns-rr.c
+@@ -122,7 +122,11 @@ DnsResourceKey* dns_resource_key_ref(DnsResourceKey *k) {
+         assert(k->n_ref != UINT_MAX);
+ 
+         assert(k->n_ref > 0);
+-        k->n_ref++;
++
++        /* Also make sure we never increase the counter to UINT_MAX, since that would turn this key into
++         * a const one. See ref_counter_inc() for an explanation why we abort here. */
++        assert_se(k->n_ref < UINT_MAX - 1);
++        ref_counter_inc(&k->n_ref);
+ 
+         return k;
+ }
+@@ -132,15 +136,12 @@ DnsResourceKey* dns_resource_key_unref(DnsResourceKey *k) {
+                 return NULL;
+ 
+         assert(k->n_ref != UINT_MAX);
+-        assert(k->n_ref > 0);
+ 
+-        if (k->n_ref == 1) {
+-                free(k->_name);
+-                free(k);
+-        } else
+-                k->n_ref--;
++        if (ref_counter_dec(&k->n_ref) > 0)
++                return NULL;
+ 
+-        return NULL;
++        free(k->_name);
++        return mfree(k);
+ }
+ 
+ const char* dns_resource_key_name(const DnsResourceKey *key) {
+diff --git a/src/shared/json.c b/src/shared/json.c
+index f58b2031..2767de06 100644
+--- a/src/shared/json.c
++++ b/src/shared/json.c
+@@ -850,7 +850,7 @@ JsonVariant *json_variant_ref(JsonVariant *v) {
+                 json_variant_ref(v->parent); /* ref the compounding variant instead */
+         else {
+                 assert(v->n_ref > 0);
+-                v->n_ref++;
++                ref_counter_inc(&v->n_ref);
+         }
+ 
+         return v;
+@@ -864,14 +864,9 @@ JsonVariant *json_variant_unref(JsonVariant *v) {
+ 
+         if (v->is_embedded)
+                 json_variant_unref(v->parent);
+-        else {
+-                assert(v->n_ref > 0);
+-                v->n_ref--;
+-
+-                if (v->n_ref == 0) {
+-                        json_variant_free_inner(v, false);
+-                        free(v);
+-                }
++        else if (ref_counter_dec(&v->n_ref) == 0) {
++                json_variant_free_inner(v, false);
++                free(v);
+         }
+ 
+         return NULL;
