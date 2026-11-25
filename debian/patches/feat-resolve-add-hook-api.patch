@@ -1,0 +1,1377 @@
+From 8209f4adcde08d225f56269e608ccd5f6704cd70 Mon Sep 17 00:00:00 2001
+From: Lennart Poettering <lennart@poettering.net>
+Date: Thu, 9 Oct 2025 11:04:58 +0200
+Subject: [PATCH] resolved: add hook api
+
+This introduces /run/systemd/resolve.hook/ as a new directory that local
+(privileged) programs can bind a Varlink socket into. If they do they'll
+get a method call for each attempted resolved lookup, which they can
+then either process themselves (and generate new records for, or return
+errors to block stuff) or let pass so that the regular resolution is
+done.
+
+Usecase for this is primarily two things:
+
+1. in machined we can add local resolution of machine names to their IP
+   addresses, similar in fashion to nss-mymachines, but working also if
+   the non-NSS interfaces to name resolution are used, i.e. the local
+   DNS responder. In fact, I think we should eventually remove
+   nss-mymachines from our tree, as soon as this code in resolved is
+   setlled.
+
+2. in networkd we can add local resolution of names specified in DHCP
+   leases we hand out.
+
+But beyond that there should be many other uses, for example people
+could write "dns firewalls" with this if they like where they
+dynamically block certain names from resolution.
+
+Fixes: #8518
+
+Also contains the follow-up upstream fix from commit
+dfc4658b2f8089fc65d3becbbc97b5926871a644 ("resolved: fix hook filter
+connection lifecycle"):
+
+    Keep the replacement filter connection after a disconnect instead of
+    falling through to terminate and immediately destroying it. Clear the
+    previous filter so stale domains or label limits cannot suppress queries
+    while the replacement filter reply is pending.
+
+    Retry missing filter connections on later lookups before the unchanged
+    directory shortcut. This also recovers socket-activated hooks whose socket
+    remains present. Apply the existing rate limit in hook_acquire_filter()
+    so all acquisition paths share it, and report only the first suppressed
+    attempt per window.
+
+    Stop filter monitoring when unlinking a hook. A pending query can retain
+    the Hook after its manager has been cleared; a subsequent filter
+    disconnect would otherwise try to reconnect and fail assert(h->manager).
+    The pending query retains its separate connection and can still complete.
+
+[v255 backport note: this backport was adapted to the systemd v255.2 API,
+which predates the public sd-varlink and sd-json APIs used by the upstream
+version of this commit:
+- sd_varlink_*() calls were mapped onto the internal varlink_*() API
+  (src/shared/varlink.h), sd_json_*() onto the JsonVariant/json_*() API
+  (src/shared/json.h). SD_JSON_ALLOW_EXTENSIONS became JSON_PERMISSIVE,
+  SD_JSON_NULLABLE has no v255 equivalent and is handled in the dispatch
+  callbacks instead.
+- src/resolve/resolved-forward.h does not exist in v255.2; the required
+  forward declarations live in src/resolve/resolved-hook.h and
+  resolved-dns-query.h.
+- src/shared/resolved-def.h is src/resolve/resolved-def.h in v255.2.
+- src/resolve/resolved-varlink.c has no resolve_service_all_complete() in
+  v255.2 (the varlink service shares the bus implementation), so that part
+  of the upstream commit was dropped.
+- src/resolve/test-dns-query.c does not exist in v255.2, so the test
+  hermeticity hunk (SYSTEMD_RESOLVED_HOOK=0) was dropped.
+- v255.2's varlink IDL macros (VARLINK_DEFINE_*) have no field/interface
+  comments and no way to mark a method as supporting the "more" flag; those
+  annotations were dropped. ResourceKey/ResourceRecord are shared with the
+  io.systemd.Resolve.Monitor interface, so they are referenced via extern
+  declarations instead of being defined again.]
+
+---
+diff --git a/man/org.freedesktop.resolve1.xml b/man/org.freedesktop.resolve1.xml
+index f15e34a7..e454dcd8 100644
+--- a/man/org.freedesktop.resolve1.xml
++++ b/man/org.freedesktop.resolve1.xml
+@@ -483,6 +483,7 @@ node /org/freedesktop/resolve1 {
+ #define SD_RESOLVED_FROM_ZONE         (UINT64_C(1) &lt;&lt; 21)
+ #define SD_RESOLVED_FROM_TRUST_ANCHOR (UINT64_C(1) &lt;&lt; 22)
+ #define SD_RESOLVED_FROM_NETWORK      (UINT64_C(1) &lt;&lt; 23)
++#define SD_RESOLVED_FROM_HOOK         (UINT64_C(1) &lt;&lt; 27)
+ </programlisting>
+ 
+         <para>On input, the first five flags control the protocols to use for the look-up. They refer to
+diff --git a/src/resolve/meson.build b/src/resolve/meson.build
+index 9fbb79bd..c99dd1cb 100644
+--- a/src/resolve/meson.build
++++ b/src/resolve/meson.build
+@@ -29,6 +29,7 @@ systemd_resolved_sources = files(
+         'resolved-dnssd-bus.c',
+         'resolved-dnssd.c',
+         'resolved-etc-hosts.c',
++        'resolved-hook.c',
+         'resolved-link-bus.c',
+         'resolved-link.c',
+         'resolved-llmnr.c',
+diff --git a/src/resolve/resolvectl.c b/src/resolve/resolvectl.c
+index afa537f1..f3b1e127 100644
+--- a/src/resolve/resolvectl.c
++++ b/src/resolve/resolvectl.c
+@@ -206,13 +206,14 @@ static void print_source(uint64_t flags, usec_t rtt) {
+                ansi_normal());
+ 
+         if ((flags & (SD_RESOLVED_FROM_MASK|SD_RESOLVED_SYNTHETIC)) != 0)
+-                printf("%s-- Data from:%s%s%s%s%s%s\n",
++                printf("%s-- Data from:%s%s%s%s%s%s%s\n",
+                        ansi_grey(),
+                        FLAGS_SET(flags, SD_RESOLVED_SYNTHETIC) ? " synthetic" : "",
+                        FLAGS_SET(flags, SD_RESOLVED_FROM_CACHE) ? " cache" : "",
+                        FLAGS_SET(flags, SD_RESOLVED_FROM_ZONE) ? " zone" : "",
+                        FLAGS_SET(flags, SD_RESOLVED_FROM_TRUST_ANCHOR) ? " trust-anchor" : "",
+                        FLAGS_SET(flags, SD_RESOLVED_FROM_NETWORK) ? " network" : "",
++                       FLAGS_SET(flags, SD_RESOLVED_FROM_HOOK) ? " hook" : "",
+                        ansi_normal());
+ }
+ 
+diff --git a/src/resolve/resolved-bus.c b/src/resolve/resolved-bus.c
+index 2758249e..34996137 100644
+--- a/src/resolve/resolved-bus.c
++++ b/src/resolve/resolved-bus.c
+@@ -1019,7 +1019,7 @@ static void resolve_service_all_complete(DnsQuery *query) {
+ 
+         assert(q);
+ 
+-        if (q->block_all_complete > 0) {
++        if (q->hook_query || q->block_all_complete > 0) {
+                 TAKE_PTR(q);
+                 return;
+         }
+@@ -1030,6 +1030,12 @@ static void resolve_service_all_complete(DnsQuery *query) {
+ 
+                 LIST_FOREACH(auxiliary_queries, aux, q->auxiliary_queries) {
+ 
++                        if (aux->hook_query) {
++                                /* If an auxiliary query's hook is still pending, let's wait */
++                                TAKE_PTR(q);
++                                return;
++                        }
++
+                         switch (aux->state) {
+ 
+                         case DNS_TRANSACTION_PENDING:
+diff --git a/src/resolve/resolved-def.h b/src/resolve/resolved-def.h
+index b7a44f95..8f0fc981 100644
+--- a/src/resolve/resolved-def.h
++++ b/src/resolve/resolved-def.h
+@@ -70,6 +70,9 @@
+ /* Output: Result was (at least partially) answered from network */
+ #define SD_RESOLVED_FROM_NETWORK    (UINT64_C(1) << 23)
+ 
++/* Output: Result was answered by hook */
++#define SD_RESOLVED_FROM_HOOK       (UINT64_C(1) << 27)
++
+ /* Input: Don't answer request with stale data */
+ #define SD_RESOLVED_NO_STALE        (UINT64_C(1) << 24)
+ 
+@@ -77,6 +80,6 @@
+ #define SD_RESOLVED_MDNS            (SD_RESOLVED_MDNS_IPV4|SD_RESOLVED_MDNS_IPV6)
+ #define SD_RESOLVED_PROTOCOLS_ALL   (SD_RESOLVED_MDNS|SD_RESOLVED_LLMNR|SD_RESOLVED_DNS)
+ 
+-#define SD_RESOLVED_FROM_MASK       (SD_RESOLVED_FROM_CACHE|SD_RESOLVED_FROM_ZONE|SD_RESOLVED_FROM_TRUST_ANCHOR|SD_RESOLVED_FROM_NETWORK)
++#define SD_RESOLVED_FROM_MASK       (SD_RESOLVED_FROM_CACHE|SD_RESOLVED_FROM_ZONE|SD_RESOLVED_FROM_TRUST_ANCHOR|SD_RESOLVED_FROM_NETWORK|SD_RESOLVED_FROM_HOOK)
+ 
+ #define SD_RESOLVED_QUERY_TIMEOUT_USEC (120 * USEC_PER_SEC)
+diff --git a/src/resolve/resolved-dns-query.c b/src/resolve/resolved-dns-query.c
+index 3ec2c18e..02edd2be 100644
+--- a/src/resolve/resolved-dns-query.c
++++ b/src/resolve/resolved-dns-query.c
+@@ -10,6 +10,7 @@
+ #include "resolved-dns-query.h"
+ #include "resolved-dns-synthesize.h"
+ #include "resolved-etc-hosts.h"
++#include "resolved-hook.h"
+ #include "string-util.h"
+ 
+ #define QUERIES_MAX 2048
+@@ -394,6 +395,8 @@ DnsQuery *dns_query_free(DnsQuery *q) {
+ 
+         dns_query_unlink_candidates(q);
+ 
++        hook_query_free(q->hook_query);
++
+         dns_question_unref(q->question_idna);
+         dns_question_unref(q->question_utf8);
+         dns_packet_unref(q->question_bypass);
+@@ -717,23 +720,16 @@ static int dns_query_try_etc_hosts(DnsQuery *q) {
+         return 1;
+ }
+ 
+-int dns_query_go(DnsQuery *q) {
++static int dns_query_go_scopes(DnsQuery *q) {
+         DnsScopeMatch found = DNS_SCOPE_NO;
+         DnsScope *first = NULL;
+         int r;
+ 
+         assert(q);
++        assert(!q->hook_query);
++        assert(q->state == DNS_TRANSACTION_NULL);
+ 
+-        if (q->state != DNS_TRANSACTION_NULL)
+-                return 0;
+-
+-        r = dns_query_try_etc_hosts(q);
+-        if (r < 0)
+-                return r;
+-        if (r > 0) {
+-                dns_query_complete(q, DNS_TRANSACTION_SUCCESS);
+-                return 1;
+-        }
++        /* Start the lookup via the scopes */
+ 
+         LIST_FOREACH(scopes, s, q->manager->dns_scopes) {
+                 DnsScopeMatch match;
+@@ -842,6 +838,72 @@ fail:
+         return r;
+ }
+ 
++static void on_hook_complete(HookQuery *hq, int rcode, DnsAnswer *answer, void *userdata) {
++        DnsQuery *q = ASSERT_PTR(userdata);
++        int r;
++
++        assert(hq);
++        assert(q->hook_query == hq);
++        assert(q->state == DNS_TRANSACTION_NULL);
++
++        q->hook_query = hook_query_free(q->hook_query);
++        TAKE_PTR(hq);
++
++        if (rcode < 0) {
++                log_debug("Hook yielded no results, proceeding.");
++                r = dns_query_go_scopes(q);
++                if (r < 0) {
++                        dns_query_reset_answer(q);
++                        q->answer_errno = r;
++                        dns_query_complete(q, DNS_TRANSACTION_ERRNO);
++                }
++
++                return;
++        }
++
++        dns_query_reset_answer(q);
++
++        q->answer = dns_answer_ref(answer);
++        q->answer_rcode = rcode;
++        q->answer_protocol = dns_synthesize_protocol(q->flags);
++        q->answer_family = dns_synthesize_family(q->flags);
++        q->answer_query_flags = SD_RESOLVED_FROM_HOOK;
++        dns_query_complete(q, rcode == DNS_RCODE_SUCCESS ? DNS_TRANSACTION_SUCCESS : DNS_TRANSACTION_RCODE_FAILURE);
++}
++
++int dns_query_go(DnsQuery *q) {
++        int r;
++
++        assert(q);
++
++        /* Already ongoing? Then suppress */
++        if (q->hook_query ||
++            q->state != DNS_TRANSACTION_NULL)
++                return 0;
++
++        r = dns_query_try_etc_hosts(q);
++        if (r < 0)
++                return r;
++        if (r > 0) {
++                dns_query_complete(q, DNS_TRANSACTION_SUCCESS);
++                return 1;
++        }
++
++        r = manager_hook_query(
++                        q->manager,
++                        q->question_bypass ? q->question_bypass->question : q->question_idna,
++                        q->question_bypass ? q->question_bypass->question : q->question_utf8,
++                        on_hook_complete,
++                        q,
++                        &q->hook_query);
++        if (r < 0)
++                return r;
++        if (r > 0) /* hook calls are pending */
++                return 0;
++
++        return dns_query_go_scopes(q);
++}
++
+ static void dns_query_accept(DnsQuery *q, DnsQueryCandidate *c) {
+         DnsTransactionState state = DNS_TRANSACTION_NO_SERVERS;
+         bool has_authenticated = false, has_non_authenticated = false, has_confidential = false, has_non_confidential = false;
+@@ -977,6 +1039,9 @@ void dns_query_ready(DnsQuery *q) {
+          * after calling this function, unless the block_ready
+          * counter was explicitly bumped before doing so. */
+ 
++        if (q->hook_query)
++                return;
++
+         if (q->block_ready > 0)
+                 return;
+ 
+diff --git a/src/resolve/resolved-dns-query.h b/src/resolve/resolved-dns-query.h
+index 2723299b..ad7094cd 100644
+--- a/src/resolve/resolved-dns-query.h
++++ b/src/resolve/resolved-dns-query.h
+@@ -9,6 +9,7 @@
+ typedef struct DnsQueryCandidate DnsQueryCandidate;
+ typedef struct DnsQuery DnsQuery;
+ typedef struct DnsStubListenerExtra DnsStubListenerExtra;
++typedef struct HookQuery HookQuery;
+ 
+ #include "resolved-dns-answer.h"
+ #include "resolved-dns-question.h"
+@@ -109,6 +110,9 @@ struct DnsQuery {
+         DnsAnswer *reply_additional;
+         DnsStubListenerExtra *stub_listener_extra;
+ 
++        /* Pending query to any installed hooks */
++        HookQuery *hook_query;
++
+         /* Completion callback */
+         void (*complete)(DnsQuery* q);
+ 
+diff --git a/src/resolve/resolved-hook.c b/src/resolve/resolved-hook.c
+new file mode 100644
+index 00000000..b3e02e34
+--- /dev/null
++++ b/src/resolve/resolved-hook.c
+@@ -0,0 +1,908 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include "sd-event.h"
++
++#include "alloc-util.h"
++#include "dirent-util.h"
++#include "dns-domain.h"
++#include "env-util.h"
++#include "errno-util.h"
++#include "fd-util.h"
++#include "hash-funcs.h"
++#include "iovec-util.h"
++#include "json.h"
++#include "list.h"
++#include "parse-util.h"
++#include "path-util.h"
++#include "ratelimit.h"
++#include "resolved-hook.h"
++#include "resolved-manager.h"
++#include "set.h"
++#include "stat-util.h"
++#include "time-util.h"
++#include "varlink.h"
++
++/* Controls how many idle connections to keep around at max. This is purely an optimization: an established
++ * socket that has gone through connect()/accept() already is just quicker to use. Since we might get a flood
++ * of resolution requests we keep multiple connections open thus, but not too many. */
++#define HOOK_IDLE_CONNECTIONS_MAX 4U
++
++/* Encapsulates a specific hook, i.e. bound socket in in the /run/systemd/resolve.hook/ directory */
++typedef struct Hook {
++        unsigned n_ref;
++
++        Manager *manager;
++        char *socket_path;
++
++        Varlink *filter_link;
++        Set *idle_links; /* we retry to recycle varlink connections */
++
++        /* This hook only shall be applied to names matching the following filter parameters */
++        Set *filter_domains;          /* if NULL → no filtering; if empty → do not accept anything */
++        unsigned filter_labels_min;   /* minimum number of labels */
++        unsigned filter_labels_max;   /* maximum number of labels (this is useful to hook only into single-label lookups á la LLMNR) */
++
++        /* timestamp we last saw this in CLOCK_MONOTONIC, for GC handling */
++        uint64_t seen_usec;
++
++        /* When a hook never responds correctly, we'll eventually give up trying */
++        RateLimit reconnect_ratelimit;
++} Hook;
++
++static Hook* hook_free(Hook *h) {
++        if (!h)
++                return NULL;
++
++        mfree(h->socket_path);
++        varlink_unref(h->filter_link);
++
++        /* The idle set uses trivial hash ops, hence unref the connections explicitly. */
++        void *vl;
++        while ((vl = set_steal_first(h->idle_links)))
++                varlink_unref(vl);
++        set_free(h->idle_links);
++
++        set_free(h->filter_domains);
++
++        return mfree(h);
++}
++
++DEFINE_PRIVATE_TRIVIAL_REF_UNREF_FUNC(Hook, hook, hook_free);
++DEFINE_TRIVIAL_CLEANUP_FUNC(Hook*, hook_unref);
++
++static Hook *hook_unlink(Hook *h) {
++        if (!h)
++                return NULL;
++
++        if (!h->manager)
++                return NULL;
++
++        if (h->socket_path)
++                hashmap_remove(h->manager->hooks, h->socket_path);
++        h->manager = NULL;
++
++        /* Pending queries may keep the hook alive, but it must no longer monitor its filter. */
++        h->filter_link = varlink_unref(h->filter_link);
++
++        return hook_unref(h);
++}
++
++static int dispatch_filter_domains(const char *name, JsonVariant *variant, JsonDispatchFlags flags, void *userdata) {
++        Hook *h = ASSERT_PTR(userdata);
++        int r;
++
++        /* NULL means: no filtering at all */
++        if (json_variant_is_null(variant))
++                return 0;
++
++        if (!json_variant_is_array(variant))
++                return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL), "JSON field '%s' is not an array.", strna(name));
++
++        /* Let's explicitly allocate the set here, since we want that a NULL set means: let everything
++         * through; but an empty set shall mean: let nothing through */
++        r = set_ensure_allocated(&h->filter_domains, &dns_name_hash_ops_free);
++        if (r < 0)
++                return json_log_oom(variant, flags);
++
++        JsonVariant *i;
++        JSON_VARIANT_ARRAY_FOREACH(i, variant) {
++                if (!json_variant_is_string(i))
++                        return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL),
++                                        "Element of JSON field '%s' is not a string.", strna(name));
++
++                r = set_put_strdup_full(&h->filter_domains, &dns_name_hash_ops_free, json_variant_string(i));
++                if (r < 0 && r != -EEXIST)
++                        return json_log_oom(variant, flags);
++        }
++
++        return 0;
++}
++
++static void hook_reset_filter(Hook *h) {
++        assert(h);
++
++        h->filter_domains = set_free(h->filter_domains);
++        h->filter_labels_min = UINT_MAX;
++        h->filter_labels_max = UINT_MAX;
++}
++
++static int hook_acquire_filter(Hook *h);
++
++static int on_filter_reply(
++                Varlink *link,
++                JsonVariant *parameters,
++                const char *error_id,
++                VarlinkReplyFlags flags,
++                void *userdata) {
++
++        Hook *h = ASSERT_PTR(userdata);
++        int r;
++
++        if (error_id) {
++                if (streq(error_id, VARLINK_ERROR_DISCONNECTED)) {
++                        /* When we are disconnected, that's fine, maybe the other side wants to clean up
++                         * open connections every now and then, or is being restarted and thus a moment
++                         * offline. Try to reconnect immediately to recover. */
++                        log_debug("Connection terminated while querying filter of hook '%s'.", h->socket_path);
++
++                        h->filter_link = varlink_unref(h->filter_link);
++
++                        /* Filters from the old connection must not block queries while reconnecting. */
++                        hook_reset_filter(h);
++
++                        r = hook_acquire_filter(h);
++                        if (r < 0)
++                                goto terminate;
++
++                        return 1;
++                }
++
++                if (streq(error_id, VARLINK_ERROR_METHOD_NOT_FOUND)) {
++                        log_debug("Hook '%s' does not implement querying filter.", h->socket_path);
++                        goto terminate;
++                }
++
++                log_warning("Received error while requesting query filter: %s", error_id);
++                goto terminate;
++        }
++
++        if (!FLAGS_SET(flags, VARLINK_REPLY_CONTINUES)) {
++                log_debug("Final message received while querying filter, terminating connection.");
++                goto terminate;
++        }
++
++        hook_reset_filter(h);
++
++        static const JsonDispatch dispatch_table[] = {
++                { "filterDomains",   _JSON_VARIANT_TYPE_INVALID, dispatch_filter_domains, 0, 0 },
++                { "filterLabelsMin", JSON_VARIANT_INTEGER,       json_dispatch_uint, offsetof(Hook, filter_labels_min), 0 },
++                { "filterLabelsMax", JSON_VARIANT_INTEGER,       json_dispatch_uint, offsetof(Hook, filter_labels_max), 0 },
++                {},
++        };
++
++        r = json_dispatch(parameters, dispatch_table, JSON_LOG|JSON_PERMISSIVE, h);
++        if (r < 0)
++                goto terminate;
++
++        return 1;
++
++terminate:
++        h->filter_link = varlink_unref(h->filter_link);
++        hook_reset_filter(h);
++        return 1;
++}
++
++static int hook_varlink_connect(Hook *h, int64_t priority, Varlink **ret) {
++        int r;
++
++        assert(h);
++        assert(ret);
++
++        _cleanup_(varlink_unrefp) Varlink *v = NULL;
++        r = varlink_connect_address(&v, h->socket_path);
++        if (ERRNO_IS_NEG_DISCONNECT(r) || r == -ENOENT) {
++                log_debug_errno(r, "Socket '%s' is not connectible, probably stale, ignoring: %m", h->socket_path);
++                *ret = NULL;
++                return 0; /* dead socket */
++        }
++        if (r < 0)
++                return log_error_errno(r, "Failed to connect to '%s': %m", h->socket_path);
++
++        _cleanup_free_ char *bn = NULL;
++        r = path_extract_filename(h->socket_path, &bn);
++        if (r < 0)
++                return log_error_errno(r, "Failed to extract filename from path '%s': %m", h->socket_path);
++
++        _cleanup_free_ char *j = strjoin("hook-", bn);
++        if (!j)
++                return log_oom();
++
++        (void) varlink_set_description(v, j);
++
++        r = varlink_attach_event(v, h->manager->event, priority);
++        if (r < 0)
++                return log_error_errno(r, "Failed to attach Varlink connection to event loop: %m");
++
++        *ret = TAKE_PTR(v);
++        return 1; /* worked */
++}
++
++static int hook_acquire_filter(Hook *h) {
++        int r;
++
++        assert(h);
++        assert(h->manager);
++
++        if (h->filter_link)
++                return 0;
++
++        /* Apply the same limit to immediate reconnects and retries on later lookups. */
++        if (!ratelimit_below(&h->reconnect_ratelimit)) {
++                if (ratelimit_num_dropped(&h->reconnect_ratelimit) == 1)
++                        log_warning("Filter connections to hook '%s' failed too quickly, not reconnecting for now.", h->socket_path);
++                return 0;
++        }
++
++        _cleanup_(varlink_unrefp) Varlink *v = NULL;
++        r = hook_varlink_connect(h, SD_EVENT_PRIORITY_NORMAL-10, &v); /* Give the querying of the filter a bit of priority */
++        if (r <= 0)
++                return r;
++
++        /* Turn off timeout, after all we want to continously monitor filter changes */
++        r = varlink_set_relative_timeout(v, UINT64_MAX);
++        if (r < 0)
++                return log_error_errno(r, "Failed to disable timeout on Varlink connection %m");
++
++        varlink_set_userdata(v, h);
++        r = varlink_bind_reply(v, on_filter_reply);
++        if (r < 0)
++                return log_error_errno(r, "Failed to set filter reply callback on Varlink connection: %m");
++
++        r = varlink_observe(
++                        v,
++                        "io.systemd.Resolve.Hook.QueryFilter",
++                        /* parameters= */ NULL);
++        if (r < 0)
++                return log_error_errno(r, "Failed to issue QueryFilter() varlink call: %m");
++
++        h->filter_link = TAKE_PTR(v);
++        return 0;
++}
++
++static int hook_test_filter(Hook *h, DnsQuestion *question) {
++        int r;
++
++        assert(h);
++        assert(question);
++
++        const char *name = dns_question_first_name(question);
++        if (!name)
++                return -EINVAL;
++
++        if (h->filter_labels_max != UINT_MAX || h->filter_labels_min != UINT_MAX) {
++                int n = dns_name_count_labels(name);
++                if (n < 0)
++                        return n;
++
++                if (h->filter_labels_max != UINT_MAX && (unsigned) n > h->filter_labels_max)
++                        return false;
++                if (h->filter_labels_min != UINT_MAX && (unsigned) n < h->filter_labels_min)
++                        return false;
++        }
++
++        if (h->filter_domains)
++                for (const char *p = name;;) {
++                        if (set_contains(h->filter_domains, p))
++                                break;
++
++                        r = dns_name_parent(&p);
++                        if (r < 0)
++                                return r;
++                        if (r == 0)
++                                return false;
++                }
++
++        return true;
++}
++
++static int hook_compare(const Hook *a, const Hook *b) {
++        assert(a);
++
++        /* Hooks take preference based on the name of their socket */
++        return path_compare(a->socket_path, b->socket_path);
++}
++
++static void hook_recycle_varlink(Hook *h, Varlink *vl) {
++        int r;
++
++        assert(h);
++        assert(vl);
++
++        /* Disable any potential callbacks while we are recycling the thing */
++        varlink_set_userdata(vl, NULL);
++        varlink_bind_reply(vl, NULL);
++
++        if (set_size(h->idle_links) > HOOK_IDLE_CONNECTIONS_MAX)
++                return;
++
++        /* If we are done with a lookup don't close the connection right-away, but keep it open so that we
++         * can possibly reuse it later, and can save a bit of time on future lookups. We only keep a few
++         * around however. */
++
++        r = set_ensure_put(&h->idle_links, &trivial_hash_ops, vl);
++        if (r < 0)
++                log_debug_errno(r, "Failed to add varlink connection to idle set, ignoring: %m");
++        else
++                varlink_ref(vl);
++}
++
++static void manager_gc_hooks(Manager *m, usec_t seen_usec) {
++        assert(m);
++
++        Hook *h;
++        HASHMAP_FOREACH(h, m->hooks) {
++                /* Keep hooks around that have been seen in this iteration */
++                if (h->seen_usec == seen_usec)
++                        continue;
++
++                hook_unlink(h);
++        }
++}
++
++DEFINE_HASH_OPS_WITH_VALUE_DESTRUCTOR(
++                hook_hash_ops,
++                char, string_hash_func, string_compare_func,
++                Hook, hook_unlink);
++
++static int manager_hook_add(Manager *m, const char *p, usec_t seen_usec) {
++        int r;
++
++        assert(m);
++        assert(p);
++
++        Hook *found = hashmap_get(m->hooks, p);
++        if (found) {
++                found->seen_usec = seen_usec;
++                return 0;
++        }
++
++        _cleanup_free_ char *s = strdup(p);
++        if (!s)
++                return log_oom();
++
++        _cleanup_(hook_unrefp) Hook *h = new(Hook, 1);
++        if (!h)
++                return log_oom();
++
++        *h = (Hook) {
++                .n_ref = 1,
++                .socket_path = TAKE_PTR(s),
++                .filter_labels_min = UINT_MAX,
++                .filter_labels_max = UINT_MAX,
++                .reconnect_ratelimit = { 1 * USEC_PER_SEC, 5 },
++                .seen_usec = seen_usec,
++        };
++
++        if (hashmap_ensure_put(&m->hooks, &hook_hash_ops, h->socket_path, h) < 0)
++                return log_oom();
++
++        hook_ref(h);
++        h->manager = m;
++
++        r = hook_acquire_filter(h);
++        if (r < 0) {
++                hook_unlink(h);
++                return r;
++        }
++
++        return 0;
++}
++
++static int manager_hook_discover(Manager *m) {
++        /* You might wonder, why is this /run/systemd/resolve.hook/ and not /run/systemd/resolve/hook/?
++         * That's because of permissions: resolved runs as "systemd-resolve" user and owns
++         * /run/systemd/resolve/, but the hook directory is where other privileged code shall bind a socket
++         * in (and where root ownership hence makes sense). Hence we do not nest the directories, but put
++         * them side by side, so that they can have different ownership. */
++        static const char dp[] = "/run/systemd/resolve.hook";
++        _cleanup_closedir_ DIR *d = NULL;
++        int r;
++
++        assert(m);
++
++        usec_t seen_usec = now(CLOCK_MONOTONIC);
++
++        struct stat st;
++        if (stat(dp, &st) < 0) {
++                if (errno == ENOENT)
++                        r = 0;
++                else
++                        r = log_warning_errno(errno, "Failed to stat %s/: %m", dp);
++
++                goto finish;
++        }
++
++        /* A socket-activated hook can restart without changing the directory. */
++        Hook *h;
++        HASHMAP_FOREACH(h, m->hooks)
++                (void) hook_acquire_filter(h);
++
++        if (stat_inode_unmodified(&st, &m->hook_stat))
++                return 0;
++
++        d = opendir(dp);
++        if (!d) {
++                if (errno == ENOENT)
++                        r = 0;
++                else
++                        r = log_warning_errno(errno, "Failed to enumerate %s/ contents: %m", dp);
++
++                goto finish;
++        }
++
++        for (;;) {
++                errno = 0;
++                struct dirent *de = readdir_no_dot(d);
++                if (!de) {
++                        if (errno == 0) /* EOD */
++                                break;
++
++                        r = log_error_errno(errno, "Failed to enumerate %s/: %m", dp);
++                        goto finish;
++                }
++
++                if (!IN_SET(de->d_type, DT_SOCK, DT_UNKNOWN))
++                        continue;
++
++                _cleanup_free_ char *p = path_join(dp, de->d_name);
++                if (!p) {
++                        r = log_oom();
++                        goto finish;
++                }
++
++                (void) manager_hook_add(m, p, seen_usec);
++        }
++
++        m->hook_stat = st;
++        r = 0;
++
++finish:
++        manager_gc_hooks(m, seen_usec);
++        return r;
++}
++
++typedef struct HookQueryCandidate HookQueryCandidate;
++
++/* Encapsulates a query currently being processed by various hooks */
++struct HookQuery {
++        /* Question */
++        DnsQuestion *question_idna;
++        DnsQuestion *question_utf8;
++
++        /* Selected answer */
++        DnsAnswer *answer;
++        int answer_rcode;
++        Hook *answer_hook;
++
++        /* Candidates for a reply, i.e, one entry for each hook */
++        LIST_HEAD(HookQueryCandidate, candidates);
++
++        /* Completion callback to invoke */
++        void (*complete)(HookQuery *q, int answer_rcode, DnsAnswer *answer, void *userdata);
++        void *userdata;
++};
++
++/* Encapsulates the state of a hook query to one specific hook */
++struct HookQueryCandidate {
++        HookQuery *query;
++        Hook *hook;
++        Varlink *link;
++        LIST_FIELDS(HookQueryCandidate, candidates);
++};
++
++static HookQueryCandidate* hook_query_candidate_free(HookQueryCandidate *c) {
++        if (!c)
++                return NULL;
++
++        c->link = varlink_unref(c->link);
++
++        if (c->query)
++                LIST_REMOVE(candidates, c->query->candidates, c);
++
++        hook_unref(c->hook);
++        return mfree(c);
++}
++
++DEFINE_TRIVIAL_CLEANUP_FUNC(HookQueryCandidate*, hook_query_candidate_free);
++
++HookQuery* hook_query_free(HookQuery *hq) {
++        if (!hq)
++                return NULL;
++
++        /* Free candidates as long as there are candidates */
++        while (hq->candidates)
++                hook_query_candidate_free(hq->candidates);
++
++        dns_question_unref(hq->question_utf8);
++        dns_question_unref(hq->question_idna);
++        dns_answer_unref(hq->answer);
++        hook_unref(hq->answer_hook);
++
++        return mfree(hq);
++}
++
++DEFINE_TRIVIAL_CLEANUP_FUNC(HookQuery*, hook_query_free);
++
++static void hook_query_ready(HookQuery *hq) {
++        assert(hq);
++
++        bool done = true;
++        LIST_FOREACH(candidates, c, hq->candidates)
++                if (c->link) { /* ongoing connection? */
++                        done = false;
++                        break;
++                }
++
++        if (!done)
++                return;
++
++        /* The complete() callback quite likely will destroy 'hq', which might be what keeps the answer
++         * object alive. Let's take an explicit ref here hence, so that it definitely remains alive for the
++         * whole callback lifetime */
++        _cleanup_(dns_answer_unrefp) DnsAnswer *answer = dns_answer_ref(hq->answer);
++        hq->complete(hq, hq->answer_rcode, answer, hq->userdata);
++}
++
++static int dispatch_rcode(const char *name, JsonVariant *variant, JsonDispatchFlags flags, void *userdata) {
++        int *u = ASSERT_PTR(userdata), r;
++
++        assert(variant);
++
++        int rcode;
++        r = json_dispatch_int(name, variant, flags, &rcode);
++        if (r < 0)
++                return r;
++
++        if (rcode < 0 || rcode >= _DNS_RCODE_MAX)
++                return json_log(variant, flags, SYNTHETIC_ERRNO(ERANGE), "JSON field '%s' contains an invalid DNS rcode.", strna(name));
++
++        *u = rcode;
++        return 0;
++}
++
++static int dispatch_answer(const char *name, JsonVariant *variant, JsonDispatchFlags flags, void *userdata) {
++        DnsAnswer **a = ASSERT_PTR(userdata);
++        int r;
++
++        assert(variant);
++
++        if (json_variant_is_null(variant)) {
++                *a = dns_answer_unref(*a);
++                return 0;
++        }
++
++        if (!json_variant_is_array(variant))
++                return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL), "JSON field '%s' is not an array.", strna(name));
++
++        _cleanup_(dns_answer_unrefp) DnsAnswer *l = NULL;
++        JsonVariant *e;
++        JSON_VARIANT_ARRAY_FOREACH(e, variant) {
++                if (!json_variant_is_object(e))
++                        return json_log(e, flags, SYNTHETIC_ERRNO(EINVAL), "JSON array element is not an object");
++
++                _cleanup_(iovec_done) struct iovec iovec = {};
++                static const JsonDispatch dispatch_table[] = {
++                        { "raw", JSON_VARIANT_STRING, json_dispatch_unbase64_iovec, 0, JSON_MANDATORY },
++                        { "rr",  JSON_VARIANT_OBJECT, NULL,                         0, 0                 },
++                        {}
++                };
++
++                r = json_dispatch(e, dispatch_table, flags|JSON_PERMISSIVE, &iovec);
++                if (r < 0)
++                        return r;
++
++                _cleanup_(dns_resource_record_unrefp) DnsResourceRecord *rr = NULL;
++                r = dns_resource_record_new_from_raw(&rr, iovec.iov_base, iovec.iov_len);
++                if (r < 0)
++                        return json_log(variant, flags, SYNTHETIC_ERRNO(EINVAL),
++                                        "JSON field '%s' contains an invalid resource record.", strna(name));
++
++                if (dns_answer_add_extend(&l, rr, /* ifindex= */ 0, /* flags= */ 0, /* rrsig= */ NULL) < 0)
++                        return json_log_oom(e, flags);
++        }
++
++        dns_answer_unref(*a);
++        *a = TAKE_PTR(l);
++
++        return 0;
++}
++
++typedef struct QueryReplyParameters {
++        int rcode;
++        DnsAnswer *answer;
++} QueryReplyParameters;
++
++static void query_reply_parameters_done(QueryReplyParameters *p) {
++        assert(p);
++
++        p->answer = dns_answer_unref(p->answer);
++}
++
++static int on_query_reply(
++                Varlink *link,
++                JsonVariant *parameters,
++                const char *error_id,
++                VarlinkReplyFlags flags,
++                void *userdata) {
++
++        HookQueryCandidate *qc = ASSERT_PTR(userdata);
++        HookQuery *q = ASSERT_PTR(qc->query); /* save early in case we destroy 'qc' half-way through this function */
++        int r;
++
++        assert(link);
++
++        _cleanup_(query_reply_parameters_done) QueryReplyParameters p = {
++                .rcode = -1,
++        };
++
++        if (error_id) {
++                log_notice("Query on hook '%s' failed with error '%s', ignoring.", qc->hook->socket_path, error_id);
++                r = -EBADR;
++                goto destroy;
++        }
++
++        static const JsonDispatch dispatch_table[] = {
++                { "rcode",  _JSON_VARIANT_TYPE_INVALID, dispatch_rcode,  offsetof(QueryReplyParameters, rcode),  0 },
++                { "answer", JSON_VARIANT_ARRAY,         dispatch_answer, offsetof(QueryReplyParameters, answer), 0 },
++                {},
++        };
++
++        r = json_dispatch(parameters, dispatch_table, JSON_LOG|JSON_PERMISSIVE, &p);
++        if (r < 0)
++                goto destroy;
++
++        if (p.rcode < 0) {
++                /* If no rcode is specified, then this means "continue with regular DNS based resolving" to us */
++                log_debug("Query on hook '%s' returned empty reply, skipping.", qc->hook->socket_path);
++                r = 0;
++                goto destroy;
++        }
++
++        bool win = false;
++        if (p.rcode == DNS_RCODE_SUCCESS)
++                /* if this is a successful lookup, let it win if the so far best lookup was a failure or
++                 * empty, or ordered later than us */
++                win = q->answer_rcode != DNS_RCODE_SUCCESS ||
++                        dns_answer_isempty(q->answer) ||
++                        (!dns_answer_isempty(p.answer) &&
++                         hook_compare(qc->hook, q->answer_hook) < 0);
++        else
++                /* if this is a failure lookup, let it win if we so far haven't seen any reply at all, or the
++                 * winner so far us ordered later than us. */
++                win = q->answer_rcode < 0 ||
++                        hook_compare(qc->hook, q->answer_hook) < 0;
++
++        if (win) {
++                /* This reply wins over whatever was stored before. Let's track that */
++                dns_answer_unref(q->answer);
++                q->answer = TAKE_PTR(p.answer);
++                q->answer_rcode = p.rcode;
++                hook_unref(q->answer_hook);
++                q->answer_hook = hook_ref(qc->hook);
++        }
++
++        hook_recycle_varlink(qc->hook, qc->link);
++        qc->link = varlink_unref(qc->link);
++
++        /* Check if we are ready now, and have processed all hooks on this query (this might destroy our
++         * candidate and our hook query!) */
++        hook_query_ready(q);
++        return 0;
++
++destroy:
++        qc = hook_query_candidate_free(qc);
++        hook_query_ready(q);
++        return r;
++}
++
++static int dns_questions_to_json(DnsQuestion *a, DnsQuestion *b, JsonVariant **ret) {
++        int r;
++
++        assert(ret);
++
++        /* Takes both questions and turns them into a JSON array of objects with the key. Note this takes two
++         * questions, one in IDNA and one in UTF-8 encoding, and merges them, removing duplicates. */
++
++        _cleanup_(json_variant_unrefp) JsonVariant *l = NULL;
++
++        DnsResourceKey *key;
++        DNS_QUESTION_FOREACH(key, a) {
++                _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
++                r = dns_resource_key_to_json(key, &v);
++                if (r < 0)
++                        return r;
++
++                r = json_variant_append_arrayb(&l, JSON_BUILD_OBJECT(JSON_BUILD_PAIR_VARIANT("key", v)));
++                if (r < 0)
++                        return r;
++        }
++
++        if (a != b) {
++                DNS_QUESTION_FOREACH(key, b) {
++                        if (dns_question_contains_key(a, key))
++                                continue;
++
++                        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
++                        r = dns_resource_key_to_json(key, &v);
++                        if (r < 0)
++                                return r;
++
++                        r = json_variant_append_arrayb(&l, JSON_BUILD_OBJECT(JSON_BUILD_PAIR_VARIANT("key", v)));
++                        if (r < 0)
++                                return r;
++                }
++        }
++
++        *ret = TAKE_PTR(l);
++        return 0;
++}
++
++static int hook_query_add_candidate(HookQuery *hq, Hook *h) {
++        int r;
++
++        assert(hq);
++        assert(h);
++
++        _cleanup_(varlink_unrefp) Varlink *vl = NULL;
++        for (;;) {
++                /* Before we create a new connection, let's see if there are still idle connections we can
++                 * use. */
++                vl = set_steal_first(h->idle_links);
++                if (!vl) {
++                        /* Nope, there's nothing, let's create a new connection */
++                        r = hook_varlink_connect(h, SD_EVENT_PRIORITY_NORMAL, &vl);
++                        if (r <= 0)
++                                return r;
++
++                        break;
++                }
++
++                /* v255 has no varlink_is_connected(); a disconnected connection has its fd closed. */
++                r = varlink_get_fd(vl);
++                if (r >= 0)
++                        break;
++
++                vl = varlink_unref(vl);
++        }
++
++        /* Set a short timeout for hooks. Hooks should not be able to cause the DNS part of the lookup to fail. */
++        r = varlink_set_relative_timeout(vl, SD_RESOLVED_QUERY_TIMEOUT_USEC/4);
++        if (r < 0)
++                return log_error_errno(r, "Failed to set Varlink connection timeout: %m");
++
++        r = varlink_bind_reply(vl, on_query_reply);
++        if (r < 0)
++                return log_error_errno(r, "Failed to bind reply callback to Varlink connection: %m");
++
++        _cleanup_(json_variant_unrefp) JsonVariant *jq = NULL;
++        r = dns_questions_to_json(hq->question_idna, hq->question_utf8, &jq);
++        if (r < 0)
++                return log_error_errno(r, "Failed to convert question to JSON: %m");
++
++        r = varlink_invokeb(
++                        vl,
++                        "io.systemd.Resolve.Hook.ResolveRecord",
++                        JSON_BUILD_OBJECT(JSON_BUILD_PAIR_VARIANT("question", jq)));
++        if (r < 0)
++                return log_error_errno(r, "Failed to enqueue question onto Varlink connection: %m");
++
++        _cleanup_(hook_query_candidate_freep) HookQueryCandidate *qc = new(HookQueryCandidate, 1);
++        if (!qc)
++                return log_oom();
++
++        qc->query = hq;
++        qc->hook = hook_ref(h);
++        qc->link = TAKE_PTR(vl);
++        LIST_PREPEND(candidates, hq->candidates, qc);
++
++        varlink_set_userdata(qc->link, qc);
++
++        TAKE_PTR(qc);
++
++        return 0;
++}
++
++static bool use_hooks(void) {
++        static int cache = -1;
++        int r;
++
++        if (cache >= 0)
++                return cache;
++
++        /* v255 does not have secure_getenv_bool(), do this manually. */
++        const char *e = secure_getenv("SYSTEMD_RESOLVED_HOOK");
++        if (!e)
++                return (cache = true);
++
++        r = parse_boolean(e);
++        if (r < 0) {
++                log_debug_errno(r, "Failed to parse $SYSTEMD_RESOLVED_HOOK, ignoring: %m");
++                return (cache = true);
++        }
++
++        return (cache = r);
++}
++
++int manager_hook_query(
++                Manager *m,
++                DnsQuestion *question_idna,
++                DnsQuestion *question_utf8,
++                HookCompleteCallback complete_cb,
++                void *userdata,
++                HookQuery **ret) {
++
++        int r;
++
++        assert(m);
++        assert(ret);
++
++        if (!use_hooks()) {
++                *ret = NULL;
++                return 0; /* no relevant hooks, continue immediately */
++        }
++
++        /* Let's bring our list of hooks up-to-date */
++        (void) manager_hook_discover(m);
++
++        _cleanup_(hook_query_freep) HookQuery *hq = NULL;
++
++        Hook *h;
++        HASHMAP_FOREACH(h, m->hooks) {
++                r = hook_test_filter(h, question_idna);
++                if (r < 0) {
++                        log_warning_errno(
++                                        r, "Failed to test if hook '%s' matches IDNA  question (%s), assuming not.",
++                                        h->socket_path, dns_question_first_name(question_idna));
++                        continue;
++                }
++                if (r == 0) {
++                        r = hook_test_filter(h, question_utf8);
++                        if (r < 0) {
++                                log_warning_errno(
++                                                r, "Failed to test if hook '%s' matches UTF-8 question (%s), assuming not.",
++                                                h->socket_path, dns_question_first_name(question_utf8));
++                                continue;
++                        }
++                        if (r == 0) {
++                                log_debug("Hook %s does not match question, skipping.", h->socket_path);
++                                continue;
++                        }
++                }
++
++                if (!hq) {
++                        hq = new(HookQuery, 1);
++                        if (!hq)
++                                return log_oom();
++
++                        *hq = (HookQuery) {
++                                .question_idna = dns_question_ref(question_idna),
++                                .question_utf8 = dns_question_ref(question_utf8),
++                                .answer_rcode = -1,
++                                .complete = complete_cb,
++                                .userdata = userdata,
++                        };
++                }
++
++                r = hook_query_add_candidate(hq, h);
++                if (r < 0)
++                        return r;
++        }
++
++        if (!hq || !hq->candidates) {
++                *ret = NULL;
++                return 0; /* no relevant hooks, continue immediately */
++        }
++
++        *ret = TAKE_PTR(hq);
++        return 1; /* please wait for the hooks to reply */
++}
+diff --git a/src/resolve/resolved-hook.h b/src/resolve/resolved-hook.h
+new file mode 100644
+index 00000000..7aa1d31a
+--- /dev/null
++++ b/src/resolve/resolved-hook.h
+@@ -0,0 +1,14 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++/* v255.2 has no resolved-forward.h, hence forward declare what we need here. */
++typedef struct DnsAnswer DnsAnswer;
++typedef struct DnsQuestion DnsQuestion;
++typedef struct HookQuery HookQuery;
++typedef struct Manager Manager;
++
++typedef void (HookCompleteCallback)(HookQuery *q, int rcode, DnsAnswer *answer, void *userdata);
++
++int manager_hook_query(Manager *m, DnsQuestion *question_idna, DnsQuestion *question_utf8, HookCompleteCallback complete_cb, void *userdata, HookQuery **ret);
++
++HookQuery* hook_query_free(HookQuery *hq);
+diff --git a/src/resolve/resolved-manager.c b/src/resolve/resolved-manager.c
+index c6056b37..14a2f24b 100644
+--- a/src/resolve/resolved-manager.c
++++ b/src/resolve/resolved-manager.c
+@@ -763,6 +763,8 @@ Manager *manager_free(Manager *m) {
+         dns_trust_anchor_flush(&m->trust_anchor);
+         manager_etc_hosts_flush(m);
+ 
++        hashmap_free(m->hooks);
++
+         return mfree(m);
+ }
+ 
+diff --git a/src/resolve/resolved-manager.h b/src/resolve/resolved-manager.h
+index 5cd5e834..1bf731e7 100644
+--- a/src/resolve/resolved-manager.h
++++ b/src/resolve/resolved-manager.h
+@@ -165,6 +165,9 @@ struct Manager {
+         size_t n_socket_graveyard;
+ 
+         struct sigrtmin18_info sigrtmin18_info;
++
++        Hashmap *hooks;
++        struct stat hook_stat;
+ };
+ 
+ /* Manager */
+diff --git a/src/shared/meson.build b/src/shared/meson.build
+index dd30846a..14f72b5c 100644
+--- a/src/shared/meson.build
++++ b/src/shared/meson.build
+@@ -176,6 +176,7 @@ shared_sources = files(
+         'varlink-io.systemd.Journal.c',
+         'varlink-io.systemd.ManagedOOM.c',
+         'varlink-io.systemd.PCRExtend.c',
++        'varlink-io.systemd.Resolve.Hook.c',
+         'varlink-io.systemd.Resolve.Monitor.c',
+         'varlink-io.systemd.Resolve.c',
+         'varlink-io.systemd.UserDatabase.c',
+diff --git a/src/shared/varlink-io.systemd.Resolve.Hook.c b/src/shared/varlink-io.systemd.Resolve.Hook.c
+new file mode 100644
+index 00000000..834e768f
+--- /dev/null
++++ b/src/shared/varlink-io.systemd.Resolve.Hook.c
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include "varlink-io.systemd.Resolve.Hook.h"
++
++/* ResourceKey and ResourceRecord are shared with the io.systemd.Resolve.Monitor interface. In v255.2 they
++ * are defined in varlink-io.systemd.Resolve.Monitor.c and not declared in any header, hence declare the
++ * symbols here. */
++extern const VarlinkSymbol vl_type_ResourceKey;
++extern const VarlinkSymbol vl_type_ResourceRecord;
++
++/* Note: v255.2's varlink IDL macros have no support for field comments, for the io.systemd.Resolve.Hook
++ * interface comments or for marking a method as supporting the "more" flag, hence those annotations from
++ * the upstream version are dropped here. Also the Answer/Question types are made static here to avoid
++ * clashing with the same-named types of the io.systemd.Resolve.Monitor interface. */
++
++static VARLINK_DEFINE_STRUCT_TYPE(
++                Answer,
++                VARLINK_DEFINE_FIELD_BY_TYPE(rr, ResourceRecord, VARLINK_NULLABLE),
++                VARLINK_DEFINE_FIELD(raw, VARLINK_STRING, 0));
++
++static VARLINK_DEFINE_STRUCT_TYPE(
++                Question,
++                VARLINK_DEFINE_FIELD_BY_TYPE(key, ResourceKey, 0));
++
++static VARLINK_DEFINE_METHOD(
++                QueryFilter,
++                VARLINK_DEFINE_OUTPUT(filterDomains, VARLINK_STRING, VARLINK_NULLABLE|VARLINK_ARRAY),
++                VARLINK_DEFINE_OUTPUT(filterLabelsMin, VARLINK_INT, VARLINK_NULLABLE),
++                VARLINK_DEFINE_OUTPUT(filterLabelsMax, VARLINK_INT, VARLINK_NULLABLE));
++
++static VARLINK_DEFINE_METHOD(
++                ResolveRecord,
++                VARLINK_DEFINE_INPUT_BY_TYPE(question, Question, VARLINK_ARRAY),
++                VARLINK_DEFINE_OUTPUT(rcode, VARLINK_INT, VARLINK_NULLABLE),
++                VARLINK_DEFINE_OUTPUT_BY_TYPE(answer, Answer, VARLINK_ARRAY|VARLINK_NULLABLE));
++
++VARLINK_DEFINE_INTERFACE(
++                io_systemd_Resolve_Hook,
++                "io.systemd.Resolve.Hook",
++                &vl_type_Answer,
++                &vl_type_Question,
++                &vl_type_ResourceKey,
++                &vl_type_ResourceRecord,
++                &vl_method_QueryFilter,
++                &vl_method_ResolveRecord);
+diff --git a/src/shared/varlink-io.systemd.Resolve.Hook.h b/src/shared/varlink-io.systemd.Resolve.Hook.h
+new file mode 100644
+index 00000000..384f1742
+--- /dev/null
++++ b/src/shared/varlink-io.systemd.Resolve.Hook.h
+@@ -0,0 +1,6 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include "varlink-idl.h"
++
++extern const VarlinkInterface vl_interface_io_systemd_Resolve_Hook;
+diff --git a/src/test/test-varlink-idl.c b/src/test/test-varlink-idl.c
+index b67e5796..9be89fe6 100644
+--- a/src/test/test-varlink-idl.c
++++ b/src/test/test-varlink-idl.c
+@@ -11,6 +11,7 @@
+ #include "varlink-io.systemd.Journal.h"
+ #include "varlink-io.systemd.ManagedOOM.h"
+ #include "varlink-io.systemd.PCRExtend.h"
++#include "varlink-io.systemd.Resolve.Hook.h"
+ #include "varlink-io.systemd.Resolve.Monitor.h"
+ #include "varlink-io.systemd.Resolve.h"
+ #include "varlink-io.systemd.UserDatabase.h"
+@@ -129,6 +130,8 @@ TEST(parse_format) {
+         print_separator();
+         test_parse_format_one(&vl_interface_io_systemd_Resolve);
+         print_separator();
++        test_parse_format_one(&vl_interface_io_systemd_Resolve_Hook);
++        print_separator();
+         test_parse_format_one(&vl_interface_io_systemd_Resolve_Monitor);
+         print_separator();
+         test_parse_format_one(&vl_interface_io_systemd_ManagedOOM);
