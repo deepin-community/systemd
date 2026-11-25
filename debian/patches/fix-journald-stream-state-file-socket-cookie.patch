@@ -1,0 +1,289 @@
+From 5da9fa80fd161ca11752b8e85e5ac2f854d61fe7 Mon Sep 17 00:00:00 2001
+From: Frederik Deweerdt <fdeweerdt@fastly.com>
+Date: Sat, 31 Oct 2026 16:46:18 -0700
+Subject: [PATCH] journald: include socket cookie in stream state file names
+
+Stream state files in /run/systemd/journal/streams/ are named after the
+device and inode number of the stream socket. Socket inode numbers are
+handed out by get_next_ino(), a 32-bit counter shared with pipes and other
+pseudo files, which wraps around within a couple of days on busy systems.
+Once it has, a new stream can get the inode number of a long-running one.
+Its state file then overwrites the long-running stream's, and is removed
+when the new stream ends. On the next journald restart the long-running
+stream's fd has no state file and is closed as unknown, while PID 1 keeps
+its copy in the fd store: the service's stdout ends up connected to a
+socket nobody reads from, and the service blocks once the buffer is full.
+
+Append the socket cookie, which is never reused, to the state file name of
+new streams and match it on restore. The device and inode numbers stay in
+front so that older versions, which only parse those, can still restore
+streams after a downgrade. State files named without cookie by older
+versions are still accepted and matched by device and inode number only,
+skipping sockets that have a state file with cookie of their own.
+
+Follow-up commit folded in: "journald: shut down streams that can't be
+restored" (39107c7722). When journald gets a stream fd from its fd store
+that it can't restore, e.g. because the state file is gone, it just closed
+it; PID 1 kept its copy, so the connection stayed open with nothing reading
+from it and the writer blocked once the socket buffer filled up. Shut such
+streams down before closing them, and do the same when terminating a stream
+that is in the fd store, so that the writer gets EPIPE (as for a stream
+that was never in the fd store) and PID 1 sees EPOLLHUP and drops its copy.
+Only connected stream sockets are shut down, and only if reading the state
+files worked.
+
+[v255 backport note: v255.2 sources differ from the upstream version these
+commits were written against, the following adaptations were applied]
+ - Upstream moved the journald manager into src/journal/journald-manager.c
+   and renamed Server to Manager; v255.2 still has src/journal/journald-server.c
+   with the Server type, server_restore_streams() and server_init(), so all
+   hunks were rebased onto those functions/types.
+ - Upstream renamed stdout_stream_destroy() to stdout_stream_terminate();
+   v255.2 still has stdout_stream_destroy() (the same path: it unlinks the
+   state file before freeing), so the shutdown() was added there.
+ - v255.2 has no socket_get_cookie() in src/basic/socket-util.c and no
+   asprintf_safe(); a local stream_socket_get_cookie() helper (with a
+   guarded SO_COOKIE fallback definition) plus plain asprintf() are used
+   instead of the upstream helpers.
+ - test/units/TEST-04-JOURNAL.stream-restore.sh does not exist in v255.2
+   (the journal test suite is still split into test/units/testsuite-04.*.sh
+   and has no stream-restore test), so all test hunks were dropped.
+---
+  src/journal/journald-server.c |  20 +++++-
+  src/journal/journald-stream.c | 142 +++++++++++++++++++++++++++++++++---------
+  2 files changed, 129 insertions(+), 33 deletions(-)
+diff --git a/src/journal/journald-server.c b/src/journal/journald-server.c
+index 1c3a2a0b..f789bdcd 100644
+--- a/src/journal/journald-server.c
++++ b/src/journal/journald-server.c
+@@ -6,6 +6,7 @@
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
+ #include <sys/signalfd.h>
++#include <sys/socket.h>
+ #include <sys/statvfs.h>
+ #include <linux/sockios.h>
+ 
+@@ -2617,11 +2618,26 @@ int server_init(Server *s, const char *namespace) {
+                 }
+         }
+ 
+-        /* Try to restore streams, but don't bother if this fails */
+-        (void) server_restore_streams(s, fds);
++        /* Try to restore streams. If this fails, the fds left over might still have state files, and a later
++         * restart might restore them, so don't shut them down below. */
++        r = server_restore_streams(s, fds);
+ 
+         if (fdset_size(fds) > 0) {
+                 log_warning("%u unknown file descriptors passed, closing.", fdset_size(fds));
++
++                /* These are most likely streams from our fd store whose state file is gone. PID 1 still has
++                 * them, see stdout_stream_destroy(), so shut them down. Leave anything else alone though:
++                 * shutdown() acts on the socket, which PID 1 shares with us, not just on our fd. On a
++                 * listening or datagram socket we don't know about (e.g. from an extra ListenStream= line),
++                 * it would make connect() or sendmsg() fail for everyone until the socket unit restarts. */
++                if (r >= 0) {
++                        int fd;
++                        FDSET_FOREACH(fd, fds)
++                                if (sd_is_socket_unix(fd, SOCK_STREAM, /* listening= */ 0,
++                                                      /* path= */ NULL, /* length= */ 0) > 0)
++                                        (void) shutdown(fd, SHUT_RDWR);
++                }
++
+                 fds = fdset_free(fds);
+         }
+ 
+diff --git a/src/journal/journald-stream.c b/src/journal/journald-stream.c
+index 81a0e682..efe3c8eb 100644
+--- a/src/journal/journald-stream.c
++++ b/src/journal/journald-stream.c
+@@ -1,6 +1,8 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
++#include <inttypes.h>
+ #include <stddef.h>
++#include <sys/socket.h>
+ #include <unistd.h>
+ 
+ #if HAVE_SELINUX
+@@ -144,9 +146,37 @@ void stdout_stream_destroy(StdoutStream *s) {
+         if (s->state_file)
+                 (void) unlink(s->state_file);
+ 
++        /* PID 1 keeps a copy of the connection in our fd store, which would keep it open after we close
++         * ours, with nothing reading from it anymore: once the socket buffer is full, the writer would
++         * block forever. Shut it down, so that the writer gets EPIPE instead, as for a stream that isn't
++         * in the fd store, and PID 1 sees EPOLLHUP and drops its copy. */
++        if (s->fdstore)
++                (void) shutdown(s->fd, SHUT_RDWR);
++
+         stdout_stream_free(s);
+ }
+ 
++/* Note: v255.2 has no socket_get_cookie() in src/basic/socket-util.c, so it is provided locally here.
++ * SO_COOKIE is not defined by older libc headers, provide the value from the kernel UAPI then. */
++#ifndef SO_COOKIE
++#define SO_COOKIE 57
++#endif
++
++static int stream_socket_get_cookie(int fd, uint64_t *ret) {
++        uint64_t cookie = 0;
++        socklen_t l = sizeof(cookie);
++
++        assert(fd >= 0);
++        assert(ret);
++
++        if (getsockopt(fd, SOL_SOCKET, SO_COOKIE, &cookie, &l) < 0)
++                return -errno;
++
++        *ret = cookie;
++
++        return 0;
++}
++
+ static int stdout_stream_save(StdoutStream *s) {
+         _cleanup_(unlink_and_freep) char *temp_path = NULL;
+         _cleanup_fclose_ FILE *f = NULL;
+@@ -159,14 +189,26 @@ static int stdout_stream_save(StdoutStream *s) {
+ 
+         if (!s->state_file) {
+                 struct stat st;
++                uint64_t cookie;
+ 
+                 r = fstat(s->fd, &st);
+                 if (r < 0)
+                         return log_ratelimit_warning_errno(errno, JOURNAL_LOG_RATELIMIT,
+                                                            "Failed to stat connected stream: %m");
+ 
+-                /* We use device and inode numbers as identifier for the stream */
+-                r = asprintf(&s->state_file, "%s/streams/%lu:%lu", s->server->runtime_directory, (unsigned long) st.st_dev, (unsigned long) st.st_ino);
++                /* Identify the stream by device, inode and socket cookie: socket inode numbers are 32-bit
++                 * and get reused, the cookie never is. Device and inode come first so that older versions
++                 * can still parse the name. */
++                r = stream_socket_get_cookie(s->fd, &cookie);
++                if (r < 0)
++                        return log_ratelimit_warning_errno(errno, JOURNAL_LOG_RATELIMIT,
++                                                           "Failed to get cookie of connected stream: %m");
++
++                r = asprintf(&s->state_file, "%s/streams/%lu:%lu:%" PRIu64,
++                             s->server->runtime_directory,
++                             (unsigned long) st.st_dev,
++                             (unsigned long) st.st_ino,
++                             cookie);
+                 if (r < 0)
+                         return log_oom();
+         }
+@@ -858,6 +900,62 @@ static int stdout_stream_restore(Server *s, const char *fname, int fd) {
+         return 0;
+ }
+ 
++static int restore_stream_from_file(Server *s, DIR *d, const char *path, const char *fname, FDSet *fds, bool with_cookie) {
++        unsigned long st_dev, st_ino;
++        uint64_t cookie = 0;
++        int fd, n, r;
++
++        assert(s);
++        assert(d);
++        assert(path);
++        assert(fname);
++        /* fds may be NULL if no stream fds were passed in, in which case all state files are removed */
++
++        /* Older versions named state files without the socket cookie, see stdout_stream_save() */
++        n = sscanf(fname, "%lu:%lu:%" SCNu64, &st_dev, &st_ino, &cookie);
++        if (n != (with_cookie ? 3 : 2))
++                return 0;
++
++        FDSET_FOREACH(fd, fds) {
++                struct stat st;
++
++                if (fstat(fd, &st) < 0)
++                        return log_error_errno(errno, "Failed to stat %s: %m", fname);
++
++                if (!S_ISSOCK(st.st_mode) || st.st_dev != st_dev || st.st_ino != st_ino)
++                        continue;
++
++                /* Socket inode numbers are reused, so match the cookie too if we have one */
++                if (with_cookie) {
++                        uint64_t c;
++
++                        if (stream_socket_get_cookie(fd, &c) < 0 || c != cookie)
++                                continue;
++                }
++
++                fdset_remove(fds, fd);
++
++                r = stdout_stream_restore(s, fname, fd);
++                if (r < 0) {
++                        /* PID 1 still has the stream in our fd store, see stdout_stream_destroy() */
++                        (void) shutdown(fd, SHUT_RDWR);
++                        safe_close(fd);
++
++                        if (unlinkat(dirfd(d), fname, /* flags= */ 0) < 0)
++                                log_warning_errno(errno, "Failed to remove %s/%s, ignoring: %m", path, fname);
++                }
++
++                return 0;
++        }
++
++        /* No file descriptor? Then let's delete the state file */
++        log_debug("Cannot restore stream file %s", fname);
++        if (unlinkat(dirfd(d), fname, /* flags= */ 0) < 0)
++                log_warning_errno(errno, "Failed to remove %s/%s, ignoring: %m", path, fname);
++
++        return 0;
++}
++
+ int server_restore_streams(Server *s, FDSet *fds) {
+         _cleanup_closedir_ DIR *d = NULL;
+         const char *path;
+@@ -872,39 +970,21 @@ int server_restore_streams(Server *s, FDSet *fds) {
+                 return log_warning_errno(errno, "Failed to enumerate %s: %m", path);
+         }
+ 
++        /* Restore streams from state files with socket cookie first, so that state files named without
++         * cookie can only take the fds that are left over: socket inode numbers are reused, and the fd of
++         * a stream with a state file of its own has to stay with that stream. */
+         FOREACH_DIRENT(de, d, goto fail) {
+-                unsigned long st_dev, st_ino;
+-                bool found = false;
+-                int fd;
+-
+-                if (sscanf(de->d_name, "%lu:%lu", &st_dev, &st_ino) != 2)
+-                        continue;
+-
+-                FDSET_FOREACH(fd, fds) {
+-                        struct stat st;
+-
+-                        if (fstat(fd, &st) < 0)
+-                                return log_error_errno(errno, "Failed to stat %s: %m", de->d_name);
+-
+-                        if (S_ISSOCK(st.st_mode) && st.st_dev == st_dev && st.st_ino == st_ino) {
+-                                found = true;
+-                                break;
+-                        }
+-                }
+-
+-                if (!found) {
+-                        /* No file descriptor? Then let's delete the state file */
+-                        log_debug("Cannot restore stream file %s", de->d_name);
+-                        if (unlinkat(dirfd(d), de->d_name, 0) < 0)
+-                                log_warning_errno(errno, "Failed to remove %s/%s: %m", path, de->d_name);
+-                        continue;
+-                }
++                r = restore_stream_from_file(s, d, path, de->d_name, fds, /* with_cookie= */ true);
++                if (r < 0)
++                        return r;
++        }
+ 
+-                fdset_remove(fds, fd);
++        rewinddir(d);
+ 
+-                r = stdout_stream_restore(s, de->d_name, fd);
++        FOREACH_DIRENT(de, d, goto fail) {
++                r = restore_stream_from_file(s, d, path, de->d_name, fds, /* with_cookie= */ false);
+                 if (r < 0)
+-                        safe_close(fd);
++                        return r;
+         }
+ 
+         return 0;

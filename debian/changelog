@@ -1,3 +1,9 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * Backport upstream journald stream restore fixes: include the socket cookie in stream state file names, and shut down streams that can't be restored so that the writer gets EPIPE instead of blocking forever.
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 25 Nov 2026 10:14:34 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the
