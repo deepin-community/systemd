@@ -1,3 +1,9 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * Backport upstream 99a1cdc9510a and 3addeada7902: exec_context_deserialize() never reset the selinux_context_ignore, apparmor_profile_ignore and smack_process_label_ignore flags to false, so a stale _ignore value could survive deserialization (e.g. after daemon-reexec) and silently disable an AppArmor profile or SELinux/Smack label. Drop the now redundant exec-context-*-ignore serialization items (already encoded by the leading '-' of the corresponding label field) and set each _ignore flag from that prefix in both branches.
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 25 Nov 2026 11:48:19 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the

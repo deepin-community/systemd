@@ -1,0 +1,96 @@
+From 99a1cdc9510ac8b4865d8d403b66bc82335a6520 Mon Sep 17 00:00:00 2001
+From: Mike Yuan <me@yhndnzj.com>
+Date: Sun, 7 Jul 2024 18:13:43 +0200
+Subject: [PATCH] core/execute-serialize: drop duplicate serialization of
+ _ignore flags
+
+These are indicated by the leading '-' in corresponding
+label fields already.
+
+Combined with follow-up commit 3addeada790241ccdbf85498a07b83769878feb4
+("core/execute-serialize: fix deserialization for apparmor_profile_ignore"),
+which fixes the deserialization side: when a label field is not prefixed
+with '-', the matching _ignore flag must be reset to false. Without that,
+a stale apparmor_profile_ignore=true (e.g. left over from an earlier unit
+setting) survives deserialization and silently disables the AppArmor
+profile after the unit is re-loaded/re-executed.
+
+Backport note for v255.2: serialize/deserialize layout of ExecContext is
+identical to upstream, only line numbers differ; both commits were merged
+into this single hunk set (the follow-up commits on top of the first one).
+
+(cherry picked from commit 99a1cdc9510ac8b4865d8d403b66bc82335a6520)
+(cherry picked from commit 3addeada790241ccdbf85498a07b83769878feb4)
+
+---
+diff --git a/src/core/execute-serialize.c b/src/core/execute-serialize.c
+--- a/src/core/execute-serialize.c
++++ b/src/core/execute-serialize.c
+@@ -2311,18 +2311,6 @@ static int exec_context_serialize(const
+         if (r < 0)
+                 return r;
+ 
+-        r = serialize_bool_elide(f, "exec-context-selinux-context-ignore", c->selinux_context_ignore);
+-        if (r < 0)
+-                return r;
+-
+-        r = serialize_bool_elide(f, "exec-context-apparmor-profile-ignore", c->apparmor_profile_ignore);
+-        if (r < 0)
+-                return r;
+-
+-        r = serialize_bool_elide(f, "exec-context-smack-process-label-ignore", c->smack_process_label_ignore);
+-        if (r < 0)
+-                return r;
+-
+         if (c->selinux_context) {
+                 r = serialize_item_format(f, "exec-context-selinux-context",
+                                           "%s%s",
+@@ -3306,26 +3294,12 @@ static int exec_context_deserialize(Exec
+                         if (r < 0)
+                                 return r;
+                         c->no_new_privileges = r;
+-                } else if ((val = startswith(l, "exec-context-selinux-context-ignore="))) {
+-                        r = parse_boolean(val);
+-                        if (r < 0)
+-                                return r;
+-                        c->selinux_context_ignore = r;
+-                } else if ((val = startswith(l, "exec-context-apparmor-profile-ignore="))) {
+-                        r = parse_boolean(val);
+-                        if (r < 0)
+-                                return r;
+-                        c->apparmor_profile_ignore = r;
+-                } else if ((val = startswith(l, "exec-context-smack-process-label-ignore="))) {
+-                        r = parse_boolean(val);
+-                        if (r < 0)
+-                                return r;
+-                        c->smack_process_label_ignore = r;
+                 } else if ((val = startswith(l, "exec-context-selinux-context="))) {
+                         if (val[0] == '-') {
+                                 c->selinux_context_ignore = true;
+                                 val++;
+-                        }
++                        } else
++                                c->selinux_context_ignore = false;
+ 
+                         r = free_and_strdup(&c->selinux_context, val);
+                         if (r < 0)
+@@ -3334,7 +3308,8 @@ static int exec_context_deserialize(Exec
+                         if (val[0] == '-') {
+                                 c->apparmor_profile_ignore = true;
+                                 val++;
+-                        }
++                        } else
++                                c->apparmor_profile_ignore = false;
+ 
+                         r = free_and_strdup(&c->apparmor_profile, val);
+                         if (r < 0)
+@@ -3343,7 +3318,8 @@ static int exec_context_deserialize(Exec
+                         if (val[0] == '-') {
+                                 c->smack_process_label_ignore = true;
+                                 val++;
+-                        }
++                        } else
++                                c->smack_process_label_ignore = false;
+ 
+                         r = free_and_strdup(&c->smack_process_label, val);
+                         if (r < 0)
