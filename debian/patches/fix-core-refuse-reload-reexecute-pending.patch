@@ -1,0 +1,187 @@
+From f51c8ee45cac6c0f46ab79aead579dc7ee0f7498 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 21 Nov 2026 16:28:36 +0900
+Subject: [PATCH] core: refuse reload/reexecute while another one is still
+ pending
+
+The manager objective is only acted upon once the current event loop
+dispatch batch is done, but a second Reload() or Reexecute() may be
+dispatched in the same batch in which a previous request or signal
+already set the objective. If we accepted it, the objective would be
+overwritten and the first request silently cancelled: the reexecute
+client would wait for a disconnect that never comes, and its pending
+reply would leak. A second reexecute request would even trip over an
+assert.
+
+Hence, refuse reload and reexecute requests with EBUSY while the
+manager already has an objective or a reload or reexecute request is
+still pending, in all four entry points, and drop the now redundant
+asserts in method_reexecute() and vl_method_reexecute_manager().
+
+Follow-up for 77c7d72546e03dfd66d2dcdfb8d13f1f766e35ac.
+
+[deepin: backport of two upstream commits to v255.2, merged into one patch:
+
+ 1) 77c7d72546e03dfd66d2dcdfb8d13f1f766e35ac "core: recover from daemon-reexec
+    preparation failures" (PR 44444). Its changes are folded into the diff
+    below: the new Manager.pending_reexecute_message_dbus field, keeping the
+    Reexecute() request in method_reexecute(), the
+    bus_send_pending_reexecute_error() helper plus destroy_bus() cleanup, and
+    the invoke_main_loop() recovery path when prepare_reexecute() fails before
+    execve(). v255.2 has no src/core/varlink-manager.c and no
+    src/core/varlink.c varlink bus plumbing (no pending_reload_message_vl /
+    pending_reexecute_message_vl, no
+    manager_varlink_send_pending_reexecute_error()), so all varlink hunks of
+    77c7d725 are dropped, including the `#include "varlink.h"` and the
+    varlink error call in main.c. The D-Bus recovery path is kept as is.
+
+ 2) f51c8ee45cac6c0f46ab79aead579dc7ee0f7498 "core: refuse reload/reexecute
+    while another one is still pending" (PR 44959). v255.2 has no
+    src/core/varlink-manager.c, so only the two D-Bus entry points
+    (method_reload()/method_reexecute()) exist here and the two varlink hunks
+    are dropped. v255.2 tracks the pending reload reply with the single
+    m->pending_reload_message field (no pending_reload_message_dbus/_vl), so
+    manager_can_reload() checks m->objective == MANAGER_OK,
+    !m->pending_reload_message and !m->pending_reexecute_message_dbus. There
+    are no reexecute asserts to drop in v255.2. The bus error uses the local
+    `error` parameter name of the v255.2 function signatures.]
+
+Index: b/src/core/dbus-manager.c
+===================================================================
+--- a/src/core/dbus-manager.c
++++ b/src/core/dbus-manager.c
+@@ -1625,6 +1625,17 @@ static int method_reload(sd_bus_message
+         /* Write a log message noting the unit or process who requested the Reload() */
+         log_caller(message, m, "Reloading");
+ 
++        /* The manager objective is only acted upon once the current event loop dispatch batch is done.
++         * If another request already set it (or a reply to a previous Reload() is still pending), accepting
++         * this one would overwrite the objective and silently cancel the first request. Do this before the
++         * rate limit check, so that a refused request doesn't use up a token. */
++        if (!manager_can_reload(m)) {
++                log_warning("Reloading request rejected, another conflicting operation is still pending.");
++                return sd_bus_error_set_errnof(
++                                error, EBUSY,
++                                "Reload() request rejected, another conflicting operation is still pending.");
++        }
++
+         /* Check the rate limit after the authorization succeeds, to avoid denial-of-service issues. */
+         if (!ratelimit_below(&m->reload_ratelimit)) {
+                 log_warning("Reloading request rejected due to rate limit.");
+@@ -1671,9 +1682,19 @@ static int method_reexecute(sd_bus_messa
+         /* Write a log message noting the unit or process who requested the Reexecute() */
+         log_caller(message, m, "Reexecuting");
+ 
++        /* See method_reload(). A second reexecution request must not overwrite the objective either,
++         * otherwise the first client would wait for a disconnect that never comes. */
++        if (!manager_can_reload(m)) {
++                log_warning("Reexecution request rejected, another conflicting operation is still pending.");
++                return sd_bus_error_set_errnof(
++                                error, EBUSY,
++                                "Reexecute() request rejected, another conflicting operation is still pending.");
++        }
++
+         /* We don't send a reply back here, the client should
+          * just wait for us disconnecting. */
+ 
++        m->pending_reexecute_message_dbus = sd_bus_message_ref(message);
+         m->objective = MANAGER_REEXECUTE;
+         return 1;
+ }
+Index: b/src/core/manager.h
+===================================================================
+--- a/src/core/manager.h
++++ b/src/core/manager.h
+@@ -336,6 +336,10 @@ struct Manager {
+          * the reply message here, and afterwards we send it */
+         sd_bus_message *pending_reload_message;
+ 
++        /* This is used during reexecution: we keep the request around so preparation failures before
++         * execve() can be reported. Successful reexecution is still reported by disconnecting. */
++        sd_bus_message *pending_reexecute_message_dbus;
++
+         Hashmap *watch_bus;  /* D-Bus names => Unit object n:1 */
+ 
+         bool send_reloading_done;
+@@ -511,6 +515,14 @@ static inline usec_t manager_default_tim
+         return m->defaults.timeout_abort_set ? m->defaults.timeout_abort_usec : m->defaults.timeout_stop_usec;
+ }
+ 
++/* Whether a new reload or reexecute request can be accepted. */
++static inline bool manager_can_reload(Manager *m) {
++        assert(m);
++        return m->objective == MANAGER_OK &&
++               !m->pending_reload_message &&
++               !m->pending_reexecute_message_dbus;
++}
++
+ #define MANAGER_IS_SYSTEM(m) ((m)->runtime_scope == RUNTIME_SCOPE_SYSTEM)
+ #define MANAGER_IS_USER(m) ((m)->runtime_scope == RUNTIME_SCOPE_USER)
+ 
+Index: b/src/core/dbus.c
+===================================================================
+--- a/src/core/dbus.c
++++ b/src/core/dbus.c
+@@ -69,6 +69,21 @@ int bus_send_pending_reload_message(Mana
+         return 0;
+ }
+ 
++void bus_send_pending_reexecute_error(Manager *m, int error) {
++        int r;
++
++        assert(m);
++
++        if (!m->pending_reexecute_message_dbus)
++                return;
++
++        r = sd_bus_reply_method_errno(m->pending_reexecute_message_dbus, error, /* e= */ NULL);
++        if (r < 0)
++                log_warning_errno(r, "Failed to send queued reexecute error reply, ignoring: %m");
++
++        m->pending_reexecute_message_dbus = sd_bus_message_unref(m->pending_reexecute_message_dbus);
++}
++
+ int bus_forward_agent_released(Manager *m, const char *path) {
+         int r;
+ 
+@@ -1031,6 +1046,8 @@ static void destroy_bus(Manager *m, sd_b
+         /* Get rid of queued message on this bus */
+         if (m->pending_reload_message && sd_bus_message_get_bus(m->pending_reload_message) == *bus)
+                 m->pending_reload_message = sd_bus_message_unref(m->pending_reload_message);
++        if (m->pending_reexecute_message_dbus && sd_bus_message_get_bus(m->pending_reexecute_message_dbus) == *bus)
++                m->pending_reexecute_message_dbus = sd_bus_message_unref(m->pending_reexecute_message_dbus);
+ 
+         /* Possibly flush unwritten data, but only if we are unprivileged, since we don't want to sync
+          * here, and only if the connection is currently RUNNING: sd_bus_flush() first drives the
+Index: b/src/core/dbus.h
+===================================================================
+--- a/src/core/dbus.h
++++ b/src/core/dbus.h
+@@ -6,6 +6,7 @@
+ #include "manager.h"
+ 
+ int bus_send_pending_reload_message(Manager *m);
++void bus_send_pending_reexecute_error(Manager *m, int error);
+ 
+ int bus_init_private(Manager *m);
+ int bus_init_api(Manager *m);
+Index: b/src/core/main.c
+===================================================================
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -2013,8 +2013,13 @@ static int invoke_main_loop(
+ 
+                         r = prepare_reexecute(m, &arg_serialization, ret_fds, false);
+                         if (r < 0) {
+-                                *ret_error_message = "Failed to prepare for reexecution";
+-                                return r;
++                                if (m->n_reloading > 0)
++                                        m->n_reloading--;
++                                log_warning_errno(r, "Failed to prepare for reexecution, continuing: %m");
++                                bus_send_pending_reexecute_error(m, r);
++                                m->objective = MANAGER_OK;
++                                m->send_reloading_done = true;
++                                continue;
+                         }
+ 
+                         log_notice("Reexecuting.");

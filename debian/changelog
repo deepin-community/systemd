@@ -1,3 +1,14 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * Backport the daemon-reexec robustness fixes: when prepare_reexecute()
+    fails before execve(), report the error back to the Reexecute() caller
+    and keep the current manager running instead of exiting, and refuse
+    Reload()/Reexecute() with EBUSY while another conflicting reload or
+    reexecution is still pending, so that a pending objective and its reply
+    cannot be overwritten or leaked.
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 25 Nov 2026 10:14:45 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the
