@@ -1,0 +1,423 @@
+From b1ed32ea386011d9b9518abee7217dd780ad90bb Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sat, 21 Nov 2026 21:42:29 +0900
+Subject: [PATCH] socket-util: harden some helpers (#44951)
+
+Combined backport of PR #44951, which consists of the following commits:
+
+  c0fbedf7aeac9649783984e277c2d3848cffeadf socket-util: also compare ports in sockaddr_equal()
+  187673da46e2b206b83f26857175b6bf4aa6889a socket-util: refuse truncated source addresses in recvmsg_safe()
+  a10cac898fb03f813f1cb80a0e71bb395eb0f8b5 socket-util: drop datagrams from port 0 in recvmsg_safe()
+  b1ed32ea386011d9b9518abee7217dd780ad90bb socket-util: harden some helpers (#44951)
+
+sockaddr_equal() so far only compared the addresses of AF_INET/AF_INET6/
+AF_VSOCK socket addresses, but ignored the port. Compare the port too.
+
+recvmsg_safe() now also refuses source addresses that the kernel silently
+truncated (msg_namelen reports the full size, no flag is set), and
+suppresses AF_INET/AF_INET6 datagrams coming from source port 0, which are
+never legitimate. Raw IP sockets have no concept of ports, hence a new
+recvmsg_safe_full() with RECVMSG_SAFE_ALLOW_PORT_ZERO is introduced and
+icmp6_receive() uses it.
+
+[v255 backport note: this tree is v255.2 and its recvmsg_safe() predates
+several later upstream changes, so the hunks were re-adapted:
+ - v255.2 recvmsg_safe() only checks MSG_CTRUNC (not MSG_TRUNC/-ECHRNG, from
+   commit ad501930d749) and does not retry without MSG_CMSG_CLOEXEC (commit
+   cd3e6e7984b4); those parts were not added, the function keeps the v255.2
+   recvmsg() call and CTRUNC handling.
+ - src/basic/socket-util.c did not include "in-addr-util.h", which is needed
+   for in6_addr_equal(); the include was added.
+ - v255.2 src/test/test-socket-util.c has neither ASSERT_OK*/ASSERT_ERROR*
+   nor ASSERT_STREQ()/ASSERT_GT() macros and no TEST(recvmsg_safe_packet)
+   anchor, so the new tests use assert_se()/streq() and are inserted before
+   TEST(receive_nopassfd); FOREACH_ARGUMENT() does not exist either and was
+   replaced by an explicit array loop. The tests only cover the behaviour
+   added here, not the MSG_TRUNC case from ad501930d749.]
+diff --git a/src/basic/socket-util.c b/src/basic/socket-util.c
+index beb64d8e..09037d6c 100644
+--- a/src/basic/socket-util.c
++++ b/src/basic/socket-util.c
+@@ -21,6 +21,7 @@
+ #include "fd-util.h"
+ #include "fileio.h"
+ #include "format-util.h"
++#include "in-addr-util.h"
+ #include "io-util.h"
+ #include "log.h"
+ #include "memory-util.h"
+@@ -704,13 +705,16 @@ bool sockaddr_equal(const union sockaddr_union *a, const union sockaddr_union *b
+                 return false;
+ 
+         if (a->sa.sa_family == AF_INET)
+-                return a->in.sin_addr.s_addr == b->in.sin_addr.s_addr;
++                return a->in.sin_addr.s_addr == b->in.sin_addr.s_addr &&
++                        a->in.sin_port == b->in.sin_port;
+ 
+         if (a->sa.sa_family == AF_INET6)
+-                return memcmp(&a->in6.sin6_addr, &b->in6.sin6_addr, sizeof(a->in6.sin6_addr)) == 0;
++                return in6_addr_equal(&a->in6.sin6_addr, &b->in6.sin6_addr) &&
++                        a->in6.sin6_port == b->in6.sin6_port;
+ 
+         if (a->sa.sa_family == AF_VSOCK)
+-                return a->vm.svm_cid == b->vm.svm_cid;
++                return a->vm.svm_cid == b->vm.svm_cid &&
++                        a->vm.svm_port == b->vm.svm_port;
+ 
+         return false;
+ }
+@@ -1429,13 +1433,78 @@ int socket_bind_to_ifindex(int fd, int ifindex) {
+         return socket_bind_to_ifname(fd, ifname);
+ }
+ 
+-ssize_t recvmsg_safe(int sockfd, struct msghdr *msg, int flags) {
++static int validate_source_port(const struct msghdr *msg, RecvMsgSafeFlags safe_flags) {
++        assert(msg);
++
++        /* UDP (and similar) datagrams originating from port 0 are never legitimate: nobody can reply to
++         * them (the kernel refuses sending to port 0), and code processing them tends to get confused by
++         * the zero port. Returns 0 if the source address of the message is an AF_INET/AF_INET6 one with
++         * port 0, > 0 otherwise (including if the caller didn't ask for the source address), and -ENOTNAM
++         * if the source address is too short for its address family. If RECVMSG_SAFE_ALLOW_PORT_ZERO is
++         * set in safe_flags, nothing is checked. */
++
++        /* Caller didn't ask for the source address, or none is known (e.g. unbound AF_UNIX peer) */
++        if (msg->msg_namelen == 0)
++                return 1;
++
++        assert(msg->msg_name);
++        assert(msg->msg_namelen >= endoffsetof_field(struct sockaddr, sa_family)); /* Already checked by caller */
++
++        /* Caller explicitly wants port 0 (e.g. for raw IP sockets, which have no ports) */
++        if (FLAGS_SET(safe_flags, RECVMSG_SAFE_ALLOW_PORT_ZERO))
++                return 1;
++
++        switch (((const struct sockaddr*) msg->msg_name)->sa_family) {
++
++        case AF_INET: {
++                if (msg->msg_namelen < sizeof(struct sockaddr_in))
++                        return -ENOTNAM;
++
++                const struct sockaddr_in *sin = msg->msg_name;
++                return sin->sin_port != 0;
++        }
++
++        case AF_INET6: {
++                if (msg->msg_namelen < sizeof(struct sockaddr_in6))
++                        return -ENOTNAM;
++
++                const struct sockaddr_in6 *sin6 = msg->msg_name;
++                return sin6->sin6_port != 0;
++        }
++
++        case AF_VSOCK:
++                /* No port check on AF_VSOCK: port 0 is apparently a valid port number there (unlike
++                 * VMADDR_PORT_ANY, which is -1U). */
++                return 1;
++
++        default:
++                return 1;
++        }
++}
++
++ssize_t recvmsg_safe_full(int sockfd, struct msghdr *msg, int flags, RecvMsgSafeFlags safe_flags) {
+         ssize_t n;
++        int r;
+ 
+-        /* A wrapper around recvmsg() that checks for MSG_CTRUNC, and turns it into an error, in a reasonably
+-         * safe way, closing any SCM_RIGHTS fds in the error path.
++        /* A wrapper around recvmsg() that checks for MSG_CTRUNC, as well as for a truncated source address,
++         * and turns them into an error, in a reasonably safe way, closing any received fds in the error
++         * path.
++         *
++         * Note that unlike our usual coding style this might modify *msg on failure.
+          *
+-         * Note that unlike our usual coding style this might modify *msg on failure. */
++         * Datagrams from source port 0 are suppressed, unless RECVMSG_SAFE_ALLOW_PORT_ZERO is set, see
++         * validate_source_port(). */
++
++        assert(sockfd >= 0);
++        assert(msg);
++
++        /* Passing a non-zero size along with a NULL pointer would be very weird (the kernel will e.g. ignore
++         * .msg_namelen if .msg_name is NULL), and probably a programming error, hence let's assert on it. */
++        assert(msg->msg_namelen == 0 || msg->msg_name);
++        assert(msg->msg_iovlen == 0 || msg->msg_iov);
++        assert(msg->msg_controllen == 0 || msg->msg_control);
++
++        socklen_t name_size = msg->msg_namelen;
+ 
+         n = recvmsg(sockfd, msg, flags);
+         if (n < 0)
+@@ -1446,6 +1515,28 @@ ssize_t recvmsg_safe(int sockfd, struct msghdr *msg, int flags) {
+                 return -EXFULL; /* a recognizable error code */
+         }
+ 
++        /* If the source address doesn't fit into the buffer the kernel silently truncates it, but reports
++         * its full size in msg_namelen, without setting any flag. Refuse that too. Also refuse source
++         * addresses that are too short to even carry the address family, that's just broken. */
++        if (msg->msg_namelen > name_size ||
++            (msg->msg_namelen > 0 && msg->msg_namelen < endoffsetof_field(struct sockaddr, sa_family))) {
++                cmsg_close_all(msg);
++                return -ENOTNAM;
++        }
++
++        /* Suppress datagrams from port 0 early on, and make them look like a spurious wakeup */
++        r = validate_source_port(msg, safe_flags);
++        if (r <= 0) {
++                cmsg_close_all(msg);
++
++                /* If we only peeked, the datagram is still queued, and we'd see it again and again.
++                 * Hence, drop it from the queue. */
++                if (FLAGS_SET(flags, MSG_PEEK))
++                        (void) recv(sockfd, /* buf= */ NULL, /* size= */ 0, MSG_DONTWAIT);
++
++                return r < 0 ? r : -EAGAIN;
++        }
++
+         return n;
+ }
+ 
+diff --git a/src/basic/socket-util.h b/src/basic/socket-util.h
+index 9a11df83..de809ea7 100644
+--- a/src/basic/socket-util.h
++++ b/src/basic/socket-util.h
+@@ -340,7 +340,18 @@ struct timespec_large {
+          CMSG_SPACE(sizeof(struct timespec)) +                          \
+          CMSG_SPACE(sizeof(struct timespec_large)))
+ 
+-ssize_t recvmsg_safe(int sockfd, struct msghdr *msg, int flags);
++typedef enum RecvMsgSafeFlags {
++        /* By default recvmsg_safe() suppresses AF_INET/AF_INET6 datagrams whose source port is 0. Raw IP
++         * sockets (SOCK_RAW, e.g. ICMP/ICMPv6/NDisc) and ICMP "ping" sockets (SOCK_DGRAM + IPPROTO_ICMP)
++         * have no concept of ports, and the kernel always reports the source port as 0 for them. Set this
++         * flag when receiving from such sockets, otherwise every datagram would be dropped. */
++        RECVMSG_SAFE_ALLOW_PORT_ZERO = 1 << 0,
++} RecvMsgSafeFlags;
++
++ssize_t recvmsg_safe_full(int sockfd, struct msghdr *msg, int flags, RecvMsgSafeFlags safe_flags);
++static inline ssize_t recvmsg_safe(int sockfd, struct msghdr *msg, int flags) {
++        return recvmsg_safe_full(sockfd, msg, flags, /* safe_flags= */ 0);
++}
+ 
+ int socket_get_family(int fd);
+ int socket_set_recvpktinfo(int fd, int af, bool b);
+diff --git a/src/libsystemd-network/icmp6-util.c b/src/libsystemd-network/icmp6-util.c
+index 72c20baa..1e9d2378 100644
+--- a/src/libsystemd-network/icmp6-util.c
++++ b/src/libsystemd-network/icmp6-util.c
+@@ -170,7 +170,8 @@ int icmp6_receive(
+ 
+         iov = IOVEC_MAKE(buffer, size);
+ 
+-        len = recvmsg_safe(fd, &msg, MSG_DONTWAIT);
++        /* Raw ICMPv6 sockets have no ports, the kernel always reports the source port as 0 */
++        len = recvmsg_safe_full(fd, &msg, MSG_DONTWAIT, RECVMSG_SAFE_ALLOW_PORT_ZERO);
+         if (len < 0)
+                 return (int) len;
+ 
+diff --git a/src/test/test-socket-util.c b/src/test/test-socket-util.c
+index e9c776a8..f98fa32c 100644
+--- a/src/test/test-socket-util.c
++++ b/src/test/test-socket-util.c
+@@ -3,6 +3,8 @@
+ #include <fcntl.h>
+ #include <grp.h>
+ #include <net/if_arp.h>
++#include <netinet/udp.h>
++#include <poll.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -14,6 +16,7 @@
+ #include "fd-util.h"
+ #include "fs-util.h"
+ #include "in-addr-util.h"
++#include "io-util.h"
+ #include "iovec-util.h"
+ #include "log.h"
+ #include "macro.h"
+@@ -24,6 +27,7 @@
+ #include "socket-util.h"
+ #include "string-util.h"
+ #include "tests.h"
++#include "time-util.h"
+ #include "tmpfile-util.h"
+ 
+ assert_cc(SUN_PATH_LEN == 108);
+@@ -121,6 +125,19 @@ TEST(sockaddr_equal) {
+         assert_se(!sockaddr_equal(&a, &c));
+         assert_se(!sockaddr_equal(&b, &c));
+         assert_se(!sockaddr_equal(&a, &e));
++
++        /* Ports must match too */
++        union sockaddr_union f = a, g = d, h = e;
++        f.in.sin_port = htobe16(53);
++        g.in6.sin6_port = htobe16(53);
++        h.vm.svm_port = 53;
++
++        assert_se(sockaddr_equal(&f, &f));
++        assert_se(sockaddr_equal(&g, &g));
++        assert_se(sockaddr_equal(&h, &h));
++        assert_se(!sockaddr_equal(&a, &f));
++        assert_se(!sockaddr_equal(&d, &g));
++        assert_se(!sockaddr_equal(&e, &h));
+ }
+ 
+ TEST(sockaddr_un_len) {
+@@ -375,6 +392,155 @@ TEST(pass_many_fds_contents_read) {
+         }
+ }
+ 
++static int make_loopback_udp_socket(union sockaddr_union *ret) {
++        assert(ret);
++
++        _cleanup_close_ int fd = socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
++        assert_se(fd >= 0);
++        union sockaddr_union sa = {
++                .in.sin_family = AF_INET,
++                .in.sin_addr.s_addr = htobe32(INADDR_LOOPBACK),
++        };
++        socklen_t salen = sizeof(sa.in);
++
++        /* The loopback interface is down when running in a network namespace without networking, e.g. in
++         * package build sandboxes. Depending on the kernel either bind() fails then, or bind() succeeds
++         * but routing to the address fails. Check both, the latter via a connect() on a scratch
++         * socket. */
++        int r = RET_NERRNO(bind(fd, &sa.sa, salen));
++        if (r >= 0) {
++                assert_se(getsockname(fd, &sa.sa, &salen) >= 0);
++
++                _cleanup_close_ int probe_fd = socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, 0);
++                assert_se(probe_fd >= 0);
++                r = RET_NERRNO(connect(probe_fd, &sa.sa, salen));
++        }
++        if (IN_SET(r, -EADDRNOTAVAIL, -ENETUNREACH)) {
++                log_tests_skipped_errno(r, "Loopback address not available");
++                return r;
++        }
++        assert_se(r >= 0);
++
++        *ret = sa;
++        return TAKE_FD(fd);
++}
++
++TEST(recvmsg_safe_short_name) {
++        union sockaddr_union sa;
++        _cleanup_close_ int fd = make_loopback_udp_socket(&sa);
++        if (fd < 0)
++                return;
++
++        _cleanup_close_ int sender_fd = socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, 0);
++        assert_se(sender_fd >= 0);
++
++        /* The kernel reports the full address length in msg_namelen even if the buffer is shorter, and
++         * silently truncates the address. Such a truncated address must be refused. */
++        const socklen_t sizes[] = { sizeof(sa_family_t) - 1, sizeof(struct sockaddr_in) - 1 };
++        for (size_t i = 0; i < ELEMENTSOF(sizes); i++) {
++                union sockaddr_union peer = {};
++                char buf[4];
++                struct msghdr msg = {
++                        .msg_name = &peer,
++                        .msg_namelen = sizes[i],
++                        .msg_iov = &IOVEC_MAKE(buf, sizeof(buf)),
++                        .msg_iovlen = 1,
++                };
++
++                assert_se(sendto(sender_fd, "foo", 4, /* flags= */ 0, &sa.sa, sizeof(sa.in)) == 4);
++                assert_se(fd_wait_for_event(fd, POLLIN, 5 * USEC_PER_SEC) > 0);
++                assert_se(recvmsg_safe(fd, &msg, MSG_DONTWAIT) == -ENOTNAM);
++                assert_se(msg.msg_namelen == sizeof(struct sockaddr_in));
++        }
++
++        /* The datagrams were consumed */
++        assert_se(fd_wait_for_event(fd, POLLIN, /* timeout= */ 0) == 0);
++}
++
++static void send_udp_from_port_zero(int raw_fd, uint16_t dest_port) {
++        struct {
++                struct udphdr udp;
++                char payload[4];
++        } _packed_ packet = {
++                .udp.source = 0,
++                .udp.dest = htobe16(dest_port),
++                .udp.len = htobe16(sizeof(packet)),
++                .udp.check = 0, /* no checksum, valid for IPv4 */
++                .payload = "foo",
++        };
++        union sockaddr_union sa = {
++                .in.sin_family = AF_INET,
++                .in.sin_addr.s_addr = htobe32(INADDR_LOOPBACK),
++        };
++
++        assert_se(sendto(raw_fd, &packet, sizeof(packet), /* flags= */ 0, &sa.sa, sizeof(sa.in)) == (ssize_t) sizeof(packet));
++}
++
++TEST(recvmsg_safe_port_zero) {
++        _cleanup_close_ int raw_fd = socket(AF_INET, SOCK_RAW|SOCK_CLOEXEC, IPPROTO_UDP);
++        if (raw_fd < 0) {
++                if (ERRNO_IS_PRIVILEGE(errno) || ERRNO_IS_NOT_SUPPORTED(errno))
++                        return (void) log_tests_skipped_errno(errno, "Failed to create raw UDP socket");
++                assert_se(raw_fd >= 0);
++        }
++
++        union sockaddr_union sa;
++        _cleanup_close_ int fd = make_loopback_udp_socket(&sa);
++        if (fd < 0)
++                return;
++        uint16_t port = be16toh(sa.in.sin_port);
++        assert_se(port > 0);
++
++        union sockaddr_union peer;
++        char buf[16];
++        struct msghdr msg = {
++                .msg_name = &peer,
++                .msg_iov = &IOVEC_MAKE(buf, sizeof(buf)),
++                .msg_iovlen = 1,
++        };
++
++        /* A datagram from port 0 is suppressed, and with MSG_PEEK also dropped from the queue */
++        send_udp_from_port_zero(raw_fd, port);
++        assert_se(fd_wait_for_event(fd, POLLIN, 5 * USEC_PER_SEC) > 0);
++        msg.msg_namelen = sizeof(peer);
++        assert_se(recvmsg_safe(fd, &msg, MSG_PEEK|MSG_DONTWAIT) == -EAGAIN);
++        assert_se(fd_wait_for_event(fd, POLLIN, /* timeout= */ 0) == 0);
++
++        /* Same without MSG_PEEK */
++        send_udp_from_port_zero(raw_fd, port);
++        assert_se(fd_wait_for_event(fd, POLLIN, 5 * USEC_PER_SEC) > 0);
++        msg.msg_namelen = sizeof(peer);
++        assert_se(recvmsg_safe(fd, &msg, MSG_DONTWAIT) == -EAGAIN);
++        assert_se(fd_wait_for_event(fd, POLLIN, /* timeout= */ 0) == 0);
++
++        /* With RECVMSG_SAFE_ALLOW_PORT_ZERO it is let through */
++        send_udp_from_port_zero(raw_fd, port);
++        assert_se(fd_wait_for_event(fd, POLLIN, 5 * USEC_PER_SEC) > 0);
++        msg.msg_namelen = sizeof(peer);
++        assert_se(recvmsg_safe_full(fd, &msg, MSG_DONTWAIT, RECVMSG_SAFE_ALLOW_PORT_ZERO) == 4);
++        assert_se(peer.sa.sa_family == AF_INET);
++        assert_se(peer.in.sin_port == 0);
++
++        /* Without a msg_name we cannot know the port, hence the datagram is let through */
++        send_udp_from_port_zero(raw_fd, port);
++        assert_se(fd_wait_for_event(fd, POLLIN, 5 * USEC_PER_SEC) > 0);
++        msg.msg_name = NULL;
++        msg.msg_namelen = 0;
++        assert_se(recvmsg_safe(fd, &msg, MSG_DONTWAIT) == 4);
++        msg.msg_name = &peer;
++
++        /* A datagram from a regular port is let through */
++        _cleanup_close_ int sender_fd = socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, 0);
++        assert_se(sender_fd >= 0);
++        assert_se(sendto(sender_fd, "bar", 4, /* flags= */ 0, &sa.sa, sizeof(sa.in)) == 4);
++        assert_se(fd_wait_for_event(fd, POLLIN, 5 * USEC_PER_SEC) > 0);
++        msg.msg_namelen = sizeof(peer);
++        assert_se(recvmsg_safe(fd, &msg, MSG_DONTWAIT) == 4);
++        assert_se(streq(buf, "bar"));
++        assert_se(peer.sa.sa_family == AF_INET);
++        assert_se(peer.in.sin_port != 0);
++}
++
+ TEST(receive_nopassfd) {
+         _cleanup_close_pair_ int pair[2];
+         static const char wire_contents[] = "no fd passed here";
