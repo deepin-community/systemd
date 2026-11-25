@@ -1,0 +1,55 @@
+From 5553ebb43f87d5410c9c804ab35444130ad3f718 Mon Sep 17 00:00:00 2001
+From: Nayyar <nayyar@bugqore.com>
+Date: Sat, 21 Nov 2026 21:46:13 +0530
+Subject: [PATCH] pcrlock: bound event log digest walk to the checked record
+ size (#44400)
+
+validate_firmware_event() sizes the digest list of an event from the
+algorithms advertised in the log header. The walk in
+event_log_load_firmware() instead advances by the size of whatever
+algorithm each TPMT_HA names, and nothing prevents a record from naming
+the same algorithm more than once. Digest sizes of algorithms we don't
+know are not validated by the header parser either, so a record that
+repeats an advertised algorithm with a large digest size walks past the
+end of the checked record, and for the final event past the end of the
+log buffer. Conversely, a record that repeats an algorithm with a small
+digest size ends the walk early and is accepted with some of its banks
+silently dropped.
+
+Check the remaining size before advancing to the next digest, and refuse
+records whose digests don't cover exactly the area that was checked.
+
+diff --git a/src/pcrlock/pcrlock.c b/src/pcrlock/pcrlock.c
+--- a/src/pcrlock/pcrlock.c
++++ b/src/pcrlock/pcrlock.c
+@@ -921,6 +921,10 @@ static int event_log_load_firmware(Event
+                         return log_oom();
+                 record->firmware_payload_size = payload_size;
+ 
++                /* validate_firmware_event() sized the digest list from the algorithms in the log header,
++                 * but a record may name the same algorithm more than once, hence make sure the walk below
++                 * covers exactly the part of the record that was checked. */
++                const uint8_t *digests_end = (const uint8_t*) payload - sizeof(uint32_t);
+                 const void *ha, *ha_next = NULL;
+                 ha = (const uint8_t*) event + offsetof(TCG_PCR_EVENT2, digests.digests);
+                 assert(event->digests.count == n_algorithms);
+@@ -940,6 +944,9 @@ static int event_log_load_firmware(Event
+                         if (j >= n_algorithms)
+                                 return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Hash algorithms in event log record not among those advertised by log header.");
+ 
++                        if (offsetof(TPMT_HA, digest) + algorithms[j].digestSize > (size_t) (digests_end - (const uint8_t*) ha))
++                                return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Digests in event log record exceed size advertised by log header.");
++
+                         ha_next = (const uint8_t*) ha + offsetof(TPMT_HA, digest) + algorithms[j].digestSize;
+ 
+                         if (!tpm2_hash_alg_to_string(hash_alg))
+@@ -955,6 +962,9 @@ static int event_log_load_firmware(Event
+                                 return log_error_errno(r, "Failed to add bank to event log record: %m");
+                 }
+ 
++                if ((const uint8_t*) ha != digests_end)
++                        return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Digests in event log record don't match size advertised by log header.");
++
+                 /* Try to extract a descriptive text */
+                 r = event_log_record_extract_firmware_description(record);
+                 if (r < 0)
