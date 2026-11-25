@@ -1,0 +1,280 @@
+From bc46d09353972789b222e4b7c3d7bb42759ca1a1 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Sun, 22 Nov 2026 01:05:30 +0900
+Subject: [PATCH] core: Wait for the API bus before tracking deserialised bus
+ clients (#44504)
+
+Since 1166f4472d76 ("core/dbus: do not block the manager on GetId during
+bus (re-)connection"), we no longer wait for the bus daemon when
+connecting to the API bus. Coldplugging still does, though, since
+unit_coldplug(), job_coldplug() and scope_coldplug() track the bus
+clients again with sd_bus_track_add_name(). This looks the name up
+synchronously which can't complete until the bus daemon has finished
+authenticating the new connection. Oh dear!
+
+So if PID 1 is reexecuted while, say, a job requested over the bus is
+still pending (like dbus-broker activating a service with StartUnit()),
+and the bus daemon is slow to answer, PID 1 is stuck in coldplug for up
+to BUS_AUTH_TIMEOUT. In the meantime it doesn't answer anything at all:
+
+    sd_bus_wait()
+    bus_ensure_running()
+    sd_bus_call()
+    sd_bus_get_name_creds()
+    sd_bus_track_add_name()
+    bus_track_add_name_many()
+    bus_job_coldplug_bus_track()
+    job_coldplug()
+    unit_coldplug()
+    manager_coldplug()
+    manager_startup()
+
+[Backport note for deepin (systemd 255.2): this tree has neither the
+Manager.api_bus_ready field nor the asynchronous GetId()-based API bus setup
+introduced by upstream commit 1166f4472d76 (PR #42981), so the "bus not ready"
+checks are expressed as sd_bus_is_ready(m->api_bus) <= 0 instead. Accordingly
+the deferred coldplugging of the deserialized bus clients is triggered from the
+reply to the asynchronous RequestName() call issued in bus_setup_api(), instead
+of from api_bus_instance_id_reply(), which does not exist here. The
+unit_coldplug(), job_coldplug() and scope_coldplug() tracking is skipped while
+the API bus is still connecting, and a subsequent daemon-reload keeps the
+pending names alive because they are now serialized too.
+
+The test/units/TEST-07-PID1.reexec-bus-clients.sh hunk is dropped: 255.2 still
+ships the monolithic test/units/testsuite-07.*.sh tests and the per-test
+TEST-07-PID1.*.sh fragments do not exist yet, so an extra fragment would not be
+wired into the integration test suite.]
+
+Given subscriptions already wait for the GetId() reply, let's do the
+same for these.
+
+Index: systemd/src/core/dbus-job.c
+===================================================================
+--- systemd.orig/src/core/dbus-job.c
++++ systemd/src/core/dbus-job.c
+@@ -342,6 +342,11 @@ int bus_job_coldplug_bus_track(Job *j) {
+ 
+         assert(j);
+ 
++        /* sd_bus_track_add_name() blocks until the bus daemon answers, hence wait until the API bus is
++         * fully up, see bus_coldplug_deferred_tracks(). */
++        if (j->manager->api_bus && sd_bus_is_ready(j->manager->api_bus) <= 0)
++                return 0;
++
+         deserialized_clients = TAKE_PTR(j->deserialized_clients);
+ 
+         if (strv_isempty(deserialized_clients))
+Index: systemd/src/core/dbus-scope.c
+===================================================================
+--- systemd.orig/src/core/dbus-scope.c
++++ systemd/src/core/dbus-scope.c
+@@ -304,6 +304,11 @@ int bus_scope_track_controller(Scope *s)
+         if (!s->controller || s->controller_track)
+                 return 0;
+ 
++        /* sd_bus_track_add_name() blocks until the bus daemon answers, hence wait until the API bus is
++         * fully up, see bus_coldplug_deferred_tracks(). */
++        if (!UNIT(s)->manager->api_bus || sd_bus_is_ready(UNIT(s)->manager->api_bus) <= 0)
++                return 0;
++
+         r = sd_bus_track_new(UNIT(s)->manager->api_bus, &s->controller_track, on_controller_gone, s);
+         if (r < 0)
+                 return r;
+Index: systemd/src/core/dbus-unit.c
+===================================================================
+--- systemd.orig/src/core/dbus-unit.c
++++ systemd/src/core/dbus-unit.c
+@@ -2602,6 +2602,26 @@ int bus_unit_track_add_name(Unit *u, con
+         return sd_bus_track_add_name(u->bus_track, name);
+ }
+ 
++int bus_unit_coldplug_bus_track(Unit *u) {
++        int r = 0;
++
++        assert(u);
++
++        /* sd_bus_track_add_name() blocks until the bus daemon answers, so if the API bus isn't set up yet,
++         * keep the names around until it is, see bus_coldplug_deferred_tracks(). */
++        if (u->manager->api_bus && sd_bus_is_ready(u->manager->api_bus) <= 0)
++                return 0;
++
++        _cleanup_strv_free_ char **refs = TAKE_PTR(u->deserialized_refs);
++        if (!u->manager->api_bus)
++                return 0;
++
++        STRV_FOREACH(i, refs)
++                RET_GATHER(r, bus_unit_track_add_name(u, *i));
++
++        return r;
++}
++
+ int bus_unit_track_add_sender(Unit *u, sd_bus_message *m) {
+         int r;
+ 
+Index: systemd/src/core/dbus-unit.h
+===================================================================
+--- systemd.orig/src/core/dbus-unit.h
++++ systemd/src/core/dbus-unit.h
+@@ -51,5 +51,6 @@ int bus_unit_queue_job(
+ int bus_unit_validate_load_state(Unit *u, sd_bus_error *error);
+ 
+ int bus_unit_track_add_name(Unit *u, const char *name);
++int bus_unit_coldplug_bus_track(Unit *u);
+ int bus_unit_track_add_sender(Unit *u, sd_bus_message *m);
+ int bus_unit_track_remove_sender(Unit *u, sd_bus_message *m);
+Index: systemd/src/core/dbus.c
+===================================================================
+--- systemd.orig/src/core/dbus.c
++++ systemd/src/core/dbus.c
+@@ -35,6 +35,7 @@
+ #include "log.h"
+ #include "mkdir-label.h"
+ #include "process-util.h"
++#include "scope.h"
+ #include "selinux-access.h"
+ #include "serialize.h"
+ #include "service.h"
+@@ -776,6 +777,47 @@ static int bus_on_connection(sd_event_so
+         return 0;
+ }
+ 
++static void bus_coldplug_deferred_tracks(Manager *m) {
++        Unit *u;
++        Job *j;
++        int r;
++
++        assert(m);
++
++        HASHMAP_FOREACH(u, m->units) {
++                r = bus_unit_coldplug_bus_track(u);
++                if (r < 0)
++                        log_unit_debug_errno(u, r, "Failed to track deserialized bus clients, ignoring: %m");
++
++                Scope *s = SCOPE(u);
++                if (s && !UNIT_IS_INACTIVE_OR_FAILED(unit_active_state(u)))
++                        (void) bus_scope_track_controller(s);
++        }
++
++        HASHMAP_FOREACH(j, m->jobs)
++                (void) bus_job_coldplug_bus_track(j);
++}
++
++static int bus_request_name_reply(sd_bus_message *reply, void *userdata, sd_bus_error *reterr_error) {
++        Manager *m = userdata;
++        const sd_bus_error *e;
++
++        assert(reply);
++        assert(m);
++
++        e = sd_bus_message_get_error(reply);
++        if (e)
++                log_debug_errno(sd_bus_error_get_errno(e),
++                                "Failed to request API bus name, tracking deserialized bus clients anyway: %s",
++                                e->message);
++
++        /* The reply is only processed once the connection is fully up, hence this is the point where
++         * looking up the deserialized client names cannot block anymore. */
++        bus_coldplug_deferred_tracks(m);
++
++        return 0;
++}
++
+ static int bus_setup_api(Manager *m, sd_bus *bus) {
+         char *name;
+         Unit *u;
+@@ -816,7 +858,7 @@ static int bus_setup_api(Manager *m, sd_
+         /* Allow replacing of our name, to ease implementation of reexecution, where we keep the old connection open
+          * until after the new connection is set up and the name installed to allow clients to synchronously wait for
+          * reexecution to finish */
+-        r = sd_bus_request_name_async(bus, NULL, "org.freedesktop.systemd1", SD_BUS_NAME_REPLACE_EXISTING|SD_BUS_NAME_ALLOW_REPLACEMENT, NULL, NULL);
++        r = sd_bus_request_name_async(bus, NULL, "org.freedesktop.systemd1", SD_BUS_NAME_REPLACE_EXISTING|SD_BUS_NAME_ALLOW_REPLACEMENT, bus_request_name_reply, m);
+         if (r < 0)
+                 return log_error_errno(r, "Failed to request name: %m");
+ 
+@@ -1047,7 +1089,26 @@ static void destroy_bus(Manager *m, sd_b
+ }
+ 
+ void bus_done_api(Manager *m) {
++        Unit *u;
++        Job *j;
++
++        /* This is called on every unit state change while D-Bus isn't running, see manager_recheck_dbus(). */
++        if (!m->api_bus)
++                return;
++
+         destroy_bus(m, &m->api_bus);
++
++        /* Clients that we didn't get to track yet were on this bus too. */
++        HASHMAP_FOREACH(u, m->units)
++                if (u->deserialized_refs) {
++                        u->deserialized_refs = strv_free(u->deserialized_refs);
++                        unit_add_to_gc_queue(u);
++                }
++        HASHMAP_FOREACH(j, m->jobs)
++                if (j->deserialized_clients) {
++                        j->deserialized_clients = strv_free(j->deserialized_clients);
++                        job_add_to_gc_queue(j);
++                }
+ }
+ 
+ void bus_done_system(Manager *m) {
+Index: systemd/src/core/job.c
+===================================================================
+--- systemd.orig/src/core/job.c
++++ systemd/src/core/job.c
+@@ -1215,6 +1215,8 @@ int job_serialize(Job *j, FILE *f) {
+                 (void) serialize_usec(f, "job-begin-running", j->begin_running_usec);
+ 
+         bus_track_serialize(j->bus_track, f, "subscribed");
++        STRV_FOREACH(i, j->deserialized_clients)
++                (void) serialize_item(f, "subscribed", *i);
+ 
+         activation_details_serialize(j->activation_details, f);
+ 
+@@ -1442,7 +1444,7 @@ bool job_may_gc(Job *j) {
+         if (j->in_dbus_queue)
+                 return false;
+ 
+-        if (sd_bus_track_count(j->bus_track) > 0)
++        if (sd_bus_track_count(j->bus_track) > 0 || !strv_isempty(j->deserialized_clients))
+                 return false;
+ 
+         /* FIXME: So this is a bit ugly: for now we don't properly track references made via private bus connections
+Index: systemd/src/core/unit-serialize.c
+===================================================================
+--- systemd.orig/src/core/unit-serialize.c
++++ systemd/src/core/unit-serialize.c
+@@ -213,6 +213,8 @@ int unit_serialize_state(Unit *u, FILE *
+         (void) serialize_markers(f, u->markers);
+ 
+         bus_track_serialize(u->bus_track, f, "ref");
++        STRV_FOREACH(i, u->deserialized_refs)
++                (void) serialize_item(f, "ref", *i);
+ 
+         for (CGroupIPAccountingMetric m = 0; m < _CGROUP_IP_ACCOUNTING_METRIC_MAX; m++) {
+                 uint64_t v;
+Index: systemd/src/core/unit.c
+===================================================================
+--- systemd.orig/src/core/unit.c
++++ systemd/src/core/unit.c
+@@ -459,7 +459,7 @@ bool unit_may_gc(Unit *u) {
+         if (u->in_dbus_queue)
+                 return false;
+ 
+-        if (sd_bus_track_count(u->bus_track) > 0)
++        if (sd_bus_track_count(u->bus_track) > 0 || !strv_isempty(u->deserialized_refs))
+                 return false;
+ 
+         state = unit_active_state(u);
+@@ -3846,10 +3846,7 @@ int unit_coldplug(Unit *u) {
+ 
+         u->coldplugged = true;
+ 
+-        STRV_FOREACH(i, u->deserialized_refs)
+-                RET_GATHER(r, bus_unit_track_add_name(u, *i));
+-
+-        u->deserialized_refs = strv_free(u->deserialized_refs);
++        RET_GATHER(r, bus_unit_coldplug_bus_track(u));
+ 
+         if (UNIT_VTABLE(u)->coldplug)
+                 RET_GATHER(r, UNIT_VTABLE(u)->coldplug(u));
