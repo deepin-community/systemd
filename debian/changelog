@@ -1,3 +1,15 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * Backport upstream sd-json hardening: refuse JSON objects with duplicate
+    keys. sd_json_variant_new_object() and everything built on it (the
+    parser, the builder, varlink and JSON config/user records) now fail
+    with -ENOTUNIQ instead of silently picking the first or last
+    occurrence of a key, matching the I-JSON profile of RFC 7493. Adds
+    generic cmp_string()/cmp_const_string() comparators to sort-util.
+    (fix-sd-json-refuse-duplicate-keys.patch)
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 25 Nov 2026 10:12:17 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the
