@@ -1,3 +1,13 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * Backport upstream 6701e92f: core/namespace: restore the compaction of
+    the simplified noexec deny list, so the recursive noexec flip stops at
+    the explicitly configured ExecPaths=/NoExecPaths= carve-outs again
+    instead of every configured mount. Add a nested-mount test covering the
+    exec/noexec propagation.
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 25 Nov 2026 10:11:29 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the

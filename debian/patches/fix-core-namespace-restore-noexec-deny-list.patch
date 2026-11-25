@@ -1,0 +1,68 @@
+From 6701e92f7a195ce47a5ecc9ab09b979e9d5732d3 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Wed, 18 Nov 2026 15:00:34 +0900
+Subject: [PATCH] core: restore the simplified deny list for the noexec bits
+
+82fb2da21347b750b3de53cde588ee1189f7acb7 ("core/namespace: refactor
+applying mounts in a separate function", v248) turned the compaction
+counter of the simplified deny list into the loop index, so that the
+list was rebuilt with the paths at their original positions and the
+terminator at the end, i.e. it stayed the full deny list. Since then
+the recursive noexec flip has been stopping at every configured mount,
+not only at the ones that carry an exec or noexec attribute, i.e. at
+the explicitly configured exec carve-outs.
+
+Restore the compaction, and cover it with a test.
+
+Fixes a regression caused by 82fb2da21347b750b3de53cde588ee1189f7acb7.
+
+[v255 backport note: the upstream test hunk appends to
+test/units/TEST-07-PID1.exec-context.sh, which in this 255.2 tree is
+still the monolithic test/units/testsuite-07.exec-context.sh. The test
+is appended there instead, right after the failure-path clean-up cases.
+For the same reason the surrounding context of the upstream hunk (the
+"if [[ ! -v ASAN_OPTIONS ]]" unshare block) does not exist here.]
+---
+ src/core/namespace.c                     | 10 +++++-----
+ test/units/testsuite-07.exec-context.sh  | 13 +++++++++++++
+ 2 files changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/src/core/namespace.c b/src/core/namespace.c
+--- a/src/core/namespace.c
++++ b/src/core/namespace.c
+@@ -2007,10 +2007,11 @@ static int apply_mounts(
+         }
+ 
+         /* Third round, flip the noexec bits with a simplified deny list. */
+-        for (size_t j = 0; j < ml->n_mounts; j++)
+-                if (IN_SET((ml->mounts+j)->mode, MOUNT_EXEC, MOUNT_NOEXEC))
+-                        deny_list[j] = (char*) mount_entry_path(ml->mounts+j);
+-        deny_list[ml->n_mounts] = NULL;
++        size_t k = 0;
++        FOREACH_ARRAY(m, ml->mounts, ml->n_mounts)
++                if (mount_entry_exec(m) || mount_entry_noexec(m) || FLAGS_SET(m->flags, MS_NOEXEC))
++                        deny_list[k++] = (char*) mount_entry_path(m);
++        deny_list[k] = NULL;
+ 
+         FOREACH_ARRAY(m, ml->mounts, ml->n_mounts) {
+                 r = make_noexec(m, deny_list, proc_self_mountinfo);
+diff --git a/test/units/testsuite-07.exec-context.sh b/test/units/testsuite-07.exec-context.sh
+--- a/test/units/testsuite-07.exec-context.sh
++++ b/test/units/testsuite-07.exec-context.sh
+@@ -375,3 +375,16 @@
+ (! systemd-run --wait --pipe -p RootDirectory=/tmp/root this-shouldnt-exist)
+ (! systemd-run --wait --pipe -p RootDirectory=/tmp/root /foo)
+ (! systemd-run --wait --pipe --service-type=oneshot -p ExecStartPre=-/foo/bar/baz -p ExecStart=-/foo/bar/baz -p RootDirectory=/tmp/root -- "- foo")
++
++# Check that the exec and noexec attributes are propagated to the mounts below.
++systemd-run --wait --pipe \
++    -p NoExecPaths=/root \
++    -p TemporaryFileSystem=/root/noexec \
++    -p BindPaths=/bin:/root/noexec/mnt \
++    -p TemporaryFileSystem=/root/exec \
++    -p BindPaths=/bin:/root/exec/mnt \
++    -p ExecPaths=/root/exec/mnt \
++    bash -xec '
++        (! /root/noexec/mnt/true)
++        /root/exec/mnt/true
++    '
