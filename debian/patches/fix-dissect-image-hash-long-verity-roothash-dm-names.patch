@@ -1,0 +1,126 @@
+From 37d32184044512078ff22414174ab82e1ac4e219 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Mon, 23 Nov 2026 16:53:07 +0900
+Subject: [PATCH] dissect-image: hash verity root hashes too long for DM names
+
+With DISSECT_IMAGE_VERITY_SHARE the name of a shared verity device is
+derived from the root hash, so that identical images can reuse it. A
+SHA-512 root hash is 128 characters in hex, which together with the
+"-verity" suffix exceeds the 127-character device-mapper name limit, so
+verity images with such hashes could neither be set up nor reused, and
+veritysetup defaults to SHA-512 on some distributions.
+
+Besides that limit, libcryptsetup composes the device-mapper UUID of a
+verity device as "CRYPT-VERITY-<superblock uuid>-<name>" and truncates
+it, with an error logged, when it doesn't fit in DM_UUID_LEN-1
+characters, which leaves 82 characters for the name. Keep the hex
+encoding of the root hash when it fits, so that the names of existing
+setups do not change, and hash the root hash with SHA-256 otherwise,
+which always fits. Also make make_dm_name_and_node() reject overlong
+names explicitly.
+
+Keep the veritysetup hash pinned in the sysext test fixtures, as TEST-50
+references the shared verity devices by their hex-encoded root hash,
+and use SHA-512 for the OverlayFS ELOOP test, extended to check the
+name of the shared verity device, to cover the hashed fallback on all
+distributions.
+
+Follow-up for 5f5c20435fe6202ebc990b5387d48687cfeb119d.
+
+[v255 backport note: adapted to the 255.2 tree of deepin-community/systemd]
+  - Only the src/shared/dissect-image.c changes are backported. All test
+    changes of this commit, and all changes of 5f5c20435fe6202ebc990b5387d48687cfeb119d
+    ("test: fix verity roothash to sha256", test-only), are dropped: 255.2 has no
+    test/units/TEST-50-DISSECT.dissect.sh and its test/units/util.sh contains no
+    veritysetup extension-image fixtures at all, so those hunks have no target.
+  - VeritySettings::root_hash is a (void *root_hash, size_t root_hash_size) pair in
+    255.2, not a struct iovec, so verity_dm_name_base() takes those two arguments
+    and returns char*, and asserts on root_hash instead of iovec_is_set().
+  - sha256_direct_hex() does not exist in 255.2 (src/fundamental/sha256.h only
+    provides sha256_direct()), so the too-long branch calls sha256_direct() and
+    passes the digest to hexmem().
+  - dissected_image_new_from_existing_verity() does not exist in 255.2, so that
+    hunk is dropped; verity_partition() already derives the shared device node from
+    the root hash and reuses an existing device itself, so no call site is lost.
+  - make_dm_name_and_node() still has the 255.2 signature (original_node, suffix,
+    ret_name, ret_node) and takes a device node path, so the DM_NAME_LEN check is
+    added right after filename_is_valid() on the computed name.
+  - <linux/dm-ioctl.h> is already included unconditionally in 255.2, so only the
+    "sha256.h" include is added (placed after "resize-fs.h"; 255.2 does not have
+    rm-rf.h/runtime-scope.h there).
+  - The helper and macro live inside the pre-existing #if HAVE_LIBCRYPTSETUP block,
+    so builds without libcryptsetup do not get an unused-function warning.
+
+diff --git a/src/shared/dissect-image.c b/src/shared/dissect-image.c
+--- a/src/shared/dissect-image.c
++++ b/src/shared/dissect-image.c
+@@ -64,6 +64,7 @@
+ #include "process-util.h"
+ #include "raw-clone.h"
+ #include "resize-fs.h"
++#include "sha256.h"
+ #include "signal-util.h"
+ #include "sparse-endian.h"
+ #include "stat-util.h"
+@@ -2340,6 +2341,32 @@ int dissected_image_mount_and_warn(
+ }
+ 
+ #if HAVE_LIBCRYPTSETUP
++/* The device-mapper UUID that libcryptsetup composes for a verity device is
++ * "CRYPT-VERITY-<superblock uuid>-<name>", and it is truncated, with an error logged, when it
++ * doesn't fit in DM_UUID_LEN-1 characters. With the 32 hex characters of the superblock UUID that
++ * leaves 82 characters for the device name, which is below the DM_NAME_LEN-1 character limit on
++ * the name itself. */
++#define VERITY_DM_NAME_MAX (DM_UUID_LEN - 1 - strlen("CRYPT-VERITY-") - 32 - 1)
++
++/* Encode the root hash for the name of a shared verity device, which is derived from the root
++ * hash so that the device can be reused for identical images. Keep the hex encoding when it fits,
++ * so that the names of existing setups do not change, and hash the root hash with SHA-256
++ * otherwise, which always fits. The naming is shared with the verity hook of libmount in
++ * util-linux, to deduplicate devices across the whole system, so keep them in sync. */
++static char* verity_dm_name_base(const void *root_hash, size_t root_hash_size) {
++        assert(root_hash);
++        assert(root_hash_size > 0);
++
++        if (root_hash_size * 2 > VERITY_DM_NAME_MAX - strlen("-verity")) {
++                uint8_t hash[SHA256_DIGEST_SIZE];
++
++                sha256_direct(root_hash, root_hash_size, hash);
++                return hexmem(hash, sizeof(hash));
++        }
++
++        return hexmem(root_hash, root_hash_size);
++}
++
+ struct DecryptedPartition {
+         struct crypt_device *device;
+         char *name;
+@@ -2435,6 +2462,10 @@ static int make_dm_name_and_node(const v
+                 return -ENOMEM;
+         if (!filename_is_valid(name))
+                 return -EINVAL;
++        /* The device-mapper interface is stricter than filename_is_valid() above: it also rejects
++         * names longer than DM_NAME_LEN-1 characters. */
++        if (strlen(name) >= DM_NAME_LEN)
++                return -ENAMETOOLONG;
+ 
+         node = path_join(sym_crypt_get_dir(), name);
+         if (!node)
+@@ -2774,13 +2805,13 @@ static int verity_partition(
+ 
+         if (FLAGS_SET(flags, DISSECT_IMAGE_VERITY_SHARE)) {
+                 /* Use the roothash, which is unique per volume, as the device node name, so that it can be reused */
+-                _cleanup_free_ char *root_hash_encoded = NULL;
++                _cleanup_free_ char *root_hash_dm_name = NULL;
+ 
+-                root_hash_encoded = hexmem(verity->root_hash, verity->root_hash_size);
+-                if (!root_hash_encoded)
++                root_hash_dm_name = verity_dm_name_base(verity->root_hash, verity->root_hash_size);
++                if (!root_hash_dm_name)
+                         return -ENOMEM;
+ 
+-                r = make_dm_name_and_node(root_hash_encoded, "-verity", &name, &node);
++                r = make_dm_name_and_node(root_hash_dm_name, "-verity", &name, &node);
+         } else
+                 r = make_dm_name_and_node(m->node, "-verity", &name, &node);
+         if (r < 0)
