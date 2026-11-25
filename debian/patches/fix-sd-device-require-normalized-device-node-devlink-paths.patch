@@ -1,0 +1,167 @@
+From 0022639611b2d75acde29e829288648d99e28563 Mon Sep 17 00:00:00 2001
+From: Yu Watanabe <watanabe.yu+github@gmail.com>
+Date: Mon, 23 Nov 2026 05:31:11 +0900
+Subject: [PATCH] sd-device: require normalized paths for device node and
+ devlinks
+
+Previously, mangle_devname() only rejected paths with '..' components.
+A '.' component was silently dropped by path_simplify(), changing the
+referred path. E.g. for a GPT partition whose partition label is '.',
+udev built the devlink path "disk/by-partlabel/.", which was simplified
+into "/dev/disk/by-partlabel", and udev created the symlink at that
+path, replacing the directory itself.
+
+Let's require the input path to be normalized, so that such paths are
+rejected with -EINVAL. Redundant and trailing slashes are now also
+rejected, they were silently merged or stripped before.
+
+Fixes #44979
+
+[Backport note for deepin (systemd 255.2): the source and test changes apply
+unchanged after rebasing onto v255:
+ - The NEWS hunk is dropped, as this release's NEWS describes the v255
+   changes and must not gain v263 release notes.
+ - The documentation paragraph is inserted into the SYMLINK= assignment
+   section of man/udev.xml, whose wording differs in v255.
+ - v255's src/libsystemd/sd-device/test-sd-device.c still uses assert_se()
+   instead of the later ASSERT_OK()/ASSERT_ERROR() macros, and does not yet
+   contain TEST(sd_device_new_from_nulstr_invalid_typed_property), so the
+   new TEST(device_add_devlink) is inserted before
+   TEST(sd_device_new_from_path) with assert_se() assertions.
+ - test/test-udev.py in v255 is not yet "ruff format"ed, so the expected
+   link lists are updated in the pre-ruff style.
+ Note that in v255 udev-rules.c already passes each SYMLINK= token to
+ device_add_devlink() without pre-simplifying it, hence the stricter
+ mangle_devname() alone is enough to reject non-normalized symlink paths.]
+
+diff --git a/man/udev.xml b/man/udev.xml
+index 709cecfd..5ba3230d 100644
+--- a/man/udev.xml
++++ b/man/udev.xml
+@@ -417,6 +417,11 @@
+             <listitem>
+               <para>The name of a symlink targeting the node. Every matching rule adds
+               this value to the list of symlinks to be created.</para>
++              <para>The value must be a normalized path, i.e. it must not contain redundant or
++              trailing slashes, or <literal>.</literal> or <literal>..</literal> as a path component.
++              A relative path is interpreted relative to <filename>/dev/</filename>, and an absolute
++              path must be located below <filename>/dev/</filename>. Otherwise, the value is
++              ignored.</para>
+               <para>The set of characters to name a symlink is limited. Allowed
+               characters are <literal>0-9A-Za-z#+-.:=@_/</literal>, valid UTF-8 character
+               sequences, and <literal>\x00</literal> hex encoding. All other
+diff --git a/src/libsystemd/sd-device/sd-device.c b/src/libsystemd/sd-device/sd-device.c
+index 2fbc619a..97e8d132 100644
+--- a/src/libsystemd/sd-device/sd-device.c
++++ b/src/libsystemd/sd-device/sd-device.c
+@@ -578,7 +578,9 @@ static int mangle_devname(const char *p, char **ret) {
+         assert(p);
+         assert(ret);
+ 
+-        if (!path_is_safe(p))
++        /* path_is_normalized() allows a trailing slash, but path_simplify() below strips it,
++         * which would silently change the referred path. */
++        if (!path_is_normalized(p) || endswith(p, "/"))
+                 return -EINVAL;
+ 
+         /* When the path is absolute, it must start with "/dev/", but ignore "/dev/" itself. */
+@@ -592,8 +594,6 @@ static int mangle_devname(const char *p, char **ret) {
+         if (!q)
+                 return -ENOMEM;
+ 
+-        path_simplify(q);
+-
+         *ret = q;
+         return 0;
+ }
+diff --git a/src/libsystemd/sd-device/test-sd-device.c b/src/libsystemd/sd-device/test-sd-device.c
+index bce99b55..f222adc1 100644
+--- a/src/libsystemd/sd-device/test-sd-device.c
++++ b/src/libsystemd/sd-device/test-sd-device.c
+@@ -597,6 +597,37 @@ TEST(sd_device_new_from_nulstr) {
+         }
+ }
+ 
++TEST(device_add_devlink) {
++        _cleanup_(sd_device_unrefp) sd_device *device = NULL;
++
++        assert_se(sd_device_new_from_syspath(&device, "/sys/class/net/lo") >= 0);
++
++        /* Dots inside a path component are allowed. */
++        assert_se(device_add_devlink(device, "foo./.bar") >= 0);
++        assert_se(set_contains(device->devlinks, "/dev/foo./.bar"));
++
++        /* The path must be normalized, as path_simplify() would silently change the
++         * referred path otherwise. */
++        assert_se(device_add_devlink(device, ".") == -EINVAL);
++        assert_se(device_add_devlink(device, "..") == -EINVAL);
++        assert_se(device_add_devlink(device, "./foo") == -EINVAL);
++        assert_se(device_add_devlink(device, "foo/.") == -EINVAL);
++        assert_se(device_add_devlink(device, "foo/./bar") == -EINVAL);
++        assert_se(device_add_devlink(device, "foo//bar") == -EINVAL);
++        assert_se(device_add_devlink(device, "foo/") == -EINVAL);
++        assert_se(device_add_devlink(device, "foo/../bar") == -EINVAL);
++        assert_se(device_add_devlink(device, "/dev/./foo") == -EINVAL);
++        assert_se(device_add_devlink(device, "/dev/foo/.") == -EINVAL);
++        assert_se(device_add_devlink(device, "/dev/foo/") == -EINVAL);
++
++        /* When the path is absolute, it must start with "/dev/", but ignore "/dev/" itself. */
++        assert_se(device_add_devlink(device, "/dev/abs") >= 0);
++        assert_se(set_contains(device->devlinks, "/dev/abs"));
++        assert_se(device_add_devlink(device, "/foo/bar") == -EINVAL);
++        assert_se(device_add_devlink(device, "/dev") == -EINVAL);
++        assert_se(device_add_devlink(device, "/dev/") == -EINVAL);
++}
++
+ TEST(sd_device_new_from_path) {
+         _cleanup_(sd_device_enumerator_unrefp) sd_device_enumerator *e = NULL;
+         _cleanup_(rm_rf_physical_and_freep) char *tmpdir = NULL;
+diff --git a/test/test-udev.py b/test/test-udev.py
+index 5a95b9c5..7de17cc2 100755
+--- a/test/test-udev.py
++++ b/test/test-udev.py
+@@ -308,23 +308,29 @@ RULES = [
+         "SYMLINK tests",
+         Device(
+             "/devices/pci0000:00/0000:00:1f.2/host0/target0:0:0/0:0:0:0/block/sda/sda1",
+-            exp_links       = ["link1", "link2/foo", "link3/aaa/bbb",
+-                               "abs1", "abs2/foo", "abs3/aaa/bbb",
++            exp_links       = ["link1",
++                               "abs1",
+                                "default___replace_test/foo_aaa",
+                                "string_escape___replace/foo_bbb",
+                                "env_with_space",
+                                "default/replace/mode_foo__hoge",
+                                "replace_env_harder_foo__hoge",
+-                               "match", "unmatch"],
+-            not_exp_links   = ["removed1", "removed2", "removed3", "unsafe/../../path", "/nondev/path/will/be/refused"],
++                               "match", "unmatch",
++                               "subdir/valid",
++                               "not-removed"],
++            not_exp_links   = ["removed1", "removed2", "removed3", "unsafe/../../path", "/nondev/path/will/be/refused",
++                               "link2/foo", "link3/aaa/bbb", "abs2/foo", "abs3/aaa/bbb",
++                               "subdir/dot-component"],
+         ),
+         rules = r"""
+         SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="removed1"
+         SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK-="removed1"
+-        SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="/./dev///removed2"
++        SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="/dev/removed2"
+         SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK-="removed2"
+-        SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="././removed3"
+-        SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK-="/dev//./removed3/./"
++        SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="removed3"
++        SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK-="/dev/removed3"
++        SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="not-removed"
++        SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK-="not-removed/"
+         SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="unsafe/../../path"
+         SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="/nondev/path/will/be/refused"
+         SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="link1 .///link2/././/foo//./ .///link3/aaa/bbb"
+@@ -336,6 +342,7 @@ RULES = [
+         SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", OPTIONS="string_escape=replace", ENV{.HOGE}="replace/env/harder?foo;;hoge", SYMLINK+="%E{.HOGE}"
+         SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK=="link1", SYMLINK+="match"
+         SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK!="removed1", SYMLINK+="unmatch"
++        SUBSYSTEMS=="scsi", ATTRS{vendor}=="ATA", ATTRS{model}=="ST910021AS", SYMLINK+="subdir/valid subdir/. subdir/./dot-component"
+         """),
+ 
+     Rules.new(
