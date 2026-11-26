@@ -1,3 +1,9 @@
+systemd (255.2-4deepin88) unstable; urgency=medium
+
+  * Backport the DNS-over-TLS session verification fix from upstream PR #43922: do not resume a TLS session that was negotiated without certificate verification once verification is required, only save sessions of completed handshakes, drop the cached session when server features are reset, and stop reusing long-lived connections established without verification. Applied to both the OpenSSL and GnuTLS backends.
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 26 Nov 2026 10:23:14 +0800
+
 systemd (255.2-4deepin87) unstable; urgency=medium
 
   * Fix test-sysusers failing when built from the source package: the
